@@ -201,7 +201,8 @@ func (r *balanceSnapshotRepository) UpsertBatchIncrementalTx(tx *gorm.DB, tableI
 	if len(snapshots) == 0 {
 		return nil
 	}
-	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
+	// tx 由调用方 (db.WithContext(ctx).Transaction(...)) 传入；ctx 已附在 tx.Statement.Context 上。
+	tableName := shadow.TableName(tx.Statement.Context, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 	const batchSize = 500
 	return tx.Table(tableName).
 		Clauses(clause.OnConflict{
@@ -416,7 +417,7 @@ func (r *balanceSnapshotRepository) SetBeginAndEnd(ctx context.Context, dbIndex,
 	}
 
 	// shadow 路由：压测流量走 _shadow 副本表，与 callback 路径一致
-	tableName := shadow.TableName(ctx, shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)))
+	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 	db, err := r.dbManager.GetDB(dbIndex)
 	if err != nil {
 		return fmt.Errorf("balance_snapshot SetBeginAndEnd: get db[%d]: %w", dbIndex, err)
