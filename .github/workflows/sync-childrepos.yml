@@ -4,11 +4,20 @@
 #   - push 到 main → 自动同步**有改动**的 package（默认行为）
 #   - 手动触发（workflow_dispatch）→ 可指定 package 列表，或勾选 force_all 强推所有
 #
-# 鉴权：
-#   GitHub Actions 用 SSH key 推 child repo，需要在 monorepo 的 repo settings →
-#   Secrets and variables → Actions 里加：
-#     CHILDREPO_SSH_KEY  — 一把对所有 17 个 child repo 都有 push 权限的 deploy key
-#                          （建议给一个机器人账户，绑定到组织级权限）
+# 鉴权：HTTPS + Personal Access Token
+#   monorepo 的 repo settings → Secrets and variables → Actions → New secret
+#     Name:   CHILDREPO_PAT
+#     Value:  一把对 17 个 child repo 都有 push 权限的 PAT
+#
+#   生成 PAT：
+#     - Classic：https://github.com/settings/tokens/new
+#       Scope 勾  `repo`（含全部子项），expiration 建议 90 天或自定义
+#     - Fine-grained（推荐，权限更窄）：https://github.com/settings/personal-access-tokens/new
+#       Repository access → Only select repositories → 把 17 个 xiongwp/* 全选
+#       Repository permissions → Contents: Read and write
+#
+#   选 PAT 而非 SSH deploy key，是因为 GitHub deploy key 是 per-repo 的，
+#   一把公钥不能同时绑到 17 个 repo（"Key is already in use"）。
 #
 # 行为：
 #   - 检测哪些 packages/<name>/ 在最近一次 push 里被改了
@@ -50,41 +59,40 @@ jobs:
           git config user.name  "ci-monorepo-sync"
           git config user.email "ci-monorepo-sync@users.noreply.github.com"
 
-      - name: Set up SSH for child-repo push
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.CHILDREPO_SSH_KEY }}
-
-      - name: Trust github.com host key
+      - name: Add child-repo remotes (HTTPS + PAT)
+        # 镜像 monorepo 本地的 git remote 配置；保持 packages/<name> ↔ remote-name ↔ child-repo 三者同名。
+        # token 通过 https://x-access-token:${TOKEN}@github.com/... 形式注入，
+        # 不会写入 git config 文件（remote URL 写时 token 会被 GitHub Actions 自动 mask）。
+        env:
+          GH_TOKEN: ${{ secrets.CHILDREPO_PAT }}
         run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -H github.com >> ~/.ssh/known_hosts
-
-      - name: Add child-repo remotes
-        # 镜像 monorepo 本地的 git remote 配置；保持 packages/<name> ↔ remote-name ↔ child-repo 三者同名
-        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::Secret CHILDREPO_PAT is not set. See workflow header for setup steps." >&2
+            exit 1
+          fi
           declare -A REMOTES=(
-            [accounting-admin-web]="git@github.com:xiongwp/accounting-admin-web.git"
-            [accounting-grpc-api]="git@github.com:xiongwp/accounting-grpc-api.git"
-            [accounting-system]="git@github.com:xiongwp/accounting-system.git"
-            [api-gateway]="git@github.com:xiongwp/api-gateway.git"
-            [billing-system]="git@github.com:xiongwp/billing-system.git"
-            [clearing-settlement]="git@github.com:xiongwp/clearing-settlement.git"
-            [id-generator]="git@github.com:xiongwp/id-generator.git"
-            [kms-manage]="git@github.com:xiongwp/kms-manage.git"
-            [order-core]="git@github.com:xiongwp/order-core.git"
-            [payment-admin-web]="git@github.com:xiongwp/payment-admin-web.git"
-            [payment-channel]="git@github.com:xiongwp/payment-channel.git"
-            [payment-core]="git@github.com:xiongwp/payment-core.git"
-            [payment-gateway]="git@github.com:xiongwp/payment-gateway.git"
-            [payment-util]="git@github.com:xiongwp/payment-util.git"
-            [reconplatform]="git@github.com:xiongwp/reconplatform.git"
-            [risk-manage]="git@github.com:xiongwp/risk-manage.git"
-            [user-merchant-core]="git@github.com:xiongwp/user-merchant-core.git"
+            [accounting-admin-web]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/accounting-admin-web.git"
+            [accounting-grpc-api]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/accounting-grpc-api.git"
+            [accounting-system]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/accounting-system.git"
+            [api-gateway]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/api-gateway.git"
+            [billing-system]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/billing-system.git"
+            [clearing-settlement]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/clearing-settlement.git"
+            [id-generator]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/id-generator.git"
+            [kms-manage]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/kms-manage.git"
+            [order-core]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/order-core.git"
+            [payment-admin-web]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/payment-admin-web.git"
+            [payment-channel]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/payment-channel.git"
+            [payment-core]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/payment-core.git"
+            [payment-gateway]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/payment-gateway.git"
+            [payment-util]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/payment-util.git"
+            [reconplatform]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/reconplatform.git"
+            [risk-manage]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/risk-manage.git"
+            [user-merchant-core]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/user-merchant-core.git"
           )
           for name in "${!REMOTES[@]}"; do
             git remote add "$name" "${REMOTES[$name]}" 2>/dev/null || true
           done
+          # 打印 remote 时 GitHub Actions 会自动把 token 替换成 ***
           git remote -v
 
       - name: Sync (push)
