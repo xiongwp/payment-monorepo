@@ -1,0 +1,48 @@
+version: '3.8'
+
+# ─── 记账系统管理后台 - 独立部署 ──────────────────────────────────────────────
+# 启动: docker-compose up -d
+# 访问: http://localhost
+#
+# 镜像构建时会 git-clone accounting-grpc-api（私仓），需要 GITHUB_TOKEN：
+#   GITHUB_TOKEN=ghp_xxx docker compose build
+#
+# 若与 accounting-system 合并部署，使用:
+#   docker-compose -f ../accounting-system/docker-compose.yml \
+#                  -f docker-compose.yml up -d
+
+services:
+  accounting-admin-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      secrets:
+        - GITHUB_TOKEN
+    image: accounting-admin-web:latest
+    container_name: accounting-admin-web
+    ports:
+      - "80:80"
+    environment:
+      # accounting-system gRPC 地址（容器名:端口）
+      - GRPC_ADDR=${GRPC_ADDR:-accounting-service:50051}
+      # accounting-system HTTP admin 地址（服务发现 + 热重载，默认容器名:8888）
+      - ACCOUNTING_ADMIN_HTTP_ADDR=${ACCOUNTING_ADMIN_HTTP_ADDR:-http://accounting-service:8888}
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  default:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true
+
+# BuildKit secret：从环境变量读取 GITHUB_TOKEN 传给 git clone。
+# 公仓或本机 git 已登录时可不设 token（Dockerfile 内部判断 secret 是否存在）。
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN
