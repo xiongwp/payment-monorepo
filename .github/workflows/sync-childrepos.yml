@@ -53,6 +53,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # 关键：不要让 actions/checkout 在全局 git config 留一个
+          #   http.https://github.com/.extraheader = AUTHORIZATION: basic <github-actions[bot]>
+          # 否则后面 `git subtree push <child-remote>` 时 bot token 会覆盖
+          # 我们 remote URL 里的 x-access-token:${CHILDREPO_PAT}@... ，
+          # 推到 xiongwp/<other-repo>.git 时报：
+          #   remote: Permission to xiongwp/<repo>.git denied to github-actions[bot]
+          persist-credentials: false
 
       - name: Configure git identity
         run: |
