@@ -1,5 +1,4 @@
 //go:build e2e
-
 // 三层压测 / 基准：order-core → payment-core → payment-channel。
 //
 // 目的：
