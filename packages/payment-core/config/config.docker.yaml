@@ -1,0 +1,103 @@
+# Config for docker-compose deployments. Service hostnames match the
+# container_name of each sibling service in the full stack.
+#
+# Use via bind mount or PAYCORE_CONFIG=config.docker in env.
+
+server:
+  grpc_port: 9090
+
+metrics:
+  addr: ":9190"
+
+auth:
+  tokens: []
+
+rate_limit:
+  rps: 2000
+  burst: 4000
+
+channel:
+  endpoint: "payment-channel:9092"
+  rpc_timeout: 10s
+
+kms:
+  endpoint: "kms-manage:9290"
+  bearer_token: ""
+  rpc_timeout: 3s
+
+risk:
+  endpoint: "risk-manage:9490"
+  rpc_timeout: 3s
+
+routing:
+  rules:
+    - priority: 100
+      country: PH
+      payment_method: GCASH
+      adapter: gcash
+    - priority: 100
+      country: PH
+      payment_method: MAYA
+      adapter: maya
+    - priority: 100
+      country: PH
+      payment_method: GRABPAY
+      adapter: grabpay
+    - priority: 100
+      country: PH
+      payment_method: COINS_PH
+      adapter: coinsph
+    - priority: 100
+      country: PH
+      payment_method: INSTAPAY
+      amount_max: 5000000
+      adapter: instapay
+    - priority: 110
+      country: PH
+      payment_method: INSTAPAY
+      amount_min: 5000001
+      adapter: pesonet
+    - priority: 100
+      country: PH
+      payment_method: PESONET
+      adapter: pesonet
+    - priority: 100
+      country: PH
+      payment_method: PAYMONGO
+      adapter: paymongo
+    - priority: 100
+      country: PH
+      payment_method: XENDIT
+      adapter: xendit
+    - priority: 100
+      country: PH
+      payment_method: DRAGONPAY
+      adapter: dragonpay
+    - priority: 100
+      country: PH
+      payment_method: SHOPEEPAY
+      adapter: shopeepay
+    - priority: 100
+      country: PH
+      payment_method: BILLEASE
+      adapter: billease
+    - priority: 100
+      country: PH
+      payment_method: BDO
+      adapter: bdo
+    - priority: 100
+      country: PH
+      payment_method: BPI
+      adapter: bpi
+    - priority: 100
+      country: PH
+      payment_method: METROBANK
+      adapter: metrobank
+    - priority: 100
+      country: PH
+      payment_method: LANDBANK
+      adapter: landbank
+    # Fallback: any unknown payment_method goes to GCash
+    - priority: 999
+      country: PH
+      adapter: gcash

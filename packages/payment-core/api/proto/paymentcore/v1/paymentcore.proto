@@ -1,0 +1,128 @@
+// payment-core 暴露给 order-core 的 gRPC 面。形状严格对齐 order-core
+// internal/channel.PaymentChannel —— 就是把 Go interface 翻译成 proto。
+//
+// order-core 的 channel.PaymentChannel 接口有 6 个方法：
+//   Charge / Capture / Void / Refund / Query / ParseWebhook
+// ParseWebhook 在 gRPC 里对应 ForwardWebhook：order-core 收到渠道回调后把原始
+// headers/body 转给 payment-core，payment-core 做签名校验 + 规范化。
+syntax = "proto3";
+
+package paymentcore.v1;
+option go_package = "github.com/xiongwp/payment-core/api/proto/paymentcore/v1;paymentcorev1";
+
+service PaymentCoreService {
+  rpc Charge(ChargeRequest) returns (ChargeResponse);
+  rpc Capture(CaptureRequest) returns (OpResponse);
+  rpc Void(VoidRequest) returns (OpResponse);
+  rpc Refund(RefundRequest) returns (OpResponse);
+  rpc Query(QueryRequest) returns (QueryResponse);
+  rpc ParseWebhook(ParseWebhookRequest) returns (WebhookEvent);
+}
+
+message ChargeRequest {
+  string payment_intent_id  = 1;
+  string charge_id          = 2;
+  int64  amount             = 3;
+  string currency           = 4;
+  string country            = 5;   // 用于路由
+  string payment_method     = 6;   // GCASH / MAYA / GRABPAY / COINS_PH / INSTAPAY / PESONET / VISA / ...
+  string payment_method_ref = 7;   // token / card_token / wallet_id / account_no
+  string customer_id        = 8;
+  string capture_method     = 9;   // automatic / manual
+  string return_url         = 10;
+  string notify_url         = 11;
+  string description        = 12;
+  map<string, string> metadata = 13;
+  map<string, string> extra    = 14;
+}
+
+message RequiredAction {
+  string type         = 1;
+  int64  expires_at   = 2;
+  string challenge_ref = 3;
+  map<string, string> details = 4;
+}
+
+message ChargeResponse {
+  string result_type     = 1;   // succeeded / authorized / processing / requires_action / failed
+  string external_ref_no = 2;
+  string auth_code       = 3;
+  int64  amount_authorized = 4;
+  int64  amount_captured   = 5;
+  RequiredAction required_action = 6;
+  string failure_code    = 7;
+  string failure_message = 8;
+  string risk_level      = 9;
+  int32  risk_score      = 10;
+  map<string, string> raw_response = 11;
+}
+
+message CaptureRequest {
+  string payment_intent_id = 1;
+  string charge_id         = 2;
+  string external_ref_no   = 3;
+  int64  amount            = 4;
+  map<string, string> extra = 5;
+}
+
+message VoidRequest {
+  string payment_intent_id = 1;
+  string charge_id         = 2;
+  string external_ref_no   = 3;
+  string reason            = 4;
+  map<string, string> extra = 5;
+}
+
+message RefundRequest {
+  string payment_intent_id = 1;
+  string charge_id         = 2;
+  string refund_id         = 3;
+  string external_ref_no   = 4;
+  int64  amount            = 5;
+  string currency          = 6;
+  string reason            = 7;
+  map<string, string> extra = 8;
+}
+
+message OpResponse {
+  string result_type     = 1;
+  string external_ref_no = 2;
+  string failure_code    = 3;
+  string failure_message = 4;
+  map<string, string> raw_response = 5;
+}
+
+message QueryRequest {
+  string payment_intent_id = 1;
+  string charge_id         = 2;
+  string external_ref_no   = 3;
+  map<string, string> extra = 4;
+}
+
+message QueryResponse {
+  string result_type      = 1;
+  string external_ref_no  = 2;
+  int64  amount_captured  = 3;
+  int64  amount_refunded  = 4;
+  string failure_code     = 5;
+  string failure_message  = 6;
+  map<string, string> raw_response = 7;
+}
+
+message ParseWebhookRequest {
+  string adapter            = 1; // 可选；空则 payment-core 自行识别
+  map<string, string> headers = 2;
+  bytes  body               = 3;
+}
+
+message WebhookEvent {
+  string event_id          = 1;
+  string event_type        = 2;
+  string payment_intent_id = 3;
+  string charge_id         = 4;
+  string refund_id         = 5;
+  string external_ref_no   = 6;
+  int64  amount            = 7;
+  int64  timestamp         = 8;
+  map<string, string> raw_payload = 9;
+}
