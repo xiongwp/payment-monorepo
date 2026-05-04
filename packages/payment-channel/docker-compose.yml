@@ -51,6 +51,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util: ../payment-util
+        kms-manage:   ../kms-manage
+        risk-manage:  ../risk-manage
       secrets:
         - GITHUB_TOKEN
     image: payment-channel:latest

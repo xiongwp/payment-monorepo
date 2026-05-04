@@ -1,21 +1,24 @@
-# user-merchant-core Dockerfile — 自包含构建
+# user-merchant-core Dockerfile — 优先用本地兄弟仓，找不到才 git clone。
 #
-# 以前要求 docker build context 是"父目录"以看到 ../payment-util 和 ../kms-manage。
-# 当 outer docker-compose 用 `context: ./user-merchant-core` 时，sibling COPY 会失败。
+# 默认（推荐）：docker-compose.yml 用 BuildKit additional_contexts 注入本地：
+#   build:
+#     additional_contexts:
+#       payment-util:        ../payment-util
+#       kms-manage:          ../kms-manage
+#       risk-manage:         ../risk-manage
+#       accounting-grpc-api: ../accounting-grpc-api
 #
-# 现在 Dockerfile 自己 git-clone payment-util / kms-manage / risk-manage /
-# accounting-grpc-api 到 /src/<name>，go.mod 里的 `replace ../payment-util` /
-# `replace ../kms-manage` / `replace ../risk-manage` /
-# `replace ../accounting-grpc-api` 相对路径仍然成立。
-#
-# 私仓 clone 通过 BuildKit secret 传 token：
-#   services.user-merchant-core.build.secrets:
-#     - GITHUB_TOKEN
-# 然后 GITHUB_TOKEN=ghp_xxx docker compose build；
-# 公仓不带 secret 也行。
-#
-# 覆盖分支：--build-arg PAYMENT_UTIL_REF=<branch> / KMS_MANAGE_REF=<branch> /
-# RISK_MANAGE_REF=<branch>
+# 没设置时 fallback 到 git clone（需 GITHUB_TOKEN secret）。
+
+# Sibling source provider placeholders。
+FROM alpine:3.19 AS payment-util
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS kms-manage
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS risk-manage
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS accounting-grpc-api
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS build
 RUN apk add --no-cache git ca-certificates
@@ -28,35 +31,40 @@ ARG PAYMENT_UTIL_REF=main
 ARG KMS_MANAGE_REF=main
 ARG RISK_MANAGE_REF=main
 ARG ACCOUNTING_GRPC_API_REF=main
-# CACHEBUST 让 sibling clone 步骤可被显式 invalidate。
-# 用 --build-arg CACHEBUST=$(date +%s) 强制重 clone。
-ARG CACHEBUST=0
+
+COPY --from=payment-util         / /tmp/payment-util-staged/
+COPY --from=kms-manage           / /tmp/kms-manage-staged/
+COPY --from=risk-manage          / /tmp/risk-manage-staged/
+COPY --from=accounting-grpc-api  / /tmp/accounting-grpc-api-staged/
+
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
-    echo "cachebust=$CACHEBUST"; \
-    TOKEN=""; \
-    [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
-    if [ -z "$TOKEN" ]; then \
-        echo "ERROR: GITHUB_TOKEN is not set; required to clone private xiongwp/* siblings." >&2; \
-        echo "       Generate a token at https://github.com/settings/tokens (scope: repo)," >&2; \
-        echo "       then run:  GITHUB_TOKEN=ghp_xxx docker compose build" >&2; \
-        exit 1; \
-    fi; \
-    auth="x-access-token:${TOKEN}@"; \
-    clone_with_fallback() { \
-        repo=$1; ref=$2; \
-        url="https://${auth}github.com/xiongwp/${repo}.git"; \
-        dest="/src/${repo}"; \
-        if git clone --depth=1 --branch "$ref" "$url" "$dest" 2>/dev/null; then \
-            return 0; \
+    promote() { \
+      name=$1; ref=$2; \
+      staged="/tmp/${name}-staged"; final="/src/${name}"; \
+      if [ -f "${staged}/go.mod" ]; then \
+        echo "→ Using local ${name} (additional_context override)"; \
+        mkdir -p "${final}"; cp -a "${staged}/." "${final}/"; \
+      else \
+        echo "→ Local ${name} not provided, git clone fallback (ref=${ref})"; \
+        TOKEN=""; \
+        [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
+        if [ -z "$TOKEN" ]; then \
+          echo "ERROR: cannot fetch sibling '${name}' — provide ../${name} via additional_contexts OR GITHUB_TOKEN secret." >&2; \
+          exit 1; \
         fi; \
-        echo "branch '$ref' not found in $repo; falling back to default branch" >&2; \
-        git clone --depth=1 "$url" "$dest"; \
+        auth="x-access-token:${TOKEN}@"; \
+        url="https://${auth}github.com/xiongwp/${name}.git"; \
+        rm -rf "${final}"; \
+        git clone --depth=1 --branch "$ref" "$url" "$final" 2>/dev/null \
+          || git clone --depth=1 "$url" "$final"; \
+      fi; \
+      rm -rf "${staged}"; \
     }; \
-    clone_with_fallback payment-util        "$PAYMENT_UTIL_REF"; \
-    clone_with_fallback kms-manage          "$KMS_MANAGE_REF"; \
-    clone_with_fallback risk-manage         "$RISK_MANAGE_REF"; \
-    clone_with_fallback accounting-grpc-api "$ACCOUNTING_GRPC_API_REF"
+    promote payment-util         "$PAYMENT_UTIL_REF"; \
+    promote kms-manage           "$KMS_MANAGE_REF"; \
+    promote risk-manage          "$RISK_MANAGE_REF"; \
+    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"
 
 # 这个仓自己的代码
 COPY . /src/user-merchant-core

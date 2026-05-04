@@ -17,6 +17,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 优先用本地 monorepo 兄弟仓覆盖 Dockerfile 里的 placeholder stage。
+      additional_contexts:
+        payment-util:    ../payment-util
+        kms-manage:      ../kms-manage
+        payment-channel: ../payment-channel
+        risk-manage:     ../risk-manage
       secrets:
         - GITHUB_TOKEN
     image: payment-core:latest

@@ -11,12 +11,19 @@ RUN npm run build
 
 # ─── Stage 2: Build Go HTTP backend ───────────────────────────────────────────
 #
-# 不再用 `-mod=vendor`：vendor/modules.txt 与 go.mod 容易漂移（比如有新依赖
-# 进来但忘了重跑 go mod vendor）。改为 `go mod download` 从公网 proxy 拉包，
-# 构建时联网即可。
-#
-# accounting-grpc-api 通过 git clone 放到同级路径，让 go.mod 里
-# `replace ../../accounting-grpc-api` 能解析到。私仓需要 GITHUB_TOKEN secret。
+# 优先用本地兄弟仓 ../accounting-grpc-api 和 ../payment-util，找不到才 git clone。
+# docker-compose.yml 用 BuildKit additional_contexts 注入：
+#   build:
+#     additional_contexts:
+#       payment-util:        ../payment-util
+#       accounting-grpc-api: ../accounting-grpc-api
+
+# Sibling source provider placeholders。
+FROM alpine:3.19 AS payment-util
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS accounting-grpc-api
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+
 FROM golang:1.25-alpine AS go-builder
 
 RUN apk add --no-cache tzdata git ca-certificates
@@ -26,38 +33,38 @@ WORKDIR /src
 ENV GOFLAGS=-mod=mod
 ENV GOTOOLCHAIN=auto
 
-ARG ACCOUNTING_GRPC_API_REF=claude/fix-payment-util-pvFNu
-# payment-util 提供 serviceregistry（etcd resolver / DialWithFallback）；
-# 跟 accounting-grpc-api 同样需要 sibling clone 让 go.mod 的
-# `replace ../../payment-util` 解析到 /src/payment-util。
-ARG PAYMENT_UTIL_REF=claude/fix-payment-util-pvFNu
-# CACHEBUST 让 sibling clone 步骤可被显式 invalidate。
-# 用 --build-arg CACHEBUST=$(date +%s) 强制重 clone。
-ARG CACHEBUST=0
+ARG ACCOUNTING_GRPC_API_REF=main
+ARG PAYMENT_UTIL_REF=main
+
+COPY --from=payment-util         / /tmp/payment-util-staged/
+COPY --from=accounting-grpc-api  / /tmp/accounting-grpc-api-staged/
+
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
-    echo "cachebust=$CACHEBUST"; \
-    TOKEN=""; \
-    [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
-    if [ -z "$TOKEN" ]; then \
-        echo "ERROR: GITHUB_TOKEN is not set; required to clone private xiongwp/* siblings." >&2; \
-        echo "       Generate a token at https://github.com/settings/tokens (scope: repo)," >&2; \
-        echo "       then run:  GITHUB_TOKEN=ghp_xxx docker compose build" >&2; \
-        exit 1; \
-    fi; \
-    auth="x-access-token:${TOKEN}@"; \
-    clone_with_fallback() { \
-        repo=$1; ref=$2; \
-        url="https://${auth}github.com/xiongwp/${repo}.git"; \
-        dest="/src/${repo}"; \
-        if git clone --depth=1 --branch "$ref" "$url" "$dest" 2>/dev/null; then \
-            return 0; \
+    promote() { \
+      name=$1; ref=$2; \
+      staged="/tmp/${name}-staged"; final="/src/${name}"; \
+      if [ -f "${staged}/go.mod" ]; then \
+        echo "→ Using local ${name} (additional_context override)"; \
+        mkdir -p "${final}"; cp -a "${staged}/." "${final}/"; \
+      else \
+        echo "→ Local ${name} not provided, git clone fallback (ref=${ref})"; \
+        TOKEN=""; \
+        [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
+        if [ -z "$TOKEN" ]; then \
+          echo "ERROR: cannot fetch sibling '${name}' — provide ../${name} via additional_contexts OR GITHUB_TOKEN secret." >&2; \
+          exit 1; \
         fi; \
-        echo "branch '$ref' not found in $repo; falling back to default branch" >&2; \
-        git clone --depth=1 "$url" "$dest"; \
+        auth="x-access-token:${TOKEN}@"; \
+        url="https://${auth}github.com/xiongwp/${name}.git"; \
+        rm -rf "${final}"; \
+        git clone --depth=1 --branch "$ref" "$url" "$final" 2>/dev/null \
+          || git clone --depth=1 "$url" "$final"; \
+      fi; \
+      rm -rf "${staged}"; \
     }; \
-    clone_with_fallback accounting-grpc-api "$ACCOUNTING_GRPC_API_REF"; \
-    clone_with_fallback payment-util "$PAYMENT_UTIL_REF"
+    promote payment-util         "$PAYMENT_UTIL_REF"; \
+    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"
 
 # backend 自己的代码放到 /src/accounting-admin-web/backend，
 # 和 go.mod 里 `replace ../../accounting-grpc-api` 的相对路径一致

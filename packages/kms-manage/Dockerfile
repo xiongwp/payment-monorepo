@@ -1,22 +1,16 @@
-# kms-manage Dockerfile — 自包含构建
+# kms-manage Dockerfile — 优先用本地 ../payment-util，找不到才 git clone。
 #
-# 以前要求 docker build context 是"父目录"以看到 ../payment-util。
-# 当 outer docker-compose 用 `context: ./kms-manage` 时，sibling COPY 会失败。
+# 默认（推荐）：docker-compose.yml 用 BuildKit additional_contexts 注入：
+#   build:
+#     additional_contexts:
+#       payment-util: ../payment-util
 #
-# 现在 Dockerfile 自己 git-clone payment-util 到 /src/payment-util，
-# go.mod 里的 `replace ../payment-util` 依赖的相对路径仍然成立。
-#
-# 私仓 clone 通过 BuildKit secret 传 token：
-#   services.kms.build.secrets:
-#     - GITHUB_TOKEN
-# 然后 GITHUB_TOKEN=ghp_xxx docker compose build；
-# 公仓不带 secret 也行。
-#
-# 默认拉 main；覆盖：--build-arg PAYMENT_UTIL_REF=<branch>
+# 没设置时 fallback 到 git clone（需 GITHUB_TOKEN secret）。
 
-# --- build ---
-# 自包含 build：BuildKit secret 拿 GITHUB_TOKEN，自己 git-clone payment-util
-# 到 /src/payment-util，让 go.mod 里的 `replace ../payment-util` 在容器内能命中。
+# Sibling source provider placeholder。
+FROM alpine:3.19 AS payment-util
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+
 FROM golang:1.25-alpine AS build
 
 RUN apk add --no-cache git ca-certificates
@@ -27,26 +21,34 @@ ENV GOFLAGS=-mod=mod
 ENV GOTOOLCHAIN=auto
 
 ARG PAYMENT_UTIL_REF=main
-ARG CACHEBUST=0
+
+COPY --from=payment-util / /tmp/payment-util-staged/
+
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
-    echo "cachebust=$CACHEBUST"; \
-    TOKEN=""; \
-    [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
-    if [ -z "$TOKEN" ]; then \
-        echo "ERROR: GITHUB_TOKEN is required to clone xiongwp/payment-util." >&2; \
-        echo "       Generate at https://github.com/settings/tokens (scope: repo)," >&2; \
-        echo "       then run:  GITHUB_TOKEN=ghp_xxx docker compose build" >&2; \
-        exit 1; \
-    fi; \
-    auth="x-access-token:${TOKEN}@"; \
-    url="https://${auth}github.com/xiongwp/payment-util.git"; \
-    if git clone --depth=1 --branch "$PAYMENT_UTIL_REF" "$url" /src/payment-util 2>/dev/null; then \
-        :; \
-    else \
-        echo "branch '$PAYMENT_UTIL_REF' not found in payment-util; falling back to default branch" >&2; \
-        git clone --depth=1 "$url" /src/payment-util; \
-    fi
+    promote() { \
+      name=$1; ref=$2; \
+      staged="/tmp/${name}-staged"; final="/src/${name}"; \
+      if [ -f "${staged}/go.mod" ]; then \
+        echo "→ Using local ${name} (additional_context override)"; \
+        mkdir -p "${final}"; cp -a "${staged}/." "${final}/"; \
+      else \
+        echo "→ Local ${name} not provided, git clone fallback (ref=${ref})"; \
+        TOKEN=""; \
+        [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
+        if [ -z "$TOKEN" ]; then \
+          echo "ERROR: cannot fetch sibling '${name}' — provide ../${name} via additional_contexts OR GITHUB_TOKEN secret." >&2; \
+          exit 1; \
+        fi; \
+        auth="x-access-token:${TOKEN}@"; \
+        url="https://${auth}github.com/xiongwp/${name}.git"; \
+        rm -rf "${final}"; \
+        git clone --depth=1 --branch "$ref" "$url" "$final" 2>/dev/null \
+          || git clone --depth=1 "$url" "$final"; \
+      fi; \
+      rm -rf "${staged}"; \
+    }; \
+    promote payment-util "$PAYMENT_UTIL_REF"
 
 # 本仓代码 → /src/kms-manage（与 /src/payment-util 同级，匹配 go.mod 里的 ../payment-util）
 COPY . /src/kms-manage

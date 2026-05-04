@@ -1,24 +1,32 @@
 # ─── Stage 1: Build ───────────────────────────────────────────────────────────
 #
-# 自包含 build：Dockerfile 自己 git-clone 两个同级仓（accounting-grpc-api 和
-# payment-util），避免依赖 outer docker-compose 的 context 必须是父目录。
+# 优先使用本地兄弟仓（../payment-util 和 ../accounting-grpc-api），找不到才 git clone。
 #
-# 这样：
-#   - docker compose 用 `context: ./accounting-system` 也能构建
-#   - docker compose 用 `context: .`（父目录）也能构建
+# 默认（推荐，本地开发）：docker-compose.yml 用 BuildKit 的 additional_contexts
+# 注入本地兄弟目录，覆盖下面的 placeholder stage：
 #
-# 私仓 clone 需要 token：outer compose 通过 BuildKit secret 传入：
-#   services.accounting-system.build.secrets:
-#     - GITHUB_TOKEN
-# 然后 `GITHUB_TOKEN=ghp_xxx docker compose build`；
-# 公仓（或本机 git 已登录 GitHub）不带 secret 也行。
+#   services.<svc>.build:
+#     additional_contexts:
+#       payment-util:         ../payment-util
+#       accounting-grpc-api:  ../accounting-grpc-api
 #
-# go.mod 里 `replace ../payment-util` 仍然生效 —— git-clone 把两仓放到
-# /src/payment-util 和 /src/accounting-grpc-api，和 /src/accounting-system
-# 是兄弟关系，相对路径吻合。
+# 没有设置 additional_contexts（CI / 干净 checkout）时，placeholder 是空的，
+# builder 自动 git clone fallback（需要 BuildKit secret GITHUB_TOKEN）。
 #
-# vendor/ 和 -mod=vendor 以前生效过，但现在 go.mod 里加了 payment-util，
-# vendor/modules.txt 不同步 —— 改走 `go mod download` + 默认 -mod=readonly。
+# go.mod 里 `replace ../payment-util` 仍然生效 —— 不论本地还是 clone，
+# 两仓都放到 /src/payment-util 和 /src/accounting-grpc-api，和
+# /src/accounting-system 兄弟关系，相对路径吻合。
+
+# ─── Sibling source providers (overridden by additional_contexts) ─────────────
+# 这些 placeholder stage 的名字必须和 additional_contexts 的 key 一致。
+# 当 docker compose 设置 additional_contexts:payment-util=../payment-util 时，
+# 本 stage 被替换为本地目录的 build context，COPY --from=payment-util 拿到真实代码。
+# 没设置时，placeholder 没有 go.mod，触发 git clone fallback。
+FROM alpine:3.19 AS payment-util
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+
+FROM alpine:3.19 AS accounting-grpc-api
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS builder
 
@@ -31,33 +39,43 @@ ENV GOTOOLCHAIN=auto
 
 ARG PAYMENT_UTIL_REF=main
 ARG ACCOUNTING_GRPC_API_REF=main
-# CACHEBUST 让 sibling clone 步骤可被显式 invalidate。
-# 用 --build-arg CACHEBUST=$(date +%s) 强制重 clone。
-ARG CACHEBUST=0
+
+# Stage sibling sources：override 时拿到真实仓，否则拿到 placeholder（没 go.mod）。
+COPY --from=payment-util         / /tmp/payment-util-staged/
+COPY --from=accounting-grpc-api  / /tmp/accounting-grpc-api-staged/
+
+# Promote：发现 go.mod 用本地，否则 git clone。
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
-    echo "cachebust=$CACHEBUST"; \
-    TOKEN=""; \
-    [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
-    if [ -z "$TOKEN" ]; then \
-        echo "ERROR: GITHUB_TOKEN is not set; required to clone private xiongwp/* siblings." >&2; \
-        echo "       Generate a token at https://github.com/settings/tokens (scope: repo)," >&2; \
-        echo "       then run:  GITHUB_TOKEN=ghp_xxx docker compose build" >&2; \
-        exit 1; \
-    fi; \
-    auth="x-access-token:${TOKEN}@"; \
-    clone_with_fallback() { \
-        repo=$1; ref=$2; \
-        url="https://${auth}github.com/xiongwp/${repo}.git"; \
-        dest="/src/${repo}"; \
-        if git clone --depth=1 --branch "$ref" "$url" "$dest" 2>/dev/null; then \
-            return 0; \
+    promote() { \
+      name=$1; ref=$2; \
+      staged="/tmp/${name}-staged"; final="/src/${name}"; \
+      if [ -f "${staged}/go.mod" ]; then \
+        echo "→ Using local ${name} (additional_context override)"; \
+        mkdir -p "${final}"; \
+        cp -a "${staged}/." "${final}/"; \
+      else \
+        echo "→ Local ${name} not provided, git clone fallback (ref=${ref})"; \
+        TOKEN=""; \
+        [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
+        if [ -z "$TOKEN" ]; then \
+          echo "" >&2; \
+          echo "ERROR: cannot fetch sibling repo '${name}'." >&2; \
+          echo "Either:" >&2; \
+          echo "  (1) Use docker compose build from monorepo (additional_contexts auto-set); OR" >&2; \
+          echo "  (2) Provide GITHUB_TOKEN: GITHUB_TOKEN=ghp_xxx docker compose build" >&2; \
+          exit 1; \
         fi; \
-        echo "branch '$ref' not found in $repo; falling back to default branch" >&2; \
-        git clone --depth=1 "$url" "$dest"; \
+        auth="x-access-token:${TOKEN}@"; \
+        url="https://${auth}github.com/xiongwp/${name}.git"; \
+        rm -rf "${final}"; \
+        git clone --depth=1 --branch "$ref" "$url" "$final" 2>/dev/null \
+          || git clone --depth=1 "$url" "$final"; \
+      fi; \
+      rm -rf "${staged}"; \
     }; \
-    clone_with_fallback payment-util         "$PAYMENT_UTIL_REF"; \
-    clone_with_fallback accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"
+    promote payment-util         "$PAYMENT_UTIL_REF"; \
+    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"
 
 # 这个仓自己的代码（outer compose 的 context 就是这个仓的根目录）
 COPY . /src/accounting-system

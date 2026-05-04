@@ -34,6 +34,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:        ../payment-util
+        accounting-grpc-api: ../accounting-grpc-api
     ports:
       - "50051:50051"   # gRPC
       - "8888:8888"     # HTTP admin（服务发现 + 热重载）

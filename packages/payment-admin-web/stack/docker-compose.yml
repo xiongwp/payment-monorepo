@@ -491,6 +491,8 @@ services:
     build:
       context: ../../kms-manage
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util: ../../payment-util
       secrets: [GITHUB_TOKEN]
     image: kms-manage:local
     container_name: kms-manage
@@ -515,6 +517,8 @@ services:
     build:
       context: ../../risk-manage
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util: ../../payment-util
       secrets: [GITHUB_TOKEN]
     image: risk-manage:local
     restart: unless-stopped
@@ -556,6 +560,10 @@ services:
     build:
       context: ../../payment-channel
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util: ../../payment-util
+        kms-manage:   ../../kms-manage
+        risk-manage:  ../../risk-manage
       secrets: [GITHUB_TOKEN]
     image: payment-channel:local
     restart: unless-stopped
@@ -590,6 +598,9 @@ services:
     build:
       context: ../../accounting-system
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:        ../../payment-util
+        accounting-grpc-api: ../../accounting-grpc-api
       secrets: [GITHUB_TOKEN]
     image: accounting-system:local
     container_name: accounting-system
@@ -612,11 +623,15 @@ services:
     ports: ["50051:50051", "8888:8888"]   # gRPC + admin HTTP（admin-web BFF 调）
 
   payment-core:
-    # 自包含：Dockerfile 内 git-clone kms-manage/risk-manage/payment-channel/
-    # payment-util 到 /src/，所以 context 只用 payment-core 自身即可。
+    # 优先用本地兄弟仓覆盖 Dockerfile 里的 placeholder stage；找不到才 git clone。
     build:
       context: ../../payment-core
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:    ../../payment-util
+        kms-manage:      ../../kms-manage
+        payment-channel: ../../payment-channel
+        risk-manage:     ../../risk-manage
       secrets: [GITHUB_TOKEN]
     image: payment-core:local
     container_name: payment-core
@@ -632,10 +647,17 @@ services:
     ports: ["9090:9090", "9190:9190"]
 
   order-core:
-    # 自包含：Dockerfile 内 git-clone 6 个兄弟 repo
+    # 优先用本地兄弟仓覆盖 Dockerfile 里的 placeholder stage；找不到才 git clone。
     build:
       context: ../../order-core
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:        ../../payment-util
+        kms-manage:          ../../kms-manage
+        risk-manage:         ../../risk-manage
+        payment-channel:     ../../payment-channel
+        payment-core:        ../../payment-core
+        accounting-grpc-api: ../../accounting-grpc-api
       secrets: [GITHUB_TOKEN]
     image: order-core:local
     container_name: order-core
@@ -653,10 +675,15 @@ services:
     ports: ["9091:9091"]
 
   user-merchant-core:
-    # 自包含：Dockerfile 内 git-clone payment-util / kms-manage
+    # 优先用本地兄弟仓覆盖 Dockerfile 里的 placeholder stage；找不到才 git clone。
     build:
       context: ../../user-merchant-core
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:        ../../payment-util
+        kms-manage:          ../../kms-manage
+        risk-manage:         ../../risk-manage
+        accounting-grpc-api: ../../accounting-grpc-api
       secrets: [GITHUB_TOKEN]
     image: user-merchant-core:local
     container_name: user-merchant-core
@@ -677,11 +704,15 @@ services:
 
   api-gateway:
     # 公网入口网关；signup / login / verify-otp / me 等用户面 HTML 路由都在这。
-    # 自包含 Dockerfile：内部 git-clone payment-util / kms-manage /
-    # user-merchant-core / risk-manage 兄弟仓。
+    # 优先用本地兄弟仓覆盖 Dockerfile 里的 placeholder stage；找不到才 git clone。
     build:
       context: ../../api-gateway
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:        ../../payment-util
+        kms-manage:          ../../kms-manage
+        user-merchant-core:  ../../user-merchant-core
+        risk-manage:         ../../risk-manage
       secrets: [GITHUB_TOKEN]
     image: api-gateway:local
     container_name: api-gateway
@@ -707,6 +738,9 @@ services:
     build:
       context: ../../accounting-admin-web
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:        ../../payment-util
+        accounting-grpc-api: ../../accounting-grpc-api
       secrets: [GITHUB_TOKEN]
     image: accounting-admin-web:local
     container_name: accounting-admin-web
@@ -719,10 +753,19 @@ services:
     ports: ["8080:80"]
 
   payment-admin-backend:
-    # 自包含：backend/Dockerfile 内 git-clone 8 个兄弟 repo
+    # backend/Dockerfile 优先用本地兄弟仓覆盖 placeholder stage；找不到才 git clone。
     build:
       context: ../../payment-admin-web/backend
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:        ../../payment-util
+        kms-manage:          ../../kms-manage
+        risk-manage:         ../../risk-manage
+        payment-channel:     ../../payment-channel
+        payment-core:        ../../payment-core
+        order-core:          ../../order-core
+        user-merchant-core:  ../../user-merchant-core
+        accounting-grpc-api: ../../accounting-grpc-api
       secrets: [GITHUB_TOKEN]
     image: payment-admin-backend:local
     container_name: payment-admin-backend

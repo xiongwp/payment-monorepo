@@ -51,6 +51,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:        ../payment-util
+        kms-manage:          ../kms-manage
+        risk-manage:         ../risk-manage
+        payment-channel:     ../payment-channel
+        payment-core:        ../payment-core
+        accounting-grpc-api: ../accounting-grpc-api
       secrets:
         - GITHUB_TOKEN
     image: order-core:latest

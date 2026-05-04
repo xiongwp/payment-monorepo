@@ -280,6 +280,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 优先用本地 monorepo 兄弟仓覆盖 Dockerfile 里的 placeholder stage。
+      # 仓在父目录 packages/ 下，所以路径是 ../<name>。
+      # additional_contexts 没设置时，Dockerfile 里 promote() 会 fallback 到 git clone。
+      additional_contexts:
+        payment-util:        ../payment-util
+        accounting-grpc-api: ../accounting-grpc-api
       secrets:
         - GITHUB_TOKEN
     image: accounting-system:latest

@@ -12,6 +12,11 @@ services:
     build:
       context: ../accounting-admin-web
       dockerfile: Dockerfile
+      # additional_contexts 路径相对于本 compose 文件所在目录解析
+      # （packages/accounting-admin-web/）。
+      additional_contexts:
+        payment-util:        ../payment-util
+        accounting-grpc-api: ../accounting-grpc-api
     image: accounting-admin-web:latest
     container_name: accounting-admin-web
     ports:

@@ -29,7 +29,12 @@ services:
 
 
   id-service:
-    build: .
+    build:
+      context: .
+      additional_contexts:
+        payment-util: ../payment-util
+      secrets:
+        - GITHUB_TOKEN
     environment:
       ETCD_ENDPOINT: accounting-etcd:2379
     depends_on:
@@ -46,3 +51,9 @@ networks:
 volumes:
   etcd-data:
   mysql-data:
+
+# BuildKit secret：从环境变量读取 GITHUB_TOKEN，给 Dockerfile 的 git clone fallback。
+# 用法：GITHUB_TOKEN=ghp_xxx docker compose build
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

@@ -17,6 +17,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:        ../payment-util
+        kms-manage:          ../kms-manage
+        user-merchant-core:  ../user-merchant-core
+        risk-manage:         ../risk-manage
       secrets:
         - GITHUB_TOKEN
     image: api-gateway:local

@@ -23,6 +23,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util: ../payment-util
       secrets:
         - GITHUB_TOKEN
     image: risk-manage:local

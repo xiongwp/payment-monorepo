@@ -1,18 +1,38 @@
-# payment-admin-backend 自包含 build
+# payment-admin-backend — 优先用本地兄弟仓，找不到才 git clone。
 #
-# docker build 的 context 是 backend 自己的目录（即本 Dockerfile 所在目录），
-# 可以直接 `cd payment-admin-web/backend && docker build .` 或用
-# docker-compose.yml `context: ./backend` 触发。
+# 默认（推荐）：docker-compose.yml 用 BuildKit additional_contexts 注入 8 个本地仓：
+#   build:
+#     additional_contexts:
+#       payment-util:        ../../payment-util
+#       kms-manage:          ../../kms-manage
+#       risk-manage:         ../../risk-manage
+#       payment-channel:     ../../payment-channel
+#       payment-core:        ../../payment-core
+#       order-core:          ../../order-core
+#       user-merchant-core:  ../../user-merchant-core
+#       accounting-grpc-api: ../../accounting-grpc-api
+# 注意 backend 在 payment-admin-web/backend 子目录下，故 ../../ 才到 packages/ 根。
 #
-# 所有 sibling 仓都由 Dockerfile 自己 git-clone 到 /src/ 下，
-# go.mod 里 `replace ../../kms-manage` 相对路径仍然生效：
-#   /src/payment-admin-web/backend  →  .. →  /src/payment-admin-web
-#                                   →  ../.. →  /src  →  /src/kms-manage
-#
-# 每个 sibling 的 branch/tag 可以通过 build-arg 覆盖：
-#   docker build --build-arg PAYMENT_UTIL_REF=claude/fix-payment-util-pvFNu ...
-#
-# 私仓 clone 需要 GITHUB_TOKEN（从 BuildKit secret 读）。
+# 没设置时 fallback 到 git clone（需 GITHUB_TOKEN secret）。
+
+# Sibling source provider placeholders。
+FROM alpine:3.19 AS payment-util
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS kms-manage
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS risk-manage
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS payment-channel
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS payment-core
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS order-core
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS user-merchant-core
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS accounting-grpc-api
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+
 FROM golang:1.25-alpine AS build
 RUN apk add --no-cache git ca-certificates
 WORKDIR /src
@@ -32,35 +52,47 @@ ARG ORDER_CORE_REF=main
 ARG USER_MERCHANT_CORE_REF=main
 ARG ACCOUNTING_GRPC_API_REF=main
 
+COPY --from=payment-util         / /tmp/payment-util-staged/
+COPY --from=kms-manage           / /tmp/kms-manage-staged/
+COPY --from=risk-manage          / /tmp/risk-manage-staged/
+COPY --from=payment-channel      / /tmp/payment-channel-staged/
+COPY --from=payment-core         / /tmp/payment-core-staged/
+COPY --from=order-core           / /tmp/order-core-staged/
+COPY --from=user-merchant-core   / /tmp/user-merchant-core-staged/
+COPY --from=accounting-grpc-api  / /tmp/accounting-grpc-api-staged/
+
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
-    TOKEN=""; \
-    [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
-    if [ -z "$TOKEN" ]; then \
-        echo "ERROR: GITHUB_TOKEN is not set; required to clone private xiongwp/* siblings." >&2; \
-        echo "       Generate a token at https://github.com/settings/tokens (scope: repo)," >&2; \
-        echo "       then run:  GITHUB_TOKEN=ghp_xxx docker compose build" >&2; \
-        exit 1; \
-    fi; \
-    auth="x-access-token:${TOKEN}@"; \
-    clone() { \
-        repo=$1; ref=$2; \
-        url="https://${auth}github.com/xiongwp/${repo}.git"; \
-        dest="/src/${repo}"; \
-        if git clone --depth=1 --branch "$ref" "$url" "$dest" 2>/dev/null; then \
-            return 0; \
+    promote() { \
+      name=$1; ref=$2; \
+      staged="/tmp/${name}-staged"; final="/src/${name}"; \
+      if [ -f "${staged}/go.mod" ]; then \
+        echo "→ Using local ${name} (additional_context override)"; \
+        mkdir -p "${final}"; cp -a "${staged}/." "${final}/"; \
+      else \
+        echo "→ Local ${name} not provided, git clone fallback (ref=${ref})"; \
+        TOKEN=""; \
+        [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
+        if [ -z "$TOKEN" ]; then \
+          echo "ERROR: cannot fetch sibling '${name}' — provide ../${name} via additional_contexts OR GITHUB_TOKEN secret." >&2; \
+          exit 1; \
         fi; \
-        echo "branch '$ref' not found in $repo; falling back to default branch" >&2; \
-        git clone --depth=1 "$url" "$dest"; \
+        auth="x-access-token:${TOKEN}@"; \
+        url="https://${auth}github.com/xiongwp/${name}.git"; \
+        rm -rf "${final}"; \
+        git clone --depth=1 --branch "$ref" "$url" "$final" 2>/dev/null \
+          || git clone --depth=1 "$url" "$final"; \
+      fi; \
+      rm -rf "${staged}"; \
     }; \
-    clone payment-util         "$PAYMENT_UTIL_REF"; \
-    clone kms-manage           "$KMS_MANAGE_REF"; \
-    clone risk-manage          "$RISK_MANAGE_REF"; \
-    clone payment-channel      "$PAYMENT_CHANNEL_REF"; \
-    clone payment-core         "$PAYMENT_CORE_REF"; \
-    clone order-core           "$ORDER_CORE_REF"; \
-    clone user-merchant-core   "$USER_MERCHANT_CORE_REF"; \
-    clone accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"
+    promote payment-util         "$PAYMENT_UTIL_REF"; \
+    promote kms-manage           "$KMS_MANAGE_REF"; \
+    promote risk-manage          "$RISK_MANAGE_REF"; \
+    promote payment-channel      "$PAYMENT_CHANNEL_REF"; \
+    promote payment-core         "$PAYMENT_CORE_REF"; \
+    promote order-core           "$ORDER_CORE_REF"; \
+    promote user-merchant-core   "$USER_MERCHANT_CORE_REF"; \
+    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"
 
 # build context 就是 backend 目录；把它完整拷到 /src/payment-admin-web/backend
 # 下，go.mod 里所有 `replace ../../<sibling>` 路径都能解到 /src/<sibling>。

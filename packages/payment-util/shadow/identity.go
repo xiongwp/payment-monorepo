@@ -34,7 +34,6 @@ package shadow
 import (
 	"context"
 	"fmt"
-	"strings"
 )
 
 // ─── user_id（数字段隔离）─────────────────────────────────────────────────

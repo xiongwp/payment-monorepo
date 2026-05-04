@@ -19,11 +19,22 @@ networks:
 services:
   payment-admin-backend:
     build:
-      # backend 自己的目录作为 context —— Dockerfile 里 git-clone 所有 sibling
-      # 到 /src/ 下，go.mod 的 `replace ../../<sibling>` 靠的是镜像内相对路径，
-      # 不依赖 docker context 里有什么。
+      # backend 自己的目录作为 context —— Dockerfile 里用 additional_contexts
+      # 注入本地兄弟仓（找不到时 fallback git clone）。
       context: ./backend
       dockerfile: Dockerfile
+      # 本 compose 在 packages/payment-admin-web/，sibling 在 ../../packages/<name>，
+      # 但 additional_contexts 路径是 *相对于 compose 文件所在目录* 解析，
+      # 即 packages/payment-admin-web/ → ../<name> 就到 packages/<name>。
+      additional_contexts:
+        payment-util:        ../payment-util
+        kms-manage:          ../kms-manage
+        risk-manage:         ../risk-manage
+        payment-channel:     ../payment-channel
+        payment-core:        ../payment-core
+        order-core:          ../order-core
+        user-merchant-core:  ../user-merchant-core
+        accounting-grpc-api: ../accounting-grpc-api
       secrets:
         - GITHUB_TOKEN
     image: payment-admin-backend:local

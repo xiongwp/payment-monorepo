@@ -42,6 +42,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:        ../payment-util
+        kms-manage:          ../kms-manage
+        risk-manage:         ../risk-manage
+        accounting-grpc-api: ../accounting-grpc-api
       secrets:
         - GITHUB_TOKEN
     image: user-merchant-core:latest

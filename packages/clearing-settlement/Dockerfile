@@ -1,4 +1,21 @@
-# clearing-settlement Dockerfile — 自包含构建（与 payment-core / api-gateway 风格一致）。
+# clearing-settlement Dockerfile — 优先用本地兄弟仓，找不到才 git clone。
+#
+# 默认（推荐）：docker-compose.yml 用 BuildKit additional_contexts 注入本地：
+#   build:
+#     additional_contexts:
+#       payment-util:        ../payment-util
+#       accounting-grpc-api: ../accounting-grpc-api
+#
+# 没有 additional_contexts（CI / 干净 checkout）时，fallback 到 git clone
+# （需 BuildKit secret GITHUB_TOKEN）。
+
+# Sibling source provider placeholders — name 与 additional_contexts key 一致，
+# 被 docker compose 的 additional_contexts 整体替换。
+FROM alpine:3.19 AS payment-util
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+
+FROM alpine:3.19 AS accounting-grpc-api
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS build
 RUN apk add --no-cache git ca-certificates
@@ -10,29 +27,36 @@ ENV GOTOOLCHAIN=auto
 ARG ACCOUNTING_GRPC_API_REF=main
 ARG PAYMENT_UTIL_REF=main
 
-# CACHEBUST 让 sibling clone 步骤可被显式 invalidate。
-# 用 --build-arg CACHEBUST=$(date +%s) 强制重 clone。
-ARG CACHEBUST=0
+# Stage sibling sources：override 时拿到真实仓，否则拿到 placeholder（没 go.mod）。
+COPY --from=payment-util         / /tmp/payment-util-staged/
+COPY --from=accounting-grpc-api  / /tmp/accounting-grpc-api-staged/
+
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
-    echo "cachebust=$CACHEBUST"; \
-    TOKEN=""; \
-    [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
-    if [ -z "$TOKEN" ]; then \
-        echo "ERROR: GITHUB_TOKEN is not set; required to clone private xiongwp/* siblings." >&2; \
-        exit 1; \
-    fi; \
-    auth="x-access-token:${TOKEN}@"; \
-    clone_with_fallback() { \
-        repo=$1; ref=$2; \
-        url="https://${auth}github.com/xiongwp/${repo}.git"; \
-        dest="/src/${repo}"; \
-        if git clone --depth=1 --branch "$ref" "$url" "$dest" 2>/dev/null; then return 0; fi; \
-        echo "branch '$ref' not found in $repo; falling back to default branch" >&2; \
-        git clone --depth=1 "$url" "$dest"; \
+    promote() { \
+      name=$1; ref=$2; \
+      staged="/tmp/${name}-staged"; final="/src/${name}"; \
+      if [ -f "${staged}/go.mod" ]; then \
+        echo "→ Using local ${name} (additional_context override)"; \
+        mkdir -p "${final}"; cp -a "${staged}/." "${final}/"; \
+      else \
+        echo "→ Local ${name} not provided, git clone fallback (ref=${ref})"; \
+        TOKEN=""; \
+        [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
+        if [ -z "$TOKEN" ]; then \
+          echo "ERROR: cannot fetch sibling '${name}' — provide ../${name} via additional_contexts OR GITHUB_TOKEN secret." >&2; \
+          exit 1; \
+        fi; \
+        auth="x-access-token:${TOKEN}@"; \
+        url="https://${auth}github.com/xiongwp/${name}.git"; \
+        rm -rf "${final}"; \
+        git clone --depth=1 --branch "$ref" "$url" "$final" 2>/dev/null \
+          || git clone --depth=1 "$url" "$final"; \
+      fi; \
+      rm -rf "${staged}"; \
     }; \
-    clone_with_fallback accounting-grpc-api "$ACCOUNTING_GRPC_API_REF"; \
-    clone_with_fallback payment-util        "$PAYMENT_UTIL_REF"
+    promote payment-util         "$PAYMENT_UTIL_REF"; \
+    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"
 
 COPY . /src/clearing-settlement
 WORKDIR /src/clearing-settlement
