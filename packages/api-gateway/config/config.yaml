@@ -1,0 +1,60 @@
+# api-gateway 配置示例
+# 生产部署：用 K8s ConfigMap 挂载到 /etc/api-gateway/config.yaml；
+# 敏感字段（auth.tokens / kms.bearer_token）通过 Secret + 环境变量注入。
+
+server:
+  # 公网入口 HTTP 端口
+  http_port: 8080
+  # 单请求 body 上限（字节）。商户回调可能携带大 payload，但 1MB 已足够。
+  max_request_bytes: 1048576
+  # 读 / 写超时；防 slowloris、保护 fd 池
+  read_header_timeout: 5s
+  read_timeout: 10s
+  write_timeout: 30s
+  idle_timeout: 60s
+
+# 内部管理 HTTP（K8s 集群内可达，不暴露公网）。健康检查 + 路由热重载。
+admin:
+  port: 8081
+  # 留空 = warn-only。生产必填，比较走 subtle.ConstantTimeCompare。
+  # 也可通过 ADMIN_HTTP_TOKEN env 注入（优先级更高）。
+  token: ""
+
+# Prometheus 指标端口
+metrics:
+  port: 9090
+
+# OTel exporter；空 = 不导出 trace。
+# OTEL_EXPORTER_OTLP_ENDPOINT env 也可。
+otel:
+  endpoint: ""
+
+# 鉴权
+auth:
+  # API key 校验开关。开启时所有 /v1/* 必须带 X-API-Key 头。
+  enabled: false
+  # 静态合法 token 列表（dev 用）。生产 → KMS 解密 + 数据库查 merchant_channel_secret。
+  # 支持 KMS 密文格式：直接写 "kms:v1:<key_id>:..."，启动时透明解密。
+  tokens: []
+
+# 限流（per-IP + per-merchant）
+rate_limit:
+  # per-IP token bucket 全局参数；超过返回 429
+  ip_rps: 100
+  ip_burst: 200
+  # per-merchant；merchant 信息从 X-Merchant-ID 头取
+  merchant_rps: 1000
+  merchant_burst: 2000
+
+# 下游 gRPC 服务地址。空 = 该路由禁用。
+upstream:
+  order_core: ""        # e.g. order-core:50051
+  user_merchant: ""     # e.g. user-merchant-core:9191
+  payment_core: ""      # e.g. payment-core:9090
+  rpc_timeout: 10s
+
+# kms-manage（用来透明解密 KMS 密文 token / 商户 API key）
+kms:
+  endpoint: ""          # 空 = passthrough，直接当原样字符串处理
+  bearer_token: ""
+  rpc_timeout: 3s

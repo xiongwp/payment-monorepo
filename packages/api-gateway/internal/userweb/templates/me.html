@@ -1,0 +1,35 @@
+{{define "me.html"}}{{template "layout" .}}{{end}}
+
+{{define "content"}}
+<h1>账户中心</h1>
+<p class="sub">欢迎，{{if .User.Username}}{{.User.Username}}{{else if .User.Email}}{{.User.Email}}{{else}}{{.User.Phone}}{{end}}</p>
+<div class="kv"><span>用户 ID</span><span style="font-family:monospace;">{{.User.Id}}</span></div>
+<div class="kv"><span>状态</span><span>{{.User.Status}}</span></div>
+<div class="kv"><span>邮箱</span><span>{{.User.Email}} {{if .User.EmailVerified}}<small>已验证</small>{{end}}</span></div>
+<div class="kv"><span>手机</span><span>{{.User.Phone}} {{if .User.PhoneVerified}}<small>已验证</small>{{end}}</span></div>
+<div class="kv"><span>2FA</span><span>{{if .User.TotpEnabled}}已启用{{else}}未启用{{end}}</span></div>
+
+<h2 style="margin-top:24px">账户</h2>
+{{if .Accounts}}
+<table style="width:100%;border-collapse:collapse">
+  <thead>
+    <tr><th align="left">币种</th><th align="left">Account ID</th><th align="left">状态</th></tr>
+  </thead>
+  <tbody>
+    {{range .Accounts}}
+    <tr>
+      <td>{{.Currency}}</td>
+      <td style="font-family:monospace">{{.AccountID}}</td>
+      <td>{{.Status}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="sub">尚未开通任何币种账户。</p>
+{{end}}
+
+<form method="POST" action="/logout" style="margin-top:24px">
+  <button type="submit" style="background:#444">登出</button>
+</form>
+{{end}}

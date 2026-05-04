@@ -1,0 +1,17 @@
+{{define "login.html"}}{{template "layout" .}}{{end}}
+
+{{define "content"}}
+<h1>登录</h1>
+<p class="sub">没有账号？<a href="/signup">注册</a></p>
+{{if .Flash}}<div class="flash">{{.Flash}}</div>{{end}}
+<form method="POST" action="/login">
+  <label>登录名 / 邮箱 / 手机</label>
+  <input name="login_id" required autocomplete="username">
+
+  <label>密码</label>
+  <input name="password" type="password" required autocomplete="current-password">
+
+  <button type="submit">登录</button>
+</form>
+<p class="alt"><a href="/forgot">忘记密码？</a></p>
+{{end}}
