@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
@@ -38,6 +39,7 @@ type segmentIDGenerator struct {
 	repo       *segmentRepository
 	loadFactor float64
 	buffers    sync.Map // map[bizTag]*segmentBuffer
+	lastLoad   sync.Map // map[bizTag]time.Time —— 自适应 step 用，跟踪上次 reload 时间
 	logger     *zap.Logger
 }
 
@@ -230,6 +232,12 @@ func (g *segmentIDGenerator) loadSegment(ctx context.Context, bizTag string, buf
 	start := alloc.MaxID - int64(alloc.Step)
 	seg := newSegment(start, alloc.Step)
 
+	// 自适应步长（P1-12）：上次 reload 与本次间隔很短 → step 倍增。
+	// 这样高 QPS bizTag 自动从 100k 涨到 1.6M（max 16×），低 QPS 保持 100k。
+	// 步长写回 leaf_alloc.step 后下次 allocNextSegment 自然取新值。
+	now := time.Now()
+	g.adaptStepLocked(ctx, bizTag, alloc, now)
+
 	buf.lock()
 	defer buf.unlock()
 
@@ -246,6 +254,41 @@ func (g *segmentIDGenerator) loadSegment(ctx context.Context, bizTag string, buf
 		zap.Int("step", alloc.Step),
 	)
 	return nil
+}
+
+// adaptStepLocked 自适应调整 step。仅在间隔过短时倍增；不持有 buf.mu，所以可以
+// 跟 buf 操作并行。会话级状态用 g.lastLoad（sync.Map），多副本场景互不影响：
+// 各副本自己观测自己的 reload 节奏，写回的 step 是全局共享（leaf_alloc 同一行），
+// 副本间事实上互相协作（任一副本检测到高 QPS 就调高，所有副本受益）。
+func (g *segmentIDGenerator) adaptStepLocked(ctx context.Context, bizTag string, alloc *LeafAlloc, now time.Time) {
+	prevAny, ok := g.lastLoad.Load(bizTag)
+	g.lastLoad.Store(bizTag, now)
+	if !ok {
+		return
+	}
+	prev, _ := prevAny.(time.Time)
+	if now.Sub(prev) >= adaptiveStepFastThreshold {
+		return
+	}
+	maxStep := defaultStep * adaptiveStepMaxMultiplier
+	if alloc.Step >= maxStep {
+		return
+	}
+	newStep := alloc.Step * 2
+	if newStep > maxStep {
+		newStep = maxStep
+	}
+	if err := g.repo.updateStep(ctx, bizTag, newStep); err != nil {
+		g.logger.Warn("idgen: adaptive step update failed",
+			zap.String("bizTag", bizTag), zap.Int("from", alloc.Step), zap.Int("to", newStep),
+			zap.Error(err))
+		return
+	}
+	g.logger.Info("idgen: adaptive step bumped (high QPS detected)",
+		zap.String("bizTag", bizTag),
+		zap.Int("from", alloc.Step),
+		zap.Int("to", newStep),
+		zap.Duration("interval", now.Sub(prev)))
 }
 
 func (g *segmentIDGenerator) asyncLoadNext(ctx context.Context, bizTag string, buf *segmentBuffer) {

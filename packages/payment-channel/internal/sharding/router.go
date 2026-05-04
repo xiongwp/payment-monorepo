@@ -46,6 +46,35 @@ func (r *Router) RouteByID(id int64) (dbIndex, tableIndex int) {
 	return n / r.tablePerDB, n
 }
 
+// RouteByIDHashed 用 FNV-1a mix 后再取模，对**有结构性聚集**的 numeric ID 更均匀。
+// 典型场景：bit-encoded ID（account_id / transaction_id）的低位 seq 可能集中（leaf
+// 段连续发号），直接 id%100 在初始化阶段会让前几个 shard 被打爆。
+//
+// 用法：
+//   - user_id（leaf 发号、稀疏分布）→ 用 RouteByID 即可
+//   - bit-encoded account_id / 类似有 positional 字段的 ID → 优先用专用解码（如
+//     shadow.AccountIDDBIndex），fallback 用 RouteByIDHashed
+func (r *Router) RouteByIDHashed(id int64) (dbIndex, tableIndex int) {
+	if id < 0 {
+		id = -id
+	}
+	// FNV-1a 64-bit
+	const (
+		offset64 uint64 = 14695981039346656037
+		prime64  uint64 = 1099511628211
+	)
+	h := offset64
+	u := uint64(id)
+	for i := 0; i < 8; i++ {
+		h ^= u & 0xff
+		h *= prime64
+		u >>= 8
+	}
+	total := uint64(r.dbCount * r.tablePerDB)
+	n := int(h % total)
+	return n / r.tablePerDB, n
+}
+
 func (r *Router) RouteByString(s string) (dbIndex, tableIndex int) {
 	if s == "" {
 		return 0, 0

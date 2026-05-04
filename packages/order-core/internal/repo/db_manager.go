@@ -146,7 +146,17 @@ func (m *Manager) GetShard(idx int) (*gorm.DB, error) {
 // AllShards 所有分库
 func (m *Manager) AllShards() []*gorm.DB { return m.shards }
 
-// GetMeta meta 库；未配置时返回 shards[0] 兜底
+// GetMeta meta 库；未配置时返回 shards[0] 兜底。
+//
+// **P1-17 风险**：fallback 到 shards[0] 是 SPOF —— shards[0] 挂掉时所有 meta 查询
+// 失败，级联到 PI / refund / merchant 注册等全部业务路径，即使 shards[1-9] 健康也救不了。
+//
+// 缓解措施：
+//   1. **生产部署必须显式配 meta DSN**（separate physical DB），不要依赖 fallback。
+//      未配置时 main.go 启动期 logger.Warn 一次（待补）。
+//   2. 业务侧：高频元数据（merchant config / payment_method registry）一律 in-memory cache，
+//      避免每次请求打 meta 库（已在 ReloadRegistry 路径实现）。
+//   3. 长期：考虑给 meta 也做 dual-replica（read replica fallback），跟 shard 一样处理。
 func (m *Manager) GetMeta() *gorm.DB {
 	if m.meta != nil {
 		return m.meta

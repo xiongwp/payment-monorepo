@@ -15,6 +15,7 @@ package idgen
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/accounting-system/internal/infrastructure/database"
 	"go.uber.org/zap"
@@ -38,6 +39,17 @@ const defaultInitMaxID = 1_000_000
 
 // defaultStep 高频业务号段步长：每次从 DB 分配 100000 个 ID，正常流量下约每分钟一次 DB 访问
 const defaultStep = 100_000
+
+// 自适应步长（P1-12 横向扩展瓶颈缓解）：
+//   - 观测：同一 bizTag 两次 loadSegment 间隔 < adaptiveStepFastThreshold → step 倍增
+//   - 上限 maxStep 防止单次分配过大造成 leaf_alloc 表跳号过宽（重启 / 故障损耗）
+//   - 上限到 16× default = 1.6M / 单次分配，足以撑住 1k-10k QPS bizTag
+//
+// 不做向下回退（流量低时 step 大也无害；多分配的号段重启就丢，与小 step 同样情况）。
+const (
+	adaptiveStepFastThreshold = 30 * time.Second // 30s 内连续两次 reload → 触发倍增
+	adaptiveStepMaxMultiplier = 16               // 上限：default × 16
+)
 
 // NewIDGeneratorFromManager 从 accounting-system 的 DB Manager 创建号段 ID 生成器。
 // leaf_alloc 表使用 account_meta 元数据库（独立于分库分表，不随分片扩容而复制）。

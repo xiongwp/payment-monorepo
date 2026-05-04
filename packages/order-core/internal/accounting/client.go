@@ -74,6 +74,15 @@ type Client struct {
 	acctCache   map[string]string // "{userId}:{businessType}:{currency}" → accountNo
 }
 
+// 默认 RPC 超时。P1-6 资损保护：未配置 yaml accounting.timeout 时强制兜底，
+// 避免一次慢 booking（accounting-system 卡 30s+）把整个 order-core handler
+// goroutine 池吃光，引起 cascade（payment-channel 已发出 charge 但 order-core
+// 不知道结果，重试又触发幂等冲突）。
+//
+// 5s 是粗粒度估计：accounting-system DoubleEntryBooking 正常 P99 < 200ms；
+// 5s 留 20× 安全余量，足够应对 metaDB / shard 偶发 GC 抖动。
+const defaultRPCTimeout = 5 * time.Second
+
 // New 构造。
 func New(cfg Config) (*Client, error) {
 	if cfg.Addr == "" && len(cfg.RegistryEndpoints) == 0 {
@@ -82,6 +91,9 @@ func New(cfg Config) (*Client, error) {
 	service := cfg.ServiceName
 	if service == "" {
 		service = "accounting-service"
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = defaultRPCTimeout
 	}
 	// 联栈模式下走 etcd resolver：容器删了 container_name 后 "accounting-service"
 	// 跨 compose project 无法 DNS 解析（不同 -p 项目 不会自动加 service 名 alias）。

@@ -28,27 +28,30 @@ type Server struct {
 
 	svc *service.AcquirerService
 
-	authTokens   map[string]string
-	rateLimitRPS float64
-	rateBurst    int
-	logger       *zap.Logger
+	authTokens           map[string]string
+	allowUnauthenticated bool
+	rateLimitRPS         float64
+	rateBurst            int
+	logger               *zap.Logger
 }
 
 type Deps struct {
-	AcquirerSvc  *service.AcquirerService
-	AuthTokens   map[string]string
-	RateLimitRPS float64
-	RateBurst    int
-	Logger       *zap.Logger
+	AcquirerSvc          *service.AcquirerService
+	AuthTokens           map[string]string
+	AllowUnauthenticated bool // dev / lab 显式打开匿名；生产 false
+	RateLimitRPS         float64
+	RateBurst            int
+	Logger               *zap.Logger
 }
 
 func NewServer(d Deps) *Server {
 	return &Server{
-		svc:          d.AcquirerSvc,
-		authTokens:   d.AuthTokens,
-		rateLimitRPS: d.RateLimitRPS,
-		rateBurst:    d.RateBurst,
-		logger:       d.Logger,
+		svc:                  d.AcquirerSvc,
+		authTokens:           d.AuthTokens,
+		allowUnauthenticated: d.AllowUnauthenticated,
+		rateLimitRPS:         d.RateLimitRPS,
+		rateBurst:            d.RateBurst,
+		logger:               d.Logger,
 	}
 }
 
@@ -66,7 +69,7 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 		shadow.UnaryServerInterceptor(),
 		MetricsInterceptor(),
 		RateLimitInterceptor(s.rateLimitRPS, s.rateBurst),
-		AuthInterceptor(s.authTokens, s.logger),
+		AuthInterceptor(s.authTokens, s.allowUnauthenticated, s.logger),
 	))
 	channelv1.RegisterAcquirerServiceServer(srv, s)
 	s.logger.Info("payment-channel grpc listening", zap.Int("port", port))

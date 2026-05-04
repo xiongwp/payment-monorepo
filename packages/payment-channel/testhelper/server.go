@@ -108,7 +108,7 @@ func Start(t testing.TB, adapters ...ScriptedAdapter) *Server {
 		reg.Register(toInternalAdapter(sa))
 	}
 	svc := service.NewAcquirerService(reg, newMemTxRepo(), &memIDIssuer{}, logger)
-	handler := server.NewServer(server.Deps{AcquirerSvc: svc, Logger: logger})
+	handler := server.NewServer(server.Deps{AcquirerSvc: svc, AllowUnauthenticated: true, Logger: logger})
 
 	lis := bufconn.Listen(1 << 20)
 	grpcSrv := grpc.NewServer()

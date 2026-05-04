@@ -34,7 +34,11 @@ type Config struct {
 
 	// Auth
 	AuthEnabled bool
-	AuthTokens  []string
+	// AuthAPIKeys: API key → merchant_id（server-trusted）。token 校验通过后
+	// 把对应 merchant_id 注入 ctx，per-merchant 限流 / 审计直接读 ctx，绕过
+	// 客户端 X-Merchant-ID header 伪造问题。
+	// dev 期间没接 merchant 注册表时 value 可以填空字符串（限流退化到 per-IP）。
+	AuthAPIKeys map[string]string
 
 	// Rate limit
 	IPRPS         int
@@ -106,7 +110,7 @@ func NewServer(cfg Config, logger *zap.Logger, registers ...MuxRegister) *Server
 		TrustedHeaderValue: cfg.ShadowTrustedHeaderValue,
 	}, logger)(publicHandler)
 	if cfg.AuthEnabled {
-		publicHandler = APIKeyMiddleware(cfg.AuthTokens, logger)(publicHandler)
+		publicHandler = APIKeyMiddleware(cfg.AuthAPIKeys, logger)(publicHandler)
 	}
 	publicHandler = RateLimitMiddleware(cfg.IPRPS, cfg.IPBurst, cfg.MerchantRPS, cfg.MerchantBurst, logger)(publicHandler)
 	publicHandler = LoggingMiddleware(logger)(publicHandler)
@@ -116,13 +120,31 @@ func NewServer(cfg Config, logger *zap.Logger, registers ...MuxRegister) *Server
 		publicHandler = http.MaxBytesHandler(publicHandler, cfg.MaxRequestBytes)
 	}
 
+	// P1-8 资损保护：cfg.* 漏配（yaml 没填）时强制兜底，避免一次慢请求 hang 住
+	// goroutine。0 timeout = 无限等待；slowloris 攻击 / 慢下游能把 worker 池打爆。
+	publicReadHeader := cfg.ReadHeaderTimeout
+	if publicReadHeader <= 0 {
+		publicReadHeader = 5 * time.Second
+	}
+	publicRead := cfg.ReadTimeout
+	if publicRead <= 0 {
+		publicRead = 30 * time.Second
+	}
+	publicWrite := cfg.WriteTimeout
+	if publicWrite <= 0 {
+		publicWrite = 60 * time.Second
+	}
+	publicIdle := cfg.IdleTimeout
+	if publicIdle <= 0 {
+		publicIdle = 60 * time.Second
+	}
 	publicSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
 		Handler:           publicHandler,
-		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-		ReadTimeout:       cfg.ReadTimeout,
-		WriteTimeout:      cfg.WriteTimeout,
-		IdleTimeout:       cfg.IdleTimeout,
+		ReadHeaderTimeout: publicReadHeader,
+		ReadTimeout:       publicRead,
+		WriteTimeout:      publicWrite,
+		IdleTimeout:       publicIdle,
 	}
 
 	// Admin server: health 探针 + （未来）路由热重载。token 校验单独包一层。
@@ -193,10 +215,19 @@ func handlePing(w http.ResponseWriter, _ *http.Request) {
 
 // adminTokenMiddleware 校验 X-Admin-Token。空 token = warn-only。
 // 健康探针豁免（K8s probe 不带 header）。
+//
+// **P1-21**：校验通过后给 ctx 打 is_admin=true 标记，业务 handler 可按需做二次
+// 门禁（区分"普通商户能看的"vs"只有 admin 能看的"），避免公网用户面误调 admin
+// 路由（即使 token 都对了，也可以拒掉跨域调用）。
 func adminTokenMiddleware(token string, logger *zap.Logger) func(http.Handler) http.Handler {
 	if token == "" {
 		logger.Error("admin http: AUTH DISABLED — set ADMIN_HTTP_TOKEN env or admin.token in config for production")
-		return func(next http.Handler) http.Handler { return next }
+		// 即使 disabled 也给 ctx 打 is_admin —— 保持下游 handler 读 ctx 的语义一致。
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, WithIsAdmin(r))
+			})
+		}
 	}
 	expected := []byte(token)
 	return func(next http.Handler) http.Handler {
@@ -213,7 +244,7 @@ func adminTokenMiddleware(token string, logger *zap.Logger) func(http.Handler) h
 				_, _ = w.Write([]byte(`{"error":"unauthorized: missing or invalid X-Admin-Token"}`))
 				return
 			}
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, WithIsAdmin(r))
 		})
 	}
 }

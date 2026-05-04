@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/payment-util/trace"
@@ -22,31 +23,41 @@ import (
 type Server struct {
 	paymentcorev1.UnimplementedPaymentCoreServiceServer
 
-	svc    *service.PaymentService
-	whSvc  *service.WebhookService
-	auth   map[string]string
-	rps    float64
-	burst  int
-	logger *zap.Logger
+	svc                  *service.PaymentService
+	whSvc                *service.WebhookService
+	auth                 map[string]string
+	allowUnauthenticated bool
+	rps                  float64
+	burst                int
+	shutdownTimeout      time.Duration
+	logger               *zap.Logger
 }
 
 type Deps struct {
-	PaymentSvc   *service.PaymentService
-	WebhookSvc   *service.WebhookService
-	AuthTokens   map[string]string
-	RateLimitRPS float64
-	RateBurst    int
-	Logger       *zap.Logger
+	PaymentSvc *service.PaymentService
+	WebhookSvc *service.WebhookService
+	AuthTokens map[string]string
+	// AllowUnauthenticated dev / lab 显式打开匿名（生产应为 false）。
+	// AuthTokens 为空 + 本字段 false → 启动期 fail-closed 拒所有请求。
+	AllowUnauthenticated bool
+	RateLimitRPS         float64
+	RateBurst            int
+	// ShutdownTimeout SIGTERM 后等待 in-flight RPC 完成的最长时间。
+	// 0 = 用默认 25s（与 K8s preStop 30s 留 5s 余量）。
+	ShutdownTimeout time.Duration
+	Logger          *zap.Logger
 }
 
 func NewServer(d Deps) *Server {
 	return &Server{
-		svc:    d.PaymentSvc,
-		whSvc:  d.WebhookSvc,
-		auth:   d.AuthTokens,
-		rps:    d.RateLimitRPS,
-		burst:  d.RateBurst,
-		logger: d.Logger,
+		svc:                  d.PaymentSvc,
+		whSvc:                d.WebhookSvc,
+		auth:                 d.AuthTokens,
+		allowUnauthenticated: d.AllowUnauthenticated,
+		rps:                  d.RateLimitRPS,
+		burst:                d.RateBurst,
+		shutdownTimeout:      d.ShutdownTimeout,
+		logger:               d.Logger,
 	}
 }
 
@@ -64,13 +75,34 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 		LoggingInterceptor(s.logger),
 		MetricsInterceptor(),
 		RateLimitInterceptor(s.rps, s.burst),
-		AuthInterceptor(s.auth, s.logger),
+		AuthInterceptor(s.auth, s.allowUnauthenticated, s.logger),
 	))
 	paymentcorev1.RegisterPaymentCoreServiceServer(srv, s)
 	s.logger.Info("payment-core grpc listening", zap.Int("port", port))
+	// P1-16 graceful shutdown timeout 兜底：K8s preStop 默认 30s 内必须 drain 完毕，
+	// 在那之后 SIGKILL。GracefulStop 不带 timeout 会无限等 in-flight RPC 完成，
+	// 一笔慢 charge（payment-channel 卡 60s+）能直接撑到 SIGKILL → 客户端见 RST，
+	// 业务侧重试触发幂等冲突。给 25s 上限：超时后 srv.Stop() 强制断连，让客户端
+	// 走超时重试比 SIGKILL 优雅。
+	shutdownTimeout := s.shutdownTimeout
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 25 * time.Second
+	}
 	go func() {
 		<-ctx.Done()
-		srv.GracefulStop()
+		s.logger.Info("payment-core grpc draining", zap.Duration("timeout", shutdownTimeout))
+		stopped := make(chan struct{})
+		go func() {
+			srv.GracefulStop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+			s.logger.Info("payment-core grpc graceful stop complete")
+		case <-time.After(shutdownTimeout):
+			s.logger.Warn("payment-core grpc graceful stop timed out, forcing", zap.Duration("after", shutdownTimeout))
+			srv.Stop()
+		}
 	}()
 	return srv.Serve(lis)
 }

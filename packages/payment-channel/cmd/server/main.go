@@ -438,11 +438,12 @@ func newServer(svc *service.AcquirerService, v *viper.Viper, logger *zap.Logger)
 		tokens[t] = "ok"
 	}
 	return server.NewServer(server.Deps{
-		AcquirerSvc:  svc,
-		AuthTokens:   tokens,
-		RateLimitRPS: v.GetFloat64("rate_limit.rps"),
-		RateBurst:    v.GetInt("rate_limit.burst"),
-		Logger:       logger,
+		AcquirerSvc:          svc,
+		AuthTokens:           tokens,
+		AllowUnauthenticated: v.GetBool("auth.allow_unauthenticated"),
+		RateLimitRPS:         v.GetFloat64("rate_limit.rps"),
+		RateBurst:            v.GetInt("rate_limit.burst"),
+		Logger:               logger,
 	})
 }
 

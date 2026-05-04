@@ -260,7 +260,8 @@ func (a *Adapter) ParseWebhook(headers map[string]string, body []byte) (*channel
 		sig = headers["X-Bpi-Signature"]
 	}
 	// BPI callback signs the raw body with client_secret (HMAC-SHA256 base64).
-	sigOK := sig != "" && sig == channel.HMACSHA256Base64([]byte(a.cfg.ClientSecret), body)
+	// P1-4 timing-safe：用 VerifyHMACSHA256Base64 而非 == 字符串相等。
+	sigOK := sig != "" && channel.VerifyHMACSHA256Base64([]byte(a.cfg.ClientSecret), body, sig)
 	var nb struct {
 		TransactionID   string `json:"transactionId"`
 		ReferenceNumber string `json:"referenceNumber"`

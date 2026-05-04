@@ -45,6 +45,15 @@ func NewServer(d Deps) *Server {
 }
 
 // ListenAndServe 开 gRPC 监听。ctx 关闭时 GracefulStop。
+//
+// **TODO(P1-5 长期，需要 ops 配合)**：升级到 mTLS / SPIFFE workload identity。
+// 当前 AuthInterceptor 只用静态 Bearer token，宿主机 / k8s pod 拿到 token 文件
+// 都能调 Decrypt / GenerateDataKey 解密任意业务密文。生产期目标：
+//   - server-side: 用 grpc.Creds(credentials.NewTLS(...)) 替代默认 insecure
+//   - client-side: 每个调用方 service 持自己的 client cert（cert-manager 自动续期）
+//   - AuthInterceptor 改读 peer.FromContext + tls.ConnectionState.PeerCertificates
+//     → 校验 cert 的 spiffe:// URI 与白名单的 service identity 匹配
+// 切换前需要先在 staging 跑通端到端 mTLS 链路，runbook 见 docs/KMS_MTLS.md。
 func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {

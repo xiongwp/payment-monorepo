@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -90,22 +91,49 @@ func MetricsInterceptor() grpc.UnaryServerInterceptor {
 	}
 }
 
-func AuthInterceptor(validTokens map[string]string, logger *zap.Logger) grpc.UnaryServerInterceptor {
+// AuthInterceptor 默认拒绝模式：
+//   - validTokens 非空 → 校验 Bearer token；未带 / 不匹配 → Unauthenticated
+//   - validTokens 为空 + allowUnauthenticated=true → 放行（dev / lab 显式打开）
+//   - validTokens 为空 + allowUnauthenticated=false（生产默认）→ 启动期 fail-closed：
+//     拒绝所有非健康检查 / reflection 请求
+//
+// 与 order-core 同步签名（P1-1）：避免某次部署忘配 token 时被静默放过去。
+//
+// timing-safe：用 subtle.ConstantTimeCompare 对 token 做常量时间比较，
+// 防止外部根据返回延迟探测 token 长度 / 前缀。
+func AuthInterceptor(validTokens map[string]string, allowUnauthenticated bool, logger *zap.Logger) grpc.UnaryServerInterceptor {
 	skip := func(method string) bool {
 		return strings.HasPrefix(method, "/grpc.health.") ||
 			strings.HasPrefix(method, "/grpc.reflection.")
 	}
+	// 预计算 expected []byte 列表，避免热路径 map 遍历 + string→[]byte 重复转换。
+	expected := make([][]byte, 0, len(validTokens))
+	for tok := range validTokens {
+		expected = append(expected, []byte(tok))
+	}
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		if len(validTokens) == 0 || skip(info.FullMethod) {
+		if skip(info.FullMethod) {
 			return handler(ctx, req)
+		}
+		if len(validTokens) == 0 {
+			if allowUnauthenticated {
+				return handler(ctx, req)
+			}
+			logger.Warn("AuthInterceptor: no tokens configured and allowUnauthenticated=false; rejecting",
+				zap.String("method", info.FullMethod))
+			return nil, status.Error(codes.Unauthenticated, "auth not configured")
 		}
 		md, _ := metadata.FromIncomingContext(ctx)
 		auth := strings.TrimSpace(strings.Join(md.Get("authorization"), ""))
 		if !strings.HasPrefix(auth, "Bearer ") {
 			return nil, status.Error(codes.Unauthenticated, "missing bearer token")
 		}
-		tok := strings.TrimPrefix(auth, "Bearer ")
-		if _, ok := validTokens[tok]; !ok {
+		tok := []byte(strings.TrimPrefix(auth, "Bearer "))
+		var match int
+		for _, e := range expected {
+			match |= subtle.ConstantTimeCompare(tok, e)
+		}
+		if match != 1 {
 			logger.Debug("auth rejected", zap.String("method", info.FullMethod))
 			return nil, status.Error(codes.Unauthenticated, "invalid token")
 		}

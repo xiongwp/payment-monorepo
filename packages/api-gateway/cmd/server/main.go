@@ -107,7 +107,14 @@ func newServerConfig(v *viper.Viper) server.Config {
 		IdleTimeout:       getDurDefault(v, "server.idle_timeout", 60*time.Second),
 
 		AuthEnabled: v.GetBool("auth.enabled"),
-		AuthTokens:  v.GetStringSlice("auth.tokens"),
+		// auth.api_keys 是 yaml map：apikey → merchant_id（server-trusted）
+		// 例：
+		//   auth:
+		//     api_keys:
+		//       sk_live_abc: "mch_001"
+		//       sk_live_def: "mch_002"
+		// merchant_id 留空则 per-merchant 限流退化到 per-IP（dev 兼容）。
+		AuthAPIKeys: v.GetStringMapString("auth.api_keys"),
 
 		IPRPS:         getIntDefault(v, "rate_limit.ip_rps", 100),
 		IPBurst:       getIntDefault(v, "rate_limit.ip_burst", 200),

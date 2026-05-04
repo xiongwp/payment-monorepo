@@ -75,9 +75,10 @@ func Start(t testing.TB, cfg StartConfig) *Server {
 	paymentSvc := service.NewPaymentService(router, channelCli, nil, logger)
 	webhookSvc := service.NewWebhookService(logger)
 	handler := server.NewServer(server.Deps{
-		PaymentSvc: paymentSvc,
-		WebhookSvc: webhookSvc,
-		Logger:     logger,
+		PaymentSvc:           paymentSvc,
+		WebhookSvc:           webhookSvc,
+		AllowUnauthenticated: true, // testhelper：单测 / e2e 不配 token
+		Logger:               logger,
 	})
 
 	lis := bufconn.Listen(1 << 20)

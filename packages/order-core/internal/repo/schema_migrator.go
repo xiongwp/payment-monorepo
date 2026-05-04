@@ -196,28 +196,47 @@ func (m *Manager) ApplyShardMigrations(ctx context.Context, tablePerDB int, logg
 			global := shardIdx*tablePerDB + tIdx
 			suffix := fmt.Sprintf("%02d", global)
 			for _, mig := range migrations {
-				tbl := mig.TablePrefix + suffix
-				exists, err := mig.exists(ctx, db, dbName, tbl)
-				if err != nil {
-					failed++
-					logger.Warn("shard migration introspect failed",
-						zap.String("db", dbName), zap.String("tbl", tbl),
-						zap.String("change", mig.what()), zap.Error(err))
-					continue
+				// P1-20 同步迁移到 _shadow 表：主 + 影子两套都跑同一份 DDL，避免主
+				// 加列后 _shadow 还停在旧 schema 导致 ClaimBatch WHERE claim_token IS NULL
+				// 在影子表无效（列不存在直接 SQL 错误）。
+				for _, tableSuffix := range []string{"", "_shadow"} {
+					tbl := mig.TablePrefix + suffix + tableSuffix
+					// _shadow 表如果还没建（首次部署 ApplyShadowTables 紧跟其后才跑）
+					// 直接跳过——ApplyShadowTables 用 LIKE 主表 CREATE 时主表已经迁完，
+					// 复制出来的影子表自带新列，无需 ALTER。
+					tblExists, err := tableExists(ctx, db, dbName, tbl)
+					if err != nil {
+						failed++
+						logger.Warn("shard migration: introspect table failed",
+							zap.String("db", dbName), zap.String("tbl", tbl), zap.Error(err))
+						continue
+					}
+					if !tblExists {
+						skipped++
+						continue
+					}
+					exists, err := mig.exists(ctx, db, dbName, tbl)
+					if err != nil {
+						failed++
+						logger.Warn("shard migration introspect failed",
+							zap.String("db", dbName), zap.String("tbl", tbl),
+							zap.String("change", mig.what()), zap.Error(err))
+						continue
+					}
+					if exists {
+						skipped++
+						continue
+					}
+					ddl := fmt.Sprintf("ALTER TABLE `%s` %s", tbl, mig.changeDDL())
+					if err := db.WithContext(ctx).Exec(ddl).Error; err != nil {
+						failed++
+						logger.Warn("shard migration apply failed",
+							zap.String("db", dbName), zap.String("tbl", tbl),
+							zap.String("change", mig.what()), zap.Error(err))
+						continue
+					}
+					applied++
 				}
-				if exists {
-					skipped++
-					continue
-				}
-				ddl := fmt.Sprintf("ALTER TABLE `%s` %s", tbl, mig.changeDDL())
-				if err := db.WithContext(ctx).Exec(ddl).Error; err != nil {
-					failed++
-					logger.Warn("shard migration apply failed",
-						zap.String("db", dbName), zap.String("tbl", tbl),
-						zap.String("change", mig.what()), zap.Error(err))
-					continue
-				}
-				applied++
 			}
 		}
 	}

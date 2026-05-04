@@ -16,6 +16,7 @@ import (
 	"github.com/accounting-system/internal/repository"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -273,9 +274,16 @@ func (s *dayCutService) TriggerDayCut(ctx context.Context, cutDate, currency str
 	// 并发处理所有分片。
 	// 使用 context.WithoutCancel(ctx)：脱离 HTTP 请求取消信号（避免 caller 断开导致分片停在 PENDING），
 	// 但保留 ctx 上承载的 trace / span / deadline 元信息，便于观测。
+	//
+	// **P1-19 强制清 shadow flag**：context.WithoutCancel 会保留 ctx.Value 包括
+	// shadow=true。日切如果由 shadow trigger（admin 误操作 / 压测端点）触发，会让
+	// 整个全分片日切落到 _shadow 表，主流量当天 trial balance / cut_date snapshot
+	// 全部缺失。强制 WithoutShadow 把 shadow flag 显式抹掉——日切永远只对主流量生效。
+	// shadow 流量自己的日切应通过独立的 admin endpoint 显式 trigger（见 admin handler）。
+	//
 	// 超时 dayCutShardTimeout 作为硬兜底；正常每个分片 batch+checkpoint 几分钟即可完成，
 	// 4h 是旧的宽松值。收紧到 30min → 若真卡住可触发 watchdog 及时重新派发。
-	bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dayCutShardTimeout)
+	bgCtx, cancel := context.WithTimeout(shadow.WithShadow(context.WithoutCancel(ctx), false), dayCutShardTimeout)
 
 	// 并发进度计数（atomic 安全）。每 30s 打印一次仍在跑的分片数 + 已完成数。
 	// 在 100 分片并发时，单分片完成日志容易被淹没；这里给运维提供"全局进度"视图。
@@ -309,11 +317,18 @@ func (s *dayCutService) TriggerDayCut(ctx context.Context, cutDate, currency str
 		}
 	}()
 
+	// P1-14 并发度限流：不限并发的话 100 goroutine 同时握 100 张分片表 + 100
+	// 个 DB 事务 → 把 DB 连接池吃光，反而比串行还慢（context switch + lock 等待）。
+	// 上限 10：每分库 1 路并发（10 库 × 1）≈ 单分片 RT × 10 总耗时，恰好平衡。
+	const dayCutFanoutConcurrency = 10
+	sem := make(chan struct{}, dayCutFanoutConcurrency)
 	var wg sync.WaitGroup
 	for _, shard := range shards {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(dbIdx, tableIdx int) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			shardStart := time.Now()
 			if err := s.ProcessShardDayCut(bgCtx, dbIdx, tableIdx, cutDate, newRunID, currency); err != nil {
 				atomic.AddInt64(&failed, 1)

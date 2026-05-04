@@ -211,12 +211,15 @@ func newServer(svc *service.PaymentService, wh *service.WebhookService, kms kmsc
 		tokenSet[t] = "ok"
 	}
 	return server.NewServer(server.Deps{
-		PaymentSvc:   svc,
-		WebhookSvc:   wh,
-		AuthTokens:   tokenSet,
-		RateLimitRPS: v.GetFloat64("rate_limit.rps"),
-		RateBurst:    v.GetInt("rate_limit.burst"),
-		Logger:       logger,
+		PaymentSvc: svc,
+		WebhookSvc: wh,
+		AuthTokens: tokenSet,
+		// 生产默认 fail-closed：tokenSet 为空 + 不显式打开 = 拒所有请求。
+		// dev / lab 显式 yaml: auth.allow_unauthenticated: true 才放开。
+		AllowUnauthenticated: v.GetBool("auth.allow_unauthenticated"),
+		RateLimitRPS:         v.GetFloat64("rate_limit.rps"),
+		RateBurst:            v.GetInt("rate_limit.burst"),
+		Logger:               logger,
 	}), nil
 }
 

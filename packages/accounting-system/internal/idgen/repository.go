@@ -72,3 +72,11 @@ func (r *segmentRepository) register(ctx context.Context, alloc *LeafAlloc) erro
 		Clauses(clause.OnConflict{DoNothing: true}).
 		Create(alloc).Error
 }
+
+// updateStep 调高 / 调低指定 bizTag 的 step（自适应）。仅当 newStep != 当前值时才 UPDATE。
+// 主流量 / shadow 段独立调整（leaf_alloc vs leaf_alloc_shadow，由 ctx 路由）。
+func (r *segmentRepository) updateStep(ctx context.Context, bizTag string, newStep int) error {
+	return r.db.WithContext(ctx).Table(leafTable(ctx)).
+		Where("biz_tag = ? AND step <> ?", bizTag, newStep).
+		Update("step", newStep).Error
+}

@@ -207,22 +207,31 @@ func LoggingMiddleware(logger *zap.Logger) func(http.Handler) http.Handler {
 
 // ─── auth ────────────────────────────────────────────────────────────────────
 
-// APIKeyMiddleware 校验请求头 X-API-Key。tokens 为空时退化为 warn-only：放行
-// 所有请求，启动时一次 WARN 提示生产应配置。健康检查路径豁免。
+// APIKeyMiddleware 校验请求头 X-API-Key。
 //
-// 比较走 subtle.ConstantTimeCompare 防 timing attack。原 token 列表在启动时
-// 物化为 [][]byte，避免每条请求 range map 引入额外 timing 信号。
-func APIKeyMiddleware(tokens []string, logger *zap.Logger) func(http.Handler) http.Handler {
-	expected := make([][]byte, 0, len(tokens))
-	for _, t := range tokens {
-		t = strings.TrimSpace(t)
-		if t == "" {
+// apiKeys: token → merchant_id（server-trusted）。token 为空时退化为 warn-only：
+// 放行所有请求，启动时一次 WARN 提示生产应配置。健康检查路径豁免。
+//
+// **P1-10 解锁 per-merchant rate limit**：之前 token 是 []string，无法把 merchant_id
+// 注入 ctx，per-merchant 限流空跑。现在改成 map，token 校验通过后把对应的 merchant_id
+// 写到 ctx (WithMerchantID)，下游 RateLimitMiddleware 直接读 ctx 拿到 server-trusted
+// merchant_id，per-merchant 限流真正生效。
+//
+// 比较走 subtle.ConstantTimeCompare 防 timing attack。token 列表在启动时物化为
+// [][]byte + 平行 [merchantID 切片，避免每条请求 range map 引入额外 timing 信号。
+func APIKeyMiddleware(apiKeys map[string]string, logger *zap.Logger) func(http.Handler) http.Handler {
+	expected := make([][]byte, 0, len(apiKeys))
+	merchantByIdx := make([]string, 0, len(apiKeys))
+	for tok, mch := range apiKeys {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
 			continue
 		}
-		expected = append(expected, []byte(t))
+		expected = append(expected, []byte(tok))
+		merchantByIdx = append(merchantByIdx, strings.TrimSpace(mch))
 	}
 	if len(expected) == 0 {
-		logger.Warn("api-gateway: API KEY AUTH DISABLED — set auth.tokens in config or auth.enabled=false explicitly for dev")
+		logger.Warn("api-gateway: API KEY AUTH DISABLED — set auth.api_keys in config or auth.enabled=false explicitly for dev")
 		return func(next http.Handler) http.Handler { return next }
 	}
 	return func(next http.Handler) http.Handler {
@@ -236,9 +245,17 @@ func APIKeyMiddleware(tokens []string, logger *zap.Logger) func(http.Handler) ht
 				http.Error(w, `{"error":"missing X-API-Key"}`, http.StatusUnauthorized)
 				return
 			}
+			// 全扫描求 match（constant-time 防 timing leak）；同时记录命中位置
+			// 用于反查 merchant_id。命中位置在 ctx 注入前不会暴露给攻击者，
+			// 因为只有真命中才走到 next handler。
 			var match int
-			for _, e := range expected {
-				match |= subtle.ConstantTimeCompare(got, e)
+			matchedIdx := -1
+			for i, e := range expected {
+				eq := subtle.ConstantTimeCompare(got, e)
+				match |= eq
+				if eq == 1 {
+					matchedIdx = i
+				}
 			}
 			if match != 1 {
 				logger.Warn("api-key rejected",
@@ -246,6 +263,11 @@ func APIKeyMiddleware(tokens []string, logger *zap.Logger) func(http.Handler) ht
 					zap.String("remote", r.RemoteAddr))
 				http.Error(w, `{"error":"invalid X-API-Key"}`, http.StatusUnauthorized)
 				return
+			}
+			if matchedIdx >= 0 {
+				if mch := merchantByIdx[matchedIdx]; mch != "" {
+					r = WithMerchantID(r, mch)
+				}
 			}
 			next.ServeHTTP(w, r)
 		})
@@ -305,17 +327,11 @@ func RateLimitMiddleware(
 				http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
 				return
 			}
-			// 资安：per-merchant 限流之前直接读 X-Merchant-ID header，header 是
-			// 客户端可控的——攻击者拿一把合法 API key 不停换 merchant_id 头，
-			// per-merchant 桶每次都新鲜，等同没限流。
-			//
-			// 临时修复：merchant rate limit 仅在 ctx 里有由 APIKeyMiddleware
-			// 注入的 merchantID（即真正的 server-side authoritative 值）才生效。
-			// 当前 APIKey 还没把 API key 反查到 merchant_id（kms-manage 那条路
-			// 暂未接），所以这块先空跑——比信任客户端 header 安全。
-			//
-			// follow-up：APIKeyMiddleware 拿到 token 后查 merchant 注册表把
-			// merchant_id 注入 ctx，这里改读 ctx.Value("merchant_id")。
+			// per-merchant 限流：merchant_id 由 APIKeyMiddleware 在 token 校验
+			// 通过后注入 ctx（server-trusted）。攻击者无法通过 header 伪造，因为
+			// X-Merchant-ID 这个客户端 header 现在不再被这里读取。
+			// 匿名路径（health probe / signup 等）merchantIDFromContext 返空，
+			// 自动退化到 per-IP 限流。
 			if mch := merchantIDFromContext(r); mch != "" && merchantRPS > 0 {
 				if !mchLimiter.Allow(mch) {
 					logger.Warn("rate limit hit",
@@ -355,6 +371,10 @@ func clientIP(r *http.Request) string {
 // header 读 X-Merchant-ID 的伪造问题。
 type merchantCtxKey struct{}
 
+// isAdminCtxKey P1-21：admin HTTP 入口在 ctx 显式 mark "is_admin"，让下游 handler
+// 区分公网用户面 vs admin 调用——避免某个 RPC 同时挂在两个 mux 时被滥用。
+type isAdminCtxKey struct{}
+
 // merchantIDFromContext 从 ctx 提取 server-trusted merchant_id。
 // 返回空字符串 = 没有 authoritative merchant_id（匿名 / API key 还没反查到
 // merchant，限流跳过 per-merchant 维度，只走 per-IP）。
@@ -375,4 +395,16 @@ func WithMerchantID(r *http.Request, mch string) *http.Request {
 
 func contextWithMerchantID(parent context.Context, mch string) context.Context {
 	return context.WithValue(parent, merchantCtxKey{}, mch)
+}
+
+// IsAdminFromContext 是否经 admin token middleware 校验过的请求。
+// 业务 handler 入口可拿来加二次门禁（"这条 RPC 必须 admin 身份"）。
+func IsAdminFromContext(r *http.Request) bool {
+	v, _ := r.Context().Value(isAdminCtxKey{}).(bool)
+	return v
+}
+
+// WithIsAdmin 在 ctx 标记 admin 身份；admin token middleware 通过校验后调用。
+func WithIsAdmin(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), isAdminCtxKey{}, true))
 }

@@ -52,13 +52,15 @@ func Load(dir string) (*Store, error) {
 	// 但之前代码只 os.ReadFile 没 Stat → 误置成 0644 / 0666 启动时不报错，宿主机
 	// 任何 shell 用户能读 master key → 全平台 kms:v1:* ciphertext 全裸。
 	//
-	// 校验规则：
-	//   - 目录本身：不允许 group/other 写入（防 attacker 写新 key 让 ACTIVE 切换）
-	//   - 每个 .key 文件：mode & 0077 == 0（即 group/other 无任何权限）
+	// 校验规则（P1-3 收紧目录权限）：
+	//   - 目录本身：mode & 0o077 == 0（group/other 既不可读也不可写）
+	//     原来只检查 write，但攻击者获取宿主任意 user shell 后仍可 cat *.key
+	//     拿明文主密钥；目录可读 → 列出所有 key id 帮助横移。
+	//   - 每个 .key 文件：mode & 0o077 == 0（同上）
 	// 启动期硬失败而非 warn，否则就跟没检查一样。
 	if di, err := os.Stat(dir); err == nil {
-		if mode := di.Mode().Perm(); mode&0o022 != 0 {
-			return nil, fmt.Errorf("keystore: dir %s mode %#o is too open (no group/other write); chmod 0700 %s", dir, mode, dir)
+		if mode := di.Mode().Perm(); mode&0o077 != 0 {
+			return nil, fmt.Errorf("keystore: dir %s mode %#o is too open (no group/other access allowed); chmod 0700 %s", dir, mode, dir)
 		}
 	}
 	entries, err := os.ReadDir(dir)
