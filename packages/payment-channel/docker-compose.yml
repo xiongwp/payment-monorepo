@@ -41,6 +41,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.mockserver
+      additional_contexts:
+        payment-util: ../payment-util
+        kms-manage:   ../kms-manage
+        risk-manage:  ../risk-manage
+      secrets:
+        - GITHUB_TOKEN
     image: payment-channel-mockserver:latest
     container_name: paychan-mockserver
     ports:

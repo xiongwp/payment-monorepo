@@ -1,3 +1,18 @@
+# Dockerfile.mockserver — mockserver 跟 payment-channel 共享 go.mod，
+# 所以同样需要 payment-util / kms-manage / risk-manage 三兄弟仓在 /src/<name>
+# 让 `replace ../<name>` 相对路径成立。
+#
+# 优先用本地兄弟仓（docker-compose.yml 用 additional_contexts 注入），
+# 找不到才 git clone（需 GITHUB_TOKEN secret）。
+
+# Sibling source provider placeholders。
+FROM alpine:3.19 AS payment-util
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS kms-manage
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS risk-manage
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+
 FROM golang:1.25-alpine AS build
 RUN apk add --no-cache git ca-certificates
 WORKDIR /src
@@ -5,44 +20,41 @@ WORKDIR /src
 ENV GOFLAGS=-mod=mod
 ENV GOTOOLCHAIN=auto
 
-# mockserver 也依赖 payment-util（同仓 go.mod 里 replace 了）。
-# Dockerfile 自己 git-clone payment-util 放到 /src/payment-util，
-# 这样 go.mod 的 `replace ../payment-util` 相对路径能解析到。
-# 私仓 clone 需要 token：outer compose 通过 BuildKit secret 传入
-#   services.mockserver.build.secrets: [GITHUB_TOKEN]
-# 公仓或本机 git 已登录时可不设 secret。
 ARG PAYMENT_UTIL_REF=main
 ARG KMS_MANAGE_REF=main
 ARG RISK_MANAGE_REF=main
-# CACHEBUST 让 sibling clone 步骤可被显式 invalidate。当 payment-util main
-# 推进了新 commit（如新增 healthx 包）但 docker layer cache 还停在旧 commit
-# 时，用 --build-arg CACHEBUST=$(date +%s) 强制重 clone。
-ARG CACHEBUST=0
+
+COPY --from=payment-util / /tmp/payment-util-staged/
+COPY --from=kms-manage   / /tmp/kms-manage-staged/
+COPY --from=risk-manage  / /tmp/risk-manage-staged/
+
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
-    echo "cachebust=$CACHEBUST"; \
-    TOKEN=""; \
-    [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
-    if [ -z "$TOKEN" ]; then \
-        echo "ERROR: GITHUB_TOKEN is not set; required to clone private xiongwp/* siblings." >&2; \
-        echo "       Generate a token at https://github.com/settings/tokens (scope: repo)," >&2; \
-        echo "       then run:  GITHUB_TOKEN=ghp_xxx docker compose build" >&2; \
-        exit 1; \
-    fi; \
-    auth="x-access-token:${TOKEN}@"; \
-    clone_with_fallback() { \
-        repo=$1; ref=$2; \
-        url="https://${auth}github.com/xiongwp/${repo}.git"; \
-        dest="/src/${repo}"; \
-        if git clone --depth=1 --branch "$ref" "$url" "$dest" 2>/dev/null; then \
-            return 0; \
+    promote() { \
+      name=$1; ref=$2; \
+      staged="/tmp/${name}-staged"; final="/src/${name}"; \
+      if [ -f "${staged}/go.mod" ]; then \
+        echo "→ Using local ${name} (additional_context override)"; \
+        mkdir -p "${final}"; cp -a "${staged}/." "${final}/"; \
+      else \
+        echo "→ Local ${name} not provided, git clone fallback (ref=${ref})"; \
+        TOKEN=""; \
+        [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
+        if [ -z "$TOKEN" ]; then \
+          echo "ERROR: cannot fetch sibling '${name}' — provide ../${name} via additional_contexts OR GITHUB_TOKEN secret." >&2; \
+          exit 1; \
         fi; \
-        echo "branch '$ref' not found in $repo; falling back to default branch" >&2; \
-        git clone --depth=1 "$url" "$dest"; \
+        auth="x-access-token:${TOKEN}@"; \
+        url="https://${auth}github.com/xiongwp/${name}.git"; \
+        rm -rf "${final}"; \
+        git clone --depth=1 --branch "$ref" "$url" "$final" 2>/dev/null \
+          || git clone --depth=1 "$url" "$final"; \
+      fi; \
+      rm -rf "${staged}"; \
     }; \
-    clone_with_fallback payment-util "$PAYMENT_UTIL_REF"; \
-    clone_with_fallback kms-manage   "$KMS_MANAGE_REF"; \
-    clone_with_fallback risk-manage  "$RISK_MANAGE_REF"
+    promote payment-util "$PAYMENT_UTIL_REF"; \
+    promote kms-manage   "$KMS_MANAGE_REF"; \
+    promote risk-manage  "$RISK_MANAGE_REF"
 
 COPY . /src/payment-channel
 WORKDIR /src/payment-channel
