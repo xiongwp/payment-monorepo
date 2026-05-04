@@ -1,0 +1,45 @@
+version: "3.9"
+
+# payment-core 是无状态的，只依赖 payment-channel / risk-manage / kms-manage gRPC。
+# 通过 external 网络 `payment-stack` 加入联栈，用容器 DNS（payment-channel:9092、
+# risk-manage:9490、kms-manage:9290）调到它们 —— 前提是这几个兄弟服务也接到
+# 同一个 payment-stack 上。
+#
+# Dockerfile 自己 git-clone payment-util / kms-manage / payment-channel / risk-manage
+# （需要 GITHUB_TOKEN secret）。
+networks:
+  default:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true
+
+services:
+  payment-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      secrets:
+        - GITHUB_TOKEN
+    image: payment-core:latest
+    # container_name 故意不写：支持 docker compose --scale payment-core=N
+    # 多副本部署（deploy.sh 默认 2，DEPLOY_REPLICAS_PAYMENT_CORE 覆盖）。
+    # 端口同步用 range，避免副本抢同一宿主机端口。
+    ports:
+      - "9090-9099:9090"   # gRPC
+      - "9190-9199:9190"   # /metrics + /healthz
+    environment:
+      PAYCORE_LOG_DEV: "false"
+      # ── 服务发现 + 下游 endpoint（payment-stack network 内 DNS 直连）──
+      PAYCORE_REGISTRY_ENDPOINTS: "etcd:2379"
+      PAYCORE_CHANNEL_ENDPOINT: "payment-channel:9092"
+      PAYCORE_RISK_ENDPOINT: "risk-manage:9590"
+      PAYCORE_KMS_ENDPOINT: "kms-manage:9390"
+    volumes:
+      # viper 只认 config.yaml。把 docker 变体盖在它上面，避免容器装载本地开发
+      # 的空 endpoint（那样会退回 passthrough / noop）。
+      - ./config/config.docker.yaml:/app/config/config.yaml:ro
+
+# BuildKit secret：从环境变量读取 GITHUB_TOKEN，不写入镜像层。
+# 用法：GITHUB_TOKEN=ghp_xxx docker compose build
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

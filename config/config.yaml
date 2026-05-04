@@ -1,0 +1,86 @@
+server:
+  grpc_port: 9090
+
+metrics:
+  addr: ":9190"
+
+auth:
+  # 留空禁用；非空开启 bearer 鉴权。
+  # 支持 KMS 密文格式：直接写 "kms:v1:<key_id>:..."，启动时透明解密。
+  # AAD context = "svc:paycore:auth_tokens"
+  tokens: []
+
+rate_limit:
+  rps: 2000
+  burst: 4000
+
+channel:
+  endpoint: "127.0.0.1:9092"
+  rpc_timeout: 10s
+
+# kms-manage 客户端；endpoint 留空则走 passthrough（不解密，密文原样）。
+kms:
+  endpoint: ""
+  bearer_token: ""
+  rpc_timeout: 3s
+
+# risk-manage 客户端；endpoint 留空则跳过风控（全部放行）。
+# 联栈模式："risk-manage:9490"
+risk:
+  endpoint: ""
+  rpc_timeout: 3s
+  # default_timeout: 单次 Screen 调用的兜底超时（per-call）。0 / 缺省 = 不限。
+  # 比 rpc_timeout 更细粒度：rpc_timeout 是 grpc 客户端的 unary 超时（适用于
+  # 所有调用），default_timeout 只用于 Screen，可以独立调整。
+  default_timeout: 5s
+  # 头部 / 高流量 / 已认证商户可以配更短窗口加快决策。
+  # 命中后 fail-open 的 Warn 日志频次会上升 —— 那是设计意图：宁可漏判也不卡支付。
+  # 缺省走 default_timeout。
+  merchant_timeout:
+    # m_xxx: 500ms
+    # m_yyy: 1s
+
+routing:
+  rules:
+    # 具体 > 通配。Priority 数值小优先。
+    - priority: 100
+      country: PH
+      payment_method: GCASH
+      adapter: gcash
+    - priority: 100
+      country: PH
+      # 小程序模式与 GCASH H5 同走 gcash adapter；payment-channel 通过
+      # metadata gcash_flow=miniprogram 触发 MINI_APP paymentMethodType。
+      # 单独列一条路由便于 admin-web 报表里看清两种入口的量。
+      payment_method: GCASH_MINIPROGRAM
+      adapter: gcash
+    - priority: 100
+      country: PH
+      payment_method: MAYA
+      adapter: maya
+    - priority: 100
+      country: PH
+      payment_method: GRABPAY
+      adapter: grabpay
+    - priority: 100
+      country: PH
+      payment_method: COINS_PH
+      adapter: coinsph
+    - priority: 100
+      country: PH
+      payment_method: INSTAPAY
+      amount_max: 5000000           # ≤₱50,000 走 InstaPay 实时
+      adapter: instapay
+    - priority: 110
+      country: PH
+      payment_method: INSTAPAY
+      amount_min: 5000001           # >₱50,000 降级 PESONet
+      adapter: pesonet
+    - priority: 100
+      country: PH
+      payment_method: PESONET
+      adapter: pesonet
+    # 兜底：不匹配任何 payment_method 时默认走 GCash
+    - priority: 999
+      country: PH
+      adapter: gcash
