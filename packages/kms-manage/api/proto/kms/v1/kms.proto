@@ -1,0 +1,72 @@
+// kms-manage 暴露给内部服务的 gRPC 面。
+//
+// 语义：
+//   - Encrypt: 传明文 + 可选 context（AAD），服务返回 `kms:v1:<key_id>:<payload>`
+//   - Decrypt: 传密文 + 同一 context，服务返回明文
+//   - GenerateDataKey: envelope 加密用，服务返回 (明文 DEK, 加密后的 DEK)
+//   - DescribeKey / ListKeys：运维/审计用
+//
+// ciphertext 线格式（纯 ASCII，可放 yaml / env）：
+//   kms:v1:<key_id>:<base64url(nonce(12B) || ciphertext || tag(16B))>
+// AAD = "kms/v1|" + key_id + "|" + context
+syntax = "proto3";
+
+package kms.v1;
+option go_package = "github.com/xiongwp/kms-manage/api/proto/kms/v1;kmsv1";
+
+service KMSService {
+  rpc Encrypt(EncryptRequest) returns (EncryptResponse);
+  rpc Decrypt(DecryptRequest) returns (DecryptResponse);
+  rpc GenerateDataKey(GenerateDataKeyRequest) returns (GenerateDataKeyResponse);
+  rpc DescribeKey(DescribeKeyRequest) returns (DescribeKeyResponse);
+  rpc ListKeys(ListKeysRequest) returns (ListKeysResponse);
+}
+
+message EncryptRequest {
+  // 可选：指定 key_id，不传则用 keystore.active（推荐留空）
+  string key_id     = 1;
+  bytes  plaintext  = 2;
+  // AAD 上下文；解密时必须完全一致（建议用 "svc:<name>:<field>" 格式）
+  string context    = 3;
+}
+
+message EncryptResponse {
+  string ciphertext = 1; // kms:v1:<key_id>:<payload>
+  string key_id     = 2;
+}
+
+message DecryptRequest {
+  string ciphertext = 1; // kms:v1:<key_id>:<payload>
+  string context    = 2;
+}
+
+message DecryptResponse {
+  bytes  plaintext  = 1;
+  string key_id     = 2;
+}
+
+message GenerateDataKeyRequest {
+  string key_id  = 1;   // master key 用谁（空则 active）
+  string context = 2;   // AAD
+  int32  bytes   = 3;   // DEK 字节长度（16/24/32），默认 32
+}
+
+message GenerateDataKeyResponse {
+  bytes  plaintext_key   = 1; // 调用方用完必须清零
+  string encrypted_key   = 2; // kms:v1:<key_id>:<payload>，可长期存库
+  string key_id          = 3;
+}
+
+message DescribeKeyRequest  { string key_id = 1; }
+message DescribeKeyResponse {
+  string key_id     = 1;
+  string algorithm  = 2; // "AES-256-GCM"
+  int64  created_at = 3; // unix seconds
+  bool   active     = 4; // 是否为 keystore.active
+}
+
+message ListKeysRequest  {}
+message ListKeysResponse {
+  repeated DescribeKeyResponse keys = 1;
+  string active_key_id = 2;
+}

@@ -1,0 +1,77 @@
+# kms-manage Deployment
+#
+# 设计前提：
+#   - Image 由 CI build/push，version tag 用 git SHA；本文件用 latest 占位
+#   - DSN / KMS bearer 等敏感配置走 Secret，配置项走 ConfigMap
+#   - probe 路径接 metrics 服务的 /healthz（含 DB ping），失败立即重启
+#   - HPA 单独一份；PDB 单独一份；ServiceMonitor 单独一份
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kms-manage
+  labels: { app: kms-manage }
+spec:
+  replicas: 3   # HPA 会接管；这里给个安全的下限
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0    # 0 unavail：滚动期间始终满足 PDB
+  selector:
+    matchLabels: { app: kms-manage }
+  template:
+    metadata:
+      labels: { app: kms-manage }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "9390"
+        prometheus.io/path:   "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 35   # > fx.StopTimeout(30s)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: kms-manage
+          image: ghcr.io/xiongwp/kms-manage:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: grpc,    containerPort: 9290 }
+            - { name: metrics, containerPort: 9390 }
+          envFrom:
+            - configMapRef: { name: kms-manage-config }
+            - secretRef:    { name: kms-manage-secret }
+          env:
+            - name: USERMERCHANTCORE_LOG_DEV
+              value: "false"
+          resources:
+            requests:
+              cpu:    "200m"
+              memory: "256Mi"
+            limits:
+              cpu:    "2"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 2
+          startupProbe:
+            httpGet: { path: /healthz, port: metrics }
+            failureThreshold: 30        # 30 * 2s = 60s 启动窗口（warmup）
+            periodSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }

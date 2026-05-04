@@ -1,0 +1,69 @@
+# kms-manage 本地栈：一个 gRPC 服务 + 一个挂载的 keystore 卷。
+# 通过 external 网络 `payment-stack` 加入联栈，让兄弟服务用容器 DNS
+# （kms-manage:9290）调到它。
+#
+# Dockerfile 自己 git-clone payment-util（需要 GITHUB_TOKEN secret）。
+# 想拉 PR 分支覆盖默认 main，可加：
+#   build:
+#     args:
+#       PAYMENT_UTIL_REF: claude/fix-payment-util-pvFNu
+#
+# 首次运行前在 host 上 bootstrap 一把密钥：
+#   mkdir -p ./keys
+#   docker compose run --rm --entrypoint /usr/local/bin/kmsctl kms init-key /var/lib/kms-manage/keys main
+#
+# 然后起服务（需要 GITHUB_TOKEN 让 Dockerfile clone 私仓 payment-util）：
+#   GITHUB_TOKEN=ghp_xxx docker compose up --build
+networks:
+  default:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true
+
+services:
+  kms:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      secrets:
+        - GITHUB_TOKEN
+    image: kms-manage:local
+    # container_name 故意不写：支持 docker compose --scale=N 多副本部署。
+    # 多副本时所有 pod 必须挂同一份 keystore（K8s ReadOnlyMany PV / Vault sidecar），
+    # 否则不同副本解密不出对方加密的密文。
+    restart: unless-stopped
+    volumes:
+      # 改成 RW（之前是 :ro）让 entrypoint 能 chmod 0600。生产推荐 ReadOnlyMany
+      # PV + 在 PV 创建时就把 0600 设好；本地 dev 用 RW 让 entrypoint 自我修正。
+      - ./keys:/var/lib/kms-manage/keys
+    # 自动 bootstrap：keystore 目录空时 init-key 生成 main.key（0600）；
+    # 已有 key 但权限错（host 拷过来的 0644）也强制 chmod 0600 + 目录 0700。
+    # PR #14 加了启动期 perm 检查，0644 直接 die，所以这里得自我修正。
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        KEYS=/var/lib/kms-manage/keys
+        mkdir -p "$$KEYS"
+        if [ -z "$$(ls -A $$KEYS/*.key 2>/dev/null)" ]; then
+          echo "[init] no keys found, generating main.key"
+          /usr/local/bin/kmsctl init-key "$$KEYS" main
+        fi
+        # 容错：宿主机拷过来的 .key 文件经常 0644，PR #14 启动期检查要求 0600
+        chmod 0700 "$$KEYS"
+        chmod 0600 "$$KEYS"/*.key 2>/dev/null || true
+        chmod 0600 "$$KEYS"/ACTIVE 2>/dev/null || true
+        exec /usr/local/bin/kms-manage "$$@"
+    # host 端口用 range 支持 scale=2：每个副本依次拿 host 19260 / 19261（gRPC）
+    # 和 19360 / 19361（metrics）。容器内端口仍是 9290 / 9390。
+    ports:
+      - "19260-19261:9290"   # gRPC
+      - "19360-19361:9390"   # metrics + /healthz
+    environment:
+      KMS_LOG_DEV: "false"
+      # ── 服务发现（自注册到 etcd 让 payment-core / payment-channel / user-merchant-core 发现）──
+      KMS_REGISTRY_ENDPOINTS: "etcd:2379"
+
+# BuildKit secret：Dockerfile 用它从环境变量拿 GITHUB_TOKEN clone payment-util。
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

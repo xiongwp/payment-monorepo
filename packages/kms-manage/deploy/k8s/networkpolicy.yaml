@@ -1,0 +1,39 @@
+# 只接受 admin-backend / order-core / payment-core / payment-channel 调用；
+# 其它 Pod 一律拒绝。出站只放 DB + KMS + OTel collector。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kms-manage
+spec:
+  podSelector:
+    matchLabels: { app: kms-manage }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - { podSelector: { matchLabels: { app: payment-admin-backend } } }
+        - { podSelector: { matchLabels: { app: order-core } } }
+        - { podSelector: { matchLabels: { app: payment-core } } }
+        - { podSelector: { matchLabels: { app: payment-channel } } }
+      ports:
+        - { protocol: TCP, port: 9290 }
+    - from:
+        - { namespaceSelector: { matchLabels: { name: monitoring } } }
+      ports:
+        - { protocol: TCP, port: 9390 }
+  egress:
+    - to:
+        - { podSelector: { matchLabels: { app: kms-manage } } }
+      ports:
+        - { protocol: TCP, port: 9290 }
+    - to:
+        - { podSelector: { matchLabels: { app: otel-collector } } }
+      ports:
+        - { protocol: TCP, port: 4317 }
+    - to:
+        - { ipBlock: { cidr: 10.0.0.0/8 } }   # MySQL VPC; 收紧到具体子网更好
+      ports:
+        - { protocol: TCP, port: 3306 }
+    # DNS
+    - ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
