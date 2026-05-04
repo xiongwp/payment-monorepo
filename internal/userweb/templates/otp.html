@@ -1,0 +1,14 @@
+{{define "otp.html"}}{{template "layout" .}}{{end}}
+
+{{define "content"}}
+<h1>二次验证</h1>
+<p class="sub">请输入 6 位验证码（{{.OTPSource}}）</p>
+{{if .Flash}}<div class="flash">{{.Flash}}</div>{{end}}
+<form method="POST" action="/verify-otp">
+  <input type="hidden" name="challenge" value="{{.Challenge}}">
+  <label>验证码</label>
+  <input name="code" required pattern="[0-9]{6}" maxlength="6" inputmode="numeric"
+         style="font-size:20px; letter-spacing:6px; text-align:center;">
+  <button type="submit">验证并登录</button>
+</form>
+{{end}}

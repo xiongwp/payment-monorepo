@@ -1,0 +1,35 @@
+# api-gateway 栈：无状态、无 DB。通过 external 网络 `payment-stack` 加入联栈，
+# 让浏览器能访问 8080，内部能用容器 DNS 调到 user-merchant-core / risk-manage 等下游。
+#
+# Dockerfile 自己 git-clone payment-util / kms-manage / user-merchant-core /
+# risk-manage（需要 GITHUB_TOKEN secret）。
+# 想拉 PR 分支覆盖默认 main，可加：
+#   build:
+#     args:
+#       USER_MERCHANT_CORE_REF: claude/fix-payment-util-pvFNu
+networks:
+  default:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true
+
+services:
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      secrets:
+        - GITHUB_TOKEN
+    image: api-gateway:local
+    container_name: api-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # 公网 HTTP
+      - "8081:8081"   # admin HTTP
+      - "9090:9090"   # Prometheus metrics
+    environment:
+      APIGW_LOG_DEV: "false"
+
+# BuildKit secret：从环境变量读取 GITHUB_TOKEN，不写入镜像层。
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

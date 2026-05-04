@@ -1,0 +1,22 @@
+{{define "signup.html"}}{{template "layout" .}}{{end}}
+
+{{define "content"}}
+<h1>注册</h1>
+<p class="sub">已有账号？<a href="/login">登录</a></p>
+{{if .Flash}}<div class="flash">{{.Flash}}</div>{{end}}
+<form method="POST" action="/signup">
+  <label>登录名 <span style="color:#666">(login_id)</span></label>
+  <input name="login_id" required autocomplete="username" minlength="3" maxlength="64">
+
+  <label>邮箱（可选，验证后用于找回密码）</label>
+  <input name="email" type="email" autocomplete="email">
+
+  <label>手机（可选）</label>
+  <input name="phone" type="tel" autocomplete="tel" placeholder="+8613800000000">
+
+  <label>密码</label>
+  <input name="password" type="password" required autocomplete="new-password" minlength="8" maxlength="72">
+
+  <button type="submit">创建账号</button>
+</form>
+{{end}}
