@@ -64,6 +64,17 @@ func (r *balanceBufferRepository) tableNameCtx(ctx context.Context, tableIndex i
 }
 
 // Upsert 首次写入时同时设置 flush_scheduled_at（触发时间）；后续写入只累加 delta 和 count，不改变调度时间。
+//
+// **P2-2 raw SQL 安全性说明**：
+// 这里用 raw `Exec` 而非 GORM `Clauses(clause.OnConflict{...})` 是有意的——
+// MySQL `ON DUPLICATE KEY UPDATE` 的语义跟 GORM Clauses 自动生成的 SQL 在 increment
+// 表达上有微妙差异（GORM 可能用 SELECT-then-UPDATE 而非原子 ON DUP KEY），高 QPS 下
+// 我们必须保留单条原子 INSERT...ON DUP KEY 的语义。
+//
+// **shadow 安全**：tableName 已经由 r.tableNameCtx(ctx) 在调用前解出 _shadow 后缀，
+// raw SQL 注入到指定 table 名上；GORM callback 框架不会路由本路径，但因为表名已经
+// 是 ctx-aware 的，shadow 流量自然落到 _shadow 表。**未来添加新 raw Exec 路径必须**
+// 同样调 tableNameCtx，否则 shadow 流量会污染主表。
 func (r *balanceBufferRepository) Upsert(ctx context.Context, tx *gorm.DB, accountNo string, delta int64, tableIndex int, flushScheduledAt time.Time) error {
 	tableName := r.tableNameCtx(ctx, tableIndex)
 	return tx.WithContext(ctx).Exec(

@@ -11,6 +11,22 @@
 // - ACTIVE：一行文本，指向某个 *.key 的文件名（不含 .key 后缀）
 //
 // 运行时本包只读；生成 / rotate / 删 key 由 cmd/kmsctl 做。
+//
+// **P2-6 DEK 轮换机制（待规划）**：当前 master key（KEK）支持 manual rotate
+// （cmd/kmsctl rotate-key），但 DEK（业务每条 ciphertext 的实际加密 key）由
+// service 层每次 GenerateDataKey 现场生成 + 用 active KEK 加密后塞 ciphertext header。
+//
+// 现状已经避免了"长期使用同一 DEK"——每条 record 都有自己的 DEK。但缺：
+//   1) **DEK 期限管理**：DEK 没有 created_at / expires_at；理论上一条加密了
+//      90+ 天的 cipher 用的 DEK 仍在用，没强制 re-encrypt。
+//   2) **批量 re-encrypt 工具**：业务侧没有"扫描所有老密文 → 用新 DEK 重新加密"
+//      的 admin 工具。如果 KEK 真泄漏，需要全量重加密所有数据。
+//
+// 规划方向：
+//   - GenerateDataKey 返回值加 expires_at（默认 KEK 过期 - 7d，给 grace period）
+//   - service 层加 ReencryptOldRecords admin RPC：分页扫描指定表的密文，老于 X
+//     天的重新 GenerateDataKey 加密 + UPDATE
+//   - 文档：docs/KMS_DEK_ROTATION.md（待补）
 package keystore
 
 import (

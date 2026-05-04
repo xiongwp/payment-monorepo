@@ -72,10 +72,14 @@ func openConn(cfg DBConfig, gormLog gormlogger.Interface) (*gorm.DB, error) {
 	// ConnMaxIdleTime 控制空闲连接在池中保留的最长时间。
 	// 数据库重启后，旧的空闲连接已断开但仍在池中，下次使用时会收到 "connection reset by peer"。
 	// 设置此值后，database/sql 会主动丢弃超期空闲连接，保证重连时获取到新的有效连接。
-	// 默认 10 分钟（若配置 0 则使用默认值）。
+	//
+	// **P2-10 默认值缩短**：原值 10min 在 K8s rolling restart 场景下窗口太长——
+	// MySQL Pod 升级后旧连接还在池里继续派发，业务侧报 "connection reset" 持续 ~10min。
+	// 改为 3min：每副本每 3min 主动丢弃空闲连接重连，故障感知 + 恢复时间显著缩短，
+	// 同时 connection churn 不会对 MySQL max_connections 造成压力（仍 < 1 conn/s/replica）。
 	idleTimeout := time.Duration(cfg.ConnMaxIdleTime) * time.Second
 	if idleTimeout <= 0 {
-		idleTimeout = 10 * time.Minute
+		idleTimeout = 3 * time.Minute
 	}
 	sqlDB.SetConnMaxIdleTime(idleTimeout)
 

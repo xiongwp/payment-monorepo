@@ -321,12 +321,30 @@ var DBPoolMaxOpenConns = prometheus.NewGaugeVec(
 	[]string{"shard"},
 )
 
+// BalanceCacheKeyBytes 单条 balance: cache key 大小观察直方图。
+// **P2-7 大 key 监控**：shadow 流量 + 高频缓冲账户的 pending 字段累积，单条
+// HSET balance:<accountNo>_shadow 的 value 可能膨胀到 MB 级别，超过 Redis 单 key
+// 写入 buffer 上限会让客户端报 "ERR Protocol error: invalid bulk length"。
+// alerting：直方图 +Inf bucket 累积速率 > 1/min 立即拉警，运维 redis-cli MEMORY
+// USAGE <key> 看具体哪条爆掉，定位是哪个账户。
+//
+// label dim：main / shadow（互相隔开 shadow 压测污染主流量观测）
+var BalanceCacheKeyBytes = prometheus.NewHistogramVec(
+	prometheus.HistogramOpts{
+		Name:    "accounting_balance_cache_key_bytes",
+		Help:    "Size in bytes of a single Redis balance cache key on write (alerts > 10MB indicate runaway buffering).",
+		Buckets: []float64{1024, 8192, 65536, 262144, 1048576, 10485760, 104857600},
+	},
+	[]string{"dim"},
+)
+
 // ─── 注册 & HTTP Server ───────────────────────────────────────────────────────
 
 // Register 注册所有 metrics 到默认 Prometheus registry
 func Register() {
 	prometheus.MustRegister(
 		BookingTotal,
+		BalanceCacheKeyBytes,
 		WarmAccountsTotal,
 		HotPathFallbackTotal,
 		OutboxProcessedTotal,

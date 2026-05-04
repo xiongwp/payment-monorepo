@@ -68,15 +68,44 @@ func renderProto(v interface{}) string {
 	return "<non-proto>"
 }
 
+// sensitiveLogKeys 是 redactSensitive 的全局敏感字段名单。
+//
+// **P2-5 维护说明**：手动列表容易遗漏（业务侧加新字段不会同步）。长期方案是：
+//   1) struct tag 标记（`sensitive:"true"`），用反射遍历自动脱敏；
+//   2) 或换 zap 自定义 Encoder，提供 zap.Sensitive() 类型 + 受控编码；
+//   3) 或在 proto 层用 google.protobuf.FieldOption + custom plugin 在 .proto 文件
+//      标 [(sensitive) = true]，protojson marshal 时跳过。
+//
+// 切换前的兜底是把已知的字段名集中维护，新加敏感字段时同步更新本切片。
+// 命名约定：camelCase 和 snake_case 都列（protojson 可能两种之一）。
+var sensitiveLogKeys = []string{
+	// 凭证 / token
+	`"clientSecret"`, `"client_secret"`,
+	`"webhookSecret"`, `"webhook_secret"`,
+	`"liveKey"`, `"live_key"`, `"testKey"`, `"test_key"`,
+	`"apiKey"`, `"api_key"`,
+	`"accessToken"`, `"access_token"`, `"refreshToken"`, `"refresh_token"`,
+	`"verificationToken"`, `"verification_token"`,
+	// 渠道密钥
+	`"acquirerSecret"`, `"acquirer_secret"`,
+	`"partnerSecret"`, `"partner_secret"`,
+	// 卡 / 银行账户
+	`"cardNumber"`, `"card_number"`, `"pan"`,
+	`"cvv"`, `"cvc"`, `"cvv2"`,
+	`"iban"`, `"accountNumber"`, `"account_number"`,
+	`"settlementAccount"`, `"settlement_account"`,
+	// 用户认证
+	`"password"`, `"otp"`, `"pin"`,
+	`"totpSecret"`, `"totp_secret"`,
+	// PII
+	`"taxId"`, `"tax_id"`,
+}
+
 // redactSensitive 把 JSON 日志里的敏感字段值截短，防止 client_secret / token / key 入磁盘。
+//
+// 受 sensitiveLogKeys 名单驱动；新增敏感字段必须同步更新名单。
 func redactSensitive(s string) string {
-	for _, key := range []string{
-		`"clientSecret"`, `"client_secret"`,
-		`"webhookSecret"`, `"webhook_secret"`,
-		`"liveKey"`, `"testKey"`, `"apiKey"`, `"api_key"`,
-		`"cardNumber"`, `"card_number"`, `"cvv"`, `"cvc"`,
-		`"password"`, `"otp"`,
-	} {
+	for _, key := range sensitiveLogKeys {
 		s = redactField(s, key)
 	}
 	return s

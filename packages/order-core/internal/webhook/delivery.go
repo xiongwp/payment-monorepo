@@ -24,6 +24,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/xiongwp/order-core/internal/metrics"
@@ -94,8 +95,13 @@ type Dispatcher struct {
 	h         *http.Client
 	delays    []time.Duration
 	batchSize int
-	sem       chan struct{} // 并发投递信号量，防止 goroutine 爆炸
-	logger    *zap.Logger
+	sem       chan struct{} // 全局并发投递信号量，防止 goroutine 爆炸
+	// P2-11 per-merchant QoS：每个 merchant 独立 chan struct{} 信号量，限制单
+	// merchant 同时 in-flight 投递数（默认 5）。一个慢 endpoint 不会把全局
+	// 50 个 slot 全占住、拖累其他 merchant 的投递。lazy init via sync.Map。
+	merchantSems    sync.Map // map[merchantID]chan struct{}
+	merchantConcur  int      // 单 merchant 并发上限（默认 5）
+	logger          *zap.Logger
 }
 
 func NewDispatcher(db *gorm.DB, cfg DispatcherConfig, logger *zap.Logger) *Dispatcher {
@@ -108,12 +114,32 @@ func NewDispatcher(db *gorm.DB, cfg DispatcherConfig, logger *zap.Logger) *Dispa
 		batch = 20
 	}
 	return &Dispatcher{
-		db:        db,
-		h:         &http.Client{Timeout: 10 * time.Second},
-		delays:    delays,
-		batchSize: batch,
-		sem:       make(chan struct{}, 50), // 最多 50 个并发投递 goroutine
-		logger:    logger,
+		db:             db,
+		h:              &http.Client{Timeout: 10 * time.Second},
+		delays:         delays,
+		batchSize:      batch,
+		sem:            make(chan struct{}, 50), // 最多 50 个并发投递 goroutine
+		merchantConcur: 5,                       // 默认单 merchant 最多 5 路并发投递
+		logger:         logger,
+	}
+}
+
+// acquireMerchantSlot 给指定 merchant 占一个 in-flight 投递槽位。
+// 返回 false = 该 merchant 已达并发上限，调用方应放弃本次立即投递（retry worker 之后会接）。
+// release 必须在投递结束（成功 / 失败 / panic 都要）调一次。
+func (d *Dispatcher) acquireMerchantSlot(merchantID string) (release func(), ok bool) {
+	if merchantID == "" {
+		// 没有 merchantID（极少：旧数据 / 系统事件）→ 跳过 per-merchant 限流，
+		// 仅靠全局 sem 兜底。
+		return func() {}, true
+	}
+	v, _ := d.merchantSems.LoadOrStore(merchantID, make(chan struct{}, d.merchantConcur))
+	ch := v.(chan struct{})
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, true
+	default:
+		return nil, false
 	}
 }
 
@@ -139,14 +165,25 @@ func (d *Dispatcher) Enqueue(ctx context.Context, url, secret string, evt Event)
 	// async goroutine 用 context.WithoutCancel 保留 ctx 值（含 shadow flag）但脱离 cancel 链；
 	// 否则 Enqueue 返回后 ctx canceled，tryDeliver 内部 NewRequestWithContext 直接报错。
 	asyncCtx := contextWithoutCancel(ctx)
+	// P2-11: per-merchant QoS。一个 merchant 同时只允许 N 条 in-flight。
+	// 超额时不阻塞 Enqueue，让 retry worker 之后接。
+	merchantRelease, mchOK := d.acquireMerchantSlot(evt.MerchantID)
+	if !mchOK {
+		d.logger.Info("immediate delivery deferred (per-merchant QoS limit hit)",
+			zap.String("event_id", delivery.EventID),
+			zap.String("merchant_id", evt.MerchantID))
+		return nil
+	}
 	select {
 	case d.sem <- struct{}{}:
 		go func() {
 			defer func() { <-d.sem }()
+			defer merchantRelease()
 			d.tryDeliver(asyncCtx, delivery.ID, url, secret, payload)
 		}()
 	default:
 		// 队列满，下一轮 retry worker（30s 内）会捡起这条 pending。
+		merchantRelease()
 		d.logger.Info("immediate delivery deferred to retry worker",
 			zap.String("event_id", delivery.EventID))
 	}

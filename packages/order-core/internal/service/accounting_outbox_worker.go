@@ -95,9 +95,12 @@ func (w *AccountingOutboxWorker) Wake() {
 
 // outboxMaxIdleInterval 自适应轮询的最大空闲间隔。空载时从 pollInterval 指数翻倍，
 // 封顶到这个值；有活时立即重置回 pollInterval。
-// 30s 是经验值：空载下 30s 一次扫描足够低成本，又能在新 enqueue 不触发 Wake 时
-// （比如 service 跨进程写入）保证 30s 内消费。
-const outboxMaxIdleInterval = 30 * time.Second
+//
+// **P2-9 调整**：原值 30s 在跨进程写入场景下让 refund 等关键路径平均多等 15s
+// 才被消费（pollInterval=5s → 5,10,20,30,30…，期望响应 ~17s）。
+// 改成 10s（5,10,10,10…）让最大延迟收敛到 ≤10s，CPU 开销提升约 1.5×（每分钟 6 次空扫
+// → 12 次），可接受。Wake 信号正常工作时 idle interval 几乎不触发。
+const outboxMaxIdleInterval = 10 * time.Second
 
 // outboxProcessConcurrency 单次 Tick 内并发处理 batch 的 goroutine 上限。
 // 4 是经验值：accounting-system 单 voucher TCC 是单 db 事务，4-way 并发能让
