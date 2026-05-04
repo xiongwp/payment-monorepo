@@ -1,0 +1,85 @@
+version: "3.9"
+
+# payment-channel docker 栈：
+#   - 不再起 MySQL。所有 schema 都跑在用户自管的 shared-meta + shared-shard-0..9
+#     容器里。首次上线前 schema 建一遍：scripts/init-shared-db.sh
+#   - payment-stack 是 external 用户定义网络，承载所有容器的相互发现。
+#   - `db-net-bootstrap` 是个 init 容器，每次 up 都把 shared-meta +
+#     shared-shard-0..9 挂到 payment-stack（已挂的跳过）。这样即使用户重启过
+#     shared 容器、丢了网络归属，`docker compose up` 也会自动修复。
+#
+# Dockerfile 自己 git-clone payment-util / kms-manage / risk-manage（需要 GITHUB_TOKEN secret）。
+
+networks:
+  default:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true
+
+services:
+  db-net-bootstrap:
+    image: docker:25-cli
+    container_name: paychan-db-net-bootstrap
+    restart: "no"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["sh", "-c"]
+    # idempotent: connect 已在则静默跳过；containers 不存在也不 fatal。
+    command: |
+      '
+      set -e
+      NET="${SHARED_DB_NETWORK:-payment-stack}"
+      for c in shared-meta shared-shard-0 shared-shard-1 shared-shard-2 shared-shard-3 shared-shard-4 shared-shard-5 shared-shard-6 shared-shard-7 shared-shard-8 shared-shard-9; do
+        if docker inspect "$$c" >/dev/null 2>&1; then
+          docker network connect "$$NET" "$$c" 2>/dev/null && echo "[db-net] attached $$c" || echo "[db-net]   $$c already on $$NET"
+        else
+          echo "[db-net]   skip $$c (no such container)"
+        fi
+      done
+      '
+
+  mockserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.mockserver
+    image: payment-channel-mockserver:latest
+    container_name: paychan-mockserver
+    ports:
+      - "9400:9400"
+    command: ["-addr", ":9400", "-webhook-delay", "200ms", "-print-gcash-pubkey=false"]
+
+  payment-channel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      secrets:
+        - GITHUB_TOKEN
+    image: payment-channel:latest
+    # container_name 故意不写：支持 docker compose --scale payment-channel=N
+    # 多副本部署（deploy.sh 默认 2，DEPLOY_REPLICAS_PAYMENT_CHANNEL 覆盖）。
+    # 端口同步用 range，避免副本抢同一宿主机端口。
+    depends_on:
+      mockserver:
+        condition: service_started
+      db-net-bootstrap:
+        condition: service_completed_successfully
+    # 单副本：容器端口 gRPC 9092 / metrics 9093 相邻，多副本会撞宿主端口；
+    # 见 deploy.sh 把 DEPLOY_REPLICAS_PAYMENT_CHANNEL 钉为 1。
+    ports:
+      - "9092:9092"   # gRPC AcquirerService
+      - "9192:9192"   # HTTP /wh/{adapter}
+      - "9093:9093"   # /metrics + /healthz
+    environment:
+      PAYCHAN_LOG_DEV: "false"
+      # ── 服务发现 + 下游 KMS（payment-stack 内 DNS）──
+      PAYCHAN_REGISTRY_ENDPOINTS: "etcd:2379"
+      PAYCHAN_KMS_ENDPOINT: "kms-manage:9390"
+    volumes:
+      # viper 只认 config.yaml。把 docker 变体盖在它上面，避免容器装载本地开发
+      # 的 127.0.0.1:3406-3416 端口映射。
+      - ./config/config.docker.yaml:/app/config/config.yaml:ro
+
+# BuildKit secret：从环境变量读取 GITHUB_TOKEN，不写入镜像层。
+# 用法：GITHUB_TOKEN=ghp_xxx docker compose build
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

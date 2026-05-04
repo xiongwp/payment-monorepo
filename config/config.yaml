@@ -1,0 +1,178 @@
+server:
+  grpc_port: 9092
+  webhook_http_addr: ":9192"
+
+metrics:
+  addr: ":9093"
+
+sharding:
+  db_count: 10
+  table_per_db: 10
+
+call_retry_worker:
+  interval: 60s
+  limit: 200
+
+auth:
+  tokens: []   # 留空禁用；非空开启 bearer 鉴权
+
+rate_limit:
+  rps: 2000
+  burst: 4000
+
+database:
+  meta:
+    name: paychan_meta
+    dsn: "root:password@tcp(127.0.0.1:3406)/paychan_meta?charset=utf8mb4&parseTime=True&loc=Local"
+    max_open_conns: 20
+    max_idle_conns: 5
+    conn_max_lifetime: 3600
+  shards:
+    - name: paychan_db_0
+      dsn: "root:password@tcp(127.0.0.1:3407)/paychan_db_0?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: paychan_db_1
+      dsn: "root:password@tcp(127.0.0.1:3408)/paychan_db_1?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: paychan_db_2
+      dsn: "root:password@tcp(127.0.0.1:3409)/paychan_db_2?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: paychan_db_3
+      dsn: "root:password@tcp(127.0.0.1:3410)/paychan_db_3?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: paychan_db_4
+      dsn: "root:password@tcp(127.0.0.1:3411)/paychan_db_4?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: paychan_db_5
+      dsn: "root:password@tcp(127.0.0.1:3412)/paychan_db_5?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: paychan_db_6
+      dsn: "root:password@tcp(127.0.0.1:3413)/paychan_db_6?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: paychan_db_7
+      dsn: "root:password@tcp(127.0.0.1:3414)/paychan_db_7?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: paychan_db_8
+      dsn: "root:password@tcp(127.0.0.1:3415)/paychan_db_8?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: paychan_db_9
+      dsn: "root:password@tcp(127.0.0.1:3416)/paychan_db_9?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+
+channel:
+  gcash:
+    env: sandbox
+    partner_id: ""
+    merchant_priv: ""
+    gcash_pub_key: ""
+    notify_url: "http://127.0.0.1:9192/wh/gcash"
+  maya:
+    env: sandbox
+    public_key: ""
+    secret_key: ""
+    redirect_ok: "http://127.0.0.1:9091/ret?r=ok"
+    redirect_fail: "http://127.0.0.1:9091/ret?r=fail"
+    redirect_cancel: "http://127.0.0.1:9091/ret?r=cancel"
+  grabpay:
+    env: sandbox
+    partner_id: ""
+    partner_secret: ""
+    merchant_id: ""
+    notify_url: "http://127.0.0.1:9192/wh/grabpay"
+  coinsph:
+    env: sandbox
+    merchant_id: ""
+    secret_key: ""
+    notify_url: "http://127.0.0.1:9192/wh/coinsph"
+  instapay:
+    env: sandbox
+    client_id: ""
+    client_secret: ""
+    partner_id: ""
+    sender_account: ""
+    sender_name: ""
+  pesonet:
+    env: sandbox
+    client_id: ""
+    client_secret: ""
+    partner_id: ""
+    sender_account: ""
+    sender_name: ""
+
+  # 主要银行（直连 Partner / Developer API）
+  bdo:
+    env: sandbox
+    client_id: ""
+    client_secret: ""
+    partner_id: ""
+    partner_secret: ""          # HMAC 签名使用的 secret，可与 client_secret 不同
+  bpi:
+    env: sandbox
+    client_id: ""
+    client_secret: ""
+    partner_id: ""
+    sender_account: ""
+    sender_name: ""
+  metrobank:
+    env: sandbox
+    client_id: ""
+    client_secret: ""
+    partner_id: ""
+    partner_secret: ""
+  landbank:
+    env: sandbox
+    merchant_id: ""
+    secret_key: ""
+    return_url: "http://127.0.0.1:9091/ret?channel=landbank"
+
+  # 主要支付公司（PSP / 聚合）
+  paymongo:
+    env: sandbox
+    secret_key: ""               # sk_test_... / sk_live_...
+    webhook_secret: ""
+  xendit:
+    env: sandbox
+    secret_key: ""               # xnd_development_... / xnd_production_...
+    verification_token: ""       # x-callback-token 对端校验值
+  dragonpay:
+    env: sandbox
+    merchant_id: ""
+    merchant_key: ""             # 用于 SHA1 digest
+    notify_url: "http://127.0.0.1:9192/wh/dragonpay"
+
+  # 钱包 / BNPL
+  shopeepay:
+    env: sandbox
+    partner_id: ""
+    partner_key: ""              # HMAC-SHA256 key
+    merchant_ext_id: ""
+    store_ext_id: ""
+    notify_url: "http://127.0.0.1:9192/wh/shopeepay"
+  billease:
+    env: sandbox
+    client_id: ""
+    client_secret: ""
+    callback_url: "http://127.0.0.1:9192/wh/billease"
+    success_url: "http://127.0.0.1:9091/ret?r=ok"
+    failure_url: "http://127.0.0.1:9091/ret?r=fail"
+    cancel_url:  "http://127.0.0.1:9091/ret?r=cancel"

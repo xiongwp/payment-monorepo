@@ -1,0 +1,147 @@
+# Sandbox config profile — points every adapter at the in-process PH channel
+# mockserver on http://mockserver:9400 (docker-compose) or http://127.0.0.1:9400
+# (local). Leave all credentials empty; the mock accepts anything.
+#
+# Switch on via: PAYCHAN_CONFIG=sandbox ./bin/payment-channel
+# Or just copy this file over config.yaml in dev environments.
+
+server:
+  grpc_port: 9092
+  webhook_http_addr: ":9192"
+
+metrics:
+  addr: ":9093"
+
+sharding:
+  db_count: 10
+  table_per_db: 10
+
+auth:
+  tokens: []
+
+rate_limit:
+  rps: 2000
+  burst: 4000
+
+channel:
+  gcash:
+    env: sandbox
+    partner_id: "MOCK_PARTNER"
+    # Merchant priv/pub are generated on first run; fill them in after
+    # `make run-mock` prints the public key, then set merchant_priv here.
+    merchant_priv: ""
+    gcash_pub_key: ""          # put the public key printed by mockserver here
+    notify_url: "http://127.0.0.1:9192/wh/gcash"
+    base_url: "http://127.0.0.1:9400"
+
+  maya:
+    env: sandbox
+    public_key: "pk_mock"
+    secret_key: "sk_mock"
+    redirect_ok: "http://127.0.0.1:9091/ret?r=ok"
+    redirect_fail: "http://127.0.0.1:9091/ret?r=fail"
+    redirect_cancel: "http://127.0.0.1:9091/ret?r=cancel"
+    base_url: "http://127.0.0.1:9400"
+
+  grabpay:
+    env: sandbox
+    partner_id: "MOCK_GRAB"
+    partner_secret: "s"
+    merchant_id: "m"
+    notify_url: "http://127.0.0.1:9192/wh/grabpay"
+    base_url: "http://127.0.0.1:9400"
+
+  coinsph:
+    env: sandbox
+    merchant_id: "m"
+    secret_key: "k"
+    notify_url: "http://127.0.0.1:9192/wh/coinsph"
+    base_url: "http://127.0.0.1:9400"
+
+  instapay:
+    env: sandbox
+    client_id: "c"
+    client_secret: "s"
+    partner_id: "p"
+    sender_account: "000"
+    sender_name: "mock"
+    base_url: "http://127.0.0.1:9400"
+
+  pesonet:
+    env: sandbox
+    client_id: "c"
+    client_secret: "s"
+    partner_id: "p"
+    sender_account: "000"
+    sender_name: "mock"
+    base_url: "http://127.0.0.1:9400"
+
+  bdo:
+    env: sandbox
+    client_id: "c"
+    client_secret: "s"
+    partner_id: "p"
+    partner_secret: "s"
+    base_url: "http://127.0.0.1:9400"
+
+  bpi:
+    env: sandbox
+    client_id: "c"
+    client_secret: "s"
+    partner_id: "p"
+    sender_account: "000"
+    sender_name: "mock"
+    base_url: "http://127.0.0.1:9400"
+
+  metrobank:
+    env: sandbox
+    client_id: "c"
+    client_secret: "s"
+    partner_id: "p"
+    partner_secret: "s"
+    base_url: "http://127.0.0.1:9400"
+
+  landbank:
+    env: sandbox
+    merchant_id: "m"
+    secret_key: "k"
+    return_url: "http://127.0.0.1:9091/ret?channel=landbank"
+    base_url: "http://127.0.0.1:9400"
+
+  paymongo:
+    env: sandbox
+    secret_key: "sk_test_mock"
+    webhook_secret: "whsec_mock"
+    base_url: "http://127.0.0.1:9400"
+
+  xendit:
+    env: sandbox
+    secret_key: "xnd_development_mock"
+    verification_token: "mock_token"
+    base_url: "http://127.0.0.1:9400"
+
+  dragonpay:
+    env: sandbox
+    merchant_id: "MOCK"
+    merchant_key: "MOCKKEY"
+    notify_url: "http://127.0.0.1:9192/wh/dragonpay"
+    base_url: "http://127.0.0.1:9400"
+
+  shopeepay:
+    env: sandbox
+    partner_id: "p"
+    partner_key: "k"
+    merchant_ext_id: "m"
+    store_ext_id: "s"
+    notify_url: "http://127.0.0.1:9192/wh/shopeepay"
+    base_url: "http://127.0.0.1:9400"
+
+  billease:
+    env: sandbox
+    client_id: "c"
+    client_secret: "s"
+    callback_url: "http://127.0.0.1:9192/wh/billease"
+    success_url: "http://127.0.0.1:9091/ret?r=ok"
+    failure_url: "http://127.0.0.1:9091/ret?r=fail"
+    cancel_url:  "http://127.0.0.1:9091/ret?r=cancel"
+    base_url: "http://127.0.0.1:9400"

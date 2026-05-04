@@ -1,0 +1,9 @@
+bin/
+*.log
+coverage.out
+.idea/
+.vscode/
+# database/paychandb/init/ — committed so docker-compose bind mounts
+# resolve as files, not auto-created directories. Regenerate via
+# `bash database/paychandb/scripts/generate.sh` after editing templates.
+/server

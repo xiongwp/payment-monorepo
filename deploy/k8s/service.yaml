@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-channel
+  labels: { app: payment-channel }
+spec:
+  type: ClusterIP
+  selector: { app: payment-channel }
+  ports:
+    - { name: grpc,    port: 9092, targetPort: grpc }
+    - { name: metrics, port: 9093, targetPort: metrics }
+---
+# headless 副本：grpc-go 客户端的 dns:/// resolver 走它，可拿到所有 endpoints
+# 做客户端 LB（avoid Service 单点 5-tuple-hash 偏分布）。
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-channel-headless
+  labels: { app: payment-channel }
+spec:
+  clusterIP: None
+  selector: { app: payment-channel }
+  ports:
+    - { name: grpc, port: 9092, targetPort: grpc }

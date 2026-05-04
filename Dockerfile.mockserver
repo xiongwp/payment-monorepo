@@ -1,0 +1,61 @@
+FROM golang:1.25-alpine AS build
+RUN apk add --no-cache git ca-certificates
+WORKDIR /src
+
+ENV GOFLAGS=-mod=mod
+ENV GOTOOLCHAIN=auto
+
+# mockserver 也依赖 payment-util（同仓 go.mod 里 replace 了）。
+# Dockerfile 自己 git-clone payment-util 放到 /src/payment-util，
+# 这样 go.mod 的 `replace ../payment-util` 相对路径能解析到。
+# 私仓 clone 需要 token：outer compose 通过 BuildKit secret 传入
+#   services.mockserver.build.secrets: [GITHUB_TOKEN]
+# 公仓或本机 git 已登录时可不设 secret。
+ARG PAYMENT_UTIL_REF=main
+ARG KMS_MANAGE_REF=main
+ARG RISK_MANAGE_REF=main
+# CACHEBUST 让 sibling clone 步骤可被显式 invalidate。当 payment-util main
+# 推进了新 commit（如新增 healthx 包）但 docker layer cache 还停在旧 commit
+# 时，用 --build-arg CACHEBUST=$(date +%s) 强制重 clone。
+ARG CACHEBUST=0
+RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
+    set -eu; \
+    echo "cachebust=$CACHEBUST"; \
+    TOKEN=""; \
+    [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
+    if [ -z "$TOKEN" ]; then \
+        echo "ERROR: GITHUB_TOKEN is not set; required to clone private xiongwp/* siblings." >&2; \
+        echo "       Generate a token at https://github.com/settings/tokens (scope: repo)," >&2; \
+        echo "       then run:  GITHUB_TOKEN=ghp_xxx docker compose build" >&2; \
+        exit 1; \
+    fi; \
+    auth="x-access-token:${TOKEN}@"; \
+    clone_with_fallback() { \
+        repo=$1; ref=$2; \
+        url="https://${auth}github.com/xiongwp/${repo}.git"; \
+        dest="/src/${repo}"; \
+        if git clone --depth=1 --branch "$ref" "$url" "$dest" 2>/dev/null; then \
+            return 0; \
+        fi; \
+        echo "branch '$ref' not found in $repo; falling back to default branch" >&2; \
+        git clone --depth=1 "$url" "$dest"; \
+    }; \
+    clone_with_fallback payment-util "$PAYMENT_UTIL_REF"; \
+    clone_with_fallback kms-manage   "$KMS_MANAGE_REF"; \
+    clone_with_fallback risk-manage  "$RISK_MANAGE_REF"
+
+COPY . /src/payment-channel
+WORKDIR /src/payment-channel
+RUN go mod tidy
+RUN go mod download
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mockserver ./cmd/mockserver
+
+FROM alpine:3.19
+RUN apk --no-cache add ca-certificates tzdata && \
+    addgroup -S app && adduser -S app -G app
+WORKDIR /app
+COPY --from=build /out/mockserver /app/mockserver
+USER app
+EXPOSE 9400
+ENTRYPOINT ["/app/mockserver"]
+CMD ["-addr", ":9400", "-webhook-delay", "200ms"]
