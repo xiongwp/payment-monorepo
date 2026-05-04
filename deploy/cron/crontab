@@ -1,0 +1,33 @@
+# ─── 复式记账系统 - 批处理定时任务 crontab ──────────────────────────────────────
+#
+# Docker 部署：由 Dockerfile（统一 image）安装到 /etc/crontabs/root，
+#   accounting-batchtask 容器以 entrypoint.sh 启动 crond，
+#   通过 run-batchtask.sh 包装脚本继承容器 ENV（如 GRPC_ADDR）。
+#   accounting-service 容器同 image，但跑 /app/accounting-system 不启 crond。
+#
+# 宿主机/裸金属部署：
+#   1. 拷贝 binary 到 /app/accounting-batchtask
+#   2. 拷贝 config.yaml 到 /app/config/config.yaml （设置正确的 grpc_addr）
+#   3. 执行：crontab -u appuser /app/deploy/cron/crontab
+#
+# 所有 task 均为幂等操作，重复执行不产生副作用。
+# 调整频率：只需修改 cron 表达式，无需重新编译 binary。
+#
+# 时区：Asia/Shanghai（由 entrypoint.sh 写入 /etc/environment）
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── 异步任务补偿处理（每 1 分钟）────────────────────────────────────────────────
+# 每次每个分片最多处理 100 条 pending/failed 任务
+* * * * * /app/run-batchtask.sh process_async_tasks --batch-size=100 >> /app/logs/batchtask-async.log 2>&1
+
+# ── 日切看门狗（每 5 分钟）──────────────────────────────────────────────────────
+# 检测并自动恢复超过 5 分钟无进展的卡住日切分片
+*/5 * * * * /app/run-batchtask.sh day_cut_watchdog --stuck-threshold=300 >> /app/logs/batchtask-daycut.log 2>&1
+
+# ── 卡单恢复（每 5 分钟）────────────────────────────────────────────────────────
+# 将超过 5 分钟仍在 PROCESSING 的任务重置为 FAILED，处理服务器重启或进程崩溃场景
+*/5 * * * * /app/run-batchtask.sh recover_stuck_tasks --stuck-threshold=300 >> /app/logs/batchtask-recovery.log 2>&1
+
+# ── 人工处理队列巡检（每 10 分钟）───────────────────────────────────────────────
+# 打印超过最大重试次数、需要人工干预的任务（供日志告警系统采集）
+*/10 * * * * /app/run-batchtask.sh list_manual_tasks --limit=50 >> /app/logs/batchtask-manual.log 2>&1

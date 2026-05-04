@@ -1,0 +1,274 @@
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
+USE `accounting_db_9`;
+
+-- ============================================
+-- 初始化平台账户数据
+-- ============================================
+-- 平台损益账户（资产类账户) 平台手续费收入
+INSERT IGNORE INTO  `account_90` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('090_PLATFORM_PROFIT_REVENUE', 90, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
+-- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+INSERT IGNORE INTO `account_90` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('090_PLATFORM_TCHANNEL_RECEIVABLE', 90, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+
+-- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+INSERT IGNORE INTO `account_90` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('090_PLATFORM_TCHANNEL_PAYABLE', 90, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+
+-- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+INSERT IGNORE INTO `account_90` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('090_PLATFORM_TRANSACTION_FEE', 90, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+INSERT IGNORE INTO `account_90` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('090_PLATFORM_CHARGE_FEE', 90, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+INSERT IGNORE INTO `account_90` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('090_PLATFORM_TRANSIT', 90, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+
+
+-- ============================================
+-- 初始化平台账户数据
+-- ============================================
+-- 平台损益账户（资产类账户) 平台手续费收入
+INSERT IGNORE INTO  `account_91` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('091_PLATFORM_PROFIT_REVENUE', 91, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
+-- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+INSERT IGNORE INTO `account_91` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('091_PLATFORM_TCHANNEL_RECEIVABLE', 91, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+
+-- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+INSERT IGNORE INTO `account_91` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('091_PLATFORM_TCHANNEL_PAYABLE', 91, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+
+-- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+INSERT IGNORE INTO `account_91` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('091_PLATFORM_TRANSACTION_FEE', 91, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+INSERT IGNORE INTO `account_91` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('091_PLATFORM_CHARGE_FEE', 91, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+INSERT IGNORE INTO `account_91` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('091_PLATFORM_TRANSIT', 91, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+
+
+-- ============================================
+-- 初始化平台账户数据
+-- ============================================
+-- 平台损益账户（资产类账户) 平台手续费收入
+INSERT IGNORE INTO  `account_92` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('092_PLATFORM_PROFIT_REVENUE', 92, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
+-- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+INSERT IGNORE INTO `account_92` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('092_PLATFORM_TCHANNEL_RECEIVABLE', 92, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+
+-- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+INSERT IGNORE INTO `account_92` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('092_PLATFORM_TCHANNEL_PAYABLE', 92, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+
+-- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+INSERT IGNORE INTO `account_92` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('092_PLATFORM_TRANSACTION_FEE', 92, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+INSERT IGNORE INTO `account_92` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('092_PLATFORM_CHARGE_FEE', 92, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+INSERT IGNORE INTO `account_92` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('092_PLATFORM_TRANSIT', 92, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+
+
+-- ============================================
+-- 初始化平台账户数据
+-- ============================================
+-- 平台损益账户（资产类账户) 平台手续费收入
+INSERT IGNORE INTO  `account_93` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('093_PLATFORM_PROFIT_REVENUE', 93, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
+-- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+INSERT IGNORE INTO `account_93` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('093_PLATFORM_TCHANNEL_RECEIVABLE', 93, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+
+-- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+INSERT IGNORE INTO `account_93` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('093_PLATFORM_TCHANNEL_PAYABLE', 93, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+
+-- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+INSERT IGNORE INTO `account_93` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('093_PLATFORM_TRANSACTION_FEE', 93, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+INSERT IGNORE INTO `account_93` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('093_PLATFORM_CHARGE_FEE', 93, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+INSERT IGNORE INTO `account_93` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('093_PLATFORM_TRANSIT', 93, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+
+
+-- ============================================
+-- 初始化平台账户数据
+-- ============================================
+-- 平台损益账户（资产类账户) 平台手续费收入
+INSERT IGNORE INTO  `account_94` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('094_PLATFORM_PROFIT_REVENUE', 94, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
+-- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+INSERT IGNORE INTO `account_94` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('094_PLATFORM_TCHANNEL_RECEIVABLE', 94, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+
+-- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+INSERT IGNORE INTO `account_94` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('094_PLATFORM_TCHANNEL_PAYABLE', 94, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+
+-- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+INSERT IGNORE INTO `account_94` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('094_PLATFORM_TRANSACTION_FEE', 94, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+INSERT IGNORE INTO `account_94` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('094_PLATFORM_CHARGE_FEE', 94, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+INSERT IGNORE INTO `account_94` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('094_PLATFORM_TRANSIT', 94, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+
+
+-- ============================================
+-- 初始化平台账户数据
+-- ============================================
+-- 平台损益账户（资产类账户) 平台手续费收入
+INSERT IGNORE INTO  `account_95` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('095_PLATFORM_PROFIT_REVENUE', 95, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
+-- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+INSERT IGNORE INTO `account_95` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('095_PLATFORM_TCHANNEL_RECEIVABLE', 95, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+
+-- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+INSERT IGNORE INTO `account_95` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('095_PLATFORM_TCHANNEL_PAYABLE', 95, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+
+-- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+INSERT IGNORE INTO `account_95` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('095_PLATFORM_TRANSACTION_FEE', 95, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+INSERT IGNORE INTO `account_95` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('095_PLATFORM_CHARGE_FEE', 95, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+INSERT IGNORE INTO `account_95` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('095_PLATFORM_TRANSIT', 95, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+
+
+-- ============================================
+-- 初始化平台账户数据
+-- ============================================
+-- 平台损益账户（资产类账户) 平台手续费收入
+INSERT IGNORE INTO  `account_96` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('096_PLATFORM_PROFIT_REVENUE', 96, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
+-- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+INSERT IGNORE INTO `account_96` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('096_PLATFORM_TCHANNEL_RECEIVABLE', 96, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+
+-- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+INSERT IGNORE INTO `account_96` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('096_PLATFORM_TCHANNEL_PAYABLE', 96, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+
+-- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+INSERT IGNORE INTO `account_96` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('096_PLATFORM_TRANSACTION_FEE', 96, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+INSERT IGNORE INTO `account_96` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('096_PLATFORM_CHARGE_FEE', 96, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+INSERT IGNORE INTO `account_96` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('096_PLATFORM_TRANSIT', 96, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+
+
+-- ============================================
+-- 初始化平台账户数据
+-- ============================================
+-- 平台损益账户（资产类账户) 平台手续费收入
+INSERT IGNORE INTO  `account_97` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('097_PLATFORM_PROFIT_REVENUE', 97, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
+-- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+INSERT IGNORE INTO `account_97` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('097_PLATFORM_TCHANNEL_RECEIVABLE', 97, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+
+-- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+INSERT IGNORE INTO `account_97` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('097_PLATFORM_TCHANNEL_PAYABLE', 97, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+
+-- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+INSERT IGNORE INTO `account_97` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('097_PLATFORM_TRANSACTION_FEE', 97, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+INSERT IGNORE INTO `account_97` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('097_PLATFORM_CHARGE_FEE', 97, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+INSERT IGNORE INTO `account_97` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('097_PLATFORM_TRANSIT', 97, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+
+
+-- ============================================
+-- 初始化平台账户数据
+-- ============================================
+-- 平台损益账户（资产类账户) 平台手续费收入
+INSERT IGNORE INTO  `account_98` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('098_PLATFORM_PROFIT_REVENUE', 98, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
+-- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+INSERT IGNORE INTO `account_98` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('098_PLATFORM_TCHANNEL_RECEIVABLE', 98, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+
+-- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+INSERT IGNORE INTO `account_98` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('098_PLATFORM_TCHANNEL_PAYABLE', 98, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+
+-- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+INSERT IGNORE INTO `account_98` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('098_PLATFORM_TRANSACTION_FEE', 98, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+INSERT IGNORE INTO `account_98` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('098_PLATFORM_CHARGE_FEE', 98, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+INSERT IGNORE INTO `account_98` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('098_PLATFORM_TRANSIT', 98, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+
+
+-- ============================================
+-- 初始化平台账户数据
+-- ============================================
+-- 平台损益账户（资产类账户) 平台手续费收入
+INSERT IGNORE INTO  `account_99` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('099_PLATFORM_PROFIT_REVENUE', 99, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
+-- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+INSERT IGNORE INTO `account_99` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('099_PLATFORM_TCHANNEL_RECEIVABLE', 99, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+
+-- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+INSERT IGNORE INTO `account_99` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('099_PLATFORM_TCHANNEL_PAYABLE', 99, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+
+-- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+INSERT IGNORE INTO `account_99` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('099_PLATFORM_TRANSACTION_FEE', 99, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+INSERT IGNORE INTO `account_99` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('099_PLATFORM_CHARGE_FEE', 99, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+
+-- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+INSERT IGNORE INTO `account_99` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES ('099_PLATFORM_TRANSIT', 99, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+
+

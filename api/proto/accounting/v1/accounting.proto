@@ -1,0 +1,507 @@
+syntax = "proto3";
+
+package accounting.v1;
+
+option go_package = "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1;accountingv1";
+
+import "google/protobuf/timestamp.proto";
+
+// ─── 枚举 ─────────────────────────────────────────────────────────────────────
+
+// AccountType 账户类型
+enum AccountType {
+  ACCOUNT_TYPE_UNSPECIFIED = 0;
+  ACCOUNT_TYPE_USER        = 1; // 用户账户
+  ACCOUNT_TYPE_MERCHANT    = 2; // 商户账户
+  ACCOUNT_TYPE_MERCHANT_PENDING_SETTLE  = 3; // 商户待结算账户
+  ACCOUNT_TYPE_PLATFORM    = 4; // 平台损益账户
+  ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE = 5; // 中间账户渠道应收款
+  ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE = 6; // 中间账户渠道应付款
+  ACCOUNT_TYPE_TRANSACTION_FEE          = 7;  // 平台手续费账户
+	ACCOUNT_TYPE_CHARGE_FEE               = 8;  // 平台服务费账户
+  ACCOUNT_TYPE_TRANSIT                  = 9; // 平台中间账户
+}
+
+// AccountCategory 账户分类（会计科目）
+enum AccountCategory {
+  ACCOUNT_CATEGORY_UNSPECIFIED = 0;
+  ACCOUNT_CATEGORY_ASSET       = 1; // 资产
+  ACCOUNT_CATEGORY_LIABILITY   = 2; // 负债
+  ACCOUNT_CATEGORY_EQUITY      = 3; // 所有者权益
+  ACCOUNT_CATEGORY_REVENUE     = 4; // 收入
+  ACCOUNT_CATEGORY_EXPENSE     = 5; // 费用
+}
+
+// AccountStatus 账户状态
+enum AccountStatus {
+  ACCOUNT_STATUS_UNSPECIFIED = 0;
+  ACCOUNT_STATUS_DISABLED    = 1; // 禁用
+  ACCOUNT_STATUS_ACTIVE      = 2; // 正常
+  ACCOUNT_STATUS_FROZEN      = 3; // 冻结
+}
+
+// AccountBusinessType 账户业务类型
+// userId + AccountBusinessType 为唯一键，重复创建返回 code=409
+enum AccountBusinessType {
+  ACCOUNT_BUSINESS_TYPE_UNSPECIFIED                      = 0;
+  ACCOUNT_BUSINESS_TYPE_USER_BALANCE                     = 1; // 用户余额账户
+  ACCOUNT_BUSINESS_TYPE_MERCHANT_BALANCE                 = 2; // 商户结算账户
+  ACCOUNT_BUSINESS_TYPE_MERCHANT_PENDING_SETTLE          = 3; // 商户待结算余额账户
+  ACCOUNT_BUSINESS_TYPE_PLATFORM_PNL                     = 4; // 平台损益账户
+  ACCOUNT_BUSINESS_TYPE_TRANSIT_CHANNEL_RECEIVABLE       = 5; // 中间账户渠道应收款
+  ACCOUNT_BUSINESS_TYPE_TRANSIT_CHANNEL_PAYABLE          = 6; // 中间账户渠道应付款
+  ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE                  = 7; // 平台手续费账户
+  ACCOUNT_BUSINESS_TYPE_CHARGE_FEE                       = 8; // 平台服务费账户
+  ACCOUNT_BUSINESS_TYPE_TRANSIT                          = 9; // 平台中间账户
+}
+
+// BusinessType 业务类型
+enum BusinessType {
+  BUSINESS_TYPE_UNSPECIFIED = 0;
+  BUSINESS_TYPE_TRANSFER    = 1; // 转账
+  BUSINESS_TYPE_PAYMENT     = 2; // 支付
+  BUSINESS_TYPE_REFUND      = 3; // 退款
+  BUSINESS_TYPE_WITHDRAW    = 4; // 提现
+  BUSINESS_TYPE_DEPOSIT     = 5; // 充值
+  BUSINESS_TYPE_COMMISSION  = 6; // 佣金
+}
+
+// ExecutionMode 执行模式
+enum ExecutionMode {
+  EXECUTION_MODE_UNSPECIFIED = 0;
+  EXECUTION_MODE_SYNC        = 1; // 同步
+  EXECUTION_MODE_ASYNC       = 2; // 异步
+  EXECUTION_MODE_BATCH       = 3; // 批量
+}
+
+// ─── 数据模型 ─────────────────────────────────────────────────────────────────
+
+// Account 账户
+message Account {
+  // 账户号（格式：{dbIdx:1d}{globalTableIdx:02d}{userId}-{businessType}）
+  string              account_no            = 1;
+  int64               user_id               = 2;
+  AccountType         account_type          = 3;
+  AccountCategory     category              = 4;
+  string              currency              = 5;
+  string              balance               = 6;  // 余额（字符串避免精度丢失）
+  string              frozen_balance        = 7;
+  string              available_balance     = 8;
+  AccountStatus       status                = 9;
+  int64               version               = 10;
+  google.protobuf.Timestamp created_at      = 11;
+  google.protobuf.Timestamp updated_at      = 12;
+  AccountBusinessType account_business_type = 13;
+}
+
+// AccountingEntry 记账分录
+message AccountingEntry {
+  string account_no    = 1; // 账户号
+  string debit_amount  = 2; // 借方金额
+  string credit_amount = 3; // 贷方金额
+  string description   = 4; // 描述
+}
+
+// Transaction 账户流水
+message Transaction {
+  string                    transaction_id        = 1;
+  string                    parent_transaction_id = 2;
+  string                    account_no            = 3;
+  string                    business_no           = 4;
+  BusinessType              business_type         = 5;
+  string                    debit_amount          = 6;
+  string                    credit_amount         = 7;
+  string                    balance_before        = 8;
+  string                    balance_after         = 9;
+  string                    currency              = 10;
+  string                    transaction_date      = 11;
+  google.protobuf.Timestamp transaction_time      = 12;
+  string                    description           = 13;
+  int32                     status                = 14;
+}
+
+// BalanceSnapshot 账户余额快照
+message BalanceSnapshot {
+  string account_no        = 1;
+  string snapshot_date     = 2;
+  string beginning_balance = 3; // 期初余额
+  string ending_balance    = 4; // 期末余额
+  string total_debit       = 5; // 当日借方总额
+  string total_credit      = 6; // 当日贷方总额
+  int32  transaction_count = 7; // 交易笔数
+}
+
+// TccBranchInfo TCC 分支信息
+message TccBranchInfo {
+  string                    tcc_id        = 1;  // 全局 TCC ID（= voucherNo）
+  string                    branch_id     = 2;  // 分支 ID（= transactionID）
+  string                    account_no    = 3;
+  string                    balance_delta = 4;  // Confirm 时余额增量（负=减少）
+  string                    frozen_amount = 5;  // Try 时冻结金额
+  int32                     status        = 6;  // 0=TRYING 1=CONFIRMED 2=CANCELLED
+  int32                     db_index      = 7;
+  int32                     table_index   = 8;
+  google.protobuf.Timestamp created_at    = 9;
+  google.protobuf.Timestamp updated_at    = 10;
+}
+
+// TrialBalanceCategorySummary 单个账户类别+账户类型的试算汇总
+message TrialBalanceCategorySummary {
+  string category      = 1; // AccountCategory 字符串：ASSET / LIABILITY / EQUITY / REVENUE / EXPENSE
+  int32  type          = 2; // AccountType 数字：1=USER 2=MERCHANT 3=PLATFORM 4=TRANSIT 5= 6=
+  int64  account_count = 3;
+  string sum_beginning = 4; // 期初余额合计
+  string sum_ending    = 5; // 期末余额合计
+  string sum_debit     = 6; // 期间借方合计
+  string sum_credit    = 7; // 期间贷方合计
+}
+
+// ─── 账户管理 Request / Response ─────────────────────────────────────────────
+
+message CreateAccountRequest {
+  int64               user_id               = 1;
+  AccountType         account_type          = 2;
+  AccountCategory     category              = 3;
+  string              currency              = 4;
+  string              description           = 5;
+  AccountBusinessType account_business_type = 6; // 账户业务类型（必填）
+}
+
+message CreateAccountResponse {
+  int32   code    = 1;
+  string  message = 2;
+  Account account = 3;
+}
+
+message UserIdAndBusinessTypeQuery {
+  int64               user_id               = 1;
+  AccountBusinessType account_business_type = 2;
+}
+
+message GetAccountRequest {
+  oneof identifier {
+    string                     account_no                = 1;
+    UserIdAndBusinessTypeQuery user_id_and_business_type = 2;
+  }
+}
+
+message GetAccountResponse {
+  int32   code    = 1;
+  string  message = 2;
+  Account account = 3;
+}
+
+message FreezeAccountRequest {
+  string account_no = 1;
+  string reason     = 2;
+  string operator   = 3;
+}
+
+message FreezeAccountResponse {
+  int32  code    = 1;
+  string message = 2;
+}
+
+message UnfreezeAccountRequest {
+  string account_no = 1;
+  string reason     = 2;
+  string operator   = 3;
+}
+
+message UnfreezeAccountResponse {
+  int32  code    = 1;
+  string message = 2;
+}
+
+// ─── 记账 Request / Response ──────────────────────────────────────────────────
+
+message DoubleEntryBookingRequest {
+  string                   business_no   = 1;
+  BusinessType             business_type = 2;
+  repeated AccountingEntry entries       = 3;
+  string                   currency      = 4;
+  string                   description   = 5;
+  ExecutionMode            mode          = 6;
+  string                   request_id    = 7; // 幂等键（必填）
+}
+
+message DoubleEntryBookingResponse {
+  int32            code            = 1;
+  string           message         = 2;
+  string           voucher_no      = 3;
+  repeated string  transaction_ids = 4;
+  bool             async           = 5;
+}
+
+message BatchBookingRequest {
+  repeated DoubleEntryBookingRequest requests = 1;
+  bool                               parallel = 2;
+}
+
+message BatchBookingResponse {
+  int32                              code    = 1;
+  string                             message = 2;
+  int32                              success = 3;
+  int32                              failed  = 4;
+  int32                              total   = 5;
+  repeated DoubleEntryBookingResponse results = 6;
+}
+
+// HybridDoubleEntryBookingRequest 混合记账请求（热路径/冷路径自动路由）
+message HybridDoubleEntryBookingRequest {
+  string                   request_id    = 1; // 幂等键（必填）
+  string                   business_no   = 2;
+  BusinessType             business_type = 3;
+  repeated AccountingEntry entries       = 4;
+  string                   currency      = 5;
+  string                   description   = 6;
+}
+
+message HybridDoubleEntryBookingResponse {
+  int32           code            = 1;
+  string          message         = 2;
+  string          voucher_no      = 3; // 预生成凭证号
+  repeated string transaction_ids = 4; // 预生成流水号（每条分录一个）
+  bool            idempotent_hit  = 5; // true=幂等命中，返回历史结果
+}
+
+// AtomicBatchBookingEntry 原子批量记账单笔请求
+message AtomicBatchBookingEntry {
+  string                   request_id    = 1; // 单笔幂等键
+  string                   business_no   = 2;
+  BusinessType             business_type = 3;
+  repeated AccountingEntry entries       = 4;
+  string                   currency      = 5;
+  string                   description   = 6;
+}
+
+// AtomicBatchBookingRequest 原子批量记账请求（全部成功或全部回滚）
+message AtomicBatchBookingRequest {
+  string                          batch_request_id  = 1; // 批次幂等键（必填）
+  string                          batch_business_no = 2; // 批次业务号（用于路由批次记录）
+  repeated AtomicBatchBookingEntry requests         = 3;
+  string                          description       = 4;
+}
+
+message AtomicBatchBookingItemResult {
+  string          request_id      = 1;
+  string          voucher_no      = 2;
+  repeated string transaction_ids = 3;
+  int32           code            = 4; // 0=成功，非0=失败
+  string          error_message   = 5;
+}
+
+message AtomicBatchBookingResponse {
+  int32                                  code        = 1;
+  string                                 message     = 2;
+  string                                 batch_id    = 3;
+  bool                                   all_success = 4;
+  int32                                  total       = 5;
+  repeated AtomicBatchBookingItemResult  results     = 6;
+}
+
+message MoneyFlowRequest {
+  string              product_code = 1; // 产品编码
+  string              scene_code   = 2; // 场景编码
+  string              business_no  = 3;
+  string              amount       = 4;
+  string              currency     = 5;
+  map<string, string> participants = 6; // 参与方账户映射
+  map<string, string> ext_params   = 7; // 扩展参数
+}
+
+message MoneyFlowResponse {
+  int32           code            = 1;
+  string          message         = 2;
+  string          voucher_no      = 3;
+  repeated string transaction_ids = 4;
+}
+
+// ─── 查询 Request / Response ──────────────────────────────────────────────────
+
+message GetTransactionRequest {
+  string transaction_id = 1; // 交易ID（可选）
+  string business_no    = 2; // 业务订单号（可选）
+  string account_no     = 3; // 账户号（可选）
+  string start_date     = 4;
+  string end_date       = 5;
+  int32  page_num       = 6;
+  int32  page_size      = 7;
+}
+
+message GetTransactionResponse {
+  int32               code         = 1;
+  string              message      = 2;
+  repeated Transaction transactions = 3;
+  int32               total        = 4;
+}
+
+message GetBalanceSnapshotRequest {
+  string account_no    = 1;
+  string snapshot_date = 2; // 不传则查最新
+}
+
+message GetBalanceSnapshotResponse {
+  int32           code     = 1;
+  string          message  = 2;
+  BalanceSnapshot snapshot = 3;
+}
+
+// ─── 管理 Request / Response ──────────────────────────────────────────────────
+
+message TriggerDayCutRequest {
+  string cut_date = 1; // 格式 "2006-01-02"
+}
+
+message TriggerDayCutResponse {
+  int32  code    = 1;
+  string message = 2;
+}
+
+message AdjustBalanceRequest {
+  string account_no      = 1;
+  string adjustment_type = 2; // 调账类型
+  string amount          = 3;
+  bool   is_increase     = 4;
+  string reason          = 5;
+  string operator        = 6;
+  string approval_no     = 7; // 审批单号
+}
+
+message AdjustBalanceResponse {
+  int32  code           = 1;
+  string message        = 2;
+  string transaction_id = 3;
+  string voucher_no     = 4;
+  string balance_before = 5;
+  string balance_after  = 6;
+}
+
+// ─── TCC 维护 Request / Response ─────────────────────────────────────────────
+
+message GetTccStatusRequest {
+  string tcc_id = 1;
+}
+
+message GetTccStatusResponse {
+  int32              code           = 1;
+  string             message        = 2;
+  string             tcc_id         = 3;
+  string             overall_status = 4; // CONFIRMED / CANCELLED / TRYING / PARTIAL
+  int32              branch_count   = 5;
+  repeated TccBranchInfo branches   = 6;
+}
+
+message ListStuckTccRequest {
+  int32 timeout_minutes = 1; // 超时阈值（分钟），默认 5
+  int32 limit           = 2; // 最多返回条数，默认 50
+}
+
+message ListStuckTccResponse {
+  int32              code     = 1;
+  string             message  = 2;
+  int32              count    = 3;
+  repeated TccBranchInfo branches = 4;
+}
+
+message CancelTccRequest {
+  string tcc_id = 1;
+}
+
+message CancelTccResponse {
+  int32  code    = 1;
+  string message = 2;
+  string tcc_id  = 3;
+  string result  = 4;
+}
+
+message CancelTccBranchRequest {
+  string branch_id  = 1;
+  string account_no = 2;
+}
+
+message CancelTccBranchResponse {
+  int32  code      = 1;
+  string message   = 2;
+  string branch_id = 3;
+  string result    = 4;
+}
+
+// ─── 试算平衡 Request / Response ─────────────────────────────────────────────
+
+// RunTrialBalanceRequest 试算平衡请求
+message RunTrialBalanceRequest {
+  // snapshot_date 日切日期（格式 "2006-01-02"），对应 account_balance_snapshot.snapshot_date
+  string snapshot_date = 1;
+}
+
+// RunTrialBalanceResponse 试算平衡响应
+//
+// 两项校验：
+//   is_balanced      借贷平衡：∑period_debit == ∑period_credit
+//   is_equation_valid 会计恒等式：资产期末余额 == 负债 + 所有者权益 + 收入 - 费用
+message RunTrialBalanceResponse {
+  int32  code          = 1;
+  string message       = 2;
+  string snapshot_date = 3;
+
+  // 按 (category, type) 分组的明细，已按类别+类型升序排列
+  repeated TrialBalanceCategorySummary summaries = 4;
+
+  // 期间借贷合计（∑total_debit / ∑total_credit across all accounts）
+  string total_debit  = 5;
+  string total_credit = 6;
+
+  // 借贷平衡校验
+  bool   is_balanced = 7;
+  string imbalance   = 8; // TotalDebit - TotalCredit；平衡时为 "0"
+
+  // 会计恒等式各科目期末余额汇总
+  string asset_ending_balance     = 9;
+  string liability_ending_balance = 10;
+  string equity_ending_balance    = 11;
+  string revenue_ending_balance   = 12;
+  string expense_ending_balance   = 13;
+
+  // 会计恒等式：资产 = 负债 + 所有者权益 + 收入 - 费用
+  bool   is_equation_valid = 14;
+  string equation_diff     = 15; // 资产 - (负债+权益+收入-费用)；成立时为 "0"
+}
+
+// ─── Service ──────────────────────────────────────────────────────────────────
+
+service AccountingService {
+  // ── 账户管理 ────────────────────────────────────────────────────────────────
+  rpc CreateAccount   (CreateAccountRequest)   returns (CreateAccountResponse);
+  rpc GetAccount      (GetAccountRequest)      returns (GetAccountResponse);
+  rpc FreezeAccount   (FreezeAccountRequest)   returns (FreezeAccountResponse);
+  rpc UnfreezeAccount (UnfreezeAccountRequest) returns (UnfreezeAccountResponse);
+
+  // ── 记账操作 ────────────────────────────────────────────────────────────────
+  rpc DoubleEntryBooking (DoubleEntryBookingRequest) returns (DoubleEntryBookingResponse);
+  rpc BatchBooking       (BatchBookingRequest)       returns (BatchBookingResponse);
+  rpc MoneyFlow          (MoneyFlowRequest)          returns (MoneyFlowResponse);
+
+  // 混合记账（热路径/冷路径自动切换，预生成 ID 保证幂等）
+  rpc HybridDoubleEntryBooking (HybridDoubleEntryBookingRequest) returns (HybridDoubleEntryBookingResponse);
+
+  // 原子批量记账（全部成功或全部回滚，先持久化再执行）
+  rpc AtomicBatchBooking (AtomicBatchBookingRequest) returns (AtomicBatchBookingResponse);
+
+  // ── 查询操作 ────────────────────────────────────────────────────────────────
+  rpc GetTransaction    (GetTransactionRequest)    returns (GetTransactionResponse);
+  rpc GetBalanceSnapshot(GetBalanceSnapshotRequest) returns (GetBalanceSnapshotResponse);
+
+  // ── 管理操作 ────────────────────────────────────────────────────────────────
+  rpc TriggerDayCut  (TriggerDayCutRequest)  returns (TriggerDayCutResponse);
+  rpc AdjustBalance  (AdjustBalanceRequest)  returns (AdjustBalanceResponse);
+
+  // ── TCC 维护（运维/监控使用） ────────────────────────────────────────────────
+  rpc GetTccStatus    (GetTccStatusRequest)    returns (GetTccStatusResponse);
+  rpc ListStuckTcc    (ListStuckTccRequest)    returns (ListStuckTccResponse);
+  rpc CancelTcc       (CancelTccRequest)       returns (CancelTccResponse);
+  rpc CancelTccBranch (CancelTccBranchRequest) returns (CancelTccBranchResponse);
+
+  // ── 试算平衡（日切后触发，验证借贷平衡与会计恒等式） ──────────────────────────
+  rpc RunTrialBalance (RunTrialBalanceRequest) returns (RunTrialBalanceResponse);
+}
