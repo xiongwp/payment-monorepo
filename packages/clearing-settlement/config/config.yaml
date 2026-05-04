@@ -1,0 +1,63 @@
+# clearing-settlement 配置示例
+# 生产部署：K8s ConfigMap 挂 /etc/clearing-settlement/config.yaml；
+# 敏感字段（accounting.service_token / admin.token）通过 Secret 走 env 注入。
+
+server:
+  grpc_port: 9890
+
+admin:
+  port: 9891
+  # 空 = warn-only，启动 ERROR 日志提示。也可用 ADMIN_HTTP_TOKEN env。
+  token: ""
+
+metrics:
+  port: 9892
+
+# OTel exporter；空 = 不导出 trace。
+otel:
+  endpoint: ""
+
+# 数据库（10 dbs × 10 tables = 100 分片，按 merchant_id 路由）
+database:
+  shard_count: 10
+  table_count: 100  # 总表数；与 accounting-system 一致
+  databases:        # 每库一项；空 dsn = 该分片不可用（启动 fail-fast）
+    - dsn: ""
+    - dsn: ""
+    - dsn: ""
+    - dsn: ""
+    - dsn: ""
+    - dsn: ""
+    - dsn: ""
+    - dsn: ""
+    - dsn: ""
+    - dsn: ""
+
+# 调 accounting-system 的客户端
+accounting:
+  endpoint: ""           # 例如 "accounting-system:50051"
+  rpc_timeout: 10s
+  # accounting-system gRPC service token；同 server.grpc_service_token。
+  # 空 = 不发 x-svc-token（accounting 端 warn-only 模式下仍能调用）。
+  # 优先级：ACCOUNTING_SERVICE_TOKEN env > 此处。
+  service_token: ""
+
+# 结算调度
+schedule:
+  # 自动调度开关。false = 仅 admin 手动触发。
+  enabled: false
+  # 每天本地时间触发；要求当天 day-cut 已经在 accounting-system 完成。
+  settle_time: "02:00:00"
+  timezone: "Local"
+  # 结算币种（每币种独立 run）
+  currencies: ["PHP"]
+  # 触发前等待 day-cut 完成的最大秒数；超过则跳过本日（次日 cron 自然重试）。
+  daycut_wait_max_seconds: 1800
+
+# 结算规则。后续接 yaml 热重载。
+rules:
+  # 默认规则：T+1 全额结算。amount_min/max 单位为 minor × 100（与 accounting 内部一致）。
+  default:
+    frequency: "T+1"     # T+0 / T+1 / T+N / WEEKLY
+    amount_min: 0        # 0 = 无下限
+    amount_max: 0        # 0 = 无上限
