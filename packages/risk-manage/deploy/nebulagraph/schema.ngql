@@ -1,0 +1,36 @@
+-- risk-manage NebulaGraph schema
+-- Run after: CREATE SPACE risk_graph(partition_num=10, replica_factor=3, vid_type=FIXED_STRING(32));
+
+USE risk_graph;
+
+-- 通用身份节点（device:abc / customer:42 / ip:1.2.3.4 / card:bin-1234 等）
+CREATE TAG IF NOT EXISTS identity (
+    key string NOT NULL
+);
+
+-- 风险标签：device 被标 fraud / VIP customer / 等
+CREATE TAG IF NOT EXISTS suspect (
+    label string NOT NULL,
+    ts timestamp NOT NULL
+);
+
+CREATE TAG IF NOT EXISTS goodwill (
+    label string NOT NULL,
+    ts timestamp NOT NULL
+);
+
+-- 关联边：双向；带 expires 给 cron 清理用
+CREATE EDGE IF NOT EXISTS links (
+    at timestamp NOT NULL,
+    expires timestamp NOT NULL
+);
+
+-- 索引（必须，nebula LOOKUP / GO ... WHERE 才能跑）
+CREATE TAG INDEX IF NOT EXISTS identity_key_idx ON identity(key(64));
+CREATE TAG INDEX IF NOT EXISTS suspect_label_idx ON suspect(label(40));
+CREATE TAG INDEX IF NOT EXISTS goodwill_label_idx ON goodwill(label(40));
+CREATE EDGE INDEX IF NOT EXISTS links_at_idx ON links(at);
+CREATE EDGE INDEX IF NOT EXISTS links_expires_idx ON links(expires);
+
+-- 等索引 ready (需要等约 30s 让 leader 同步)
+SHOW HOSTS;

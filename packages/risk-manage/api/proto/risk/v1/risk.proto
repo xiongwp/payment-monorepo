@@ -1,0 +1,221 @@
+// risk-manage 暴露给 payment-core 的 gRPC 面。
+//
+// payment-core 在把交易路由到 payment-channel 之前，先调 RiskService.Screen
+// 做交易前风控判定。Screen 返回 ALLOW / DENY / REVIEW 三态。
+//
+// 典型链路：
+//   order-core → payment-core → risk-manage.Screen() → 如果 ALLOW → payment-channel
+//                                                    → 如果 DENY  → 直接拒绝
+//                                                    → 如果 REVIEW → 人工队列（预留）
+syntax = "proto3";
+
+package risk.v1;
+option go_package = "github.com/xiongwp/risk-manage/api/proto/risk/v1;riskv1";
+
+service RiskService {
+  // Screen 交易前风控判定。payment-core 在路由前调用。
+  rpc Screen(ScreenRequest) returns (ScreenResponse);
+
+  // BulkScreen 批量风控（商户对账 / batch 审核）。N <= 500；服务端并发跑，
+  // 同笔顺序保留。任一笔失败不影响其它笔（result.error 标记）。
+  rpc BulkScreen(BulkScreenRequest) returns (BulkScreenResponse);
+
+  // Report 交易后上报（成功/失败/退款），用于更新风控特征。
+  rpc Report(ReportRequest) returns (ReportResponse);
+
+  // ─── 合规面 ─────────────────────────────────────────────
+  // ErasePersonalData GDPR right-to-erasure：按 customer_id / device_id /
+  // ip / fingerprint / email_hash / phone_hash 级联清 LinkStore / Counter /
+  // featurestore / audit 中的关联记录。重复调幂等。
+  rpc ErasePersonalData(EraseRequest) returns (EraseResponse);
+
+  // ─── 管理面 ─────────────────────────────────────────────
+  rpc ListRules(ListRulesRequest) returns (ListRulesResponse);
+  rpc ReloadRules(ReloadRulesRequest) returns (ReloadRulesResponse);
+
+  // ─── 黑名单运维 ───────────────────────────────────────────
+  rpc AddBlacklist(BlacklistEntryMsg) returns (BlacklistOpResponse);
+  rpc RemoveBlacklist(BlacklistEntryMsg) returns (BlacklistOpResponse);
+  rpc ListBlacklist(ListBlacklistRequest) returns (ListBlacklistResponse);
+}
+
+// ─── Blacklist 管理 ───────────────────────────────────────────────
+
+message BlacklistEntryMsg {
+  string dimension = 1;  // merchant / customer / ip / device
+  string value     = 2;
+  string reason    = 3;
+}
+
+message BlacklistOpResponse { bool ok = 1; }
+
+message ListBlacklistRequest { string dimension = 1; }
+
+message ListBlacklistResponse {
+  repeated BlacklistEntryMsg entries = 1;
+}
+
+// ─── Screen ──────────────────────────────────────────────────────
+
+message ScreenRequest {
+  string payment_intent_id = 1;
+  string merchant_id       = 2;
+  string customer_id       = 3;
+  int64  amount            = 4;  // minor unit (分)
+  string currency          = 5;
+  string payment_method    = 6;  // GCASH / MAYA / CARD / ...
+  string country           = 7;
+
+  // 设备 / 网络特征（客户端采集后透传）
+  string ip_address        = 10;
+  string device_id         = 11;
+  string user_agent        = 12;
+
+  // SDK 集成：浏览器 / 移动端创建的 RiskSession ID（POST /v1/risk/session 返回）。
+  // risk-manage 内部用 it 查 SessionStore 把 fingerprint + behavior 字段补进 TxnContext。
+  string risk_session_id   = 13;
+
+  // 幂等键（Phase 11 引入）。同 key 60s 内 Screen 复用上一次结果，
+  // 避免重试 / 双数据中心切流污染 audit / review queue / ML 计费。
+  string idempotency_key   = 14;
+
+  // 事件类型（payment.intent_create / register / login / withdraw.intent / ...）
+  // 见 EVENTS.md。引擎按 event_type 路由不同规则集。
+  string event_type        = 15;
+
+  // 设备指纹综合 hash（SDK 算好后透传；用于 fingerprint_multi_account 规则）
+  string fingerprint_hash  = 16;
+
+  // 业务扩展
+  map<string, string> metadata = 20;
+}
+
+enum Decision {
+  DECISION_UNSPECIFIED = 0;
+  ALLOW               = 1;  // 放行
+  DENY                = 2;  // 拒绝（不再路由到渠道）
+  REVIEW              = 3;  // 人工审核队列（预留）
+}
+
+message ScreenResponse {
+  Decision decision         = 1;
+  string   reason           = 2;  // 命中的规则名（DENY/REVIEW 时给调用方看）
+  int32    risk_score       = 3;  // 0-100 综合评分
+  string   risk_level       = 4;  // low / medium / high / critical
+
+  // 命中了哪些规则（可能多条同时触发，取最严厉的 decision）
+  repeated RuleHit hits     = 5;
+
+  // 决策唯一 ID，等于 audit + review_item.id；
+  // payment-core / order-core 把这个 ID 透传给商户 webhook，便于客服 / dispute
+  // 系统按 decision_id 反查决策依据（合规取证关键链）。
+  string decision_id        = 6;
+
+  // 推荐动作（payment-core 用来决定是否触发 3DS step-up / 暂留交易）：
+  //   - DENY  → "block"
+  //   - REVIEW → "step_up_3ds" (有 3DS 能力时) / "hold_for_review" (没有时)
+  //   - ALLOW → "" (空)
+  string recommended_action = 7;
+
+  // shadow_hits shadow 模式规则命中记录（仅观察，不影响 decision / score）。
+  // 给"规则预测试"用：新规则配 mode: shadow 上线后，这里能看到"如果是 enforce
+  // 就会触发"的预演结果，但实际链路不受影响。运营对照真值后切到 enforce。
+  repeated RuleHit shadow_hits = 8;
+}
+
+message RuleHit {
+  string rule_id    = 1;
+  string rule_name  = 2;
+  string decision   = 3;  // ALLOW / DENY / REVIEW
+  string detail     = 4;  // 人可读描述（如 "日累计超 50000 PHP"）
+}
+
+// ─── Report ──────────────────────────────────────────────────────
+
+message ReportRequest {
+  string payment_intent_id = 1;
+  string merchant_id       = 2;
+  string customer_id       = 3;
+  int64  amount            = 4;
+  string currency          = 5;
+  string payment_method    = 6;
+  string event_type        = 7;  // payment.succeeded / payment.failed / refund.succeeded
+  string failure_code      = 8;  // 仅 failed 时
+
+  string ip_address        = 10;
+  string device_id         = 11;
+}
+
+message ReportResponse {}
+
+// ─── 管理面 ──────────────────────────────────────────────────────
+
+message ListRulesRequest {}
+
+message Rule {
+  string id          = 1;
+  string name        = 2;
+  string type        = 3;  // amount_limit / velocity / blacklist / country_block / ...
+  string decision    = 4;  // DENY / REVIEW
+  string description = 5;
+  bool   enabled     = 6;
+  string config_json = 7;  // 规则参数 JSON（每种 type 不同 schema）
+}
+
+message ListRulesResponse {
+  repeated Rule rules = 1;
+}
+
+message ReloadRulesRequest {}
+message ReloadRulesResponse {
+  int32 loaded = 1;
+}
+
+// ─── BulkScreen ──────────────────────────────────────────────────
+//
+// payment-core 对账 / 退款审核 / 离线 batch 风控用：一次 RPC 跑 N 笔，服务端
+// 并发评估，结果按 input 顺序返回。单笔失败用 BulkScreenResult.error 标记，
+// 不影响其它笔（partial-success 语义）。
+
+message BulkScreenRequest {
+  // 单批最多 500（服务端硬上限；超出截断到 500）。
+  repeated ScreenRequest requests = 1;
+}
+
+message BulkScreenResult {
+  // 跟 BulkScreenRequest.requests 同 index。
+  int32           index    = 1;
+  ScreenResponse  response = 2; // 成功时填，error 为空
+  string          error    = 3; // 失败时填（gRPC code+msg），response 为空
+}
+
+message BulkScreenResponse {
+  repeated BulkScreenResult results = 1;
+  // total_ms 服务端整批耗时（含并发等待），监控批量延时分布用。
+  int64    total_ms = 2;
+}
+
+// ─── ErasePersonalData (GDPR) ──────────────────────────────────────
+
+message EraseRequest {
+  // 至少给一个标识符；服务端按提供的字段级联清扫。
+  string customer_id    = 1;
+  string device_id      = 2;
+  string ip_address     = 3;
+  string fingerprint    = 4;
+  string email_hash     = 5;
+  string phone_hash     = 6;
+  // reason 落 audit log（合规留痕："用户主动删号" / "GDPR 用户权请求 #..."）。
+  string reason         = 7;
+  // requested_by 操作者 id（运营 / 合规同事）。
+  string requested_by   = 8;
+}
+
+message EraseResponse {
+  // 各 store 清掉了多少条记录（粗粒度，给运营 dashboard 展示）。
+  int32 link_edges_purged   = 1;
+  int32 counters_purged     = 2;
+  int32 features_purged     = 3;
+  // audit 不物理删（合规要求 ≥7 年），改成 PII 字段脱敏（mask）。
+  int32 audits_masked       = 4;
+}

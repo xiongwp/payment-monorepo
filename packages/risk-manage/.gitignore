@@ -1,0 +1,8 @@
+# compiled CLI binaries
+/replay
+/server
+*.test
+
+# coverage / profile artifacts
+*.out
+coverage.html

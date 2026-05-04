@@ -1,0 +1,156 @@
+# risk-manage Helm chart values。覆盖产品环境差异：
+#   - replicaCount / resources：QPS 决定副本 + CPU 内存
+#   - ingress：admin / metrics 端口暴露策略
+#   - persistence：audit FileSink 路径（生产建议挂 PV）
+#   - 各种外部依赖 enable/addr (clickhouse / kafka / nebula / sift)
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/xiongwp/risk-manage
+  tag: ""  # 默认走 Chart appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  grpc:
+    port: 9490
+  metrics:
+    port: 9590
+
+# 主路径资源 (单 pod)。生产建议按 QPS 调：
+#   - 1k RPS → 0.5 CPU / 512Mi memory
+#   - 10k RPS → 2 CPU / 2Gi memory
+#   - ML inference 大量调远程 → 1 CPU 已足够
+resources:
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+  limits:
+    cpu: "2000m"
+    memory: "2Gi"
+
+# HPA：CPU > 70% 或 QPS > 800 自动扩。
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPU: 70
+  targetMemory: 80
+
+# PodDisruptionBudget：滚动升级 / 节点维护至少留 N 个副本可用
+pdb:
+  enabled: true
+  minAvailable: 2
+
+# 调度
+nodeSelector: {}
+tolerations: []
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: risk-manage
+          topologyKey: kubernetes.io/hostname
+
+# audit FileSink 持久化（生产建议：StatefulSet + PV；当前 Deployment + emptyDir
+# 重启不丢但 pod 替换会丢，作为辅助 sink 跟 Kafka/CH 配着用）
+persistence:
+  enabled: true
+  size: 10Gi
+  mountPath: /var/lib/risk-manage
+
+# 外部依赖配置（统一通过 ConfigMap / Secret 注入）
+config:
+  # gRPC 主路径
+  grpc:
+    port: 9490
+
+  # admin 端
+  metrics:
+    port: 9590
+
+  # Audit
+  audit:
+    chain_signing: true
+    file:
+      path: /var/lib/risk-manage/audit.log
+      max_size_mb: 256
+      max_backups: 10
+      fsync_every: 100
+
+  # Counter cache TTL (1s 默认)
+  counter:
+    cache_ttl: "1s"
+
+  # 限流：默认套餐 + 大客户单独配
+  rate_limit:
+    default:
+      rps: 500
+      burst: 1000
+    custom: {}
+
+  # ML
+  mlscore:
+    enabled: true
+    champion_name: "logistic-v1"
+    abtest:
+      capacity: 4096
+    drift:
+      reservoir_size: 1000
+      threshold_pct: 30
+
+  # outcome coverage 监控
+  outcome_coverage:
+    window_days: 7
+
+  # Webhook DLQ
+  webhook:
+    buffer: 1024
+    workers: 4
+    max_retries: 5
+    dlq_capacity: 4096
+
+  # 慢请求 slow log 阈值
+  slow_threshold_ms: 100
+
+  # gRPC graceful shutdown
+  server:
+    shutdown_timeout_sec: 15
+
+# 外部依赖 hosts (改 secret 填密码)
+clickhouse:
+  enabled: false
+  addr: ""
+kafka:
+  enabled: false
+  brokers: ""
+nebula:
+  enabled: false
+  addr: ""
+  space: "risk_graph"
+
+# Admin token（RBAC）— 生产从 sealed-secret 注入
+adminTokens:
+  read: ""
+  write: ""
+  danger: ""
+
+# Prometheus ServiceMonitor (operator)
+serviceMonitor:
+  enabled: true
+  scrapeInterval: 15s
+
+# Sidecars / init containers
+extraVolumes: []
+extraVolumeMounts: []
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9590"
+  prometheus.io/path: "/metrics"

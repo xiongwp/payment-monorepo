@@ -1,0 +1,98 @@
+{
+  "title": "risk-manage overview",
+  "schemaVersion": 38,
+  "version": 1,
+  "tags": ["risk-manage", "fraud", "ml"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "merchant",
+        "type": "query",
+        "query": "label_values(risk_verdict_total, merchant_id)",
+        "current": {"value": "All", "text": "All"},
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat", "title": "Screen QPS",
+      "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+      "targets": [{"expr": "sum(rate(risk_screen_total[1m]))"}]
+    },
+    {
+      "type": "stat", "title": "Verdict mix",
+      "gridPos": {"x": 4, "y": 0, "w": 8, "h": 4},
+      "targets": [
+        {"expr": "sum by (decision) (rate(risk_screen_total[5m]))", "legendFormat": "{{decision}}"}
+      ]
+    },
+    {
+      "type": "stat", "title": "Goroutines / Heap",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "targets": [
+        {"expr": "risk_goroutine_count", "legendFormat": "goroutines"},
+        {"expr": "risk_heap_inuse_bytes / 1024 / 1024", "legendFormat": "heap MiB"}
+      ]
+    },
+    {
+      "type": "graph", "title": "Screen latency p50/p95/p99",
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.5,  rate(risk_screen_duration_seconds_bucket[5m]))", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, rate(risk_screen_duration_seconds_bucket[5m]))", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.99, rate(risk_screen_duration_seconds_bucket[5m]))", "legendFormat": "p99"}
+      ]
+    },
+    {
+      "type": "graph", "title": "Per-stage latency p99",
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.99, sum by (le, stage) (rate(risk_screen_stage_duration_seconds_bucket[5m])))", "legendFormat": "{{stage}}"}
+      ]
+    },
+    {
+      "type": "graph", "title": "ML score 分布 (mean / p95)",
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 6},
+      "targets": [
+        {"expr": "risk_ml_score_mean", "legendFormat": "mean"},
+        {"expr": "risk_ml_score_p95", "legendFormat": "p95"},
+        {"expr": "risk_ml_score_drifted", "legendFormat": "drifted (1=yes)"}
+      ]
+    },
+    {
+      "type": "table", "title": "Top rules by hits",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 6},
+      "targets": [
+        {"expr": "topk(20, sum by (rule_id) (increase(risk_rule_evaluation_total{hit=\"hit\"}[1h])))"}
+      ]
+    },
+    {
+      "type": "graph", "title": "Outcome coverage (% labeled)",
+      "gridPos": {"x": 0, "y": 18, "w": 8, "h": 6},
+      "targets": [
+        {"expr": "risk_outcome_coverage_ratio", "legendFormat": "{{verdict}}"}
+      ]
+    },
+    {
+      "type": "graph", "title": "Counter cache hit rate",
+      "gridPos": {"x": 8, "y": 18, "w": 8, "h": 6},
+      "targets": [
+        {"expr": "rate(risk_counter_cache_hit_total[5m]) / (rate(risk_counter_cache_hit_total[5m]) + rate(risk_counter_cache_miss_total[5m]))",
+         "legendFormat": "hit rate"}
+      ]
+    },
+    {
+      "type": "graph", "title": "Webhook DLQ depth",
+      "gridPos": {"x": 16, "y": 18, "w": 8, "h": 6},
+      "targets": [
+        {"expr": "risk_webhook_dlq_depth", "legendFormat": "depth"},
+        {"expr": "rate(risk_audit_async_dropped_total[5m])", "legendFormat": "audit drops/s"}
+      ]
+    }
+  ]
+}
