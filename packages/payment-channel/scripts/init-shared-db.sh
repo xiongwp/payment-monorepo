@@ -24,6 +24,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 META_SQL="$ROOT/database/metadb/init/init.sql"
+META_SHADOW_SQL="$ROOT/database/metadb/init/init_shadow.sql"
 SHARD_DIR="$ROOT/database/paychandb/init"
 
 SHARED_DB_NETWORK="${SHARED_DB_NETWORK:-payment-stack}"
@@ -31,6 +32,10 @@ SHARED_META_CONTAINER="${SHARED_META_CONTAINER:-shared-meta}"
 SHARED_SHARD_PREFIX="${SHARED_SHARD_PREFIX:-shared-shard-}"
 SHARED_DB_USER="${SHARED_DB_USER:-root}"
 SHARED_DB_PASS="${SHARED_DB_PASS:-password}"
+
+# LOAD_SHADOW=0 跳过影子表导入（生产 / 不跑压测的环境）。默认导入；
+# 应用启动期 ApplyShadowTables 也会自愈兜底，导入失败不致命。
+LOAD_SHADOW="${LOAD_SHADOW:-1}"
 
 ensure_network() {
   echo "[shared-net] ensure '$SHARED_DB_NETWORK' exists"
@@ -70,5 +75,18 @@ echo "[shared-db] load paychan_db_N into matching shared-shard-N"
 for i in 0 1 2 3 4 5 6 7 8 9; do
   load_sql "${SHARED_SHARD_PREFIX}${i}" "$SHARD_DIR/${i}_init.sql"
 done
+
+if [ "$LOAD_SHADOW" = "1" ]; then
+  if [ -f "$META_SHADOW_SQL" ]; then
+    echo "[shared-db] load paychan_meta shadow into $SHARED_META_CONTAINER"
+    load_sql "$SHARED_META_CONTAINER" "$META_SHADOW_SQL"
+  fi
+  echo "[shared-db] load paychan_db_N shadow into matching shared-shard-N"
+  for i in 0 1 2 3 4 5 6 7 8 9; do
+    if [ -f "$SHARD_DIR/${i}_init_shadow.sql" ]; then
+      load_sql "${SHARED_SHARD_PREFIX}${i}" "$SHARD_DIR/${i}_init_shadow.sql"
+    fi
+  done
+fi
 
 echo "[shared-db] payment-channel init complete."

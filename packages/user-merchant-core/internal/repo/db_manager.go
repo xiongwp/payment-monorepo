@@ -15,5 +15,8 @@ type Manager = dbx.Manager
 // NewManager re-exported.
 var NewManager = dbx.NewManager
 
+// NewShardedManager re-exported.
+var NewShardedManager = dbx.NewShardedManager
+
 // SetSQLLogger re-exported.
 var SetSQLLogger = dbx.SetSQLLogger

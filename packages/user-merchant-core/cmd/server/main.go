@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/xiongwp/user-merchant-core/internal/repo"
 	"github.com/xiongwp/user-merchant-core/internal/server"
 	"github.com/xiongwp/user-merchant-core/internal/service"
+	"github.com/xiongwp/user-merchant-core/internal/sharding"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/xiongwp/user-merchant-core/pkg/configx"
@@ -46,6 +48,7 @@ func main() {
 			loadConfig,
 			newLogger,
 			newDBManager,
+			newShardRouter,
 			newIDGen,
 			newMerchantCache,
 			newSecretCache,
@@ -70,7 +73,7 @@ func main() {
 			// server
 			newServer,
 		),
-		fx.Invoke(startGRPC, startMetricsHTTP, warmupMerchantCache, startRetentionSweeper, initOTel),
+		fx.Invoke(startGRPC, startMetricsHTTP, warmupMerchantCache, startRetentionSweeper, initOTel, applyShadowTables),
 	)
 	app.Run()
 }
@@ -136,7 +139,28 @@ func newDBManager(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*repo.Ma
 	if err := v.UnmarshalKey("database.replicas", &replicas); err != nil {
 		return nil, err
 	}
-	mgr, err := repo.NewManager(meta, replicas...)
+	// ── 10 shard DB（按 dbIdx 0..9，对应 user_merchant_db_0..9）──
+	// USERMERCHANTCORE_DATABASE_SHARD_<N>_DSN 任意一个为空时退化到单 meta 模式
+	// （dev / 单元测试），生产 docker-compose 给齐 10 条 DSN。
+	shards := make([]repo.DBConfig, 0, sharding.ShardDBCount)
+	for i := 0; i < sharding.ShardDBCount; i++ {
+		key := fmt.Sprintf("database.shard_%d", i)
+		var s repo.DBConfig
+		if err := v.UnmarshalKey(key, &s); err != nil {
+			return nil, err
+		}
+		if s.DSN == "" {
+			break
+		}
+		if s.Name == "" {
+			s.Name = fmt.Sprintf("shard-%d", i)
+		}
+		shards = append(shards, s)
+	}
+	if len(shards) > 0 && len(shards) < sharding.ShardDBCount {
+		return nil, fmt.Errorf("dbx: shard DSN incomplete (got %d, want %d) — set all USERMERCHANTCORE_DATABASE_SHARD_<0..9>_DSN or none", len(shards), sharding.ShardDBCount)
+	}
+	mgr, err := repo.NewShardedManager(meta, shards, replicas...)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +169,8 @@ func newDBManager(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*repo.Ma
 	prometheus.MustRegister(dbx.NewPoolCollector(mgr))
 	logger.Info("database ready",
 		zap.String("meta", meta.Name),
-		zap.Int("replicas", len(replicas)))
+		zap.Int("replicas", len(replicas)),
+		zap.Int("shards", mgr.ShardCount()))
 	// 优雅停机：fx 反向触发 OnStop；Manager.Close 会把主库 + 全部 replica 的
 	// *sql.DB 池关掉。排在 gRPC server GracefulStop 之后，确保不会关掉仍在被
 	// in-flight 请求使用的连接。
@@ -192,14 +217,38 @@ func (promMerchantCacheHook) Size(index string, n int) {
 	metrics.MerchantCacheSize.WithLabelValues(index).Set(float64(n))
 }
 
-// ─── repositories ────────────────────────────────────────────────────────────
+// ─── sharding router ─────────────────────────────────────────────────────────
 
-func repoMerchant(mgr *repo.Manager) repo.MerchantRepository {
-	return repo.NewMerchantRepository(mgr)
+// newShardRouter 跟 accounting-system / order-core / payment-channel 同形：
+// 10 库 × 10 表 = 100 张全局分片表。dev 单库模式下 mgr.ShardCount()==0；这时
+// router 仍构造，但 repo 层的 shardForUser/shardForMerchant helper 会 fallback
+// 到 mgr.GetMeta() + 不带 _NN 后缀的表名。
+func newShardRouter() *sharding.Router {
+	return sharding.NewRouter()
 }
 
-func repoMerchantSecret(mgr *repo.Manager) repo.MerchantSecretRepository {
-	return repo.NewMerchantSecretRepository(mgr)
+// applyShadowTables 启动期自愈跨 10 个分库的影子表（CREATE TABLE LIKE 主表）。
+// 主表不存在 / 已存在都跳过，单表错误不阻断；fx.Invoke 让它在 fx.Provide 阶段
+// 完成 DI 后立即跑。
+func applyShadowTables(lc fx.Lifecycle, mgr *repo.Manager, logger *zap.Logger) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			if err := repo.ApplyShadowTables(ctx, mgr, sharding.ShardTablePerDB, logger); err != nil {
+				logger.Warn("apply shadow tables", zap.Error(err))
+			}
+			return nil // 失败不阻断启动；shadow 流量未启用时无影响
+		},
+	})
+}
+
+// ─── repositories ────────────────────────────────────────────────────────────
+
+func repoMerchant(mgr *repo.Manager, router *sharding.Router) repo.MerchantRepository {
+	return repo.NewMerchantRepository(mgr, router)
+}
+
+func repoMerchantSecret(mgr *repo.Manager, router *sharding.Router) repo.MerchantSecretRepository {
+	return repo.NewMerchantSecretRepository(mgr, router)
 }
 
 func repoIdempotency(mgr *repo.Manager) repo.IdempotencyRepository {
@@ -210,8 +259,8 @@ func repoAudit(mgr *repo.Manager) repo.AuditRepository {
 	return repo.NewAuditRepository(mgr)
 }
 
-func repoUser(mgr *repo.Manager) repo.UserRepository {
-	return repo.NewUserRepository(mgr)
+func repoUser(mgr *repo.Manager, router *sharding.Router) repo.UserRepository {
+	return repo.NewUserRepository(mgr, router)
 }
 
 func newIdempotencyStore(r repo.IdempotencyRepository) grpcutil.IdempotencyStore {

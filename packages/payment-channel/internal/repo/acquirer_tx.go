@@ -76,17 +76,17 @@ type acquirerTxRow struct {
 	UpdatedAt       string  `gorm:"column:updated_at;default:CURRENT_TIMESTAMP;->"`
 }
 
-func (r *acquirerTxRepo) table(piID string) (*gorm.DB, string, error) {
+func (r *acquirerTxRepo) table(ctx context.Context, piID string) (*gorm.DB, string, error) {
 	db, tblIdx := r.router.RouteByPrefixedID(piID)
 	shard, err := r.mgr.GetShard(db)
 	if err != nil {
 		return nil, "", err
 	}
-	return shard, r.router.GetTableName("acquirer_tx", tblIdx), nil
+	return shard, r.router.TableName(ctx, "acquirer_tx", tblIdx), nil
 }
 
 func (r *acquirerTxRepo) Insert(ctx context.Context, tx *domain.AcquirerTx) error {
-	shard, tbl, err := r.table(tx.PiID)
+	shard, tbl, err := r.table(ctx, tx.PiID)
 	if err != nil {
 		return err
 	}
@@ -103,7 +103,7 @@ func (r *acquirerTxRepo) Insert(ctx context.Context, tx *domain.AcquirerTx) erro
 }
 
 func (r *acquirerTxRepo) FindByIdem(ctx context.Context, piID, adapter, idem string) (*domain.AcquirerTx, error) {
-	shard, tbl, err := r.table(piID)
+	shard, tbl, err := r.table(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func (r *acquirerTxRepo) FindByIdem(ctx context.Context, piID, adapter, idem str
 }
 
 func (r *acquirerTxRepo) FindByID(ctx context.Context, piID, aqID string) (*domain.AcquirerTx, error) {
-	shard, tbl, err := r.table(piID)
+	shard, tbl, err := r.table(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +137,7 @@ func (r *acquirerTxRepo) FindByID(ctx context.Context, piID, aqID string) (*doma
 }
 
 func (r *acquirerTxRepo) UpdateResult(ctx context.Context, piID string, id uint64, fields map[string]any) error {
-	shard, tbl, err := r.table(piID)
+	shard, tbl, err := r.table(ctx, piID)
 	if err != nil {
 		return err
 	}
@@ -177,7 +177,7 @@ func (r *acquirerTxRepo) ListPendingRetries(ctx context.Context, limit int) ([]*
 			results[i] = shardResult{err: err}
 			continue
 		}
-		tbl := r.router.GetTableName("acquirer_tx", tblIdx)
+		tbl := r.router.TableName(ctx, "acquirer_tx", tblIdx)
 		wg.Add(1)
 		go func(idx int, db *gorm.DB, table string) {
 			defer wg.Done()
@@ -239,7 +239,7 @@ func (r *acquirerTxRepo) ListUnknownTxs(ctx context.Context, limit int, olderTha
 			results[i] = shardResult{err: err}
 			continue
 		}
-		tbl := r.router.GetTableName("acquirer_tx", tblIdx)
+		tbl := r.router.TableName(ctx, "acquirer_tx", tblIdx)
 		wg.Add(1)
 		go func(idx int, db *gorm.DB, table string) {
 			defer wg.Done()
@@ -302,7 +302,7 @@ func (r *acquirerTxRepo) ListStuckPending(ctx context.Context, limit int, stuckA
 			results[i] = shardResult{err: err}
 			continue
 		}
-		tbl := r.router.GetTableName("acquirer_tx", tblIdx)
+		tbl := r.router.TableName(ctx, "acquirer_tx", tblIdx)
 		wg.Add(1)
 		go func(idx int, db *gorm.DB, table string) {
 			defer wg.Done()

@@ -74,7 +74,7 @@ func main() {
 			newServer,
 			newWebhookHTTP,
 		),
-		fx.Invoke(startGRPC, startWebhookHTTP, startRetryWorker, startPendingQueryWorker, startMetricsHTTP, startServiceRegistrar),
+		fx.Invoke(startGRPC, startWebhookHTTP, startRetryWorker, startPendingQueryWorker, startMetricsHTTP, startServiceRegistrar, applyShadowTables),
 	)
 	app.Run()
 }
@@ -505,6 +505,23 @@ func startPendingQueryWorker(lc fx.Lifecycle, w *service.PendingQueryWorker) {
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error { go w.Start(ctx); return nil },
 		OnStop:  func(_ context.Context) error { cancel(); return nil },
+	})
+}
+
+// applyShadowTables 启动期自愈：跨 10 分库给业务表建 _shadow 副本，给
+// paychan_meta 建 leaf_alloc_shadow。init-shared-db.sh 已经导入过则全 no-op；
+// 升级 / 漏 init 的环境靠这里兜底。失败不阻断启动。
+func applyShadowTables(lc fx.Lifecycle, mgr *repo.Manager, router *sharding.Router, logger *zap.Logger) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			if err := repo.ApplyMetaShadowTables(ctx, mgr, logger); err != nil {
+				logger.Warn("apply meta shadow tables", zap.Error(err))
+			}
+			if err := repo.ApplyShadowTables(ctx, mgr, router.TablePerDB(), logger); err != nil {
+				logger.Warn("apply shadow tables", zap.Error(err))
+			}
+			return nil
+		},
 	})
 }
 

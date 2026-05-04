@@ -1,0 +1,125 @@
+-- user_merchant_db_1 的影子表（压测 / shadow 流量）
+-- 依赖：1_init.sql 已经导入完成（CREATE TABLE LIKE 需要主表存在）。
+SET NAMES utf8mb4;
+USE `user_merchant_db_1`;
+
+CREATE TABLE IF NOT EXISTS `users_10_shadow` LIKE `users_10`;
+CREATE TABLE IF NOT EXISTS `user_profiles_10_shadow` LIKE `user_profiles_10`;
+CREATE TABLE IF NOT EXISTS `user_auths_10_shadow` LIKE `user_auths_10`;
+CREATE TABLE IF NOT EXISTS `login_logs_10_shadow` LIKE `login_logs_10`;
+CREATE TABLE IF NOT EXISTS `user_sessions_10_shadow` LIKE `user_sessions_10`;
+CREATE TABLE IF NOT EXISTS `user_roles_10_shadow` LIKE `user_roles_10`;
+CREATE TABLE IF NOT EXISTS `user_accounts_10_shadow` LIKE `user_accounts_10`;
+CREATE TABLE IF NOT EXISTS `user_settings_10_shadow` LIKE `user_settings_10`;
+CREATE TABLE IF NOT EXISTS `merchants_10_shadow` LIKE `merchants_10`;
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_10_shadow` LIKE `merchant_kyc_document_10`;
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_10_shadow` LIKE `merchant_channel_secret_10`;
+
+CREATE TABLE IF NOT EXISTS `users_11_shadow` LIKE `users_11`;
+CREATE TABLE IF NOT EXISTS `user_profiles_11_shadow` LIKE `user_profiles_11`;
+CREATE TABLE IF NOT EXISTS `user_auths_11_shadow` LIKE `user_auths_11`;
+CREATE TABLE IF NOT EXISTS `login_logs_11_shadow` LIKE `login_logs_11`;
+CREATE TABLE IF NOT EXISTS `user_sessions_11_shadow` LIKE `user_sessions_11`;
+CREATE TABLE IF NOT EXISTS `user_roles_11_shadow` LIKE `user_roles_11`;
+CREATE TABLE IF NOT EXISTS `user_accounts_11_shadow` LIKE `user_accounts_11`;
+CREATE TABLE IF NOT EXISTS `user_settings_11_shadow` LIKE `user_settings_11`;
+CREATE TABLE IF NOT EXISTS `merchants_11_shadow` LIKE `merchants_11`;
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_11_shadow` LIKE `merchant_kyc_document_11`;
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_11_shadow` LIKE `merchant_channel_secret_11`;
+
+CREATE TABLE IF NOT EXISTS `users_12_shadow` LIKE `users_12`;
+CREATE TABLE IF NOT EXISTS `user_profiles_12_shadow` LIKE `user_profiles_12`;
+CREATE TABLE IF NOT EXISTS `user_auths_12_shadow` LIKE `user_auths_12`;
+CREATE TABLE IF NOT EXISTS `login_logs_12_shadow` LIKE `login_logs_12`;
+CREATE TABLE IF NOT EXISTS `user_sessions_12_shadow` LIKE `user_sessions_12`;
+CREATE TABLE IF NOT EXISTS `user_roles_12_shadow` LIKE `user_roles_12`;
+CREATE TABLE IF NOT EXISTS `user_accounts_12_shadow` LIKE `user_accounts_12`;
+CREATE TABLE IF NOT EXISTS `user_settings_12_shadow` LIKE `user_settings_12`;
+CREATE TABLE IF NOT EXISTS `merchants_12_shadow` LIKE `merchants_12`;
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_12_shadow` LIKE `merchant_kyc_document_12`;
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_12_shadow` LIKE `merchant_channel_secret_12`;
+
+CREATE TABLE IF NOT EXISTS `users_13_shadow` LIKE `users_13`;
+CREATE TABLE IF NOT EXISTS `user_profiles_13_shadow` LIKE `user_profiles_13`;
+CREATE TABLE IF NOT EXISTS `user_auths_13_shadow` LIKE `user_auths_13`;
+CREATE TABLE IF NOT EXISTS `login_logs_13_shadow` LIKE `login_logs_13`;
+CREATE TABLE IF NOT EXISTS `user_sessions_13_shadow` LIKE `user_sessions_13`;
+CREATE TABLE IF NOT EXISTS `user_roles_13_shadow` LIKE `user_roles_13`;
+CREATE TABLE IF NOT EXISTS `user_accounts_13_shadow` LIKE `user_accounts_13`;
+CREATE TABLE IF NOT EXISTS `user_settings_13_shadow` LIKE `user_settings_13`;
+CREATE TABLE IF NOT EXISTS `merchants_13_shadow` LIKE `merchants_13`;
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_13_shadow` LIKE `merchant_kyc_document_13`;
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_13_shadow` LIKE `merchant_channel_secret_13`;
+
+CREATE TABLE IF NOT EXISTS `users_14_shadow` LIKE `users_14`;
+CREATE TABLE IF NOT EXISTS `user_profiles_14_shadow` LIKE `user_profiles_14`;
+CREATE TABLE IF NOT EXISTS `user_auths_14_shadow` LIKE `user_auths_14`;
+CREATE TABLE IF NOT EXISTS `login_logs_14_shadow` LIKE `login_logs_14`;
+CREATE TABLE IF NOT EXISTS `user_sessions_14_shadow` LIKE `user_sessions_14`;
+CREATE TABLE IF NOT EXISTS `user_roles_14_shadow` LIKE `user_roles_14`;
+CREATE TABLE IF NOT EXISTS `user_accounts_14_shadow` LIKE `user_accounts_14`;
+CREATE TABLE IF NOT EXISTS `user_settings_14_shadow` LIKE `user_settings_14`;
+CREATE TABLE IF NOT EXISTS `merchants_14_shadow` LIKE `merchants_14`;
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_14_shadow` LIKE `merchant_kyc_document_14`;
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_14_shadow` LIKE `merchant_channel_secret_14`;
+
+CREATE TABLE IF NOT EXISTS `users_15_shadow` LIKE `users_15`;
+CREATE TABLE IF NOT EXISTS `user_profiles_15_shadow` LIKE `user_profiles_15`;
+CREATE TABLE IF NOT EXISTS `user_auths_15_shadow` LIKE `user_auths_15`;
+CREATE TABLE IF NOT EXISTS `login_logs_15_shadow` LIKE `login_logs_15`;
+CREATE TABLE IF NOT EXISTS `user_sessions_15_shadow` LIKE `user_sessions_15`;
+CREATE TABLE IF NOT EXISTS `user_roles_15_shadow` LIKE `user_roles_15`;
+CREATE TABLE IF NOT EXISTS `user_accounts_15_shadow` LIKE `user_accounts_15`;
+CREATE TABLE IF NOT EXISTS `user_settings_15_shadow` LIKE `user_settings_15`;
+CREATE TABLE IF NOT EXISTS `merchants_15_shadow` LIKE `merchants_15`;
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_15_shadow` LIKE `merchant_kyc_document_15`;
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_15_shadow` LIKE `merchant_channel_secret_15`;
+
+CREATE TABLE IF NOT EXISTS `users_16_shadow` LIKE `users_16`;
+CREATE TABLE IF NOT EXISTS `user_profiles_16_shadow` LIKE `user_profiles_16`;
+CREATE TABLE IF NOT EXISTS `user_auths_16_shadow` LIKE `user_auths_16`;
+CREATE TABLE IF NOT EXISTS `login_logs_16_shadow` LIKE `login_logs_16`;
+CREATE TABLE IF NOT EXISTS `user_sessions_16_shadow` LIKE `user_sessions_16`;
+CREATE TABLE IF NOT EXISTS `user_roles_16_shadow` LIKE `user_roles_16`;
+CREATE TABLE IF NOT EXISTS `user_accounts_16_shadow` LIKE `user_accounts_16`;
+CREATE TABLE IF NOT EXISTS `user_settings_16_shadow` LIKE `user_settings_16`;
+CREATE TABLE IF NOT EXISTS `merchants_16_shadow` LIKE `merchants_16`;
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_16_shadow` LIKE `merchant_kyc_document_16`;
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_16_shadow` LIKE `merchant_channel_secret_16`;
+
+CREATE TABLE IF NOT EXISTS `users_17_shadow` LIKE `users_17`;
+CREATE TABLE IF NOT EXISTS `user_profiles_17_shadow` LIKE `user_profiles_17`;
+CREATE TABLE IF NOT EXISTS `user_auths_17_shadow` LIKE `user_auths_17`;
+CREATE TABLE IF NOT EXISTS `login_logs_17_shadow` LIKE `login_logs_17`;
+CREATE TABLE IF NOT EXISTS `user_sessions_17_shadow` LIKE `user_sessions_17`;
+CREATE TABLE IF NOT EXISTS `user_roles_17_shadow` LIKE `user_roles_17`;
+CREATE TABLE IF NOT EXISTS `user_accounts_17_shadow` LIKE `user_accounts_17`;
+CREATE TABLE IF NOT EXISTS `user_settings_17_shadow` LIKE `user_settings_17`;
+CREATE TABLE IF NOT EXISTS `merchants_17_shadow` LIKE `merchants_17`;
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_17_shadow` LIKE `merchant_kyc_document_17`;
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_17_shadow` LIKE `merchant_channel_secret_17`;
+
+CREATE TABLE IF NOT EXISTS `users_18_shadow` LIKE `users_18`;
+CREATE TABLE IF NOT EXISTS `user_profiles_18_shadow` LIKE `user_profiles_18`;
+CREATE TABLE IF NOT EXISTS `user_auths_18_shadow` LIKE `user_auths_18`;
+CREATE TABLE IF NOT EXISTS `login_logs_18_shadow` LIKE `login_logs_18`;
+CREATE TABLE IF NOT EXISTS `user_sessions_18_shadow` LIKE `user_sessions_18`;
+CREATE TABLE IF NOT EXISTS `user_roles_18_shadow` LIKE `user_roles_18`;
+CREATE TABLE IF NOT EXISTS `user_accounts_18_shadow` LIKE `user_accounts_18`;
+CREATE TABLE IF NOT EXISTS `user_settings_18_shadow` LIKE `user_settings_18`;
+CREATE TABLE IF NOT EXISTS `merchants_18_shadow` LIKE `merchants_18`;
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_18_shadow` LIKE `merchant_kyc_document_18`;
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_18_shadow` LIKE `merchant_channel_secret_18`;
+
+CREATE TABLE IF NOT EXISTS `users_19_shadow` LIKE `users_19`;
+CREATE TABLE IF NOT EXISTS `user_profiles_19_shadow` LIKE `user_profiles_19`;
+CREATE TABLE IF NOT EXISTS `user_auths_19_shadow` LIKE `user_auths_19`;
+CREATE TABLE IF NOT EXISTS `login_logs_19_shadow` LIKE `login_logs_19`;
+CREATE TABLE IF NOT EXISTS `user_sessions_19_shadow` LIKE `user_sessions_19`;
+CREATE TABLE IF NOT EXISTS `user_roles_19_shadow` LIKE `user_roles_19`;
+CREATE TABLE IF NOT EXISTS `user_accounts_19_shadow` LIKE `user_accounts_19`;
+CREATE TABLE IF NOT EXISTS `user_settings_19_shadow` LIKE `user_settings_19`;
+CREATE TABLE IF NOT EXISTS `merchants_19_shadow` LIKE `merchants_19`;
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_19_shadow` LIKE `merchant_kyc_document_19`;
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_19_shadow` LIKE `merchant_channel_secret_19`;
+

@@ -50,11 +50,14 @@ func (c *PoolCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.maxLifeClosed
 }
 
-// Collect impl prometheus.Collector：meta + 每个 replica 一组 series。
+// Collect impl prometheus.Collector：meta + 每个 replica + 每个 shard 一组 series。
 func (c *PoolCollector) Collect(ch chan<- prometheus.Metric) {
 	c.emit(ch, "meta", c.mgr.meta)
 	for i, db := range c.mgr.replicas {
 		c.emit(ch, "replica-"+strconv.Itoa(i), db)
+	}
+	for i, db := range c.mgr.shards {
+		c.emit(ch, "shard-"+strconv.Itoa(i), db)
 	}
 }
 

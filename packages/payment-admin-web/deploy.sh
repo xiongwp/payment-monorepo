@@ -191,7 +191,7 @@ ensure_kms_keys() {
 cmd_init_kms() {
   mkdir -p "$KEYS_DIR"
   if [[ -f "$KEYS_DIR/ACTIVE" ]]; then
-    warn "$KEYS_DIR/ACTIVE 已存在；跳过（如需重置请手动 rm -rf $KEYS_DIR）"
+    warn "${KEYS_DIR}/ACTIVE 已存在；跳过（如需重置请手动 rm -rf ${KEYS_DIR}）"
     return 0
   fi
   info "用 kmsctl 容器生成 256-bit master key → $KEYS_DIR/main.key"
@@ -205,42 +205,38 @@ cmd_init_kms() {
 }
 
 verify_shared_dbs() {
-  # shared-shard-0 应该同时有 paychan_db_0 和 order_db_0。
+  # shared-shard-0 应该同时有 paychan_db_0 / order_db_0 / accounting_db_0 /
+  # user_merchant_db_0（user-merchant-core 已分库后）。
   local container="shared-shard-0"
   local got
   got=$(docker exec "$container" mysql -uroot -ppassword -N -e \
         "SHOW DATABASES LIKE '%_db_%'" 2>/dev/null | sort -u | tr '\n' ' ')
-  if [[ -z "$got" || "$got" != *"paychan_db_0"* || "$got" != *"order_db_0"* ]]; then
-    warn "$container 缺 paychan_db_0 或 order_db_0；init SQL 加载失败"
-    warn "  当前库: $got"
-    return 1
-  fi
-  ok "  $container: $got"
+  for need in paychan_db_0 order_db_0 accounting_db_0 user_merchant_db_0; do
+    if [[ "$got" != *"$need"* ]]; then
+      warn "${container} 缺 ${need}；init SQL 加载失败"
+      warn "  当前库: ${got}"
+      return 1
+    fi
+  done
+  ok "  ${container}: ${got}"
 
-  # shared-meta 应该有 paychan_meta + order_meta + user_merchant_meta。
+  # shared-meta 应该有 paychan_meta + order_meta + user_merchant_meta + account_meta。
   local meta_got
   meta_got=$(docker exec shared-meta mysql -uroot -ppassword -N -e \
         "SHOW DATABASES" 2>/dev/null | sort -u | tr '\n' ' ')
   if [[ "$meta_got" != *"user_merchant_meta"* \
       || "$meta_got" != *"order_meta"* \
-      || "$meta_got" != *"paychan_meta"* ]]; then
+      || "$meta_got" != *"paychan_meta"* \
+      || "$meta_got" != *"account_meta"* ]]; then
     warn "shared-meta 缺某个 meta 库；init SQL 加载失败"
     warn "  当前库: $meta_got"
     return 1
   fi
   ok "  shared-meta: $meta_got"
 
-  # 自愈 migration：老 DB 没 deleted_at 列，新代码会 WHERE 到它 → 1054 错误。
-  # ALTER 用 try-catch 形式：如果列已在，MySQL 会报重复，忽略即可。
-  info "  ensure merchants.deleted_at (idempotent)"
-  docker exec shared-meta mysql -uroot -ppassword user_merchant_meta -N -e "
-    SELECT COUNT(*) FROM information_schema.COLUMNS
-     WHERE TABLE_SCHEMA='user_merchant_meta' AND TABLE_NAME='merchants'
-       AND COLUMN_NAME='deleted_at'" 2>/dev/null | grep -q '^1$' \
-    || docker exec shared-meta mysql -uroot -ppassword user_merchant_meta \
-         -e "ALTER TABLE merchants
-               ADD COLUMN deleted_at DATETIME(3) NULL DEFAULT NULL AFTER updated,
-               ADD INDEX idx_deleted_at (deleted_at)" 2>&1 | grep -v 'Using a password'
+  # 注：分库分表后 merchants 已挪到 user_merchant_db_0..9 的 merchants_NN 分片表，
+  # 不再在 user_merchant_meta 里。templates/schema.sql 已经内置 deleted_at + 索引，
+  # 旧 schema 自愈 ALTER 步骤连带删除（meta.merchants 已不存在，原 ALTER 必报 1146）。
 }
 
 ensure_order_init_sql() {

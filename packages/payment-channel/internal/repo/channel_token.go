@@ -38,17 +38,17 @@ type channelTokenRow struct {
 	CreatedAt   string `gorm:"column:created_at;default:CURRENT_TIMESTAMP;->"`
 }
 
-func (r *channelTokenRepo) table(piID string) (*gorm.DB, string, error) {
+func (r *channelTokenRepo) table(ctx context.Context, piID string) (*gorm.DB, string, error) {
 	db, tblIdx := r.router.RouteByPrefixedID(piID)
 	shard, err := r.mgr.GetShard(db)
 	if err != nil {
 		return nil, "", err
 	}
-	return shard, r.router.GetTableName("channel_token", tblIdx), nil
+	return shard, r.router.TableName(ctx, "channel_token", tblIdx), nil
 }
 
 func (r *channelTokenRepo) Insert(ctx context.Context, t *domain.ChannelToken) error {
-	shard, tbl, err := r.table(t.PiID)
+	shard, tbl, err := r.table(ctx, t.PiID)
 	if err != nil {
 		return err
 	}
@@ -65,7 +65,7 @@ func (r *channelTokenRepo) Insert(ctx context.Context, t *domain.ChannelToken) e
 }
 
 func (r *channelTokenRepo) FindByCustomer(ctx context.Context, piID, cust, adapter string) (*domain.ChannelToken, error) {
-	shard, tbl, err := r.table(piID)
+	shard, tbl, err := r.table(ctx, piID)
 	if err != nil {
 		return nil, err
 	}

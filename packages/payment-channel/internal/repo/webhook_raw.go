@@ -44,17 +44,17 @@ type webhookRawRow struct {
 	ForwardedAt *string `gorm:"column:forwarded_at"`
 }
 
-func (r *webhookRawRepo) table(piID string) (*gorm.DB, string, error) {
+func (r *webhookRawRepo) table(ctx context.Context, piID string) (*gorm.DB, string, error) {
 	db, tblIdx := r.router.RouteByPrefixedID(piID)
 	shard, err := r.mgr.GetShard(db)
 	if err != nil {
 		return nil, "", err
 	}
-	return shard, r.router.GetTableName("webhook_raw", tblIdx), nil
+	return shard, r.router.TableName(ctx, "webhook_raw", tblIdx), nil
 }
 
 func (r *webhookRawRepo) Insert(ctx context.Context, w *domain.WebhookRaw) error {
-	shard, tbl, err := r.table(w.PiID)
+	shard, tbl, err := r.table(ctx, w.PiID)
 	if err != nil {
 		return err
 	}
@@ -82,7 +82,7 @@ func (r *webhookRawRepo) Insert(ctx context.Context, w *domain.WebhookRaw) error
 }
 
 func (r *webhookRawRepo) MarkForwarded(ctx context.Context, piID string, id uint64, ferr error) error {
-	shard, tbl, err := r.table(piID)
+	shard, tbl, err := r.table(ctx, piID)
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func (r *webhookRawRepo) ListUnforwarded(ctx context.Context, limit int) ([]*dom
 		if err != nil {
 			continue
 		}
-		tbl := r.router.GetTableName("webhook_raw", tblIdx)
+		tbl := r.router.TableName(ctx, "webhook_raw", tblIdx)
 		var rows []webhookRawRow
 		if err := shard.WithContext(ctx).Table(tbl).
 			Where("forwarded = ? AND signature_ok = ?", false, true).

@@ -1,39 +1,33 @@
 -- user_merchant_meta 影子表（压测 / shadow 流量）。
 -- 依赖：init.sql 必须已经导入完成（CREATE TABLE LIKE 需要主表存在）。
 --
--- 19 张主表 + leaf_alloc_shadow（影子号段独立，避免压测消耗主用户号段）。
--- 影子表不复制 init.sql 里的 INSERT IGNORE 种子（roles / permissions 等）；
--- 压测如需要这些 seed，由测试 fixture 单独写入 _shadow 表。
+-- 分库分表后 meta 留下的表（leaf_alloc / RBAC 字典 / idempotency / email_codes /
+-- 审计 / lookup 反查索引）每张都有 _shadow 副本；users / merchants 等 11 张
+-- 业务分片表的 _shadow 在 user_merchant_db_0..9 里，不在 meta（见
+-- database/userdb/init/N_init_shadow.sql）。
 USE `user_merchant_meta`;
 
--- 号段独立
+-- 号段独立（影子流量取 ID 不消耗主用户号段）
 CREATE TABLE IF NOT EXISTS `leaf_alloc_shadow`            LIKE `leaf_alloc`;
 
--- 商户域
-CREATE TABLE IF NOT EXISTS `merchants_shadow`             LIKE `merchants`;
-CREATE TABLE IF NOT EXISTS `merchant_kyc_document_shadow` LIKE `merchant_kyc_document`;
-CREATE TABLE IF NOT EXISTS `merchant_kyc_audit_shadow`    LIKE `merchant_kyc_audit`;
-CREATE TABLE IF NOT EXISTS `merchant_channel_secret_shadow` LIKE `merchant_channel_secret`;
-
--- 用户域
-CREATE TABLE IF NOT EXISTS `users_shadow`                 LIKE `users`;
-CREATE TABLE IF NOT EXISTS `user_profiles_shadow`         LIKE `user_profiles`;
-CREATE TABLE IF NOT EXISTS `user_auths_shadow`            LIKE `user_auths`;
-CREATE TABLE IF NOT EXISTS `login_logs_shadow`            LIKE `login_logs`;
-CREATE TABLE IF NOT EXISTS `user_sessions_shadow`         LIKE `user_sessions`;
-CREATE TABLE IF NOT EXISTS `user_accounts_shadow`         LIKE `user_accounts`;
-CREATE TABLE IF NOT EXISTS `user_settings_shadow`         LIKE `user_settings`;
+-- 幂等 / 验证码
+CREATE TABLE IF NOT EXISTS `idempotency_key_shadow`       LIKE `idempotency_key`;
 CREATE TABLE IF NOT EXISTS `email_codes_shadow`           LIKE `email_codes`;
 
--- RBAC（角色 / 权限通常静态，但 shadow 隔离避免压测期 admin 写覆盖主表）
+-- 反查二级索引（meta；指向 user_merchant_db_*.users_NN(_shadow) 等分片表）
+CREATE TABLE IF NOT EXISTS `user_lookup_shadow`           LIKE `user_lookup`;
+CREATE TABLE IF NOT EXISTS `merchant_lookup_shadow`       LIKE `merchant_lookup`;
+CREATE TABLE IF NOT EXISTS `session_lookup_shadow`        LIKE `session_lookup`;
+CREATE TABLE IF NOT EXISTS `auth_lookup_shadow`           LIKE `auth_lookup`;
+
+-- 合规审计（append-only）
+CREATE TABLE IF NOT EXISTS `merchant_kyc_audit_shadow`    LIKE `merchant_kyc_audit`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_shadow`       LIKE `admin_audit_log`;
+
+-- RBAC 字典（虽然角色 / 权限通常静态，shadow 隔离避免压测期 admin 写覆盖主表）
 CREATE TABLE IF NOT EXISTS `roles_shadow`                 LIKE `roles`;
-CREATE TABLE IF NOT EXISTS `user_roles_shadow`            LIKE `user_roles`;
 CREATE TABLE IF NOT EXISTS `permissions_shadow`           LIKE `permissions`;
 CREATE TABLE IF NOT EXISTS `role_permissions_shadow`      LIKE `role_permissions`;
-
--- 审计 + 幂等
-CREATE TABLE IF NOT EXISTS `admin_audit_log_shadow`       LIKE `admin_audit_log`;
-CREATE TABLE IF NOT EXISTS `idempotency_key_shadow`       LIKE `idempotency_key`;
 
 -- ─── leaf_alloc_shadow seed：起点对齐 payment-util/shadow 的数字 layout ────
 --

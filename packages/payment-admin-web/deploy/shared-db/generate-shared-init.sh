@@ -22,16 +22,19 @@ mkdir -p "$OUT"
 
 PAYCHAN_GEN="$ROOT/payment-channel/database/paychandb/scripts/generate.sh"
 ORDER_GEN="$ROOT/order-core/database/orderdb/scripts/generate.sh"
+USER_MERCHANT_GEN="$ROOT/user-merchant-core/database/userdb/scripts/generate.sh"
 ACCT_INIT_DIR="$ROOT/accounting-system/database/accountingdb/init"
 ACCT_META_INIT="$ROOT/accounting-system/database/metadb/init/init.sql"
 
-[[ -x "$PAYCHAN_GEN" ]] || { echo "FATAL: $PAYCHAN_GEN 不存在或不可执行"; exit 1; }
-[[ -x "$ORDER_GEN"   ]] || { echo "FATAL: $ORDER_GEN 不存在或不可执行"; exit 1; }
-[[ -d "$ACCT_INIT_DIR" ]] || { echo "FATAL: $ACCT_INIT_DIR 不存在（accounting-system 仓需平级）"; exit 1; }
-[[ -s "$ACCT_META_INIT" ]] || { echo "FATAL: $ACCT_META_INIT 不存在"; exit 1; }
+[[ -x "$PAYCHAN_GEN"        ]] || { echo "FATAL: $PAYCHAN_GEN 不存在或不可执行"; exit 1; }
+[[ -x "$ORDER_GEN"          ]] || { echo "FATAL: $ORDER_GEN 不存在或不可执行"; exit 1; }
+[[ -x "$USER_MERCHANT_GEN"  ]] || { echo "FATAL: $USER_MERCHANT_GEN 不存在或不可执行"; exit 1; }
+[[ -d "$ACCT_INIT_DIR"      ]] || { echo "FATAL: $ACCT_INIT_DIR 不存在（accounting-system 仓需平级）"; exit 1; }
+[[ -s "$ACCT_META_INIT"     ]] || { echo "FATAL: $ACCT_META_INIT 不存在"; exit 1; }
 
-# ① 确保两仓各自的 per-shard init SQL 已生成
-(cd "$ROOT/payment-channel" && rm -rf database/paychandb/init && bash database/paychandb/scripts/generate.sh) >/dev/null
+# ① 确保三仓各自的 per-shard init SQL 已生成
+(cd "$ROOT/payment-channel"   && rm -rf database/paychandb/init && bash database/paychandb/scripts/generate.sh) >/dev/null
+(cd "$ROOT/user-merchant-core" && rm -rf database/userdb/init    && bash database/userdb/scripts/generate.sh)    >/dev/null
 # order-core 的 init 已在 git 里；只在没有/是目录时重拉一次
 for i in 0 1 2 3 4 5 6 7 8 9; do
   f="$ROOT/order-core/database/orderdb/init/${i}_init.sql"
@@ -41,16 +44,24 @@ for i in 0 1 2 3 4 5 6 7 8 9; do
   [[ -s "$f" ]] || { echo "FATAL: order-core 缺 ${i}_init.sql；请在 order-core 仓里 git checkout"; exit 1; }
 done
 
-# ② 为每个 shard 拼出 "paychan_db_N + order_db_N + accounting_db_N + 平台账户 seed"
+# ② 为每个 shard 拼出 "paychan_db_N + order_db_N + accounting_db_N +
+#    user_merchant_db_N + 平台账户 seed + 各仓 _shadow"
 for i in 0 1 2 3 4 5 6 7 8 9; do
   out="$OUT/${i}_init.sql"
   acct_init="$ACCT_INIT_DIR/${i}_init.sql"
   acct_seed="$ACCT_INIT_DIR/${i}_init_tmp.sql"
-  [[ -s "$acct_init" ]] || { echo "FATAL: 缺 $acct_init"; exit 1; }
-  [[ -s "$acct_seed" ]] || { echo "FATAL: 缺 $acct_seed (平台账户 seed)"; exit 1; }
+  user_merchant_init="$ROOT/user-merchant-core/database/userdb/init/${i}_init.sql"
+  paychan_shadow="$ROOT/payment-channel/database/paychandb/init/${i}_init_shadow.sql"
+  order_shadow="$ROOT/order-core/database/orderdb/init/${i}_init_shadow.sql"
+  user_merchant_shadow="$ROOT/user-merchant-core/database/userdb/init/${i}_init_shadow.sql"
+  acct_shadow="$ACCT_INIT_DIR/${i}_init_shadow.sql"
+  [[ -s "$acct_init" ]]          || { echo "FATAL: 缺 $acct_init"; exit 1; }
+  [[ -s "$acct_seed" ]]          || { echo "FATAL: 缺 $acct_seed (平台账户 seed)"; exit 1; }
+  [[ -s "$user_merchant_init" ]] || { echo "FATAL: 缺 $user_merchant_init"; exit 1; }
   {
     echo "-- ┌──────────────────────────────────────────────────────────────────────┐"
-    echo "-- │ 共享 MySQL shard ${i} —— paychan_db_${i} + order_db_${i} + accounting_db_${i} │"
+    echo "-- │ 共享 MySQL shard ${i} —— paychan_db_${i} + order_db_${i} +"
+    echo "-- │ accounting_db_${i} + user_merchant_db_${i}                            │"
     echo "-- └──────────────────────────────────────────────────────────────────────┘"
     echo ""
     echo "-- ==== payment-channel ===="
@@ -64,13 +75,41 @@ for i in 0 1 2 3 4 5 6 7 8 9; do
     echo ""
     echo "-- ==== accounting-system 平台账户 seed (按位编码 account_no) ===="
     cat "$acct_seed"
+    echo ""
+    echo "-- ==== user-merchant-core ===="
+    cat "$user_merchant_init"
+    # ── 影子表（按文件存在性可选追加；缺失不致命）──
+    if [[ -s "$paychan_shadow" ]]; then
+      echo ""
+      echo "-- ==== payment-channel _shadow ===="
+      cat "$paychan_shadow"
+    fi
+    if [[ -s "$order_shadow" ]]; then
+      echo ""
+      echo "-- ==== order-core _shadow ===="
+      cat "$order_shadow"
+    fi
+    if [[ -s "$acct_shadow" ]]; then
+      echo ""
+      echo "-- ==== accounting-system _shadow ===="
+      cat "$acct_shadow"
+    fi
+    if [[ -s "$user_merchant_shadow" ]]; then
+      echo ""
+      echo "-- ==== user-merchant-core _shadow ===="
+      cat "$user_merchant_shadow"
+    fi
   } > "$out"
 done
 
 # ③ meta：把四仓的 meta init 合成一份（paychan_meta / order_meta /
-#    user_merchant_meta / account_meta 互不冲突）
+#    user_merchant_meta / account_meta 互不冲突），各仓 _shadow 紧随其后。
 META_OUT="$OUT/meta_init.sql"
 USER_MERCHANT_META="$ROOT/user-merchant-core/database/metadb/init/init.sql"
+USER_MERCHANT_META_SHADOW="$ROOT/user-merchant-core/database/metadb/init/init_shadow.sql"
+PAYCHAN_META_SHADOW="$ROOT/payment-channel/database/metadb/init/init_shadow.sql"
+ORDER_META_SHADOW="$ROOT/order-core/database/metadb/init/init_shadow.sql"
+ACCT_META_SHADOW="$ROOT/accounting-system/database/metadb/init/init_shadow.sql"
 [[ -s "$USER_MERCHANT_META" ]] || { echo "FATAL: user-merchant-core 缺 metadb init SQL"; exit 1; }
 {
   echo "-- 共享 meta —— paychan_meta + order_meta + user_merchant_meta + account_meta"
@@ -86,6 +125,14 @@ USER_MERCHANT_META="$ROOT/user-merchant-core/database/metadb/init/init.sql"
   echo ""
   echo "-- ==== accounting-system (account_meta: leaf_alloc / business_type / hot_account ...) ===="
   cat "$ACCT_META_INIT"
+  # ── meta 影子表（按文件存在性可选追加；依赖前面主表已建）──
+  for shadow in "$PAYCHAN_META_SHADOW" "$ORDER_META_SHADOW" "$USER_MERCHANT_META_SHADOW" "$ACCT_META_SHADOW"; do
+    if [[ -s "$shadow" ]]; then
+      echo ""
+      echo "-- ==== $(basename $(dirname $(dirname $(dirname "$shadow")))) meta _shadow ===="
+      cat "$shadow"
+    fi
+  done
 } > "$META_OUT"
 
 echo "生成完毕："

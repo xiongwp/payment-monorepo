@@ -27,6 +27,7 @@ SHADOW_BASES=(
   pay_action
   dispute
   dispute_event
+  exception_case
   inbound_webhook
   notify_log
   accounting_outbox

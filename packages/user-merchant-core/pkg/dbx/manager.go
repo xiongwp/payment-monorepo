@@ -33,15 +33,38 @@ type DBConfig struct {
 	ConnMaxLifetime int    `mapstructure:"conn_max_lifetime"` // 秒
 }
 
-// Manager 数据库管理器：meta 主库 + 可选只读 replica（round-robin）。
+// Manager 数据库管理器：meta 主库 + 可选只读 replica + 可选 N 个 shard 库。
+//
+// **分库分表（10 库 × 每库 10 表 = 100 张全局分片表）**：
+// 跟 accounting-system / order-core / payment-channel layout 完全对齐。
+// 业务表（users / merchants / merchant_secrets / admin_audit_log 等）按
+// user_id / merchant_id 路由到 shards[0..9]；leaf_alloc / 字典表（roles /
+// permissions）留在 meta DB。
+//
+// 路由规则见 internal/sharding/router.go：
+//
+//	globalTbl = id % 100
+//	dbIdx     = globalTbl / 10
+//	tblName   = "<base>_<globalTbl:02d>"  (e.g. users_42)
 type Manager struct {
 	meta     *gorm.DB
 	replicas []*gorm.DB
+	shards   []*gorm.DB
 	rrIdx    atomic.Uint32
 }
 
 // NewManager 主库（必填）+ 可选 replica（0..N 个）。
+//
+// 不带 shard，历史调用兼容：单 meta + replicas 模式。新代码用 NewShardedManager。
 func NewManager(meta DBConfig, replicas ...DBConfig) (*Manager, error) {
+	return NewShardedManager(meta, nil, replicas...)
+}
+
+// NewShardedManager 主库 + N 个 shard 库 + 可选 replica。
+//
+// shards 顺序与 dbIndex 一一对应（shards[0] = accounting_db_0 / paychan_db_0 风格命名，
+// 由 cmd/server 配置决定）。空 / nil 退化为单 meta 模式（适合 dev / 单库测试）。
+func NewShardedManager(meta DBConfig, shards []DBConfig, replicas ...DBConfig) (*Manager, error) {
 	if meta.DSN == "" {
 		return nil, fmt.Errorf("dbx: database.meta.dsn required")
 	}
@@ -60,6 +83,16 @@ func NewManager(meta DBConfig, replicas ...DBConfig) (*Manager, error) {
 		}
 		m.replicas = append(m.replicas, rdb)
 	}
+	for i, s := range shards {
+		if s.DSN == "" {
+			return nil, fmt.Errorf("dbx: shard[%d] DSN empty (sharded mode requires all shards configured)", i)
+		}
+		sdb, err := openConn(s)
+		if err != nil {
+			return nil, fmt.Errorf("shard[%d] %s: %w", i, s.Name, err)
+		}
+		m.shards = append(m.shards, sdb)
+	}
 	return m, nil
 }
 
@@ -75,9 +108,27 @@ func (m *Manager) GetMetaRO() *gorm.DB {
 	return m.replicas[i]
 }
 
+// GetShard 第 idx 个分库（0-based）。idx 越界或未配置 shards 时返回 meta（dev 模式兼容）。
+func (m *Manager) GetShard(idx int) *gorm.DB {
+	if len(m.shards) == 0 {
+		return m.meta
+	}
+	if idx < 0 || idx >= len(m.shards) {
+		return m.shards[0]
+	}
+	return m.shards[idx]
+}
+
+// ShardCount 配置的分库数量；0 表示未启用分片。
+func (m *Manager) ShardCount() int { return len(m.shards) }
+
+// AllShards 所有分库连接（schema migrator 用）。
+func (m *Manager) AllShards() []*gorm.DB { return m.shards }
+
 // Close 关闭所有连接
 func (m *Manager) Close() error {
 	closers := append([]*gorm.DB{m.meta}, m.replicas...)
+	closers = append(closers, m.shards...)
 	for _, db := range closers {
 		if db == nil {
 			continue

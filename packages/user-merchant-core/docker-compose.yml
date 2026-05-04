@@ -1,14 +1,10 @@
 version: "3.9"
 
-# user-merchant-core 联栈：自带 meta DB，gRPC 接入 `payment-stack` 共享网络
-# 让 payment-admin-backend / payment-core / payment-channel 用容器 DNS
-# （user-merchant-core:9191）拿到 merchant 相关接口。
+# user-merchant-core 联栈：自带 1 meta + 10 shard DB，gRPC 接入 `payment-stack`
+# 共享网络。10 个 shard 与 accounting-system / order-core / payment-channel
+# 的 layout 完全对齐（10 库 × 10 表 = 100 张全局分片表）。
 #
 # Dockerfile 自己 git-clone payment-util / kms-manage（需要 GITHUB_TOKEN secret）。
-# 想拉 PR 分支覆盖默认 main：
-#   build:
-#     args:
-#       PAYMENT_UTIL_REF: claude/fix-payment-util-pvFNu
 
 networks:
   default:
@@ -27,6 +23,7 @@ x-mysql-base: &mysql-base
     retries: 30
 
 services:
+  # ─── meta：全局字典 / 审计 / 幂等 / leaf_alloc ────────────────────────
   meta:
     <<: *mysql-base
     container_name: user-merchant-meta
@@ -38,6 +35,98 @@ services:
       - ./database/metadb/init/init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
       - ./database/metadb/init/init_shadow.sql:/docker-entrypoint-initdb.d/01_init_shadow.sql:ro
 
+  # ─── 10 shard DBs（user_merchant_db_0..9）─────────────────────────────
+  shard-0:
+    <<: *mysql-base
+    container_name: user-merchant-shard-0
+    ports: ["3340:3306"]
+    volumes:
+      - shard-0-data:/var/lib/mysql
+      - ./database/userdb/init/0_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./database/userdb/init/0_init_shadow.sql:/docker-entrypoint-initdb.d/01_init_shadow.sql:ro
+
+  shard-1:
+    <<: *mysql-base
+    container_name: user-merchant-shard-1
+    ports: ["3341:3306"]
+    volumes:
+      - shard-1-data:/var/lib/mysql
+      - ./database/userdb/init/1_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./database/userdb/init/1_init_shadow.sql:/docker-entrypoint-initdb.d/01_init_shadow.sql:ro
+
+  shard-2:
+    <<: *mysql-base
+    container_name: user-merchant-shard-2
+    ports: ["3342:3306"]
+    volumes:
+      - shard-2-data:/var/lib/mysql
+      - ./database/userdb/init/2_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./database/userdb/init/2_init_shadow.sql:/docker-entrypoint-initdb.d/01_init_shadow.sql:ro
+
+  shard-3:
+    <<: *mysql-base
+    container_name: user-merchant-shard-3
+    ports: ["3343:3306"]
+    volumes:
+      - shard-3-data:/var/lib/mysql
+      - ./database/userdb/init/3_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./database/userdb/init/3_init_shadow.sql:/docker-entrypoint-initdb.d/01_init_shadow.sql:ro
+
+  shard-4:
+    <<: *mysql-base
+    container_name: user-merchant-shard-4
+    ports: ["3344:3306"]
+    volumes:
+      - shard-4-data:/var/lib/mysql
+      - ./database/userdb/init/4_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./database/userdb/init/4_init_shadow.sql:/docker-entrypoint-initdb.d/01_init_shadow.sql:ro
+
+  shard-5:
+    <<: *mysql-base
+    container_name: user-merchant-shard-5
+    ports: ["3345:3306"]
+    volumes:
+      - shard-5-data:/var/lib/mysql
+      - ./database/userdb/init/5_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./database/userdb/init/5_init_shadow.sql:/docker-entrypoint-initdb.d/01_init_shadow.sql:ro
+
+  shard-6:
+    <<: *mysql-base
+    container_name: user-merchant-shard-6
+    ports: ["3346:3306"]
+    volumes:
+      - shard-6-data:/var/lib/mysql
+      - ./database/userdb/init/6_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./database/userdb/init/6_init_shadow.sql:/docker-entrypoint-initdb.d/01_init_shadow.sql:ro
+
+  shard-7:
+    <<: *mysql-base
+    container_name: user-merchant-shard-7
+    ports: ["3347:3306"]
+    volumes:
+      - shard-7-data:/var/lib/mysql
+      - ./database/userdb/init/7_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./database/userdb/init/7_init_shadow.sql:/docker-entrypoint-initdb.d/01_init_shadow.sql:ro
+
+  shard-8:
+    <<: *mysql-base
+    container_name: user-merchant-shard-8
+    ports: ["3348:3306"]
+    volumes:
+      - shard-8-data:/var/lib/mysql
+      - ./database/userdb/init/8_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./database/userdb/init/8_init_shadow.sql:/docker-entrypoint-initdb.d/01_init_shadow.sql:ro
+
+  shard-9:
+    <<: *mysql-base
+    container_name: user-merchant-shard-9
+    ports: ["3349:3306"]
+    volumes:
+      - shard-9-data:/var/lib/mysql
+      - ./database/userdb/init/9_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./database/userdb/init/9_init_shadow.sql:/docker-entrypoint-initdb.d/01_init_shadow.sql:ro
+
+  # ─── user-merchant-core 应用 ───────────────────────────────────────────
   user-merchant-core:
     build:
       context: .
@@ -50,32 +139,56 @@ services:
       secrets:
         - GITHUB_TOKEN
     image: user-merchant-core:latest
-    # 不写 container_name → compose 用 <project>-<service>-<n> 自动命名，
-    # 允许 docker compose --scale user-merchant-core=N 起多副本（同 accounting-service
-    # / order-core 模式）。固定 container_name 跟 --scale 互斥，会报：
-    #   "Docker requires each container to have a unique name. Remove the custom
-    #    name to scale the service"
+    # 不写 container_name → 允许 docker compose --scale user-merchant-core=N 起多副本。
     depends_on:
-      meta: { condition: service_healthy }
+      meta:    { condition: service_healthy }
+      shard-0: { condition: service_healthy }
+      shard-1: { condition: service_healthy }
+      shard-2: { condition: service_healthy }
+      shard-3: { condition: service_healthy }
+      shard-4: { condition: service_healthy }
+      shard-5: { condition: service_healthy }
+      shard-6: { condition: service_healthy }
+      shard-7: { condition: service_healthy }
+      shard-8: { condition: service_healthy }
+      shard-9: { condition: service_healthy }
     ports:
-      # range 让多副本各自拿固定可推算的端口；单副本时 9191 / 9291 仍用第一档。
-      # 历史问题：之前固定 "9191:9191" → 第二个 scale 副本起不来，端口冲突。
       - "9191-9200:9191"  # gRPC
-      - "9291-9300:9291"  # /metrics + /healthz （错开 payment-core metrics 9190）
+      - "9291-9300:9291"  # /metrics + /healthz
     environment:
       USERMERCHANTCORE_LOG_DEV: "false"
       USERMERCHANTCORE_DATABASE_META_DSN: "root:password@tcp(meta:3306)/user_merchant_meta?charset=utf8mb4&parseTime=True&loc=Local"
+      # ── 10 shard DSN（按 dbIdx 0-9 顺序，对应 shard-N container DNS）──
+      USERMERCHANTCORE_DATABASE_SHARD_0_DSN: "root:password@tcp(shard-0:3306)/user_merchant_db_0?charset=utf8mb4&parseTime=True&loc=Local"
+      USERMERCHANTCORE_DATABASE_SHARD_1_DSN: "root:password@tcp(shard-1:3306)/user_merchant_db_1?charset=utf8mb4&parseTime=True&loc=Local"
+      USERMERCHANTCORE_DATABASE_SHARD_2_DSN: "root:password@tcp(shard-2:3306)/user_merchant_db_2?charset=utf8mb4&parseTime=True&loc=Local"
+      USERMERCHANTCORE_DATABASE_SHARD_3_DSN: "root:password@tcp(shard-3:3306)/user_merchant_db_3?charset=utf8mb4&parseTime=True&loc=Local"
+      USERMERCHANTCORE_DATABASE_SHARD_4_DSN: "root:password@tcp(shard-4:3306)/user_merchant_db_4?charset=utf8mb4&parseTime=True&loc=Local"
+      USERMERCHANTCORE_DATABASE_SHARD_5_DSN: "root:password@tcp(shard-5:3306)/user_merchant_db_5?charset=utf8mb4&parseTime=True&loc=Local"
+      USERMERCHANTCORE_DATABASE_SHARD_6_DSN: "root:password@tcp(shard-6:3306)/user_merchant_db_6?charset=utf8mb4&parseTime=True&loc=Local"
+      USERMERCHANTCORE_DATABASE_SHARD_7_DSN: "root:password@tcp(shard-7:3306)/user_merchant_db_7?charset=utf8mb4&parseTime=True&loc=Local"
+      USERMERCHANTCORE_DATABASE_SHARD_8_DSN: "root:password@tcp(shard-8:3306)/user_merchant_db_8?charset=utf8mb4&parseTime=True&loc=Local"
+      USERMERCHANTCORE_DATABASE_SHARD_9_DSN: "root:password@tcp(shard-9:3306)/user_merchant_db_9?charset=utf8mb4&parseTime=True&loc=Local"
       # ── 服务发现 + 下游 endpoint（payment-stack 内 DNS）──
       USERMERCHANTCORE_REGISTRY_ENDPOINTS: "etcd:2379"
       USERMERCHANTCORE_KMS_ENDPOINT: "kms-manage:9390"
       USERMERCHANTCORE_ACCOUNTING_ENDPOINT: "accounting-system:50051"
       USERMERCHANTCORE_RISK_ENDPOINT: "risk-manage:9590"
     volumes:
-      # config 路径是相对于 user-merchant-core/docker-compose.yml 所在目录
       - ./config:/app/config:ro
 
 volumes:
   meta-data:
+  shard-0-data:
+  shard-1-data:
+  shard-2-data:
+  shard-3-data:
+  shard-4-data:
+  shard-5-data:
+  shard-6-data:
+  shard-7-data:
+  shard-8-data:
+  shard-9-data:
 
 # BuildKit secret：从环境变量读取 GITHUB_TOKEN，不写入镜像层。
 # 用法：GITHUB_TOKEN=ghp_xxx docker compose build
