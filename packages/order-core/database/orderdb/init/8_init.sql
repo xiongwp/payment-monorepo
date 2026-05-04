@@ -299,12 +299,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_80` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -605,12 +613,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_81` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -911,12 +927,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_82` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -1217,12 +1241,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_83` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -1523,12 +1555,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_84` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -1829,12 +1869,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_85` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -2135,12 +2183,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_86` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -2441,12 +2497,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_87` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -2747,12 +2811,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_88` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -3053,11 +3125,19 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_89` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 

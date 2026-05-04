@@ -53,10 +53,7 @@ CREATE TABLE IF NOT EXISTS `payment_intent_00` (
     KEY `idx_business`   (`business_id`),
     UNIQUE KEY `uk_idem` (`mch_id`, `idempotency_key`),
     KEY `idx_prev`       (`previous_payment_intent_id`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 列表分页热路径：WHERE mch_id=? ORDER BY created DESC LIMIT N
-    -- 缺这条复合索引时退化为按 idx_mch 拉所有 + 排序，10K+ 订单的商户 100ms+
-    KEY `idx_mch_created` (`mch_id`, `created` DESC)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Payment Intent 主表';
 
 -- 2. Charge 表 charge_00（一个 PI 可有多个 Charge：失败 / 重试）
@@ -91,10 +88,7 @@ CREATE TABLE IF NOT EXISTS `charge_00` (
     PRIMARY KEY (`id`),
     KEY `idx_pi`         (`payment_intent_id`),
     KEY `idx_status`     (`status`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 异步对账热路径：WHERE status=pending AND created<? ORDER BY created ASC LIMIT N
-    -- 不加复合索引时 reconcile worker 每 5s 全表扫，几十万 rows 时 CPU 烧满
-    KEY `idx_status_created` (`status`, `created`)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Charge 表（一次扣款尝试）';
 
 -- 3. PayAction 表 pay_action_00（3DS / OTP / PayPassword 等用户挑战条目）
@@ -305,12 +299,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_00` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -365,10 +367,7 @@ CREATE TABLE IF NOT EXISTS `payment_intent_01` (
     KEY `idx_business`   (`business_id`),
     UNIQUE KEY `uk_idem` (`mch_id`, `idempotency_key`),
     KEY `idx_prev`       (`previous_payment_intent_id`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 列表分页热路径：WHERE mch_id=? ORDER BY created DESC LIMIT N
-    -- 缺这条复合索引时退化为按 idx_mch 拉所有 + 排序，10K+ 订单的商户 100ms+
-    KEY `idx_mch_created` (`mch_id`, `created` DESC)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Payment Intent 主表';
 
 -- 2. Charge 表 charge_01（一个 PI 可有多个 Charge：失败 / 重试）
@@ -403,10 +402,7 @@ CREATE TABLE IF NOT EXISTS `charge_01` (
     PRIMARY KEY (`id`),
     KEY `idx_pi`         (`payment_intent_id`),
     KEY `idx_status`     (`status`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 异步对账热路径：WHERE status=pending AND created<? ORDER BY created ASC LIMIT N
-    -- 不加复合索引时 reconcile worker 每 5s 全表扫，几十万 rows 时 CPU 烧满
-    KEY `idx_status_created` (`status`, `created`)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Charge 表（一次扣款尝试）';
 
 -- 3. PayAction 表 pay_action_01（3DS / OTP / PayPassword 等用户挑战条目）
@@ -617,12 +613,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_01` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -677,10 +681,7 @@ CREATE TABLE IF NOT EXISTS `payment_intent_02` (
     KEY `idx_business`   (`business_id`),
     UNIQUE KEY `uk_idem` (`mch_id`, `idempotency_key`),
     KEY `idx_prev`       (`previous_payment_intent_id`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 列表分页热路径：WHERE mch_id=? ORDER BY created DESC LIMIT N
-    -- 缺这条复合索引时退化为按 idx_mch 拉所有 + 排序，10K+ 订单的商户 100ms+
-    KEY `idx_mch_created` (`mch_id`, `created` DESC)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Payment Intent 主表';
 
 -- 2. Charge 表 charge_02（一个 PI 可有多个 Charge：失败 / 重试）
@@ -715,10 +716,7 @@ CREATE TABLE IF NOT EXISTS `charge_02` (
     PRIMARY KEY (`id`),
     KEY `idx_pi`         (`payment_intent_id`),
     KEY `idx_status`     (`status`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 异步对账热路径：WHERE status=pending AND created<? ORDER BY created ASC LIMIT N
-    -- 不加复合索引时 reconcile worker 每 5s 全表扫，几十万 rows 时 CPU 烧满
-    KEY `idx_status_created` (`status`, `created`)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Charge 表（一次扣款尝试）';
 
 -- 3. PayAction 表 pay_action_02（3DS / OTP / PayPassword 等用户挑战条目）
@@ -929,12 +927,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_02` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -989,10 +995,7 @@ CREATE TABLE IF NOT EXISTS `payment_intent_03` (
     KEY `idx_business`   (`business_id`),
     UNIQUE KEY `uk_idem` (`mch_id`, `idempotency_key`),
     KEY `idx_prev`       (`previous_payment_intent_id`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 列表分页热路径：WHERE mch_id=? ORDER BY created DESC LIMIT N
-    -- 缺这条复合索引时退化为按 idx_mch 拉所有 + 排序，10K+ 订单的商户 100ms+
-    KEY `idx_mch_created` (`mch_id`, `created` DESC)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Payment Intent 主表';
 
 -- 2. Charge 表 charge_03（一个 PI 可有多个 Charge：失败 / 重试）
@@ -1027,10 +1030,7 @@ CREATE TABLE IF NOT EXISTS `charge_03` (
     PRIMARY KEY (`id`),
     KEY `idx_pi`         (`payment_intent_id`),
     KEY `idx_status`     (`status`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 异步对账热路径：WHERE status=pending AND created<? ORDER BY created ASC LIMIT N
-    -- 不加复合索引时 reconcile worker 每 5s 全表扫，几十万 rows 时 CPU 烧满
-    KEY `idx_status_created` (`status`, `created`)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Charge 表（一次扣款尝试）';
 
 -- 3. PayAction 表 pay_action_03（3DS / OTP / PayPassword 等用户挑战条目）
@@ -1241,12 +1241,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_03` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -1301,10 +1309,7 @@ CREATE TABLE IF NOT EXISTS `payment_intent_04` (
     KEY `idx_business`   (`business_id`),
     UNIQUE KEY `uk_idem` (`mch_id`, `idempotency_key`),
     KEY `idx_prev`       (`previous_payment_intent_id`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 列表分页热路径：WHERE mch_id=? ORDER BY created DESC LIMIT N
-    -- 缺这条复合索引时退化为按 idx_mch 拉所有 + 排序，10K+ 订单的商户 100ms+
-    KEY `idx_mch_created` (`mch_id`, `created` DESC)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Payment Intent 主表';
 
 -- 2. Charge 表 charge_04（一个 PI 可有多个 Charge：失败 / 重试）
@@ -1339,10 +1344,7 @@ CREATE TABLE IF NOT EXISTS `charge_04` (
     PRIMARY KEY (`id`),
     KEY `idx_pi`         (`payment_intent_id`),
     KEY `idx_status`     (`status`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 异步对账热路径：WHERE status=pending AND created<? ORDER BY created ASC LIMIT N
-    -- 不加复合索引时 reconcile worker 每 5s 全表扫，几十万 rows 时 CPU 烧满
-    KEY `idx_status_created` (`status`, `created`)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Charge 表（一次扣款尝试）';
 
 -- 3. PayAction 表 pay_action_04（3DS / OTP / PayPassword 等用户挑战条目）
@@ -1553,12 +1555,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_04` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -1613,10 +1623,7 @@ CREATE TABLE IF NOT EXISTS `payment_intent_05` (
     KEY `idx_business`   (`business_id`),
     UNIQUE KEY `uk_idem` (`mch_id`, `idempotency_key`),
     KEY `idx_prev`       (`previous_payment_intent_id`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 列表分页热路径：WHERE mch_id=? ORDER BY created DESC LIMIT N
-    -- 缺这条复合索引时退化为按 idx_mch 拉所有 + 排序，10K+ 订单的商户 100ms+
-    KEY `idx_mch_created` (`mch_id`, `created` DESC)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Payment Intent 主表';
 
 -- 2. Charge 表 charge_05（一个 PI 可有多个 Charge：失败 / 重试）
@@ -1651,10 +1658,7 @@ CREATE TABLE IF NOT EXISTS `charge_05` (
     PRIMARY KEY (`id`),
     KEY `idx_pi`         (`payment_intent_id`),
     KEY `idx_status`     (`status`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 异步对账热路径：WHERE status=pending AND created<? ORDER BY created ASC LIMIT N
-    -- 不加复合索引时 reconcile worker 每 5s 全表扫，几十万 rows 时 CPU 烧满
-    KEY `idx_status_created` (`status`, `created`)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Charge 表（一次扣款尝试）';
 
 -- 3. PayAction 表 pay_action_05（3DS / OTP / PayPassword 等用户挑战条目）
@@ -1865,12 +1869,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_05` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -1925,10 +1937,7 @@ CREATE TABLE IF NOT EXISTS `payment_intent_06` (
     KEY `idx_business`   (`business_id`),
     UNIQUE KEY `uk_idem` (`mch_id`, `idempotency_key`),
     KEY `idx_prev`       (`previous_payment_intent_id`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 列表分页热路径：WHERE mch_id=? ORDER BY created DESC LIMIT N
-    -- 缺这条复合索引时退化为按 idx_mch 拉所有 + 排序，10K+ 订单的商户 100ms+
-    KEY `idx_mch_created` (`mch_id`, `created` DESC)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Payment Intent 主表';
 
 -- 2. Charge 表 charge_06（一个 PI 可有多个 Charge：失败 / 重试）
@@ -1963,10 +1972,7 @@ CREATE TABLE IF NOT EXISTS `charge_06` (
     PRIMARY KEY (`id`),
     KEY `idx_pi`         (`payment_intent_id`),
     KEY `idx_status`     (`status`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 异步对账热路径：WHERE status=pending AND created<? ORDER BY created ASC LIMIT N
-    -- 不加复合索引时 reconcile worker 每 5s 全表扫，几十万 rows 时 CPU 烧满
-    KEY `idx_status_created` (`status`, `created`)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Charge 表（一次扣款尝试）';
 
 -- 3. PayAction 表 pay_action_06（3DS / OTP / PayPassword 等用户挑战条目）
@@ -2177,12 +2183,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_06` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -2237,10 +2251,7 @@ CREATE TABLE IF NOT EXISTS `payment_intent_07` (
     KEY `idx_business`   (`business_id`),
     UNIQUE KEY `uk_idem` (`mch_id`, `idempotency_key`),
     KEY `idx_prev`       (`previous_payment_intent_id`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 列表分页热路径：WHERE mch_id=? ORDER BY created DESC LIMIT N
-    -- 缺这条复合索引时退化为按 idx_mch 拉所有 + 排序，10K+ 订单的商户 100ms+
-    KEY `idx_mch_created` (`mch_id`, `created` DESC)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Payment Intent 主表';
 
 -- 2. Charge 表 charge_07（一个 PI 可有多个 Charge：失败 / 重试）
@@ -2275,10 +2286,7 @@ CREATE TABLE IF NOT EXISTS `charge_07` (
     PRIMARY KEY (`id`),
     KEY `idx_pi`         (`payment_intent_id`),
     KEY `idx_status`     (`status`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 异步对账热路径：WHERE status=pending AND created<? ORDER BY created ASC LIMIT N
-    -- 不加复合索引时 reconcile worker 每 5s 全表扫，几十万 rows 时 CPU 烧满
-    KEY `idx_status_created` (`status`, `created`)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Charge 表（一次扣款尝试）';
 
 -- 3. PayAction 表 pay_action_07（3DS / OTP / PayPassword 等用户挑战条目）
@@ -2489,12 +2497,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_07` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -2549,10 +2565,7 @@ CREATE TABLE IF NOT EXISTS `payment_intent_08` (
     KEY `idx_business`   (`business_id`),
     UNIQUE KEY `uk_idem` (`mch_id`, `idempotency_key`),
     KEY `idx_prev`       (`previous_payment_intent_id`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 列表分页热路径：WHERE mch_id=? ORDER BY created DESC LIMIT N
-    -- 缺这条复合索引时退化为按 idx_mch 拉所有 + 排序，10K+ 订单的商户 100ms+
-    KEY `idx_mch_created` (`mch_id`, `created` DESC)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Payment Intent 主表';
 
 -- 2. Charge 表 charge_08（一个 PI 可有多个 Charge：失败 / 重试）
@@ -2587,10 +2600,7 @@ CREATE TABLE IF NOT EXISTS `charge_08` (
     PRIMARY KEY (`id`),
     KEY `idx_pi`         (`payment_intent_id`),
     KEY `idx_status`     (`status`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 异步对账热路径：WHERE status=pending AND created<? ORDER BY created ASC LIMIT N
-    -- 不加复合索引时 reconcile worker 每 5s 全表扫，几十万 rows 时 CPU 烧满
-    KEY `idx_status_created` (`status`, `created`)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Charge 表（一次扣款尝试）';
 
 -- 3. PayAction 表 pay_action_08（3DS / OTP / PayPassword 等用户挑战条目）
@@ -2801,12 +2811,20 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_08` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
 -- ============================================
@@ -2861,10 +2879,7 @@ CREATE TABLE IF NOT EXISTS `payment_intent_09` (
     KEY `idx_business`   (`business_id`),
     UNIQUE KEY `uk_idem` (`mch_id`, `idempotency_key`),
     KEY `idx_prev`       (`previous_payment_intent_id`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 列表分页热路径：WHERE mch_id=? ORDER BY created DESC LIMIT N
-    -- 缺这条复合索引时退化为按 idx_mch 拉所有 + 排序，10K+ 订单的商户 100ms+
-    KEY `idx_mch_created` (`mch_id`, `created` DESC)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Payment Intent 主表';
 
 -- 2. Charge 表 charge_09（一个 PI 可有多个 Charge：失败 / 重试）
@@ -2899,10 +2914,7 @@ CREATE TABLE IF NOT EXISTS `charge_09` (
     PRIMARY KEY (`id`),
     KEY `idx_pi`         (`payment_intent_id`),
     KEY `idx_status`     (`status`),
-    KEY `idx_expired_at` (`expired_at`),
-    -- 异步对账热路径：WHERE status=pending AND created<? ORDER BY created ASC LIMIT N
-    -- 不加复合索引时 reconcile worker 每 5s 全表扫，几十万 rows 时 CPU 烧满
-    KEY `idx_status_created` (`status`, `created`)
+    KEY `idx_expired_at` (`expired_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Charge 表（一次扣款尝试）';
 
 -- 3. PayAction 表 pay_action_09（3DS / OTP / PayPassword 等用户挑战条目）
@@ -3113,11 +3125,19 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_09` (
     `next_attempt_at`    DATETIME(3)  DEFAULT NULL,
     `last_error`         TEXT         DEFAULT NULL,
     `sent_at`            DATETIME(3)  DEFAULT NULL,
+    -- claim_token 用于多 worker / 多副本并发投递时的批次 claim：
+    -- worker 用一条 UPDATE ... LIMIT N 把候选行的 next_attempt_at 推到远未来 +
+    -- 写入自己生成的 token，其他 worker 的 SELECT 因 next_attempt_at 在未来天然
+    -- 跳过；本 worker 再用 SELECT WHERE claim_token = ? 拉回该批次处理。
+    -- 模式同 webhook_deliveries.claim_token（见 internal/webhook/delivery.go）。
+    `claim_token`        VARCHAR(64)  DEFAULT NULL,
     `created`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`            DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_request`       (`request_id`),
     KEY         `idx_pi`           (`payment_intent_id`),
-    KEY         `idx_status_next`  (`status`, `next_attempt_at`)
+    KEY         `idx_status_next`  (`status`, `next_attempt_at`),
+    -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
+    KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 

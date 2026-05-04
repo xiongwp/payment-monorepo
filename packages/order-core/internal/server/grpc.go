@@ -35,13 +35,14 @@ type Server struct {
 	webhookSvc  service.WebhookService
 	ledgerSvc   service.LedgerService
 	disputeSvc  service.DisputeService
-	auditRepo   repo.AdminAuditRepository
-	dbMgr       *repo.Manager
-	webhookDisp *webhook.Dispatcher
-	authTokens  map[string]string
-	rateLimit   float64
-	rateBurst   int
-	logger      *zap.Logger
+	auditRepo            repo.AdminAuditRepository
+	dbMgr                *repo.Manager
+	webhookDisp          *webhook.Dispatcher
+	authTokens           map[string]string
+	authAllowUnauthenticated bool
+	rateLimit            float64
+	rateBurst            int
+	logger               *zap.Logger
 
 	// grpcSrv ListenAndServe 期间持有；Stop() 用来 GracefulStop。
 	grpcSrv *grpc.Server
@@ -84,33 +85,41 @@ type Deps struct {
 	AuditRepo  repo.AdminAuditRepository
 	DBMgr      *repo.Manager
 	WebhookDisp *webhook.Dispatcher
-	AuthTokens   map[string]string
-	RateLimitRPS float64
-	RateBurst    int
-	Logger       *zap.Logger
+	AuthTokens           map[string]string
+	AuthAllowUnauthenticated bool
+	RateLimitRPS         float64
+	RateBurst            int
+	Logger               *zap.Logger
 }
 
-// NewServer 构造
-func NewServer(d Deps) *Server {
+// NewServer 构造。
+//
+// 安全约束：若 d.AuthTokens 为空且 d.AuthAllowUnauthenticated=false，返回 error 阻止启动，
+// 避免配置漏注入导致 gRPC 全 RPC 裸奔。dev/单测场景需显式传 AuthAllowUnauthenticated=true。
+func NewServer(d Deps) (*Server, error) {
 	if d.Logger == nil {
 		d.Logger = zap.NewNop()
 	}
-	return &Server{
-		piSvc:       d.PISvc,
-		chargeSvc:   d.ChargeSvc,
-		refundSvc:   d.RefundSvc,
-		actionSvc:   d.ActionSvc,
-		webhookSvc:  d.WebhookSvc,
-		ledgerSvc:   d.LedgerSvc,
-		disputeSvc:  d.DisputeSvc,
-		auditRepo:   d.AuditRepo,
-		dbMgr:       d.DBMgr,
-		webhookDisp: d.WebhookDisp,
-		authTokens:  d.AuthTokens,
-		rateLimit:   d.RateLimitRPS,
-		rateBurst:   d.RateBurst,
-		logger:      d.Logger,
+	if len(d.AuthTokens) == 0 && !d.AuthAllowUnauthenticated {
+		return nil, errors.New("server: AuthTokens is empty and AuthAllowUnauthenticated=false; refusing to start. Set auth.tokens or explicitly set auth.allow_unauthenticated=true for dev only")
 	}
+	return &Server{
+		piSvc:                    d.PISvc,
+		chargeSvc:                d.ChargeSvc,
+		refundSvc:                d.RefundSvc,
+		actionSvc:                d.ActionSvc,
+		webhookSvc:               d.WebhookSvc,
+		ledgerSvc:                d.LedgerSvc,
+		disputeSvc:               d.DisputeSvc,
+		auditRepo:                d.AuditRepo,
+		dbMgr:                    d.DBMgr,
+		webhookDisp:              d.WebhookDisp,
+		authTokens:               d.AuthTokens,
+		authAllowUnauthenticated: d.AuthAllowUnauthenticated,
+		rateLimit:                d.RateLimitRPS,
+		rateBurst:                d.RateBurst,
+		logger:                   d.Logger,
+	}, nil
 }
 
 // ListenAndServe 启动 gRPC（阻塞）
@@ -127,7 +136,7 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 			LoggingInterceptor(s.logger),
 			MetricsInterceptor(),
 			RateLimitInterceptor(s.rateLimit, s.rateBurst),
-			AuthInterceptor(s.authTokens, s.logger),
+			AuthInterceptor(s.authTokens, s.authAllowUnauthenticated, s.logger),
 		),
 	)
 	orderv1.RegisterPaymentIntentServiceServer(gs, s)

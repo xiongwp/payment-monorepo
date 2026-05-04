@@ -4,6 +4,11 @@ server:
 metrics:
   addr: ":9090"
 
+# 联栈开发模式：跳过鉴权，方便 grpc-client / e2e 直连。生产严禁如此。
+auth:
+  tokens: []
+  allow_unauthenticated: true
+
 sharding:
   db_count: 10
   table_per_db: 10
@@ -31,20 +36,20 @@ database:
   meta:
     name: order_meta
     dsn: "root:password@tcp(shared-meta:3306)/order_meta?charset=utf8mb4&parseTime=True&loc=Local"
-    max_open_conns: 20
-    max_idle_conns: 5
+    max_open_conns: 10
+    max_idle_conns: 3
     conn_max_lifetime: 3600
   shards:
-    - { name: order_db_0, dsn: "root:password@tcp(shared-shard-0:3306)/order_db_0?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
-    - { name: order_db_1, dsn: "root:password@tcp(shared-shard-1:3306)/order_db_1?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
-    - { name: order_db_2, dsn: "root:password@tcp(shared-shard-2:3306)/order_db_2?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
-    - { name: order_db_3, dsn: "root:password@tcp(shared-shard-3:3306)/order_db_3?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
-    - { name: order_db_4, dsn: "root:password@tcp(shared-shard-4:3306)/order_db_4?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
-    - { name: order_db_5, dsn: "root:password@tcp(shared-shard-5:3306)/order_db_5?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
-    - { name: order_db_6, dsn: "root:password@tcp(shared-shard-6:3306)/order_db_6?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
-    - { name: order_db_7, dsn: "root:password@tcp(shared-shard-7:3306)/order_db_7?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
-    - { name: order_db_8, dsn: "root:password@tcp(shared-shard-8:3306)/order_db_8?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
-    - { name: order_db_9, dsn: "root:password@tcp(shared-shard-9:3306)/order_db_9?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
+    - { name: order_db_0, dsn: "root:password@tcp(shared-shard-0:3306)/order_db_0?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+    - { name: order_db_1, dsn: "root:password@tcp(shared-shard-1:3306)/order_db_1?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+    - { name: order_db_2, dsn: "root:password@tcp(shared-shard-2:3306)/order_db_2?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+    - { name: order_db_3, dsn: "root:password@tcp(shared-shard-3:3306)/order_db_3?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+    - { name: order_db_4, dsn: "root:password@tcp(shared-shard-4:3306)/order_db_4?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+    - { name: order_db_5, dsn: "root:password@tcp(shared-shard-5:3306)/order_db_5?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+    - { name: order_db_6, dsn: "root:password@tcp(shared-shard-6:3306)/order_db_6?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+    - { name: order_db_7, dsn: "root:password@tcp(shared-shard-7:3306)/order_db_7?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+    - { name: order_db_8, dsn: "root:password@tcp(shared-shard-8:3306)/order_db_8?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+    - { name: order_db_9, dsn: "root:password@tcp(shared-shard-9:3306)/order_db_9?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
 
 # accounting-system 接入：仅运行期记账走 gRPC（HybridDoubleEntryBooking）。
 # endpoint 通过 compose env 注入（ORDERCORE_ACCOUNTING_ENDPOINT）。

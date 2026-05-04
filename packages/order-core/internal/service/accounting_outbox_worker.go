@@ -167,20 +167,49 @@ func (w *AccountingOutboxWorker) Run(ctx context.Context) {
 	}
 }
 
-// Tick 执行一轮：取 due 行 → 并发调 client → 回写状态。返回本轮抓到的行数（用于自适应退避）。
+// outboxClaimLease 单次 ClaimBatch 的租约时长。
+// process() 内一次 accounting RPC 期望 < 1s，4-way 并发处理 batchSize=100 行
+// 最坏 ~30s 完成；留 5min 余量足够，租约过期后下一轮 worker（甚至本 worker）
+// 可重新 claim 该行重试。
+const outboxClaimLease = 5 * time.Minute
+
+// outboxPerTableClaim 单张分片表单次 claim 上限。
+// 总量上限 = perTable × 100 张表；perTable=batchSize/100 让总量贴近 batchSize。
+// 极端情况下 100 张表都打满 → 100 × perTable 行；这也比 ListPending 单点 limit 公平
+// （旧实现 LIMIT 100 会偏向遍历到第一张满载的表，其余表饿死）。
+func (w *AccountingOutboxWorker) perTableClaimLimit() int {
+	per := w.batchSize / 100
+	if per < 1 {
+		per = 1
+	}
+	return per
+}
+
+// Tick 执行一轮：claim 一批 due 行 → 并发调 client → 回写状态。返回本轮 claim 的行数（用于自适应退避）。
+//
+// 多副本安全：通过 ClaimBatch 的原子 UPDATE，同一行只能被一个 worker claim；
+// 即使两个 pod 同时进入 Tick 也不会重复处理。
 func (w *AccountingOutboxWorker) Tick(ctx context.Context) int {
-	rows, err := w.outboxRepo.ListPending(ctx, time.Now(), w.batchSize)
+	claimToken, claimed, err := w.outboxRepo.ClaimBatch(ctx, time.Now(), w.perTableClaimLimit(), outboxClaimLease)
 	if err != nil {
-		w.logger.Error("list pending accounting outbox", zap.Error(err))
+		w.logger.Error("claim batch accounting outbox", zap.Error(err))
 		return 0
 	}
-	metrics.AcctOutboxBatchSize.Observe(float64(len(rows)))
-	if len(rows) == 0 {
+	metrics.AcctOutboxBatchSize.Observe(float64(claimed))
+	if claimed == 0 {
 		return 0
+	}
+	rows, err := w.outboxRepo.ListByClaimToken(ctx, claimToken)
+	if err != nil {
+		w.logger.Error("list by claim_token", zap.String("token", claimToken), zap.Error(err))
+		// 不 return — 已 claim 的行租约会自然过期重新被抢，不会卡死
+		return claimed
 	}
 	if w.client == nil {
-		w.logger.Debug("accounting client not configured; leaving rows pending",
+		w.logger.Debug("accounting client not configured; leaving rows claimed (lease will expire)",
 			zap.Int("count", len(rows)))
+		// client 未就绪：不 process。租约过期后会重回 pending；
+		// 启动期短暂未配置 endpoint 时的常见路径。
 		return len(rows)
 	}
 	// 并发处理 batch：semaphore 限到 outboxProcessConcurrency。

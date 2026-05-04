@@ -147,6 +147,62 @@ var AcctOutboxTickInterval = prometheus.NewGauge(prometheus.GaugeOpts{
 	Help: "Current adaptive poll interval of accounting outbox worker",
 })
 
+// ─── DB 连接池 ────────────────────────────────────────────────────────────────
+//
+// 由 repo.Manager 在启动期 spawn 一个 goroutine 周期采样 sql.DB.Stats() 写入。
+// 关键告警：
+//   - db_pool_in_use_count / max_open 比例 > 80% 持续 5min → 即将打爆
+//   - db_pool_wait_count 增速 > 100/min → 已经在排队，下一步雪崩
+//   - db_pool_max_idle_closed 增速高 → MaxIdleConns 太小，连接频繁重建
+
+// DBPoolMaxOpen sql.DB.MaxOpenConnections（配置上限）
+var DBPoolMaxOpen = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "order_db_pool_max_open",
+	Help: "Configured max open connections per DB",
+}, []string{"db"})
+
+// DBPoolOpen 当前 open 总数（in_use + idle）
+var DBPoolOpen = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "order_db_pool_open_count",
+	Help: "Current open connections (in_use + idle)",
+}, []string{"db"})
+
+// DBPoolInUse 当前正在被某个 goroutine 持有的连接数
+var DBPoolInUse = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "order_db_pool_in_use_count",
+	Help: "Connections currently checked out by callers",
+}, []string{"db"})
+
+// DBPoolIdle 当前空闲池里的连接数
+var DBPoolIdle = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "order_db_pool_idle_count",
+	Help: "Idle connections in the pool",
+}, []string{"db"})
+
+// DBPoolWaitCount 累计等待获取连接的次数（counter，单调递增）
+var DBPoolWaitCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "order_db_pool_wait_count_total",
+	Help: "Cumulative count of connection waits (rate => contention)",
+}, []string{"db"})
+
+// DBPoolWaitDuration 累计等待时长（秒）
+var DBPoolWaitDuration = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "order_db_pool_wait_duration_seconds_total",
+	Help: "Cumulative seconds blocked waiting for a connection",
+}, []string{"db"})
+
+// DBPoolMaxIdleClosed 因 MaxIdleConns 限制被关闭的连接数（counter）
+var DBPoolMaxIdleClosed = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "order_db_pool_max_idle_closed_total",
+	Help: "Connections closed due to MaxIdleConns limit (raise MaxIdleConns if growing fast)",
+}, []string{"db"})
+
+// DBPoolMaxLifetimeClosed 因 ConnMaxLifetime 限制被关闭的连接数（counter）
+var DBPoolMaxLifetimeClosed = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "order_db_pool_max_lifetime_closed_total",
+	Help: "Connections closed due to ConnMaxLifetime",
+}, []string{"db"})
+
 // Register 把所有指标注册到默认 registry（在 main 里调用一次）
 func Register() {
 	prometheus.MustRegister(
@@ -169,6 +225,14 @@ func Register() {
 		AcctOutboxProcessTotal,
 		AcctOutboxBatchSize,
 		AcctOutboxTickInterval,
+		DBPoolMaxOpen,
+		DBPoolOpen,
+		DBPoolInUse,
+		DBPoolIdle,
+		DBPoolWaitCount,
+		DBPoolWaitDuration,
+		DBPoolMaxIdleClosed,
+		DBPoolMaxLifetimeClosed,
 	)
 }
 

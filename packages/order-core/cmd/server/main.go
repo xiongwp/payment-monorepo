@@ -169,15 +169,34 @@ func newDBManager(v *viper.Viper, logger *zap.Logger) (*repo.Manager, error) {
 	}
 	logger.Info("database ready", zap.Int("shards", mgr.ShardCount()))
 
+	// 启动 DB 连接池采集 goroutine（每 30s 写一次 Stats() → Prometheus）。
+	// 进程结束时跟随 process 自然退出（用 background ctx；后续若想跟 fx 生命周期
+	// 一起优雅关闭，可改成 lc.Append({OnStart, OnStop})）。
+	mgr.StartPoolMetrics(context.Background(), 30*time.Second, logger)
+
 	// Self-healing schema: apply embedded meta-DB migration on startup so
 	// stale volumes don't leave `webhook_deliveries` / `admin_audit_log` /
 	// `gl_*` missing. Every CREATE uses IF NOT EXISTS → no-op on fresh DBs.
 	// Disabled by setting database.skip_auto_migrate=true.
 	if !v.GetBool("database.skip_auto_migrate") && meta.DSN != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 30_000_000_000)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := mgr.ApplyMetaMigration(ctx, logger); err != nil {
 			logger.Warn("meta migration had failures (continuing)", zap.Error(err))
+		}
+	}
+
+	// Shard 自愈迁移：给现存 accounting_outbox_NN 表加 claim_token 列 + idx_claim 索引
+	// （新建的库已在 init 模板里带了）。INFORMATION_SCHEMA 检查后 ALTER，幂等可重复跑。
+	if !v.GetBool("database.skip_auto_migrate") {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		tablePerDB := v.GetInt("sharding.table_per_db")
+		if tablePerDB <= 0 {
+			tablePerDB = 10
+		}
+		if err := mgr.ApplyShardMigrations(ctx, tablePerDB, logger); err != nil {
+			logger.Warn("shard migrations had failures (continuing)", zap.Error(err))
 		}
 	}
 	return mgr, nil
@@ -540,26 +559,28 @@ func newServer(
 	whDisp *webhook.Dispatcher,
 	v *viper.Viper,
 	logger *zap.Logger,
-) *server.Server {
+) (*server.Server, error) {
 	tokens := map[string]string{}
 	for _, t := range v.GetStringSlice("auth.tokens") {
 		tokens[t] = "ok"
 	}
+	allowUnauth := v.GetBool("auth.allow_unauthenticated")
 	return server.NewServer(server.Deps{
-		PISvc:        pi,
-		ChargeSvc:    ch,
-		RefundSvc:    rf,
-		ActionSvc:    act,
-		WebhookSvc:   wh,
-		LedgerSvc:    ledger,
-		DisputeSvc:   dispute,
-		AuditRepo:    auditR,
-		DBMgr:        dbMgr,
-		WebhookDisp:  whDisp,
-		AuthTokens:   tokens,
-		RateLimitRPS: v.GetFloat64("rate_limit.rps"),
-		RateBurst:    v.GetInt("rate_limit.burst"),
-		Logger:       logger,
+		PISvc:                    pi,
+		ChargeSvc:                ch,
+		RefundSvc:                rf,
+		ActionSvc:                act,
+		WebhookSvc:               wh,
+		LedgerSvc:                ledger,
+		DisputeSvc:               dispute,
+		AuditRepo:                auditR,
+		DBMgr:                    dbMgr,
+		WebhookDisp:              whDisp,
+		AuthTokens:               tokens,
+		AuthAllowUnauthenticated: allowUnauth,
+		RateLimitRPS:             v.GetFloat64("rate_limit.rps"),
+		RateBurst:                v.GetInt("rate_limit.burst"),
+		Logger:                   logger,
 	})
 }
 

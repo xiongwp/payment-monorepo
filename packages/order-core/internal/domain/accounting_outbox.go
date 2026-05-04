@@ -60,6 +60,9 @@ type AccountingOutbox struct {
 	NextAttemptAt *time.Time               `gorm:"column:next_attempt_at"                                       json:"next_attempt_at,omitempty"`
 	LastError     string                   `gorm:"column:last_error;type:text"                                  json:"last_error,omitempty"`
 	SentAt        *time.Time               `gorm:"column:sent_at"                                               json:"sent_at,omitempty"`
+	// ClaimToken worker claim 一批待投递行时写入；SELECT WHERE claim_token=? 即可拉到刚 claim 的批次。
+	// 空 = 未被任何 worker claim。Mark{Sent,Retry,Failed} 也带 claim_token 条件以防 lease 过期被抢占。
+	ClaimToken    string                   `gorm:"column:claim_token;type:varchar(64)"                          json:"claim_token,omitempty"`
 	Created       time.Time                `gorm:"column:created;autoCreateTime:milli"                          json:"created"`
 	Updated       time.Time                `gorm:"column:updated;autoUpdateTime:milli"                          json:"updated"`
 }

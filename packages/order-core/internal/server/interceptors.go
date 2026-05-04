@@ -136,15 +136,30 @@ func MetricsInterceptor() grpc.UnaryServerInterceptor {
 // - 读取 metadata["authorization"]，期望 "Bearer <token>" 格式
 // - token 必须等于 validTokens 里的某个才放行
 // - /grpc.health.v1/* 和 /grpc.reflection.v1alpha.* 不拦
+// - 安全默认：tokens 空 → 一律拒绝（防止配置漏注入导致全 RPC 裸奔）
+// - dev / 测试场景需显式传 allowUnauthenticated=true 才放行
+//
 // 真实部署请替换成 JWT 校验 / mTLS / IAM；此处只做最小可用。
-func AuthInterceptor(validTokens map[string]string, logger *zap.Logger) grpc.UnaryServerInterceptor {
+func AuthInterceptor(validTokens map[string]string, allowUnauthenticated bool, logger *zap.Logger) grpc.UnaryServerInterceptor {
 	skip := func(method string) bool {
 		return strings.HasPrefix(method, "/grpc.health.") ||
 			strings.HasPrefix(method, "/grpc.reflection.")
 	}
+	if allowUnauthenticated && logger != nil {
+		logger.Warn("AuthInterceptor: allow_unauthenticated=true — all RPCs accepted without token. DO NOT USE IN PRODUCTION.")
+	}
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		if len(validTokens) == 0 || skip(info.FullMethod) {
+		if skip(info.FullMethod) {
 			return handler(ctx, req)
+		}
+		// 安全默认：没有配置 token 又没显式允许匿名 → 拒绝（双保险，启动期也会 fail）
+		if len(validTokens) == 0 {
+			if allowUnauthenticated {
+				return handler(ctx, req)
+			}
+			logger.Warn("auth rejected: no valid tokens configured",
+				zap.String("method", info.FullMethod))
+			return nil, status.Error(codes.Unauthenticated, "auth not configured")
 		}
 		md, _ := metadata.FromIncomingContext(ctx)
 		auth := strings.TrimSpace(strings.Join(md.Get("authorization"), ""))

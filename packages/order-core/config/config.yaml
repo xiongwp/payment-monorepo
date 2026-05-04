@@ -63,62 +63,74 @@ accounting_outbox:
   max_backoff: 5m
 
 database:
+  # 连接池容量基准：单 pod × 10 分片 × max_open=30 = 300 个连接。
+  # 3 副本 → ~900；6 副本 → ~1800。生产 MySQL max_connections 应 >= 副本数*330 + 缓冲。
+  # 写满风险来源：worker 全表扫描或慢查询持锁；监控 db_pool_in_use_count + db_pool_wait_count。
   meta:
     name: order_meta
     dsn: "root:password@tcp(127.0.0.1:3316)/order_meta?charset=utf8mb4&parseTime=True&loc=Local"
-    max_open_conns: 20
-    max_idle_conns: 5
+    max_open_conns: 10
+    max_idle_conns: 3
     conn_max_lifetime: 3600
   shards:
     - name: order_db_0
       dsn: "root:password@tcp(127.0.0.1:3306)/order_db_0?charset=utf8mb4&parseTime=True&loc=Local"
-      max_open_conns: 100
-      max_idle_conns: 50
+      max_open_conns: 30
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_1
       dsn: "root:password@tcp(127.0.0.1:3307)/order_db_1?charset=utf8mb4&parseTime=True&loc=Local"
-      max_open_conns: 100
-      max_idle_conns: 50
+      max_open_conns: 30
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_2
       dsn: "root:password@tcp(127.0.0.1:3308)/order_db_2?charset=utf8mb4&parseTime=True&loc=Local"
-      max_open_conns: 100
-      max_idle_conns: 50
+      max_open_conns: 30
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_3
       dsn: "root:password@tcp(127.0.0.1:3309)/order_db_3?charset=utf8mb4&parseTime=True&loc=Local"
-      max_open_conns: 100
-      max_idle_conns: 50
+      max_open_conns: 30
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_4
       dsn: "root:password@tcp(127.0.0.1:3310)/order_db_4?charset=utf8mb4&parseTime=True&loc=Local"
-      max_open_conns: 100
-      max_idle_conns: 50
+      max_open_conns: 30
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_5
       dsn: "root:password@tcp(127.0.0.1:3311)/order_db_5?charset=utf8mb4&parseTime=True&loc=Local"
-      max_open_conns: 100
-      max_idle_conns: 50
+      max_open_conns: 30
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_6
       dsn: "root:password@tcp(127.0.0.1:3312)/order_db_6?charset=utf8mb4&parseTime=True&loc=Local"
-      max_open_conns: 100
-      max_idle_conns: 50
+      max_open_conns: 30
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_7
       dsn: "root:password@tcp(127.0.0.1:3313)/order_db_7?charset=utf8mb4&parseTime=True&loc=Local"
-      max_open_conns: 100
-      max_idle_conns: 50
+      max_open_conns: 30
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_8
       dsn: "root:password@tcp(127.0.0.1:3314)/order_db_8?charset=utf8mb4&parseTime=True&loc=Local"
-      max_open_conns: 100
-      max_idle_conns: 50
+      max_open_conns: 30
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_9
       dsn: "root:password@tcp(127.0.0.1:3315)/order_db_9?charset=utf8mb4&parseTime=True&loc=Local"
-      max_open_conns: 100
-      max_idle_conns: 50
+      max_open_conns: 30
+      max_idle_conns: 10
       conn_max_lifetime: 3600
 
 # 商户 / KYC / 渠道凭据 已搬迁至 user-merchant-core。order-core 不再直接调 kms-manage。
+
+# gRPC 鉴权。
+# - tokens 列表里任何一个匹配 metadata["authorization"] = "Bearer <token>" 即放行。
+# - tokens 为空且 allow_unauthenticated 不设/false → NewServer 启动期失败，避免裸奔。
+# - dev / 单测可设 allow_unauthenticated=true 显式放行（NewServer 会打 Warn 日志）。
+# 真实部署应替换成 JWT / mTLS / IAM。
+auth:
+  tokens: []
+  # allow_unauthenticated: false   # 默认安全；本地/单测改 true 显式启用 dev 模式
