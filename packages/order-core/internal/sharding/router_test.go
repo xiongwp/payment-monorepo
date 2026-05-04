@@ -1,8 +1,34 @@
 package sharding
 
 import (
+	"context"
 	"testing"
+
+	"github.com/xiongwp/order-core/internal/shadow"
 )
+
+func TestTableName_NoShadowByDefault(t *testing.T) {
+	r := NewRouterWithConfig(10, 10)
+	if got := r.TableName(context.Background(), "payment_intent", 42); got != "payment_intent_42" {
+		t.Fatalf("default tableName = %s", got)
+	}
+}
+
+func TestTableName_ShadowAppendsSuffix(t *testing.T) {
+	r := NewRouterWithConfig(10, 10)
+	ctx := shadow.WithShadow(context.Background(), true)
+	if got := r.TableName(ctx, "payment_intent", 42); got != "payment_intent_42_shadow" {
+		t.Fatalf("shadow tableName = %s", got)
+	}
+}
+
+func TestTableName_ShadowFalseExplicit(t *testing.T) {
+	r := NewRouterWithConfig(10, 10)
+	ctx := shadow.WithShadow(context.Background(), false)
+	if got := r.TableName(ctx, "charge", 7); got != "charge_07" {
+		t.Fatalf("explicit shadow=false tableName = %s", got)
+	}
+}
 
 func TestRouteByID(t *testing.T) {
 	r := NewRouterWithConfig(10, 10)

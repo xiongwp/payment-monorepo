@@ -1,0 +1,100 @@
+# 同步 monorepo 改动到各 child repo（git subtree push 模式）。
+#
+# 触发：
+#   - push 到 main → 自动同步**有改动**的 package（默认行为）
+#   - 手动触发（workflow_dispatch）→ 可指定 package 列表，或勾选 force_all 强推所有
+#
+# 鉴权：
+#   GitHub Actions 用 SSH key 推 child repo，需要在 monorepo 的 repo settings →
+#   Secrets and variables → Actions 里加：
+#     CHILDREPO_SSH_KEY  — 一把对所有 17 个 child repo 都有 push 权限的 deploy key
+#                          （建议给一个机器人账户，绑定到组织级权限）
+#
+# 行为：
+#   - 检测哪些 packages/<name>/ 在最近一次 push 里被改了
+#   - 对每个有改动的 package 执行 `git subtree push --prefix=packages/<name> <name> main`
+#   - 失败不阻塞其他 package（脚本自带容错）；CI 整体失败时通过 GitHub email 通知
+#
+# 限制：
+#   - subtree push 在 child repo 本身不为线性历史（被人手动改过）时会失败；此时
+#     需要先在本地跑 sync-from-childrepo.sh 回流再重新 sync-to。
+name: Sync to child repos
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'Space-separated package names to sync. Empty = auto-detect from last commit.'
+        required: false
+        default: ''
+      force_all:
+        description: 'Force-push all 17 packages regardless of diff'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    # 需要完整历史，否则 git subtree push 会因为缺 squashed merge commit 失败
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "ci-monorepo-sync"
+          git config user.email "ci-monorepo-sync@users.noreply.github.com"
+
+      - name: Set up SSH for child-repo push
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.CHILDREPO_SSH_KEY }}
+
+      - name: Trust github.com host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+
+      - name: Add child-repo remotes
+        # 镜像 monorepo 本地的 git remote 配置；保持 packages/<name> ↔ remote-name ↔ child-repo 三者同名
+        run: |
+          declare -A REMOTES=(
+            [accounting-admin-web]="git@github.com:xiongwp/accounting-admin-web.git"
+            [accounting-grpc-api]="git@github.com:xiongwp/accounting-grpc-api.git"
+            [accounting-system]="git@github.com:xiongwp/accounting-system.git"
+            [api-gateway]="git@github.com:xiongwp/api-gateway.git"
+            [billing-system]="git@github.com:xiongwp/billing-system.git"
+            [clearing-settlement]="git@github.com:xiongwp/clearing-settlement.git"
+            [id-generator]="git@github.com:xiongwp/id-generator.git"
+            [kms-manage]="git@github.com:xiongwp/kms-manage.git"
+            [order-core]="git@github.com:xiongwp/order-core.git"
+            [payment-admin-web]="git@github.com:xiongwp/payment-admin-web.git"
+            [payment-channel]="git@github.com:xiongwp/payment-channel.git"
+            [payment-core]="git@github.com:xiongwp/payment-core.git"
+            [payment-gateway]="git@github.com:xiongwp/payment-gateway.git"
+            [payment-util]="git@github.com:xiongwp/payment-util.git"
+            [reconplatform]="git@github.com:xiongwp/reconplatform.git"
+            [risk-manage]="git@github.com:xiongwp/risk-manage.git"
+            [user-merchant-core]="git@github.com:xiongwp/user-merchant-core.git"
+          )
+          for name in "${!REMOTES[@]}"; do
+            git remote add "$name" "${REMOTES[$name]}" 2>/dev/null || true
+          done
+          git remote -v
+
+      - name: Sync (push)
+        env:
+          BRANCH: main
+        run: |
+          if [[ "${{ inputs.force_all }}" == "true" ]]; then
+            ./scripts/sync-to-childrepos.sh --all
+          elif [[ -n "${{ inputs.packages }}" ]]; then
+            ./scripts/sync-to-childrepos.sh ${{ inputs.packages }}
+          else
+            ./scripts/sync-to-childrepos.sh
+          fi

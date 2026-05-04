@@ -71,13 +71,13 @@ func NewAccountingOutboxRepository(mgr *Manager, r *sharding.Router) AccountingO
 
 const accountingOutboxTable = "accounting_outbox"
 
-func (r *accountingOutboxRepo) shardOf(piID string) (*gorm.DB, string, error) {
+func (r *accountingOutboxRepo) shardOf(ctx context.Context, piID string) (*gorm.DB, string, error) {
 	dbIdx, tblIdx := r.router.RouteByPrefixedID(piID)
 	db, err := r.mgr.GetShard(dbIdx)
 	if err != nil {
 		return nil, "", err
 	}
-	return db, r.router.GetTableName(accountingOutboxTable, tblIdx), nil
+	return db, r.router.TableName(ctx, accountingOutboxTable, tblIdx), nil
 }
 
 func (r *accountingOutboxRepo) Insert(ctx context.Context, row *domain.AccountingOutbox) (*domain.AccountingOutbox, error) {

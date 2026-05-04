@@ -11,9 +11,12 @@
 package sharding
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/xiongwp/order-core/internal/shadow"
 )
 
 const (
@@ -112,9 +115,24 @@ func (r *Router) FormatID(prefix string, dbIndex, tableIndex int, seq int64) str
 	return fmt.Sprintf("%s_%d%02d%d", prefix, dbIndex, tableIndex, seq)
 }
 
-// GetTableName 拼接 {base}_{tableIdx:02d}
+// GetTableName 拼接 {base}_{tableIdx:02d}（不感知 shadow）。
+//
+// Deprecated: 仅供不便携带 ctx 的极少路径使用（如 schema migrator 自身）。
+// 业务 repo 一律应改用 TableName(ctx, base, tableIndex)，否则压测流量会落到
+// 主表，污染生产数据。
 func (r *Router) GetTableName(base string, tableIndex int) string {
 	return fmt.Sprintf("%s_%02d", base, tableIndex)
+}
+
+// TableName 拼接分片表名并按 ctx 决定是否加 shadow 后缀：
+//
+//	主流量    → "<base>_<NN>"          e.g. payment_intent_42
+//	shadow=1 → "<base>_<NN>_shadow"   e.g. payment_intent_42_shadow
+//
+// 所有 repo 都应该走此方法；调用入口（gRPC interceptor / 内部任务调度）
+// 负责把 shadow 标识写进 ctx。
+func (r *Router) TableName(ctx context.Context, base string, tableIndex int) string {
+	return shadow.TableName(ctx, fmt.Sprintf("%s_%02d", base, tableIndex))
 }
 
 // AllShards 返回所有分片元信息（dbIdx, tblIdx）

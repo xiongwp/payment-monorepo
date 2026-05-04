@@ -32,8 +32,10 @@ func NewTxRunner(mgr *Manager, r *sharding.Router) *TxRunner {
 	return &TxRunner{mgr: mgr, router: r}
 }
 
-// TxManager 事务里的仓储 accessor
+// TxManager 事务里的仓储 accessor。tx ctx 已固定，shadow 标识从中读取，
+// Table() 方法据此决定主表 / 影子表。
 type TxManager struct {
+	ctx    context.Context // 用于 shadow 路由判断
 	tx     *gorm.DB
 	router *sharding.Router
 	tblIdx int
@@ -42,12 +44,13 @@ type TxManager struct {
 // DB 返回当前事务句柄
 func (m *TxManager) DB() *gorm.DB { return m.tx }
 
-// Table 返回本分片里某张表的名字（如 "payment_intent_15"）
+// Table 返回本分片里某张表的名字。shadow ctx 下自动加 _shadow 后缀。
 func (m *TxManager) Table(base string) string {
-	return m.router.GetTableName(base, m.tblIdx)
+	return m.router.TableName(m.ctx, base, m.tblIdx)
 }
 
-// Run 在 piID 所在分片开事务，把 TxManager 传给 fn
+// Run 在 piID 所在分片开事务，把 TxManager 传给 fn。
+// ctx 中的 shadow 标识会贯穿整个事务（同一事务里不会主/影混读）。
 func (r *TxRunner) Run(ctx context.Context, piID string, fn func(tm *TxManager) error) error {
 	if piID == "" {
 		return fmt.Errorf("tx: pi_id required")
@@ -58,6 +61,6 @@ func (r *TxRunner) Run(ctx context.Context, piID string, fn func(tm *TxManager) 
 		return err
 	}
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return fn(&TxManager{tx: tx, router: r.router, tblIdx: tblIdx})
+		return fn(&TxManager{ctx: ctx, tx: tx, router: r.router, tblIdx: tblIdx})
 	})
 }
