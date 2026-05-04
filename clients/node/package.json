@@ -1,0 +1,13 @@
+{
+  "name": "@xiongwp/risk-sdk",
+  "version": "0.1.0",
+  "description": "Server-side SDK for risk-manage HTTP API",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": ["risk", "fraud-detection", "payments"],
+  "license": "MIT"
+}

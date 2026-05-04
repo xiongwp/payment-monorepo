@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "risk-manage.fullname" . }}
+  labels: {{- include "risk-manage.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels: {{- include "risk-manage.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "risk-manage.selectorLabels" . | nindent 8 }}
+      annotations: {{- toYaml .Values.podAnnotations | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 35
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: risk-manage
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - { name: grpc,    containerPort: {{ .Values.service.grpc.port }} }
+            - { name: metrics, containerPort: {{ .Values.service.metrics.port }} }
+          env:
+            - name: RISK_LOG_DEV
+              value: "false"
+            - name: RISK_METRICS_ADDR
+              value: ":{{ .Values.service.metrics.port }}"
+            {{- if .Values.config.audit.chain_signing }}
+            - name: RISK_AUDIT_CHAIN_SIGNING
+              value: "true"
+            - name: RISK_AUDIT_FILE_PATH
+              value: "{{ .Values.config.audit.file.path }}"
+            - name: RISK_AUDIT_FILE_MAX_SIZE_MB
+              value: "{{ .Values.config.audit.file.max_size_mb }}"
+            - name: RISK_AUDIT_FILE_MAX_BACKUPS
+              value: "{{ .Values.config.audit.file.max_backups }}"
+            - name: RISK_AUDIT_FILE_FSYNC_EVERY
+              value: "{{ .Values.config.audit.file.fsync_every }}"
+            {{- end }}
+            {{- if .Values.kafka.enabled }}
+            - name: RISK_AUDIT_KAFKA_BROKERS
+              value: "{{ .Values.kafka.brokers }}"
+            - name: RISK_AUDIT_KAFKA_TOPIC
+              value: "risk.decision.v1"
+            {{- end }}
+            {{- if .Values.clickhouse.enabled }}
+            - name: RISK_AUDIT_CLICKHOUSE_DSN
+              value: "{{ .Values.clickhouse.addr }}"
+            - name: RISK_AUDIT_CLICKHOUSE_DATABASE
+              value: "risk"
+            - name: RISK_AUDIT_CLICKHOUSE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "risk-manage.fullname" . }}-secrets
+                  key: clickhouse-username
+            - name: RISK_AUDIT_CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "risk-manage.fullname" . }}-secrets
+                  key: clickhouse-password
+            {{- end }}
+            {{- if .Values.nebula.enabled }}
+            - name: RISK_LINKSTORE_NEBULA_ADDR
+              value: "{{ .Values.nebula.addr }}"
+            - name: RISK_LINKSTORE_NEBULA_SPACE
+              value: "{{ .Values.nebula.space }}"
+            {{- end }}
+            - name: RISK_COUNTER_REDIS_ADDR
+              value: "redis-master:6379"
+            - name: RISK_SLOW_THRESHOLD_MS
+              value: "{{ .Values.config.slow_threshold_ms }}"
+            - name: RISK_SERVER_SHUTDOWN_TIMEOUT_SEC
+              value: "{{ .Values.config.server.shutdown_timeout_sec }}"
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          startupProbe:
+            httpGet: { path: /healthz, port: metrics }
+            failureThreshold: 30
+            periodSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: audit-data, mountPath: {{ .Values.persistence.mountPath }} }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - name: audit-data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "risk-manage.fullname" . }}-audit
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      affinity: {{- toYaml .Values.affinity | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,658 @@
+# 风控规则配方书 — copy/paste 到 config.yaml `rules:` 列表即可启用。
+#
+# 覆盖 100+ 业务场景。Go-coded 规则（`type: xxx`）+ 表达式规则（`type: dsl`）
+# 混合使用。所有规则都支持：
+#   - mode: shadow | enforce
+#   - rollout: { bucket_field: customer_id, enable_pct: 5 }
+#   - weight: 累加风险分（覆盖默认 review=20 / deny=50）
+#
+# 提交修改后 POST /admin/rules/reload 即可热生效，不重启服务。
+
+rules:
+  # ═══════════════════════════════════════════════════════════════════
+  # 一、注册防刷（已知 20 条）
+  # ═══════════════════════════════════════════════════════════════════
+
+  # 1+2. 同一 IP N 分钟注册 ≥ M（用 register_velocity）
+  - id:      reg_ip_10min_5
+    name:    "同 IP 10 分钟注册 ≥ 5"
+    type:    register_velocity
+    enabled: true
+    config:  '{"pivot":"ip","threshold":5,"decision":"review"}'
+
+  - id:      reg_ip_1h_20
+    name:    "同 IP 1 小时注册 ≥ 20"
+    type:    register_velocity
+    enabled: true
+    config:  '{"pivot":"ip","threshold":20,"decision":"deny"}'
+
+  # 3. 同一设备注册 ≥ 3 个账号
+  - id:      reg_device_3
+    name:    "同设备注册 ≥ 3 账号"
+    type:    register_velocity
+    enabled: true
+    config:  '{"pivot":"device","threshold":3,"decision":"review"}'
+
+  # 4. 同一设备注册间隔 < 30 秒
+  - id:      reg_device_interval_30s
+    name:    "同设备注册间隔 < 30s"
+    type:    register_interval
+    enabled: true
+    config:  '{"pivot":"device","max_sec":30,"decision":"deny"}'
+
+  # 5+6. 代理/IDC IP 注册（DSL）
+  - id:      reg_proxy_or_idc
+    name:    "注册时使用代理 / 数据中心 IP"
+    type:    dsl
+    enabled: true
+    weight:  25
+    config: |
+      {"match_any":true,"conditions":[
+        {"field":"event_type","op":"eq","value":"register"},
+        {"field":"ip_proxy","op":"eq","value":true},
+        {"field":"ip_data_center","op":"eq","value":true}
+      ],"decision":"review"}
+
+  # 7. 虚拟运营商手机号
+  - id:      virtual_phone_carrier
+    name:    "虚拟运营商手机号"
+    type:    dsl
+    enabled: true
+    weight:  20
+    config:  '{"conditions":[{"field":"phone_carrier","op":"eq","value":"virtual"}],"decision":"review"}'
+
+  # 8. 手机号段黑名单（用 blacklist 规则 dim=phone_prefix）
+  - id:      phone_prefix_blacklist
+    name:    "手机号段命中黑名单"
+    type:    blacklist
+    enabled: true
+    config:  '{"dimensions":["phone_prefix"]}'
+
+  # 9. 临时邮箱
+  - id:      disposable_email
+    name:    "临时邮箱注册"
+    type:    email_pattern
+    enabled: true
+    config:  '{"numeric_suffix_min_digits":4,"decision":"deny"}'
+
+  # 10. 邮箱前缀编辑距离 — TODO（需要 history 库；当前用 email_pattern 兜底）
+
+  # 11. 用户名规则化 user001/user002
+  - id:      username_batch
+    name:    "用户名批量模式"
+    type:    username_pattern
+    enabled: true
+    config:  '{"min_trailing_digits":3,"block_numeric_only":true,"decision":"review"}'
+
+  # 12. 注册后未浏览直接跳核心操作
+  - id:      reg_no_pageview
+    name:    "注册后未浏览即操作"
+    type:    dsl
+    enabled: true
+    weight:  20
+    config: |
+      {"conditions":[
+        {"field":"event_type","op":"ne","value":"register"},
+        {"field":"metadata.pageviews_before_action","op":"eq","value":"0"},
+        {"field":"account_age_seconds","op":"lt","value":600}
+      ],"decision":"review"}
+
+  # 13. 注册后 5 分钟内敏感操作
+  - id:      new_account_sensitive_op
+    name:    "新账号 5min 内敏感操作"
+    type:    new_account_high_value
+    enabled: true
+    config:  '{"max_account_age_seconds":300,"min_amount_usd":1,"decision":"review"}'
+
+  # 14. 同设备注册 + 立即切换账号
+  - id:      reg_device_account_switch
+    name:    "同设备多账号"
+    type:    fingerprint_multi_account
+    enabled: true
+    config:  '{"threshold":3,"decision":"review"}'
+
+  # 15. 注册时间秒级聚集（用 register_velocity 1 分钟阈值高）
+  - id:      reg_burst_seconds
+    name:    "秒级注册聚集"
+    type:    register_velocity
+    enabled: true
+    config:  '{"pivot":"ip","threshold":3,"decision":"review"}'
+
+  # 16. 注册来源渠道异常
+  - id:      reg_unknown_channel
+    name:    "未知注册渠道"
+    type:    dsl
+    enabled: true
+    weight:  15
+    config: |
+      {"conditions":[
+        {"field":"event_type","op":"eq","value":"register"},
+        {"field":"metadata.channel","op":"not_in","values":["ios","android","web","official"]}
+      ],"decision":"review"}
+
+  # 17. UA 完全一致批量
+  - id:      ua_batch_reg
+    name:    "同 UA 批量注册"
+    type:    ua_batch_register
+    enabled: true
+    config:  '{"threshold":10,"decision":"deny"}'
+
+  # 18+19+20. 关闭 JS / API 直调 / 缺埋点 — 用 client_tampering
+  - id:      client_tampering
+    name:    "客户端真实性检测"
+    type:    client_tampering
+    enabled: true
+    config:  '{"min_signals":2,"decision":"review"}'
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 二、登录防刷（已知 15 条）
+  # ═══════════════════════════════════════════════════════════════════
+
+  # 1+5. 异地登录 + 失败次数（合并到 login_anomaly）
+  - id:      login_geo_or_brute
+    name:    "异地登录 / 失败暴增"
+    type:    login_anomaly
+    enabled: true
+    config:  '{"max_failed_24h":5,"max_countries":1,"decision":"review"}'
+
+  # 2. 跨城市 < 30 分钟（DSL：依赖 metadata.city + seconds_since_last_login）
+  - id:      cross_city_login
+    name:    "跨城市快速登录"
+    type:    dsl
+    enabled: true
+    weight:  30
+    config: |
+      {"conditions":[
+        {"field":"event_type","op":"eq","value":"login"},
+        {"field":"login_city","op":"ne_field","other":"login_city_prev"},
+        {"field":"seconds_since_last_login","op":"gt","value":0},
+        {"field":"seconds_since_last_login","op":"lt","value":1800}
+      ],"decision":"review"}
+
+  # 3. 新设备首次登录
+  - id:      new_device_login
+    name:    "新设备登录"
+    type:    dsl
+    enabled: true
+    weight:  15
+    config: |
+      {"conditions":[
+        {"field":"event_type","op":"eq","value":"login"},
+        {"field":"is_new_device","op":"eq","value":true}
+      ],"decision":"review"}
+
+  # 4. 新设备 + 敏感操作
+  - id:      new_device_sensitive
+    name:    "新设备敏感操作"
+    type:    dsl
+    enabled: true
+    weight:  35
+    config: |
+      {"conditions":[
+        {"field":"is_new_device","op":"eq","value":true},
+        {"field":"event_type","op":"in","values":["withdraw","bind_card","password_change"]}
+      ],"decision":"deny"}
+
+  # 6. 多账号同设备登录（同 fingerprint_multi_account 复用）
+  # 7. 多账号同 IP 登录（DSL）
+  - id:      multi_account_per_ip
+    name:    "多账号同 IP 登录"
+    type:    dsl
+    enabled: true
+    weight:  20
+    config: |
+      {"conditions":[
+        {"field":"event_type","op":"eq","value":"login"},
+        {"field":"customer_distinct_devices_90d","op":"gt","value":3}
+      ],"decision":"review"}
+
+  # 8. 代理/VPN 登录
+  - id:      login_via_vpn
+    name:    "代理/VPN 登录"
+    type:    dsl
+    enabled: true
+    weight:  20
+    config: |
+      {"match_any":true,"conditions":[
+        {"field":"ip_proxy","op":"eq","value":true},
+        {"field":"ip_vpn","op":"eq","value":true}
+      ],"decision":"review"}
+
+  # 9. 凌晨长期登录
+  - id:      late_night_login
+    name:    "凌晨登录"
+    type:    dsl
+    enabled: true
+    weight:  10
+    config: |
+      {"conditions":[
+        {"field":"event_type","op":"eq","value":"login"},
+        {"field":"hour_of_day","op":"in","values":[0,1,2,3,4]}
+      ],"decision":"review"}
+
+  # 10+13+14. 无鼠标 / Header 异常 / 脚本 UA — 复用 bot_detection + client_tampering
+  - id:      bot_check
+    name:    "Bot / 模拟器检测"
+    type:    bot_detection
+    enabled: true
+    config:  '{"min_signals":2,"min_time_ms":1000,"decision":"review"}'
+
+  # 11. Cookie 频繁变更
+  - id:      cookie_resets
+    name:    "Cookie 频繁变更"
+    type:    dsl
+    enabled: true
+    weight:  15
+    config: |
+      {"conditions":[{"field":"cookie_resets_24h","op":"gt","value":3}],"decision":"review"}
+
+  # 12. Token Replay — 用 IdempotencyKey + RequestBodyHash
+  - id:      replay_attack
+    name:    "Token / Body Replay"
+    type:    dsl
+    enabled: true
+    weight:  40
+    config: |
+      {"conditions":[
+        {"field":"request_body_hash","op":"present"},
+        {"field":"idempotency_key","op":"absent"}
+      ],"decision":"deny"}
+
+  # 15. 登录后立刻切换账号 — 用 fingerprint_multi_account 兜住
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 三、设备真实性 / 模拟器 / 越狱（已知 15 条）
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id:      fp_multi_account
+    name:    "同设备指纹 ≥5 账号"
+    type:    fingerprint_multi_account
+    enabled: true
+    config:  '{"threshold":5,"decision":"deny"}'
+
+  - id:      desktop_no_battery
+    name:    "桌面无电池 + 移动 UA（疑似模拟器）"
+    type:    dsl
+    enabled: true
+    weight:  20
+    config: |
+      {"conditions":[
+        {"field":"battery_present","op":"eq","value":false},
+        {"field":"platform","op":"in","values":["ios","android"]}
+      ],"decision":"review"}
+
+  - id:      device_jailbroken
+    name:    "Root / 越狱设备"
+    type:    dsl
+    enabled: true
+    weight:  25
+    config: '{"conditions":[{"field":"device_rooted","op":"eq","value":true}],"decision":"review"}'
+
+  - id:      timezone_ip_mismatch
+    name:    "设备时区 ≠ IP 推断时区"
+    type:    dsl
+    enabled: true
+    weight:  15
+    config:  '{"conditions":[{"field":"timezone_ip_mismatch","op":"eq","value":true}],"decision":"review"}'
+
+  - id:      emulator_check
+    name:    "模拟器特征"
+    type:    bot_detection
+    enabled: true
+    config:  '{"min_signals":2,"min_time_ms":1500,"decision":"review"}'
+
+  # 设备分辨率固定值 / GPU 一致 / Audio 一致 → 都是 fingerprint_multi_account 的子情形
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 四、行为 / Bot（已知 15 条）
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id:      behavior_anomaly
+    name:    "行为异常（鼠标/打字/点击）"
+    type:    behavior_anomaly
+    enabled: true
+    config: |
+      {"min_time_to_checkout_ms":3000,"min_mouse_entropy":0.5,
+       "bot_click_interval_ms":50,"max_typing_rhythm_cv":0.05,
+       "card_paste_blacklist":true,"decision":"review"}
+
+  # 高频接口 / 并发 / 固定间隔 → reliability MerchantLimiter 兜底（不在 rules）
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 五、关系网络 / Graph（已知 10 条）
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id:      device_10_accounts
+    name:    "1 设备 ≥ 10 账号"
+    type:    link_fanout
+    enabled: true
+    config:  '{"pivot":"device","peer":"customer","threshold":10,"decision":"deny"}'
+
+  - id:      phone_3_accounts
+    name:    "1 手机号 ≥ 3 账号"
+    type:    dsl
+    enabled: true
+    weight:  30
+    config: |
+      {"conditions":[{"field":"customer_distinct_devices_90d","op":"gt","value":2}],"decision":"review"}
+
+  - id:      cross_merchant_share
+    name:    "device/IP 跨多商户"
+    type:    cross_merchant_link
+    enabled: true
+    config:  '{"pivots":["device","ip"],"threshold":3,"decision":"review"}'
+
+  - id:      fraud_neighbor
+    name:    "图谱 fraud 邻居"
+    type:    graph_reputation
+    enabled: true
+    config: |
+      {"hops":2,"hop_decay":0.5,"pivots":["customer","device","ip"],
+       "tag_weights":{"fraud":40,"chargeback":25,"review_rejected":15},
+       "review_min":20,"deny_min":60}
+
+  - id:      multi_hop_ring
+    name:    "多跳欺诈环"
+    type:    link_fanout_multihop
+    enabled: true
+    config:  '{"pivot":"device","peer":"customer","hops":2,"threshold":8,"decision":"review"}'
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 六、交易 / 资金（已知 10 条）
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id:      first_txn_high
+    name:    "新账号首笔大额"
+    type:    new_account_high_value
+    enabled: true
+    config:  '{"max_account_age_seconds":86400,"min_amount_usd":50000,"decision":"review"}'
+
+  - id:      small_then_big
+    name:    "小额测试 + 大额"
+    type:    dsl
+    enabled: true
+    weight:  25
+    config: |
+      {"conditions":[
+        {"field":"prev_payment_status","op":"eq","value":"succeeded"},
+        {"field":"seconds_since_last_payment","op":"lt","value":300},
+        {"field":"amount_usd","op":"gt","value":50000}
+      ],"decision":"review"}
+
+  - id:      txn_velocity_amount
+    name:    "短时多笔累计"
+    type:    velocity_amount
+    enabled: true
+    config:  '{"scope_by":"customer","window_min":10,"max_amount":2000000,"decision":"review"}'
+
+  - id:      card_testing
+    name:    "卡测试（多卡尝试）"
+    type:    card_testing
+    enabled: true
+    config:  '{"pivots":["customer","device","ip"],"threshold":3,"decision":"deny"}'
+
+  - id:      bin_country_mismatch
+    name:    "卡 BIN 国 ≠ 交易国"
+    type:    bin_country
+    enabled: true
+    config:  '{"weight":15}'
+
+  - id:      avs_mismatch
+    name:    "AVS 地址不符"
+    type:    avs_check
+    enabled: true
+
+  - id:      virtual_card
+    name:    "虚拟卡 / prepaid"
+    type:    dsl
+    enabled: true
+    weight:  10
+    config: |
+      {"conditions":[{"field":"card_funding","op":"eq","value":"prepaid"}],"decision":"review"}
+
+  # 充值后立即提现 → DSL: prev_payment_status==succeeded && event_type==withdraw && seconds_since_last < N
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 七、内容 / 群体异常 / 对抗（合并已覆盖 / DSL）
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id:      sanction_check
+    name:    "OFAC / EU 制裁名单"
+    type:    sanction_screening
+    enabled: true
+    config:  '{"required":true,"decision":"deny"}'
+
+  - id:      ml_high_risk
+    name:    "ML 模型高风险"
+    type:    ml_threshold
+    enabled: true
+    config:  '{"review_min":0.5,"deny_min":0.85}'
+
+  - id:      merchant_blocklist
+    name:    "商户拒绝名单"
+    type:    merchant_blocklist
+    enabled: true
+
+  - id:      merchant_allowlist
+    name:    "商户允许名单（VIP 放行）"
+    type:    merchant_allowlist
+    enabled: true
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 八、登录爆破 / 撞库 / ATO（Account Takeover）
+  # ═══════════════════════════════════════════════════════════════════
+
+  # 同 IP 短时多账号登录 = 撞库脚本
+  - id:      login_ip_velocity_5m
+    name:    "同 IP 5 分钟登录 ≥ 30"
+    type:    velocity
+    enabled: true
+    config:  '{"max_count":30,"window_min":5,"scope_by":"ip","apply_events":["login","login.failed"]}'
+
+  - id:      login_ip_velocity_1h_deny
+    name:    "同 IP 1 小时登录 ≥ 200（撞库特征）"
+    type:    velocity
+    enabled: true
+    config:  '{"max_count":200,"window_min":60,"scope_by":"ip","apply_events":["login","login.failed"],"decision":"deny"}'
+
+  # 失败登录爆破
+  - id:      login_fail_burst_5m
+    name:    "同账号 5 分钟失败 ≥ 5（密码爆破）"
+    type:    dsl
+    enabled: true
+    weight:  40
+    config: |
+      {"match_any":false,"conditions":[
+        {"field":"event_type","op":"eq","value":"login.failed"},
+        {"field":"metadata.recent_login_failures","op":"gte","value":"5"}
+      ],"decision":"deny"}
+
+  - id:      login_fail_ip_burst
+    name:    "同 IP 10 分钟失败登录 ≥ 20"
+    type:    velocity
+    enabled: true
+    config:  '{"max_count":20,"window_min":10,"scope_by":"ip","apply_events":["login.failed"],"decision":"deny"}'
+
+  # 异地登录（已有 impossible_travel；这里加更激进的"近 24h 国家变更"信号）
+  - id:      login_geo_change_24h
+    name:    "登录国家与上次成功支付国家不同（24h 内）"
+    type:    dsl
+    enabled: true
+    weight:  20
+    config: |
+      {"match_any":false,"conditions":[
+        {"field":"event_type","op":"eq","value":"login"},
+        {"field":"metadata.last_seen_min","op":"lte","value":"1440"},
+        {"field":"metadata.last_ip_country","op":"ne","value":"${ip_country}"}
+      ],"decision":"review"}
+
+  # 新设备登录后立即改密码 = 典型 ATO（攻击者拿密码就改密锁住账号）
+  - id:      ato_password_change_after_new_device
+    name:    "新设备登录 5min 内改密码（ATO 信号）"
+    type:    dsl
+    enabled: true
+    weight:  50
+    config: |
+      {"match_any":false,"conditions":[
+        {"field":"event_type","op":"eq","value":"password_change"},
+        {"field":"metadata.device_first_seen_min","op":"lte","value":"5"}
+      ],"decision":"deny"}
+
+  # 改密后短时间提现 = ATO 后异地提现
+  - id:      ato_withdraw_after_password_change
+    name:    "改密 1h 内提现"
+    type:    dsl
+    enabled: true
+    weight:  50
+    config: |
+      {"match_any":false,"conditions":[
+        {"field":"event_type","op":"eq","value":"withdraw"},
+        {"field":"metadata.minutes_since_password_change","op":"lte","value":"60"}
+      ],"decision":"deny"}
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 九、薅羊毛 / 福利金套利（Promo Abuse）
+  # ═══════════════════════════════════════════════════════════════════
+
+  # 注册立即提现 = 撸注册礼脚本
+  - id:      welcome_bonus_immediate_withdraw
+    name:    "新账号 24h 内提现（撸注册礼）"
+    type:    account_age
+    enabled: true
+    config:  '{"min_days":1,"apply_events":["withdraw"],"decision":"deny"}'
+
+  - id:      new_account_first_payment_high
+    name:    "新账号 7 天内大额支付"
+    type:    account_age
+    enabled: true
+    config:  '{"min_days":7,"apply_events":["payment.high_value"],"decision":"review"}'
+
+  # 一次性邮箱注册 / 登录 = 大概率薅毛脚本
+  - id:      disposable_email_register
+    name:    "一次性邮箱注册"
+    type:    disposable_email
+    enabled: true
+    config:  '{"apply_events":["register"],"decision":"deny"}'
+
+  # 外部 email reputation API（emailrep.io / Hunter / 自建）
+  # endpoint 空 = no-op（fail-open 接外部）；缓存 5min 防 quota 爆
+  - id:      email_external_reputation
+    name:    "外部邮箱信誉服务"
+    type:    email_reputation
+    enabled: true
+    config:  '{"endpoint":"","min_score":30,"fail_open":true,"cache_sec":300,"decision":"review"}'
+
+  - id:      disposable_email_login
+    name:    "一次性邮箱登录"
+    type:    disposable_email
+    enabled: true
+    config:  '{"apply_events":["login"],"decision":"review"}'
+
+  # 同手机号关联多账号（薅毛常见手段：1 手机注 N 账号撸 N 份福利）
+  - id:      phone_multi_account
+    name:    "同手机号关联 ≥ 3 个账户"
+    type:    link_fanout
+    enabled: true
+    config:  '{"pivot_prefix":"phone:","peer_prefix":"customer:","threshold":3,"decision":"review"}'
+
+  # 邮箱 alias 通用 trick（gmail "+suffix" / dot 变形）→ caller 在
+  # metadata.email_normalized 里塞归一化结果，本规则比对：normalize 后已存在
+  # 关联用户 → 视作重复注册薅毛
+  - id:      email_alias_reuse
+    name:    "邮箱 alias 已被其它账户用过（薅毛 trick）"
+    type:    dsl
+    enabled: true
+    weight:  30
+    config: |
+      {"match_any":false,"conditions":[
+        {"field":"event_type","op":"eq","value":"register"},
+        {"field":"metadata.email_normalized_account_count","op":"gte","value":"1"}
+      ],"decision":"deny"}
+
+  # 注册立即领多次 promo（caller 把 promo_claims_24h 填进 metadata）
+  - id:      promo_claim_burst
+    name:    "24h 领 ≥ 3 张 promo（薅毛）"
+    type:    dsl
+    enabled: true
+    weight:  30
+    config: |
+      {"match_any":false,"conditions":[
+        {"field":"event_type","op":"eq","value":"promo.claim"},
+        {"field":"metadata.promo_claims_24h","op":"gte","value":"3"}
+      ],"decision":"deny"}
+
+  # 同设备领多个账号的 promo
+  - id:      promo_device_multi
+    name:    "同设备 ≥ 2 账号领过 promo"
+    type:    dsl
+    enabled: true
+    weight:  20
+    config: |
+      {"match_any":false,"conditions":[
+        {"field":"event_type","op":"eq","value":"promo.claim"},
+        {"field":"metadata.device_promo_account_count","op":"gte","value":"2"}
+      ],"decision":"review"}
+
+  # 推荐链路成环（A→B→A 或共享设备）= 推荐奖薅毛
+  - id:      referral_chain_circular
+    name:    "推荐链路成环 / 共享设备 / 反向推荐"
+    type:    dsl
+    enabled: true
+    weight:  40
+    config: |
+      {"match_any":true,"conditions":[
+        {"field":"metadata.referral_circular","op":"eq","value":"true"},
+        {"field":"metadata.referrer_same_device","op":"eq","value":"true"}
+      ],"decision":"deny"}
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 十、批量注册补强（基于已有 register_velocity / register_interval 之外）
+  # ═══════════════════════════════════════════════════════════════════
+
+  # IP 子网 /24 批量注册（攻击者用 IP 段轮换绕单 IP 阈值）
+  - id:      register_ipsubnet_velocity
+    name:    "/24 子网 1h 注册 ≥ 50（IP 段轮换）"
+    type:    dsl
+    enabled: true
+    weight:  30
+    config: |
+      {"match_any":false,"conditions":[
+        {"field":"event_type","op":"eq","value":"register"},
+        {"field":"metadata.ip_subnet_register_count_1h","op":"gte","value":"50"}
+      ],"decision":"deny"}
+
+  # 同邮箱域 1h 大量注册（脚本批量给同 corp 域注册子账号）
+  - id:      register_email_domain_burst
+    name:    "同邮箱域 1h 注册 ≥ 30"
+    type:    dsl
+    enabled: true
+    weight:  20
+    config: |
+      {"match_any":false,"conditions":[
+        {"field":"event_type","op":"eq","value":"register"},
+        {"field":"metadata.email_domain_register_count_1h","op":"gte","value":"30"}
+      ],"decision":"review"}
+
+  # ASN 维度限制（云厂商出口 IP 池注册 = 大概率脚本）
+  - id:      register_asn_velocity
+    name:    "同 ASN 1h 注册 ≥ 100（云厂商 IP 池）"
+    type:    dsl
+    enabled: true
+    weight:  25
+    config: |
+      {"match_any":false,"conditions":[
+        {"field":"event_type","op":"eq","value":"register"},
+        {"field":"asn_register_count_1h","op":"gte","value":"100"}
+      ],"decision":"review"}
+
+  # 用户名跟邮箱本地部分完全一致 + 数字递增（user001@…/ user002@…）
+  - id:      register_username_email_pattern
+    name:    "username == email-local + 末尾数字"
+    type:    username_pattern
+    enabled: true
+    config:  '{"min_trailing_digits":3,"block_numeric_only":false,"decision":"review"}'
+
+# 全局 score → verdict 阈值（per-merchant override 见 engine.PolicyStore）
+score_thresholds:
+  review_min: 20
+  deny_min:   50

@@ -1,0 +1,442 @@
+openapi: 3.0.3
+info:
+  title: risk-manage HTTP API
+  description: |
+    商业化风控决策服务的 HTTP 端点。
+
+    **生产推荐**：商户支付前调用走 gRPC `RiskService.Screen`（低延迟）；
+    本 HTTP 文档覆盖：
+    - SDK 端：Web / Mobile session 上报（公网，bearer-less）
+    - 商户后台：webhook 配置 / merchant_list / 自助 stats
+    - 平台 admin：决策审计 / review queue / outcome / feedback / sanction
+
+    所有 admin / merchant 端点都支持 `Authorization: Bearer <api_key>` 鉴权；
+    商户级 key (`rsk_live_<merchant>_*`) 调 admin 端点会自动按 merchant_id 过滤；
+    admin key (`rsk_admin_*`) 拥有平台级访问。
+  version: '1.0'
+  contact:
+    email: support@example.com
+
+servers:
+  - url: https://risk.example.com
+    description: production
+  - url: https://risk-sandbox.example.com
+    description: sandbox（test API key + risk_test_* 触发器走预定义场景）
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        API key 格式：
+        - `rsk_live_<merchant_id>_<random>`：商户生产 key（绑定单 merchant，租户隔离）
+        - `rsk_test_<merchant_id>_<random>`：商户测试 key（沙箱触发器生效）
+        - `rsk_admin_<random>`：平台 admin
+        - `rsk_internal_<random>`：内部服务（payment-core / dispute）
+
+  schemas:
+    Verdict:
+      type: string
+      enum: [ALLOW, REVIEW, DENY]
+
+    RiskLevel:
+      type: string
+      enum: [low, medium, high, critical]
+
+    RuleHit:
+      type: object
+      required: [rule_id, decision, detail]
+      properties:
+        rule_id:    { type: string, example: amount_over_50k }
+        rule_name:  { type: string, example: "单笔上限 ₱50,000" }
+        decision:   { $ref: '#/components/schemas/Verdict' }
+        detail:     { type: string, example: "amount 60000 > limit 50000" }
+        force:      { type: boolean, description: "true = 短路决策（merchant_block / sanction 命中）" }
+
+    DecisionAudit:
+      type: object
+      required: [decision_id, occurred_at, verdict, risk_score, risk_level]
+      properties:
+        decision_id:        { type: string, example: "1d4f2c8a9b0e6f3a4d2c1b8e7f9a0d3c" }
+        occurred_at:        { type: string, format: date-time }
+        verdict:            { $ref: '#/components/schemas/Verdict' }
+        risk_score:         { type: integer, minimum: 0, maximum: 100 }
+        risk_level:         { $ref: '#/components/schemas/RiskLevel' }
+        recommended_action: { type: string, enum: ["", block, step_up_3ds] }
+        hit_rules:          { type: array, items: { type: string } }
+        eval_duration_ms:   { type: number }
+
+    ReviewItem:
+      type: object
+      required: [id, merchant_id, status, created_at]
+      properties:
+        id:                { type: string, description: "= audit.decision_id" }
+        merchant_id:       { type: string }
+        customer_id:       { type: string }
+        payment_intent_id: { type: string }
+        amount:            { type: integer, format: int64, description: "minor unit (分)" }
+        currency:          { type: string }
+        risk_score:        { type: integer }
+        reasons:           { type: array, items: { type: string } }
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+        created_at:    { type: string, format: date-time }
+        decided_at:    { type: string, format: date-time, nullable: true }
+        decided_by:    { type: string }
+        decide_reason: { type: string }
+
+    Outcome:
+      type: object
+      required: [decision_id, source, is_fraud]
+      properties:
+        decision_id: { type: string }
+        source:
+          type: string
+          enum: [review_human, dispute, merchant_confirm]
+        is_fraud: { type: boolean }
+        at:       { type: string, format: date-time }
+        actor:    { type: string }
+        notes:    { type: string }
+
+    MerchantListEntry:
+      type: object
+      required: [merchant_id, kind, dimension, value]
+      properties:
+        merchant_id: { type: string }
+        kind:
+          type: string
+          enum: [allow, block]
+        dimension:
+          type: string
+          enum: [customer, device, ip, card_fingerprint, email]
+        value:      { type: string }
+        reason:     { type: string }
+        actor:      { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, nullable: true }
+
+    WebhookEvent:
+      type: object
+      required: [id, type, created_at, merchant_id, data]
+      properties:
+        id:          { type: string, description: "evt_<32hex>" }
+        type:
+          type: string
+          enum: [risk.review.created, risk.review.decided, risk.decision.denied]
+        created_at:  { type: string, format: date-time }
+        merchant_id: { type: string }
+        data:
+          type: object
+          description: |
+            事件相关业务字段。risk.review.created 含 decision_id / verdict /
+            risk_score / hits / payment_intent_id；risk.review.decided 含
+            decided_by / status / decide_reason。
+
+    SessionCreateRequest:
+      type: object
+      required: [fingerprint_hash]
+      properties:
+        fingerprint_hash:     { type: string, description: "Web/Mobile SDK 算的综合 hash" }
+        canvas_fingerprint:   { type: string }
+        webgl_renderer:       { type: string }
+        audio_context_hash:   { type: string }
+        screen_wxh:           { type: string, example: "1920x1080" }
+        timezone:             { type: string, example: "Asia/Shanghai" }
+        language:             { type: string, example: "zh-CN" }
+        hardware_concurrency: { type: integer }
+        platform:             { type: string, enum: [web, ios, android, weChat-miniprogram] }
+        user_agent:           { type: string }
+
+    SessionCreateResponse:
+      type: object
+      required: [session_id]
+      properties:
+        session_id: { type: string, description: "32 hex；填到后续 Screen.risk_session_id" }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+
+paths:
+  # ── SDK / 公网 ────────────────────────────────────────────────
+  /v1/risk/session:
+    post:
+      tags: [SDK]
+      summary: 创建 risk session（Web/Mobile SDK 上报指纹）
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionCreateRequest' }
+      responses:
+        '200':
+          description: session 创建成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionCreateResponse' }
+
+  /v1/risk/session/finalize:
+    post:
+      tags: [SDK]
+      summary: 提交 behavior 信号（鼠标轨迹熵 / 打字节奏等）
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_id]
+              properties:
+                session_id:               { type: string }
+                time_to_checkout_ms:      { type: integer }
+                mouse_movement_entropy:   { type: number }
+                click_interval_ms:        { type: integer }
+                scroll_speed_px_per_sec:  { type: number }
+                typing_rhythm_cv:         { type: number }
+                keystroke_count:          { type: integer }
+                pasted_fields:            { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: 已合并
+
+  # ── Admin: 决策审计 ──────────────────────────────────────────
+  /admin/audit/decisions:
+    get:
+      tags: [Admin / Audit]
+      summary: 最近 N 条决策审计（in-process ring buffer）
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 1000 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DecisionAudit' }
+
+  # ── Admin: review queue ──────────────────────────────────────
+  /admin/review/list:
+    get:
+      tags: [Admin / Review]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, approved, rejected] }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: review items
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ReviewItem' }
+
+  /admin/review/get:
+    get:
+      tags: [Admin / Review]
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: review item
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewItem' }
+
+  /admin/review/decide:
+    post:
+      tags: [Admin / Review]
+      summary: 决议一条 pending review；自动写一条 SourceReviewHuman outcome
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, action, actor]
+              properties:
+                id:     { type: string }
+                action: { type: string, enum: [approve, reject] }
+                actor:  { type: string }
+                reason: { type: string }
+      responses:
+        '200':
+          description: decided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewItem' }
+        '409':
+          description: item not pending（已决议或不存在）
+
+  # ── Admin: outcome feedback ──────────────────────────────────
+  /admin/feedback/recent:
+    get:
+      tags: [Admin / Feedback]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Outcome' }
+
+  /admin/feedback/get:
+    get:
+      tags: [Admin / Feedback]
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: outcomes for decision_id
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Outcome' }
+
+  /admin/feedback/outcome:
+    post:
+      tags: [Admin / Feedback]
+      summary: 记录一条欺诈反馈（dispute / 商户确认 / 人工 review 自动写入）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Outcome' }
+      responses:
+        '200': { description: ok }
+
+  # ── Admin: 商户 allow/block list ──────────────────────────────
+  /admin/merchant_list:
+    get:
+      tags: [Admin / Merchant List]
+      parameters:
+        - { name: merchant_id, in: query, required: true, schema: { type: string } }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [allow, block] }
+      responses:
+        '200':
+          description: entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/MerchantListEntry' }
+    post:
+      tags: [Admin / Merchant List]
+      parameters:
+        - name: ttl
+          in: query
+          description: "ISO duration 简化（例 720h），自动算 expires_at"
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MerchantListEntry' }
+      responses:
+        '200': { description: added }
+
+  /admin/merchant_list/delete:
+    post:
+      tags: [Admin / Merchant List]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [merchant_id, kind, dimension, value]
+              properties:
+                merchant_id: { type: string }
+                kind:        { type: string, enum: [allow, block] }
+                dimension:   { type: string }
+                value:       { type: string }
+      responses:
+        '200': { description: removed }
+
+  # ── Webhook（被动回调接口；商户应实现并提供 URL） ─────────────
+  '/_webhook_receiver_example_':
+    post:
+      tags: [Webhook (商户实现)]
+      summary: 商户应实现的 webhook 端点（risk-manage 调用）
+      description: |
+        商户在 webhook.subscriptions.url 配置一个 HTTPS URL，risk-manage 会
+        在 risk.review.created / risk.review.decided / risk.decision.denied
+        事件时 POST JSON 过来。商户需：
+
+        1. 用 webhook.subscriptions.secret 验签：
+           ```
+           expected = "sha256=" + hmac_sha256(secret, raw_body)
+           expected == request.headers["X-Risk-Signature"]
+           ```
+        2. 200 = 已收到（risk-manage 不再重投递）
+        3. 4xx/5xx → 指数退避重试 5 次（500ms→1s→2s→4s→8s + jitter）
+      security: []
+      parameters:
+        - name: X-Risk-Event-Id
+          in: header
+          required: true
+          schema: { type: string, example: "evt_abc123..." }
+        - name: X-Risk-Event-Type
+          in: header
+          required: true
+          schema: { type: string, enum: [risk.review.created, risk.review.decided, risk.decision.denied] }
+        - name: X-Risk-Signature
+          in: header
+          required: true
+          schema: { type: string, example: "sha256=abc..." }
+        - name: X-Risk-Delivery-Attempt
+          in: header
+          schema: { type: integer, example: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookEvent' }
+      responses:
+        '200': { description: 已确认接收（不再重投递） }
+
+tags:
+  - name: SDK
+    description: Web / Mobile SDK 上报端点（公网，无 auth；商户在前端集成）
+  - name: Admin / Audit
+    description: 决策审计 / 取证查询
+  - name: Admin / Review
+    description: 人工审核队列管理
+  - name: Admin / Feedback
+    description: 欺诈反馈（ML 训练 label）
+  - name: Admin / Merchant List
+    description: 商户专属 allow / block 名单
+  - name: Webhook (商户实现)
+    description: risk-manage 主动推送给商户的事件结构

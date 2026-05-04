@@ -1,0 +1,61 @@
+# risk-manage ConfigMap — envFrom 注入；非敏感配置在这里。
+# 敏感字段 (CH 密码、admin token、Redis 密码) 走 secret.example.yaml。
+#
+# RISK_ env 前缀对应 viper key (e.g. RISK_AUDIT_KAFKA_BROKERS → audit.kafka.brokers)。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: risk-manage-config
+data:
+  # ── 主路径 ──────────────────────────────
+  RISK_LOG_DEV: "false"
+  RISK_METRICS_ADDR: ":9590"
+  RISK_SERVER_SHUTDOWN_TIMEOUT_SEC: "15"
+  RISK_SLOW_THRESHOLD_MS: "100"
+
+  # ── Counter Redis backend (多实例共享 velocity) ─
+  RISK_COUNTER_REDIS_ADDR: "redis-master:6379"
+  RISK_COUNTER_REDIS_DB: "0"
+  RISK_COUNTER_REDIS_PREFIX: "risk:cnt:"
+  RISK_COUNTER_CACHE_TTL: "1s"
+
+  # ── Audit Kafka sink (主 + ClickHouse Kafka engine 消费) ─
+  RISK_AUDIT_KAFKA_BROKERS: "kafka-bootstrap:9092"
+  RISK_AUDIT_KAFKA_TOPIC: "risk.decision.v1"
+
+  # ── Audit ClickHouse 直连 (可选；生产建议只走 Kafka) ─
+  RISK_AUDIT_CLICKHOUSE_DSN: "clickhouse:9000"
+  RISK_AUDIT_CLICKHOUSE_DATABASE: "risk"
+  RISK_AUDIT_CLICKHOUSE_USERNAME: "risk_writer"
+
+  # ── Audit 文件兜底 + 链式签名 ─
+  RISK_AUDIT_FILE_PATH: "/var/lib/risk-manage/audit.log"
+  RISK_AUDIT_FILE_MAX_SIZE_MB: "256"
+  RISK_AUDIT_FILE_MAX_BACKUPS: "10"
+  RISK_AUDIT_FILE_FSYNC_EVERY: "100"
+  RISK_AUDIT_CHAIN_SIGNING: "true"
+
+  # ── NebulaGraph (device 关联图) ─
+  RISK_LINKSTORE_NEBULA_ADDR: "nebula-graphd:9669"
+  RISK_LINKSTORE_NEBULA_SPACE: "risk_graph"
+
+  # ── Webhook DLQ ─
+  RISK_WEBHOOK_BUFFER: "1024"
+  RISK_WEBHOOK_WORKERS: "4"
+  RISK_WEBHOOK_MAX_RETRIES: "5"
+  RISK_WEBHOOK_DLQ_CAPACITY: "4096"
+
+  # ── ML drift / outcome coverage ─
+  RISK_MLSCORE_DRIFT_RESERVOIR_SIZE: "1000"
+  RISK_MLSCORE_DRIFT_THRESHOLD_PCT: "30"
+  RISK_OUTCOME_COVERAGE_WINDOW_DAYS: "7"
+  RISK_RULE_INSIGHTS_SILENCE_WINDOW_DAYS: "7"
+  RISK_MLSCORE_ABTEST_CAPACITY: "4096"
+
+  # ── 限流 ─
+  RISK_RATE_LIMIT_DEFAULT_RPS: "500"
+  RISK_RATE_LIMIT_DEFAULT_BURST: "1000"
+
+  # ── 外部 ─
+  RISK_OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector.monitoring:4317"
+  RISK_EXTSIGNAL_CACHE_TTL_MINUTES: "60"

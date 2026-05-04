@@ -1,0 +1,69 @@
+name: ci
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=mod
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: risk-manage
+    steps:
+      - name: Checkout risk-manage
+        uses: actions/checkout@v4
+        with: { path: risk-manage }
+      - name: Checkout sibling payment-util (try matching branch)
+        id: payment_util_match
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/payment-util
+          path: payment-util
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Checkout sibling payment-util (default branch fallback)
+        if: steps.payment_util_match.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/payment-util
+          path: payment-util
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: main
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+          cache-dependency-path: risk-manage/go.sum
+      - name: Tidy sibling payment-util go.sum
+        working-directory: payment-util
+        run: go mod tidy
+      - name: Tidy go.sum (auto-add payment-util entries)
+        run: go mod tidy
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -count=1 ./...
+      # Lint 仍 non-blocking（cosmetic）；vuln scan 改为硬失败 — CVE 级问题
+      # 不应混进 main。已知 false-positive 可在 govulncheck.yaml 加 ignore 规则。
+      - name: Vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+      - name: Lint
+        continue-on-error: true
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62
+          working-directory: risk-manage
+          args: --timeout=5m

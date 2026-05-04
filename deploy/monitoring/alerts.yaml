@@ -1,0 +1,151 @@
+# Prometheus alerting rules for risk-manage.
+#
+# 部署：放进 Prometheus operator 的 PrometheusRule CRD，或者 prometheus.yml
+# 的 rule_files: 列表加这个文件。
+#
+# 严重程度：
+#   page         立即电话 / 短信叫人 (核心 SLA 受损)
+#   ticket       值班 ticket，1 小时内响应
+#   notify       Slack / 邮件，运营自查
+groups:
+  - name: risk-manage-sla
+    interval: 30s
+    rules:
+      # ── 主路径 SLA ─────────────────────────────
+      - alert: RiskScreenLatencyHigh
+        expr: histogram_quantile(0.99, rate(risk_screen_duration_seconds_bucket[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: page
+          service: risk-manage
+        annotations:
+          summary: "Screen p99 > 100ms"
+          description: "P99 = {{ $value }}s; 检查最慢 stage (risk_screen_stage_duration_seconds_bucket)"
+
+      - alert: RiskScreenErrorRate
+        expr: rate(risk_grpc_request_total{code!="OK"}[5m]) / rate(risk_grpc_request_total[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: page
+          service: risk-manage
+        annotations:
+          summary: "Screen error rate > 1%"
+
+  - name: risk-manage-models
+    interval: 1m
+    rules:
+      # ── ML 模型 ─────────────────────────────
+      - alert: MLScoreDrifted
+        expr: risk_ml_score_drifted == 1
+        for: 30m
+        labels:
+          severity: ticket
+          service: risk-manage
+        annotations:
+          summary: "ML score 分布漂移"
+          description: "Δ% = {{ $value }}; 调 admin /admin/mlscore/drift 看具体指标"
+
+      - alert: MLOverrideActive
+        expr: increase(risk_screen_total[1h]) > 0 and on() (risk_screen_total{ml_model_ver=~".*disabled-by-operator.*"} > 0)
+        for: 1h
+        labels:
+          severity: notify
+          service: risk-manage
+        annotations:
+          summary: "ML 降级开关已激活超过 1 小时；检查是否还需要"
+
+  - name: risk-manage-rules
+    interval: 5m
+    rules:
+      # ── 规则健康 ─────────────────────────────
+      - alert: RuleSilent7d
+        expr: risk_rule_last_hit_age_seconds > 7 * 24 * 3600
+        for: 1h
+        labels:
+          severity: notify
+          service: risk-manage
+        annotations:
+          summary: "规则 {{ $labels.rule_id }} 7 天没命中"
+          description: "可能配错 / 数据格式变了 / 规则过期；admin /admin/rules/insights 看明细"
+
+      - alert: RuleLowPrecision
+        expr: risk_rule_precision < 0.3 and risk_rule_roi > 0
+        for: 1d
+        labels:
+          severity: notify
+          service: risk-manage
+        annotations:
+          summary: "规则 {{ $labels.rule_id }} precision < 30%"
+          description: "误伤多；考虑切 shadow 模式或调阈值"
+
+  - name: risk-manage-feedback
+    interval: 5m
+    rules:
+      # ── outcome 反馈链路 ─────────────────────
+      - alert: OutcomeCoverageLow
+        expr: risk_outcome_coverage_ratio{verdict="DENY"} < 0.5
+        for: 1h
+        labels:
+          severity: ticket
+          service: risk-manage
+        annotations:
+          summary: "DENY 决策 coverage < 50% 持续 1h"
+          description: "dispute hook / merchant_confirm 端点可能挂；查 order-core dispute 同步状态"
+
+      - alert: WebhookDLQDepthGrowing
+        expr: risk_webhook_dlq_depth > 100 and increase(risk_webhook_dlq_depth[1h]) > 50
+        for: 30m
+        labels:
+          severity: ticket
+          service: risk-manage
+        annotations:
+          summary: "Webhook DLQ 增长 > 50 / 1h"
+          description: "商户后端持续失败；admin /admin/webhook/dlq 查列表"
+
+  - name: risk-manage-storage
+    interval: 1m
+    rules:
+      # ── 存储层健康 ─────────────────────────────
+      - alert: AuditAsyncSinkBackpressure
+        expr: increase(risk_audit_async_dropped_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: page
+          service: risk-manage
+        annotations:
+          summary: "Audit async sink 在丢消息"
+          description: "inner sink (CH/Kafka/File) 跟不上；调 queueSize / batchSize 或加 inner sink 容量"
+
+      - alert: CounterCacheLowHitRate
+        expr: rate(risk_counter_cache_hit_total[5m]) / (rate(risk_counter_cache_hit_total[5m]) + rate(risk_counter_cache_miss_total[5m])) < 0.5
+        for: 30m
+        labels:
+          severity: notify
+          service: risk-manage
+        annotations:
+          summary: "Counter cache hit rate < 50%"
+          description: "调大 counter.cache_ttl 或检查热点 key"
+
+  - name: risk-manage-runtime
+    interval: 1m
+    rules:
+      # ── 进程健康 ─────────────────────────────
+      - alert: GoroutineLeak
+        expr: risk_goroutine_count > 1000 and deriv(risk_goroutine_count[10m]) > 0
+        for: 30m
+        labels:
+          severity: page
+          service: risk-manage
+        annotations:
+          summary: "Goroutine count > 1000 且增长中（疑似泄漏）"
+          description: "拉 /admin/debug/pprof/goroutine 看具体阻塞点"
+
+      - alert: HeapGrowth
+        expr: deriv(risk_heap_inuse_bytes[1h]) > 10485760  # 10MB/h
+        for: 2h
+        labels:
+          severity: ticket
+          service: risk-manage
+        annotations:
+          summary: "Heap growth > 10MB/h"
+          description: "拉 /admin/debug/pprof/heap diff 看具体分配栈"

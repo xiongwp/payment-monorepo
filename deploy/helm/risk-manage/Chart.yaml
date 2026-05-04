@@ -1,0 +1,14 @@
+apiVersion: v2
+name: risk-manage
+description: Risk-management decision service (rules + ML + audit chain + DLQ)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - payment
+  - risk
+  - fraud-detection
+  - ml-scoring
+maintainers:
+  - name: payment-platform-team
+home: https://github.com/xiongwp/risk-manage

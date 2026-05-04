@@ -1,0 +1,91 @@
+server:
+  grpc_port: 9490
+
+metrics:
+  addr: ":9590"
+
+# ─── 风控规则配置 ────────────────────────────────────────────────────
+# 每条规则：
+#   id:       唯一标识
+#   name:     人可读名
+#   type:     规则类型（amount_limit / velocity / blacklist / country_block）
+#   enabled:  是否生效
+#   config:   该类型特有的 JSON 参数
+#
+# decision 逻辑：所有 enabled 规则按序 evaluate，取最严厉的（DENY > REVIEW > ALLOW）。
+rules:
+  # ── 限额 ──
+  - id: limit_per_txn_50k
+    name: "单笔上限 ₱50,000"
+    type: amount_limit
+    enabled: true
+    config: '{"max_per_txn": 5000000, "scope_by": "merchant", "currency": "PHP"}'
+
+  - id: limit_daily_merchant_200k
+    name: "商户日累计上限 ₱200,000"
+    type: amount_limit
+    enabled: true
+    config: '{"max_daily": 20000000, "scope_by": "merchant", "currency": "PHP"}'
+
+  - id: limit_daily_customer_100k
+    name: "用户日累计上限 ₱100,000"
+    type: amount_limit
+    enabled: true
+    config: '{"max_daily": 10000000, "scope_by": "customer", "currency": "PHP"}'
+
+  - id: limit_monthly_customer_500k
+    name: "用户月累计上限 ₱500,000"
+    type: amount_limit
+    enabled: true
+    config: '{"max_monthly": 50000000, "scope_by": "customer", "currency": "PHP"}'
+
+  # ── 速率 ──
+  - id: velocity_customer_10_5m
+    name: "用户 5 分钟内不超过 10 笔"
+    type: velocity
+    enabled: true
+    config: '{"max_count": 10, "window_min": 5, "scope_by": "customer"}'
+
+  - id: velocity_ip_20_10m
+    name: "同 IP 10 分钟内不超过 20 笔"
+    type: velocity
+    enabled: true
+    config: '{"max_count": 20, "window_min": 10, "scope_by": "ip"}'
+
+  - id: velocity_device_5_3m
+    name: "同设备 3 分钟内不超过 5 笔"
+    type: velocity
+    enabled: true
+    config: '{"max_count": 5, "window_min": 3, "scope_by": "device"}'
+
+  # ── 黑名单 ──
+  - id: bl_merchant
+    name: "商户黑名单"
+    type: blacklist
+    enabled: true
+    config: '{"dimension": "merchant"}'
+
+  - id: bl_customer
+    name: "用户黑名单"
+    type: blacklist
+    enabled: true
+    config: '{"dimension": "customer"}'
+
+  - id: bl_ip
+    name: "IP 黑名单"
+    type: blacklist
+    enabled: true
+    config: '{"dimension": "ip"}'
+
+  - id: bl_device
+    name: "设备黑名单"
+    type: blacklist
+    enabled: true
+    config: '{"dimension": "device"}'
+
+  # ── 国家 / 币种 ──
+  - id: country_whitelist_ph
+    name: "仅允许 PH 交易"
+    type: country_block
+    enabled: true
+    config: '{"mode": "allow", "countries": ["PH"], "currencies": ["PHP"]}'

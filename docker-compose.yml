@@ -1,0 +1,49 @@
+# risk-manage minimal compose — 只起 risk-manage 自己。
+#
+# 完整生产栈（含依赖系统 Redis / Kafka / ClickHouse / NebulaGraph /
+# Prometheus / Grafana）由 payment-admin-web 仓的 deploy.sh 编排：
+#
+#   cd ../payment-admin-web
+#   ./deploy.sh up
+#
+# 它会先起 risk-stack (依赖服务) 再起 risk-manage 跟其它子服务。
+#
+# 想单独测 risk-manage 的话用本 compose；记得自己起依赖：
+#   docker compose -f ../payment-admin-web/deploy/overrides/risk-stack.yml up -d
+#   GITHUB_TOKEN=ghp_xxx docker compose up -d
+#
+# 通过 external network 跟 payment-stack 联通让 payment-core 调到。
+networks:
+  default:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true
+
+services:
+  risk-manage:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      secrets:
+        - GITHUB_TOKEN
+    image: risk-manage:local
+    restart: unless-stopped
+    # 端口用 range 而不是固定映射，让 docker compose --scale risk-manage=N
+    # 给每个副本分到不同的宿主机端口（否则两个副本抢 9490 会
+    # "Bind for 0.0.0.0:9490 failed: port is already allocated"）。
+    # 默认 N=2（见 payment-admin-web/deploy.sh 的 DEPLOY_REPLICAS_RISK_MANAGE），
+    # 给 10 个端口宽量，跟 accounting-system 同模式。
+    ports:
+      - "9490-9499:9490"   # gRPC
+      - "9590-9599:9590"   # admin / metrics / pprof
+    environment:
+      RISK_LOG_DEV: "false"
+      # ── 服务发现（自注册到 etcd 让 payment-core 发现）──
+      RISK_REGISTRY_ENDPOINTS: "etcd:2379"
+      # 依赖系统通过 payment-admin-web/deploy/overrides/risk-manage.yml
+      # 注入 (Redis/Kafka/CH/Nebula DSN)；本文件不包含 — 给单仓 dev 跑
+
+# BuildKit secret：从环境变量读取 GITHUB_TOKEN。
+# 用法：GITHUB_TOKEN=ghp_xxx docker compose build
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN
