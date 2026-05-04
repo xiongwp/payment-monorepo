@@ -62,7 +62,7 @@ for i in 0 1 2 3 4 5 6 7 8 9; do
     echo "-- ==== accounting-system schema ===="
     cat "$acct_init"
     echo ""
-    echo "-- ==== accounting-system 平台账户 seed (000_PLATFORM_PROFIT 等) ===="
+    echo "-- ==== accounting-system 平台账户 seed (按位编码 account_no) ===="
     cat "$acct_seed"
   } > "$out"
 done

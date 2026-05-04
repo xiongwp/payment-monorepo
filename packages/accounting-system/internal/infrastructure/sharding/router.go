@@ -84,39 +84,24 @@ func (r *Router) RouteByUserID(userID int64) (dbIndex, globalTableIndex int) {
 	return r.RouteByID(userID)
 }
 
-// RouteByAccountNo 按账户号路由。
+// RouteByAccountNo 按账户号路由（按位编码 layout）。
 //
-// 主格式（generateAccountNo 生成的用户账户）：
-//   前3字符 = {dbIdx:1d}{globalTableIdx:02d}
-//   例："115..." → dbIndex=1, globalTableIndex=15（15/10=1 ✓）
+// account_no 是 EncodeAccountID 生成的 19 位 int64 的十进制字符串：
+//   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
 //
-// 平台账户格式（数据库初始化脚本 seed）：
-//   前3字符 = {0}{globalTableIdx:02d}  （首字符固定为 '0'，非 dbIdx）
-//   例："010_PLATFORM_..." → globalTableIdx=10 → dbIndex=1 → account_10
-//        "011_PLATFORM_..." → globalTableIdx=11 → dbIndex=1 → account_11
-//
-// 区分逻辑：先尝试主格式约束（tbl/tablePerDB==db）；约束失败时说明首字符是
-// 固定前缀 '0' 而非 dbIdx，此时直接将 chars[1:3] 作为 globalTableIdx 并
-// 推导 dbIndex。
+// 直接 ParseInt + AccountIDDBIndex/TableIndex 取出 dbIdx/globalTblIdx，
+// 不再字符串切片。所有账户（包括平台 fleet）一律走同一 layout，
+// 无需特殊路径判别。
 func (r *Router) RouteByAccountNo(accountNo string) (dbIndex, globalTableIndex int) {
-	if len(accountNo) >= 3 {
-		if db, err := strconv.Atoi(accountNo[:1]); err == nil {
-			if tbl, err := strconv.Atoi(accountNo[1:3]); err == nil {
-				total := r.dbCount * r.tablePerDB
-				if db < r.dbCount && tbl < total && tbl/r.tablePerDB == db {
-					// Primary: {dbIdx:1d}{globalTable:02d} — normal user accounts
-					return db, tbl
-				}
-				// Constraint failed: first char is a literal '0' prefix, not dbIdx.
-				// Treat chars[1:3] as the global table index directly.
-				// e.g. "010_PLATFORM_..." → tbl=10 → db=10/10=1 → account_10
-				if tbl < total {
-					return tbl / r.tablePerDB, tbl
-				}
-			}
-		}
+	id, err := strconv.ParseInt(accountNo, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, 0
 	}
-	return 0, 0
+	tbl := shadow.AccountIDTableIndex(id)
+	if tbl < 0 || tbl >= r.dbCount*r.tablePerDB {
+		return 0, 0
+	}
+	return shadow.AccountIDDBIndex(id), tbl
 }
 
 // GetTableName 获取主表名（不感知 shadow）。

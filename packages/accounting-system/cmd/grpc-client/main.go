@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +17,22 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
+
+// 平台 fleet account_no 直接走数学公式计算（与 EncodeAccountID 对齐）。
+// shadow=0, currency=608(PHP), seq=1。
+//   shadow * 1e18 + currency * 1e15 + accountType * 1e13 + globalTbl * 1e11 + businessType * 1e7 + seq
+func fleetAcct(globalTbl, accountType, businessType int) string {
+	const (
+		currencyPHP = int64(608)
+		seq         = int64(1)
+	)
+	id := currencyPHP*1_000_000_000_000_000 +
+		int64(accountType)*10_000_000_000_000 +
+		int64(globalTbl)*100_000_000_000 +
+		int64(businessType)*10_000_000 +
+		seq
+	return strconv.FormatInt(id, 10)
+}
 
 var (
 	addr     = flag.String("addr", "localhost:53667", "gRPC server address")
@@ -323,7 +340,7 @@ func (tc *testClient) TC05_UserDepositForMutilUser() {
 		ctx, cancel := tc.ctx()
 		defer cancel()
 		tc.userAccNo = account
-		accountstr := fmt.Sprintf("0%02d_PLATFORM_TCHANNEL_RECEIVABLE", j%100)
+		accountstr := fleetAcct(j%100, 5, 5) // accountType=5(TRANSITRECEIVE), biz=5
 		tc.platformAccNo = accountstr
 		resp, err := tc.c.DoubleEntryBooking(ctx, &accountingv1.DoubleEntryBookingRequest{
 			BusinessNo:   fmt.Sprintf("DEP_%d", time.Now().UnixNano()),
@@ -357,8 +374,8 @@ func (tc *testClient) TC055_UserDeposit() {
 		amountMinor       = int64(50000) // 500.00 PHP（minor = cents）
 	)
 
-	tc.userAccNo = "002100000002-001-PHP"
-	tc.platformAccNo = "000_PLATFORM_TCHANNEL_RECEIVABLE"
+	tc.userAccNo = "608010200010000002" // shadow=0|PHP|USER|gtbl=02|biz=001|seq=2
+	tc.platformAccNo = "608050000050000001" // shadow=0|PHP|TRANSITRECEIVE|gtbl=00|biz=5|seq=1
 	if tc.userAccNo == "" || tc.platformAccNo == "" {
 		fmt.Println("\n[TC05] skip: run TC01+TC02 first")
 		return
@@ -453,8 +470,8 @@ func (tc *testClient) TC055_UserDeposit() {
 // ─── TC05: 用户充值 ───────────────────────────────────────────────────────────
 func (tc *testClient) TC05_UserDeposit() {
 
-	tc.userAccNo = "002100000002-001-PHP"
-	tc.platformAccNo = "000_PLATFORM_TCHANNEL_RECEIVABLE"
+	tc.userAccNo = "608010200010000002" // shadow=0|PHP|USER|gtbl=02|biz=001|seq=2
+	tc.platformAccNo = "608050000050000001" // shadow=0|PHP|TRANSITRECEIVE|gtbl=00|biz=5|seq=1
 	if tc.userAccNo == "" || tc.platformAccNo == "" {
 		fmt.Println("\n[TC05] skip: run TC01+TC02 first")
 		return
@@ -501,7 +518,7 @@ func (tc *testClient) TC06_UserWithdrawMutilUser() {
 		tableindex := j % 100
 		account := fmt.Sprintf("%01d%02d%5d-001", tableindex/10, tableindex, 11000+j)
 		tc.userAccNo = account
-		tc.platformAccNo = fmt.Sprintf("0%02d_PLATFORM_TCHANNEL_PAYABLE", j%100)
+		tc.platformAccNo = fleetAcct(j%100, 6, 6) // accountType=6(TRANSITPAYABLE), biz=6
 		if tc.userAccNo == "" || tc.platformAccNo == "" {
 			fmt.Println("\n[TC06] skip: run TC01+TC02 first")
 			return
@@ -535,8 +552,8 @@ func (tc *testClient) TC06_UserWithdrawMutilUser() {
 // ─── TC06: 用户提现 ───────────────────────────────────────────────────────────
 
 func (tc *testClient) TC06_UserWithdraw() {
-	tc.userAccNo = "002100000002-001-PHP"
-	tc.platformAccNo = "002_PLATFORM_TCHANNEL_PAYABLE"
+	tc.userAccNo = "608010200010000002" // shadow=0|PHP|USER|gtbl=02|biz=001|seq=2
+	tc.platformAccNo = "608060200060000001" // shadow=0|PHP|TRANSITPAYABLE|gtbl=02|biz=6|seq=1
 
 	if tc.userAccNo == "" || tc.platformAccNo == "" {
 		fmt.Println("\n[TC06] skip: run TC01+TC02 first")
@@ -574,7 +591,7 @@ func (tc *testClient) TC07_UserPayMerchantMutilUser() {
 		userAccount := fmt.Sprintf("%01d%02d%5d-001", tableindex/10, tableindex, 11000+j)
 		merchantAccount := "00320003-003"
 		tc.userAccNo = userAccount
-		tc.platformAccNo = fmt.Sprintf("0%02d_PLATFORM_TRANSACTION_FEE", j%100)
+		tc.platformAccNo = fleetAcct(j%100, 7, 7) // accountType=7(TRANSACTIONFEE), biz=7
 		tc.merchantAccNo = merchantAccount
 		if tc.userAccNo == "" || tc.merchantAccNo == "" || tc.platformAccNo == "" {
 			fmt.Println("\n[TC07] skip: run TC01+TC02+TC03 first")
@@ -593,7 +610,7 @@ func (tc *testClient) TC07_UserPayMerchantMutilUser() {
 			Description:  "用户支付主流水",
 			Entries: []*accountingv1.AccountingEntry{
 				{AccountNo: tc.userAccNo, DebitAmount: "200", CreditAmount: "0"},
-				{AccountNo: "002_PLATFORM_TRANSIT", CreditAmount: "200", DebitAmount: "0"},
+				{AccountNo: "608090200090000001" /* PHP|TRANSIT|gtbl=02|biz=9|seq=1 */, CreditAmount: "200", DebitAmount: "0"},
 			},
 		})
 
@@ -609,7 +626,7 @@ func (tc *testClient) TC07_UserPayMerchantMutilUser() {
 			Currency:     "PHP",
 			Description:  "用户支付主流水",
 			Entries: []*accountingv1.AccountingEntry{
-				{AccountNo: "002_PLATFORM_TRANSIT", DebitAmount: "200", CreditAmount: "0"},
+				{AccountNo: "608090200090000001" /* PHP|TRANSIT|gtbl=02|biz=9|seq=1 */, DebitAmount: "200", CreditAmount: "0"},
 				{AccountNo: tc.merchantAccNo, CreditAmount: "200", DebitAmount: "0"},
 			},
 		})
@@ -644,8 +661,8 @@ func (tc *testClient) TC07_UserPayMerchantMutilUser() {
 
 func (tc *testClient) TC07_UserPayMerchant() {
 
-	tc.userAccNo = "002100000002-001-PHP"
-	tc.platformAccNo = "002_PLATFORM_TRANSACTION_FEE"
+	tc.userAccNo = "608010200010000002" // shadow=0|PHP|USER|gtbl=02|biz=001|seq=2
+	tc.platformAccNo = "608070200070000001" // shadow=0|PHP|TRANSACTIONFEE|gtbl=02|biz=7|seq=1
 	tc.merchantAccNo = "00120001-003"
 	if tc.userAccNo == "" || tc.merchantAccNo == "" || tc.platformAccNo == "" {
 		fmt.Println("\n[TC07] skip: run TC01+TC02+TC03 first")
@@ -663,7 +680,7 @@ func (tc *testClient) TC07_UserPayMerchant() {
 		Description:  "用户支付主流水",
 		Entries: []*accountingv1.AccountingEntry{
 			{AccountNo: tc.userAccNo, DebitAmount: "2000", CreditAmount: "0"},
-			{AccountNo: "002_PLATFORM_TRANSIT", CreditAmount: "2000", DebitAmount: "0"},
+			{AccountNo: "608090200090000001" /* PHP|TRANSIT|gtbl=02|biz=9|seq=1 */, CreditAmount: "2000", DebitAmount: "0"},
 		},
 	})
 	if err != nil || resp1.Code != 0 {
@@ -677,7 +694,7 @@ func (tc *testClient) TC07_UserPayMerchant() {
 		Currency:     "PHP",
 		Description:  "用户支付主流水",
 		Entries: []*accountingv1.AccountingEntry{
-			{AccountNo: "002_PLATFORM_TRANSIT", DebitAmount: "2000", CreditAmount: "0"},
+			{AccountNo: "608090200090000001" /* PHP|TRANSIT|gtbl=02|biz=9|seq=1 */, DebitAmount: "2000", CreditAmount: "0"},
 			{AccountNo: tc.merchantAccNo, CreditAmount: "2000", DebitAmount: "0"},
 		},
 	})
@@ -710,8 +727,8 @@ func (tc *testClient) TC07_UserPayMerchant() {
 
 func (tc *testClient) TC08_BatchBooking() {
 
-	tc.userAccNo = "000100200-001"
-	tc.platformAccNo = "000_PLATFORM_PROFIT_LOSS"
+	tc.userAccNo = "608010000010000001" // shadow=0|PHP|USER|gtbl=00|biz=001|seq=1
+	tc.platformAccNo = "608040000040000001" // shadow=0|PHP|PLATFORM|gtbl=00|biz=4|seq=1
 
 	if tc.userAccNo == "" || tc.platformAccNo == "" {
 		fmt.Println("\n[TC08] skip: run TC01+TC02 first")
@@ -725,14 +742,14 @@ func (tc *testClient) TC08_BatchBooking() {
 	for i := 0; i < 3; i++ {
 		switch i {
 		case 0:
-			tc.userAccNo = "000100200-001"
-			tc.platformAccNo = "000_PLATFORM_TRANSIT"
+			tc.userAccNo = "608010000010000001" // shadow=0|PHP|USER|gtbl=00|biz=001|seq=1
+			tc.platformAccNo = "608090000090000001" // shadow=0|PHP|TRANSIT|gtbl=00|biz=9|seq=1
 		case 1:
-			tc.userAccNo = "440100040-001"
-			tc.platformAccNo = "040_PLATFORM_TRANSIT"
+			tc.userAccNo = "608014400010000001" // shadow=0|PHP|USER|gtbl=44|biz=001|seq=1
+			tc.platformAccNo = "608094000090000001" // shadow=0|PHP|TRANSIT|gtbl=40|biz=9|seq=1
 		case 2:
-			tc.userAccNo = "550100150-001"
-			tc.platformAccNo = "050_PLATFORM_TRANSIT"
+			tc.userAccNo = "608015500010000001" // shadow=0|PHP|USER|gtbl=55|biz=001|seq=1
+			tc.platformAccNo = "608095000090000001" // shadow=0|PHP|TRANSIT|gtbl=50|biz=9|seq=1
 		}
 
 		reqs[i] = &accountingv1.DoubleEntryBookingRequest{

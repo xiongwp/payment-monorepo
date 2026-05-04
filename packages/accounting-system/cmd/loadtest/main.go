@@ -43,6 +43,21 @@ import (
 	"google.golang.org/grpc/resolver"
 )
 
+// fleetAcct 平台 fleet account_no 计算（与 EncodeAccountID 对齐）：
+//   shadow=0|currency=608(PHP)|accountType|globalTbl|businessType|seq=1
+func fleetAcct(globalTbl, accountType, businessType int) string {
+	const (
+		currencyPHP = int64(608)
+		seq         = int64(1)
+	)
+	id := currencyPHP*1_000_000_000_000_000 +
+		int64(accountType)*10_000_000_000_000 +
+		int64(globalTbl)*100_000_000_000 +
+		int64(businessType)*10_000_000 +
+		seq
+	return strconv.FormatInt(id, 10)
+}
+
 // shadowOutboundInterceptor 在每个 outbound RPC 上挂 x-shadow=1 metadata（如果 -shadow=true）。
 // 装到 conn 后所有 cli.XxxRPC 自动透传，无需逐个 ctx 改造。
 func shadowOutboundInterceptor(enabled bool) grpc.UnaryClientInterceptor {
@@ -193,7 +208,8 @@ func mustCreateSystemAccounts(cli accountingv1.AccountingServiceClient) {
 		return qResp.Account.AccountNo
 	}
 
-	transitAccNo = "001_PLATFORM_TCHANNEL_RECEIVABLE"
+	// 充值中间 fleet：globalTbl=01, accountType=5(TRANSITRECEIVE), biz=5
+	transitAccNo = fleetAcct(1, 5, 5)
 	feeAcc1No = create(2,
 		accountingv1.AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE,
 		"服务手续费账户(1%)")
@@ -306,7 +322,7 @@ func initialRecharge(cli accountingv1.AccountingServiceClient) {
 				bno := bizNo("RCG")
 				val := rand.Int63()
 				str := strconv.FormatInt(val, 10)
-				accountstr := fmt.Sprintf("0%02d_PLATFORM_TCHANNEL_RECEIVABLE", i%100)
+				accountstr := fleetAcct(i%100, 5, 5) // accountType=5(TRANSITRECEIVE), biz=5
 				_, err := cli.DoubleEntryBooking(ctx, &accountingv1.DoubleEntryBookingRequest{
 					RequestId:    str,
 					BusinessNo:   bno,

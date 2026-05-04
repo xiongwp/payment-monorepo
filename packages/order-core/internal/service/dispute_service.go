@@ -11,6 +11,7 @@ import (
 	"github.com/xiongwp/order-core/internal/domain"
 	"github.com/xiongwp/order-core/internal/idgen"
 	"github.com/xiongwp/order-core/internal/repo"
+	"github.com/xiongwp/payment-util/shadow"
 )
 
 // DisputeService lifecycle management for disputes.
@@ -105,8 +106,12 @@ func (s *disputeService) Open(ctx context.Context, in *OpenDisputeInput) (*domai
 	if err != nil {
 		return nil, fmt.Errorf("idgen: %w", err)
 	}
+	disputeID, err := shadow.EncodeIDStr(ctx, shadow.IDTypeOrderDispute, 0, seq)
+	if err != nil {
+		return nil, fmt.Errorf("encode dispute id: %w", err)
+	}
 	d := &domain.Dispute{
-		ID:               fmt.Sprintf("dp_%d", seq),
+		ID:               disputeID,
 		PaymentIntentID:  in.PaymentIntentID,
 		ChargeID:         in.ChargeID,
 		MerchantID:       in.MerchantID,

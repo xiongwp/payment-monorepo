@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/user-merchant-core/internal/cache"
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 	"github.com/xiongwp/user-merchant-core/internal/idgen"
@@ -135,7 +136,10 @@ func (s *merchantService) Create(ctx context.Context, in *CreateMerchantInput) (
 	if err != nil {
 		return nil, fmt.Errorf("idgen: %w", err)
 	}
-	id := fmt.Sprintf("mch_%d", seq)
+	id, err := shadow.EncodeIDStr(ctx, shadow.IDTypeMerchantID, 0, seq)
+	if err != nil {
+		return nil, fmt.Errorf("encode merchant id: %w", err)
+	}
 
 	liveKey := newSecretKey("sk_live_")
 	testKey := newSecretKey("sk_test_")
@@ -340,7 +344,10 @@ func (s *merchantService) AddDocument(ctx context.Context, d *domain.MerchantKYC
 		if err != nil {
 			return nil, err
 		}
-		d.ID = fmt.Sprintf("mkd_%d", seq)
+		d.ID, err = shadow.EncodeIDStr(ctx, shadow.IDTypeMerchantKYCDoc, 0, seq)
+		if err != nil {
+			return nil, fmt.Errorf("encode kyc doc id: %w", err)
+		}
 	}
 	if err := s.repo.AddDocument(ctx, d); err != nil {
 		return nil, err

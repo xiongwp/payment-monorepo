@@ -14,6 +14,7 @@ import (
 	"github.com/xiongwp/order-core/internal/domain"
 	"github.com/xiongwp/order-core/internal/idgen"
 	"github.com/xiongwp/order-core/internal/repo"
+	"github.com/xiongwp/payment-util/shadow"
 )
 
 // WebhookDirection 通知方向
@@ -240,8 +241,12 @@ func (s *webhookService) recordInbound(ctx context.Context, in *IngestWebhookInp
 	if len(body) > maxBody {
 		body = body[:maxBody]
 	}
+	inwhID, err := shadow.EncodeIDStr(ctx, shadow.IDTypeOrderInboundWebhook, 0, seq)
+	if err != nil {
+		return nil, fmt.Errorf("encode inbound webhook id: %w", err)
+	}
 	row := &domain.InboundWebhook{
-		ID:              fmt.Sprintf("inwh_%d", seq),
+		ID:              inwhID,
 		ChannelName:     in.ChannelName,
 		EventID:         ev.EventID,
 		EventType:       ev.EventType,

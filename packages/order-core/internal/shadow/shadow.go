@@ -29,6 +29,24 @@ var (
 	UnaryClientInterceptor = pshadow.UnaryClientInterceptor
 	HTTPHeaderToContext    = pshadow.HTTPHeaderToContext
 	WithoutCancel          = pshadow.WithoutCancel
+
+	// 通用 ID 按位编码 helper alias
+	EncodeID    = pshadow.EncodeID
+	EncodeIDStr = pshadow.EncodeIDStr
+	DecodeID    = pshadow.DecodeID
+)
+
+// IDType 常量 alias（按系统分段，详见 payment-util/shadow/identity.go）
+const (
+	IDTypeOrderPI               = pshadow.IDTypeOrderPI
+	IDTypeOrderCharge           = pshadow.IDTypeOrderCharge
+	IDTypeOrderRefund           = pshadow.IDTypeOrderRefund
+	IDTypeOrderGLTxn            = pshadow.IDTypeOrderGLTxn
+	IDTypeOrderDispute          = pshadow.IDTypeOrderDispute
+	IDTypeOrderInboundWebhook   = pshadow.IDTypeOrderInboundWebhook
+	IDTypeOrderAccountingOutbox = pshadow.IDTypeOrderAccountingOutbox
+	IDTypeOrderKYCDoc           = pshadow.IDTypeOrderKYCDoc
+	IDTypeOrderEvtTest          = pshadow.IDTypeOrderEvtTest
 )
 
 // 类型 alias（让外部声明 shadow.HeaderGetter 等仍可用）

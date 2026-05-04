@@ -5,392 +5,682 @@ SET NAMES utf8mb4;
 USE `accounting_db_2`;
 
 -- ============================================
--- 初始化平台 fleet 账户数据
+-- 初始化平台 fleet 账户数据 (按位编码 account_no)
 -- ============================================
 --
+-- account_no 19 位 layout（与 payment-util/shadow.EncodeAccountID 对齐）：
+--   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
+--
+-- 平台 fleet 账户的字段固定值：
+--   currency      = 608 (PHP, ISO 4217)
+--   globalTbl     = 20 (00..99，本分片表序号)
+--   accountType   = 4..9 (PLATFORM / TRANSITRECEIVE / TRANSITPAYABLE /
+--                          TRANSACTIONFEE / CHARGEFEE / TRANSIT)
+--   businessType  = 4..9 (与 accountType 一一对应，见 platformAccountSpec)
+--   seq           = 1 (每 (currency, type, gtbl, biz) 组合下只有 1 个 fleet 账户)
+--   shadow        = 1 (0 主流量 / 1 shadow)
+--
+-- 算式：
+--   account_no = shadow * 1e18 + currency * 1e15 + accountType * 1e13 +
+--                globalTbl * 1e11 + businessType * 1e7 + seq
+--
 -- fleet user_id 段（与 payment-util/shadow/identity.go 对齐）：
---   主流量：MainFleetUserIDMin (1_000_000) + globalTableIdx (20)
---   shadow ：ShadowFleetUserIDMin (9_000_000_000) + globalTableIdx (20)
---           shadow 版本由 generate.sh 单独生成，写入 *_init_tmp_shadow.sql。
+--   主流量：MainFleetUserIDMin   (1_000_000)        + globalTableIdx (20)
+--   shadow：ShadowFleetUserIDMin (9_000_000_000)    + globalTableIdx (20)
 --
--- 主流量 fleet 段 [1_000_000, 9_999_999] 共 900 万容量，每个 globalTableIdx
--- (0-99) 占用一个 user_id（fleet account 当前 6 种类型 × 100 分片 = 600 个，
--- 留充足空间给未来加 platform 账户类型 / 扩 shard）。
---
--- 9000000000 由 generate.sh 替换：主流量 = 1_000_000，shadow = 9_000_000_000。
+-- 9000000000 / 1 由 generate.sh 替换。
 
--- 平台损益账户（资产类账户) 平台手续费收入
-INSERT IGNORE INTO  `account_20_shadow` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('020_PLATFORM_PROFIT_REVENUE', 9000000000 + 20, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
-
--- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+-- 平台损益账户 (accountType=4, businessType=4, REVENUE)
 INSERT IGNORE INTO `account_20_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('020_PLATFORM_TCHANNEL_RECEIVABLE', 9000000000 + 20, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 4 * 10000000000000 + 20 * 100000000000 + 4 * 10000000 + 1 AS CHAR),
+  9000000000 + 20, 4, 4, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+-- 中间渠道应收 (accountType=5, businessType=5, ASSET)
 INSERT IGNORE INTO `account_20_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('020_PLATFORM_TCHANNEL_PAYABLE', 9000000000 + 20, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 5 * 10000000000000 + 20 * 100000000000 + 5 * 10000000 + 1 AS CHAR),
+  9000000000 + 20, 5, 5, 'ASSET', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+-- 中间渠道应付 (accountType=6, businessType=6, LIABILITY)
 INSERT IGNORE INTO `account_20_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('020_PLATFORM_TRANSACTION_FEE', 9000000000 + 20, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 6 * 10000000000000 + 20 * 100000000000 + 6 * 10000000 + 1 AS CHAR),
+  9000000000 + 20, 6, 6, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+-- 平台手续费 (accountType=7, businessType=7, REVENUE)
 INSERT IGNORE INTO `account_20_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('020_PLATFORM_CHARGE_FEE', 9000000000 + 20, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 7 * 10000000000000 + 20 * 100000000000 + 7 * 10000000 + 1 AS CHAR),
+  9000000000 + 20, 7, 7, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+-- 平台服务费 (accountType=8, businessType=8, REVENUE)
 INSERT IGNORE INTO `account_20_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('020_PLATFORM_TRANSIT', 9000000000 + 20, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 8 * 10000000000000 + 20 * 100000000000 + 8 * 10000000 + 1 AS CHAR),
+  9000000000 + 20, 8, 8, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
+
+-- 平台中间账户 (accountType=9, businessType=9, LIABILITY)
+INSERT IGNORE INTO `account_20_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 9 * 10000000000000 + 20 * 100000000000 + 9 * 10000000 + 1 AS CHAR),
+  9000000000 + 20, 9, 9, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
 -- ============================================
--- 初始化平台 fleet 账户数据
+-- 初始化平台 fleet 账户数据 (按位编码 account_no)
 -- ============================================
+--
+-- account_no 19 位 layout（与 payment-util/shadow.EncodeAccountID 对齐）：
+--   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
+--
+-- 平台 fleet 账户的字段固定值：
+--   currency      = 608 (PHP, ISO 4217)
+--   globalTbl     = 21 (00..99，本分片表序号)
+--   accountType   = 4..9 (PLATFORM / TRANSITRECEIVE / TRANSITPAYABLE /
+--                          TRANSACTIONFEE / CHARGEFEE / TRANSIT)
+--   businessType  = 4..9 (与 accountType 一一对应，见 platformAccountSpec)
+--   seq           = 1 (每 (currency, type, gtbl, biz) 组合下只有 1 个 fleet 账户)
+--   shadow        = 1 (0 主流量 / 1 shadow)
+--
+-- 算式：
+--   account_no = shadow * 1e18 + currency * 1e15 + accountType * 1e13 +
+--                globalTbl * 1e11 + businessType * 1e7 + seq
 --
 -- fleet user_id 段（与 payment-util/shadow/identity.go 对齐）：
---   主流量：MainFleetUserIDMin (1_000_000) + globalTableIdx (21)
---   shadow ：ShadowFleetUserIDMin (9_000_000_000) + globalTableIdx (21)
---           shadow 版本由 generate.sh 单独生成，写入 *_init_tmp_shadow.sql。
+--   主流量：MainFleetUserIDMin   (1_000_000)        + globalTableIdx (21)
+--   shadow：ShadowFleetUserIDMin (9_000_000_000)    + globalTableIdx (21)
 --
--- 主流量 fleet 段 [1_000_000, 9_999_999] 共 900 万容量，每个 globalTableIdx
--- (0-99) 占用一个 user_id（fleet account 当前 6 种类型 × 100 分片 = 600 个，
--- 留充足空间给未来加 platform 账户类型 / 扩 shard）。
---
--- 9000000000 由 generate.sh 替换：主流量 = 1_000_000，shadow = 9_000_000_000。
+-- 9000000000 / 1 由 generate.sh 替换。
 
--- 平台损益账户（资产类账户) 平台手续费收入
-INSERT IGNORE INTO  `account_21_shadow` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('021_PLATFORM_PROFIT_REVENUE', 9000000000 + 21, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
-
--- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+-- 平台损益账户 (accountType=4, businessType=4, REVENUE)
 INSERT IGNORE INTO `account_21_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('021_PLATFORM_TCHANNEL_RECEIVABLE', 9000000000 + 21, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 4 * 10000000000000 + 21 * 100000000000 + 4 * 10000000 + 1 AS CHAR),
+  9000000000 + 21, 4, 4, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+-- 中间渠道应收 (accountType=5, businessType=5, ASSET)
 INSERT IGNORE INTO `account_21_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('021_PLATFORM_TCHANNEL_PAYABLE', 9000000000 + 21, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 5 * 10000000000000 + 21 * 100000000000 + 5 * 10000000 + 1 AS CHAR),
+  9000000000 + 21, 5, 5, 'ASSET', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+-- 中间渠道应付 (accountType=6, businessType=6, LIABILITY)
 INSERT IGNORE INTO `account_21_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('021_PLATFORM_TRANSACTION_FEE', 9000000000 + 21, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 6 * 10000000000000 + 21 * 100000000000 + 6 * 10000000 + 1 AS CHAR),
+  9000000000 + 21, 6, 6, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+-- 平台手续费 (accountType=7, businessType=7, REVENUE)
 INSERT IGNORE INTO `account_21_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('021_PLATFORM_CHARGE_FEE', 9000000000 + 21, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 7 * 10000000000000 + 21 * 100000000000 + 7 * 10000000 + 1 AS CHAR),
+  9000000000 + 21, 7, 7, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+-- 平台服务费 (accountType=8, businessType=8, REVENUE)
 INSERT IGNORE INTO `account_21_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('021_PLATFORM_TRANSIT', 9000000000 + 21, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 8 * 10000000000000 + 21 * 100000000000 + 8 * 10000000 + 1 AS CHAR),
+  9000000000 + 21, 8, 8, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
+
+-- 平台中间账户 (accountType=9, businessType=9, LIABILITY)
+INSERT IGNORE INTO `account_21_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 9 * 10000000000000 + 21 * 100000000000 + 9 * 10000000 + 1 AS CHAR),
+  9000000000 + 21, 9, 9, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
 -- ============================================
--- 初始化平台 fleet 账户数据
+-- 初始化平台 fleet 账户数据 (按位编码 account_no)
 -- ============================================
+--
+-- account_no 19 位 layout（与 payment-util/shadow.EncodeAccountID 对齐）：
+--   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
+--
+-- 平台 fleet 账户的字段固定值：
+--   currency      = 608 (PHP, ISO 4217)
+--   globalTbl     = 22 (00..99，本分片表序号)
+--   accountType   = 4..9 (PLATFORM / TRANSITRECEIVE / TRANSITPAYABLE /
+--                          TRANSACTIONFEE / CHARGEFEE / TRANSIT)
+--   businessType  = 4..9 (与 accountType 一一对应，见 platformAccountSpec)
+--   seq           = 1 (每 (currency, type, gtbl, biz) 组合下只有 1 个 fleet 账户)
+--   shadow        = 1 (0 主流量 / 1 shadow)
+--
+-- 算式：
+--   account_no = shadow * 1e18 + currency * 1e15 + accountType * 1e13 +
+--                globalTbl * 1e11 + businessType * 1e7 + seq
 --
 -- fleet user_id 段（与 payment-util/shadow/identity.go 对齐）：
---   主流量：MainFleetUserIDMin (1_000_000) + globalTableIdx (22)
---   shadow ：ShadowFleetUserIDMin (9_000_000_000) + globalTableIdx (22)
---           shadow 版本由 generate.sh 单独生成，写入 *_init_tmp_shadow.sql。
+--   主流量：MainFleetUserIDMin   (1_000_000)        + globalTableIdx (22)
+--   shadow：ShadowFleetUserIDMin (9_000_000_000)    + globalTableIdx (22)
 --
--- 主流量 fleet 段 [1_000_000, 9_999_999] 共 900 万容量，每个 globalTableIdx
--- (0-99) 占用一个 user_id（fleet account 当前 6 种类型 × 100 分片 = 600 个，
--- 留充足空间给未来加 platform 账户类型 / 扩 shard）。
---
--- 9000000000 由 generate.sh 替换：主流量 = 1_000_000，shadow = 9_000_000_000。
+-- 9000000000 / 1 由 generate.sh 替换。
 
--- 平台损益账户（资产类账户) 平台手续费收入
-INSERT IGNORE INTO  `account_22_shadow` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('022_PLATFORM_PROFIT_REVENUE', 9000000000 + 22, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
-
--- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+-- 平台损益账户 (accountType=4, businessType=4, REVENUE)
 INSERT IGNORE INTO `account_22_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('022_PLATFORM_TCHANNEL_RECEIVABLE', 9000000000 + 22, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 4 * 10000000000000 + 22 * 100000000000 + 4 * 10000000 + 1 AS CHAR),
+  9000000000 + 22, 4, 4, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+-- 中间渠道应收 (accountType=5, businessType=5, ASSET)
 INSERT IGNORE INTO `account_22_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('022_PLATFORM_TCHANNEL_PAYABLE', 9000000000 + 22, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 5 * 10000000000000 + 22 * 100000000000 + 5 * 10000000 + 1 AS CHAR),
+  9000000000 + 22, 5, 5, 'ASSET', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+-- 中间渠道应付 (accountType=6, businessType=6, LIABILITY)
 INSERT IGNORE INTO `account_22_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('022_PLATFORM_TRANSACTION_FEE', 9000000000 + 22, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 6 * 10000000000000 + 22 * 100000000000 + 6 * 10000000 + 1 AS CHAR),
+  9000000000 + 22, 6, 6, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+-- 平台手续费 (accountType=7, businessType=7, REVENUE)
 INSERT IGNORE INTO `account_22_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('022_PLATFORM_CHARGE_FEE', 9000000000 + 22, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 7 * 10000000000000 + 22 * 100000000000 + 7 * 10000000 + 1 AS CHAR),
+  9000000000 + 22, 7, 7, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+-- 平台服务费 (accountType=8, businessType=8, REVENUE)
 INSERT IGNORE INTO `account_22_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('022_PLATFORM_TRANSIT', 9000000000 + 22, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 8 * 10000000000000 + 22 * 100000000000 + 8 * 10000000 + 1 AS CHAR),
+  9000000000 + 22, 8, 8, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
+
+-- 平台中间账户 (accountType=9, businessType=9, LIABILITY)
+INSERT IGNORE INTO `account_22_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 9 * 10000000000000 + 22 * 100000000000 + 9 * 10000000 + 1 AS CHAR),
+  9000000000 + 22, 9, 9, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
 -- ============================================
--- 初始化平台 fleet 账户数据
+-- 初始化平台 fleet 账户数据 (按位编码 account_no)
 -- ============================================
+--
+-- account_no 19 位 layout（与 payment-util/shadow.EncodeAccountID 对齐）：
+--   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
+--
+-- 平台 fleet 账户的字段固定值：
+--   currency      = 608 (PHP, ISO 4217)
+--   globalTbl     = 23 (00..99，本分片表序号)
+--   accountType   = 4..9 (PLATFORM / TRANSITRECEIVE / TRANSITPAYABLE /
+--                          TRANSACTIONFEE / CHARGEFEE / TRANSIT)
+--   businessType  = 4..9 (与 accountType 一一对应，见 platformAccountSpec)
+--   seq           = 1 (每 (currency, type, gtbl, biz) 组合下只有 1 个 fleet 账户)
+--   shadow        = 1 (0 主流量 / 1 shadow)
+--
+-- 算式：
+--   account_no = shadow * 1e18 + currency * 1e15 + accountType * 1e13 +
+--                globalTbl * 1e11 + businessType * 1e7 + seq
 --
 -- fleet user_id 段（与 payment-util/shadow/identity.go 对齐）：
---   主流量：MainFleetUserIDMin (1_000_000) + globalTableIdx (23)
---   shadow ：ShadowFleetUserIDMin (9_000_000_000) + globalTableIdx (23)
---           shadow 版本由 generate.sh 单独生成，写入 *_init_tmp_shadow.sql。
+--   主流量：MainFleetUserIDMin   (1_000_000)        + globalTableIdx (23)
+--   shadow：ShadowFleetUserIDMin (9_000_000_000)    + globalTableIdx (23)
 --
--- 主流量 fleet 段 [1_000_000, 9_999_999] 共 900 万容量，每个 globalTableIdx
--- (0-99) 占用一个 user_id（fleet account 当前 6 种类型 × 100 分片 = 600 个，
--- 留充足空间给未来加 platform 账户类型 / 扩 shard）。
---
--- 9000000000 由 generate.sh 替换：主流量 = 1_000_000，shadow = 9_000_000_000。
+-- 9000000000 / 1 由 generate.sh 替换。
 
--- 平台损益账户（资产类账户) 平台手续费收入
-INSERT IGNORE INTO  `account_23_shadow` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('023_PLATFORM_PROFIT_REVENUE', 9000000000 + 23, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
-
--- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+-- 平台损益账户 (accountType=4, businessType=4, REVENUE)
 INSERT IGNORE INTO `account_23_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('023_PLATFORM_TCHANNEL_RECEIVABLE', 9000000000 + 23, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 4 * 10000000000000 + 23 * 100000000000 + 4 * 10000000 + 1 AS CHAR),
+  9000000000 + 23, 4, 4, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+-- 中间渠道应收 (accountType=5, businessType=5, ASSET)
 INSERT IGNORE INTO `account_23_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('023_PLATFORM_TCHANNEL_PAYABLE', 9000000000 + 23, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 5 * 10000000000000 + 23 * 100000000000 + 5 * 10000000 + 1 AS CHAR),
+  9000000000 + 23, 5, 5, 'ASSET', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+-- 中间渠道应付 (accountType=6, businessType=6, LIABILITY)
 INSERT IGNORE INTO `account_23_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('023_PLATFORM_TRANSACTION_FEE', 9000000000 + 23, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 6 * 10000000000000 + 23 * 100000000000 + 6 * 10000000 + 1 AS CHAR),
+  9000000000 + 23, 6, 6, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+-- 平台手续费 (accountType=7, businessType=7, REVENUE)
 INSERT IGNORE INTO `account_23_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('023_PLATFORM_CHARGE_FEE', 9000000000 + 23, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 7 * 10000000000000 + 23 * 100000000000 + 7 * 10000000 + 1 AS CHAR),
+  9000000000 + 23, 7, 7, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+-- 平台服务费 (accountType=8, businessType=8, REVENUE)
 INSERT IGNORE INTO `account_23_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('023_PLATFORM_TRANSIT', 9000000000 + 23, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 8 * 10000000000000 + 23 * 100000000000 + 8 * 10000000 + 1 AS CHAR),
+  9000000000 + 23, 8, 8, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
+
+-- 平台中间账户 (accountType=9, businessType=9, LIABILITY)
+INSERT IGNORE INTO `account_23_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 9 * 10000000000000 + 23 * 100000000000 + 9 * 10000000 + 1 AS CHAR),
+  9000000000 + 23, 9, 9, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
 -- ============================================
--- 初始化平台 fleet 账户数据
+-- 初始化平台 fleet 账户数据 (按位编码 account_no)
 -- ============================================
+--
+-- account_no 19 位 layout（与 payment-util/shadow.EncodeAccountID 对齐）：
+--   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
+--
+-- 平台 fleet 账户的字段固定值：
+--   currency      = 608 (PHP, ISO 4217)
+--   globalTbl     = 24 (00..99，本分片表序号)
+--   accountType   = 4..9 (PLATFORM / TRANSITRECEIVE / TRANSITPAYABLE /
+--                          TRANSACTIONFEE / CHARGEFEE / TRANSIT)
+--   businessType  = 4..9 (与 accountType 一一对应，见 platformAccountSpec)
+--   seq           = 1 (每 (currency, type, gtbl, biz) 组合下只有 1 个 fleet 账户)
+--   shadow        = 1 (0 主流量 / 1 shadow)
+--
+-- 算式：
+--   account_no = shadow * 1e18 + currency * 1e15 + accountType * 1e13 +
+--                globalTbl * 1e11 + businessType * 1e7 + seq
 --
 -- fleet user_id 段（与 payment-util/shadow/identity.go 对齐）：
---   主流量：MainFleetUserIDMin (1_000_000) + globalTableIdx (24)
---   shadow ：ShadowFleetUserIDMin (9_000_000_000) + globalTableIdx (24)
---           shadow 版本由 generate.sh 单独生成，写入 *_init_tmp_shadow.sql。
+--   主流量：MainFleetUserIDMin   (1_000_000)        + globalTableIdx (24)
+--   shadow：ShadowFleetUserIDMin (9_000_000_000)    + globalTableIdx (24)
 --
--- 主流量 fleet 段 [1_000_000, 9_999_999] 共 900 万容量，每个 globalTableIdx
--- (0-99) 占用一个 user_id（fleet account 当前 6 种类型 × 100 分片 = 600 个，
--- 留充足空间给未来加 platform 账户类型 / 扩 shard）。
---
--- 9000000000 由 generate.sh 替换：主流量 = 1_000_000，shadow = 9_000_000_000。
+-- 9000000000 / 1 由 generate.sh 替换。
 
--- 平台损益账户（资产类账户) 平台手续费收入
-INSERT IGNORE INTO  `account_24_shadow` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('024_PLATFORM_PROFIT_REVENUE', 9000000000 + 24, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
-
--- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+-- 平台损益账户 (accountType=4, businessType=4, REVENUE)
 INSERT IGNORE INTO `account_24_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('024_PLATFORM_TCHANNEL_RECEIVABLE', 9000000000 + 24, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 4 * 10000000000000 + 24 * 100000000000 + 4 * 10000000 + 1 AS CHAR),
+  9000000000 + 24, 4, 4, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+-- 中间渠道应收 (accountType=5, businessType=5, ASSET)
 INSERT IGNORE INTO `account_24_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('024_PLATFORM_TCHANNEL_PAYABLE', 9000000000 + 24, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 5 * 10000000000000 + 24 * 100000000000 + 5 * 10000000 + 1 AS CHAR),
+  9000000000 + 24, 5, 5, 'ASSET', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+-- 中间渠道应付 (accountType=6, businessType=6, LIABILITY)
 INSERT IGNORE INTO `account_24_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('024_PLATFORM_TRANSACTION_FEE', 9000000000 + 24, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 6 * 10000000000000 + 24 * 100000000000 + 6 * 10000000 + 1 AS CHAR),
+  9000000000 + 24, 6, 6, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+-- 平台手续费 (accountType=7, businessType=7, REVENUE)
 INSERT IGNORE INTO `account_24_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('024_PLATFORM_CHARGE_FEE', 9000000000 + 24, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 7 * 10000000000000 + 24 * 100000000000 + 7 * 10000000 + 1 AS CHAR),
+  9000000000 + 24, 7, 7, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+-- 平台服务费 (accountType=8, businessType=8, REVENUE)
 INSERT IGNORE INTO `account_24_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('024_PLATFORM_TRANSIT', 9000000000 + 24, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 8 * 10000000000000 + 24 * 100000000000 + 8 * 10000000 + 1 AS CHAR),
+  9000000000 + 24, 8, 8, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
+
+-- 平台中间账户 (accountType=9, businessType=9, LIABILITY)
+INSERT IGNORE INTO `account_24_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 9 * 10000000000000 + 24 * 100000000000 + 9 * 10000000 + 1 AS CHAR),
+  9000000000 + 24, 9, 9, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
 -- ============================================
--- 初始化平台 fleet 账户数据
+-- 初始化平台 fleet 账户数据 (按位编码 account_no)
 -- ============================================
+--
+-- account_no 19 位 layout（与 payment-util/shadow.EncodeAccountID 对齐）：
+--   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
+--
+-- 平台 fleet 账户的字段固定值：
+--   currency      = 608 (PHP, ISO 4217)
+--   globalTbl     = 25 (00..99，本分片表序号)
+--   accountType   = 4..9 (PLATFORM / TRANSITRECEIVE / TRANSITPAYABLE /
+--                          TRANSACTIONFEE / CHARGEFEE / TRANSIT)
+--   businessType  = 4..9 (与 accountType 一一对应，见 platformAccountSpec)
+--   seq           = 1 (每 (currency, type, gtbl, biz) 组合下只有 1 个 fleet 账户)
+--   shadow        = 1 (0 主流量 / 1 shadow)
+--
+-- 算式：
+--   account_no = shadow * 1e18 + currency * 1e15 + accountType * 1e13 +
+--                globalTbl * 1e11 + businessType * 1e7 + seq
 --
 -- fleet user_id 段（与 payment-util/shadow/identity.go 对齐）：
---   主流量：MainFleetUserIDMin (1_000_000) + globalTableIdx (25)
---   shadow ：ShadowFleetUserIDMin (9_000_000_000) + globalTableIdx (25)
---           shadow 版本由 generate.sh 单独生成，写入 *_init_tmp_shadow.sql。
+--   主流量：MainFleetUserIDMin   (1_000_000)        + globalTableIdx (25)
+--   shadow：ShadowFleetUserIDMin (9_000_000_000)    + globalTableIdx (25)
 --
--- 主流量 fleet 段 [1_000_000, 9_999_999] 共 900 万容量，每个 globalTableIdx
--- (0-99) 占用一个 user_id（fleet account 当前 6 种类型 × 100 分片 = 600 个，
--- 留充足空间给未来加 platform 账户类型 / 扩 shard）。
---
--- 9000000000 由 generate.sh 替换：主流量 = 1_000_000，shadow = 9_000_000_000。
+-- 9000000000 / 1 由 generate.sh 替换。
 
--- 平台损益账户（资产类账户) 平台手续费收入
-INSERT IGNORE INTO  `account_25_shadow` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('025_PLATFORM_PROFIT_REVENUE', 9000000000 + 25, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
-
--- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+-- 平台损益账户 (accountType=4, businessType=4, REVENUE)
 INSERT IGNORE INTO `account_25_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('025_PLATFORM_TCHANNEL_RECEIVABLE', 9000000000 + 25, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 4 * 10000000000000 + 25 * 100000000000 + 4 * 10000000 + 1 AS CHAR),
+  9000000000 + 25, 4, 4, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+-- 中间渠道应收 (accountType=5, businessType=5, ASSET)
 INSERT IGNORE INTO `account_25_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('025_PLATFORM_TCHANNEL_PAYABLE', 9000000000 + 25, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 5 * 10000000000000 + 25 * 100000000000 + 5 * 10000000 + 1 AS CHAR),
+  9000000000 + 25, 5, 5, 'ASSET', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+-- 中间渠道应付 (accountType=6, businessType=6, LIABILITY)
 INSERT IGNORE INTO `account_25_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('025_PLATFORM_TRANSACTION_FEE', 9000000000 + 25, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 6 * 10000000000000 + 25 * 100000000000 + 6 * 10000000 + 1 AS CHAR),
+  9000000000 + 25, 6, 6, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+-- 平台手续费 (accountType=7, businessType=7, REVENUE)
 INSERT IGNORE INTO `account_25_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('025_PLATFORM_CHARGE_FEE', 9000000000 + 25, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 7 * 10000000000000 + 25 * 100000000000 + 7 * 10000000 + 1 AS CHAR),
+  9000000000 + 25, 7, 7, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+-- 平台服务费 (accountType=8, businessType=8, REVENUE)
 INSERT IGNORE INTO `account_25_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('025_PLATFORM_TRANSIT', 9000000000 + 25, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 8 * 10000000000000 + 25 * 100000000000 + 8 * 10000000 + 1 AS CHAR),
+  9000000000 + 25, 8, 8, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
+
+-- 平台中间账户 (accountType=9, businessType=9, LIABILITY)
+INSERT IGNORE INTO `account_25_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 9 * 10000000000000 + 25 * 100000000000 + 9 * 10000000 + 1 AS CHAR),
+  9000000000 + 25, 9, 9, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
 -- ============================================
--- 初始化平台 fleet 账户数据
+-- 初始化平台 fleet 账户数据 (按位编码 account_no)
 -- ============================================
+--
+-- account_no 19 位 layout（与 payment-util/shadow.EncodeAccountID 对齐）：
+--   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
+--
+-- 平台 fleet 账户的字段固定值：
+--   currency      = 608 (PHP, ISO 4217)
+--   globalTbl     = 26 (00..99，本分片表序号)
+--   accountType   = 4..9 (PLATFORM / TRANSITRECEIVE / TRANSITPAYABLE /
+--                          TRANSACTIONFEE / CHARGEFEE / TRANSIT)
+--   businessType  = 4..9 (与 accountType 一一对应，见 platformAccountSpec)
+--   seq           = 1 (每 (currency, type, gtbl, biz) 组合下只有 1 个 fleet 账户)
+--   shadow        = 1 (0 主流量 / 1 shadow)
+--
+-- 算式：
+--   account_no = shadow * 1e18 + currency * 1e15 + accountType * 1e13 +
+--                globalTbl * 1e11 + businessType * 1e7 + seq
 --
 -- fleet user_id 段（与 payment-util/shadow/identity.go 对齐）：
---   主流量：MainFleetUserIDMin (1_000_000) + globalTableIdx (26)
---   shadow ：ShadowFleetUserIDMin (9_000_000_000) + globalTableIdx (26)
---           shadow 版本由 generate.sh 单独生成，写入 *_init_tmp_shadow.sql。
+--   主流量：MainFleetUserIDMin   (1_000_000)        + globalTableIdx (26)
+--   shadow：ShadowFleetUserIDMin (9_000_000_000)    + globalTableIdx (26)
 --
--- 主流量 fleet 段 [1_000_000, 9_999_999] 共 900 万容量，每个 globalTableIdx
--- (0-99) 占用一个 user_id（fleet account 当前 6 种类型 × 100 分片 = 600 个，
--- 留充足空间给未来加 platform 账户类型 / 扩 shard）。
---
--- 9000000000 由 generate.sh 替换：主流量 = 1_000_000，shadow = 9_000_000_000。
+-- 9000000000 / 1 由 generate.sh 替换。
 
--- 平台损益账户（资产类账户) 平台手续费收入
-INSERT IGNORE INTO  `account_26_shadow` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('026_PLATFORM_PROFIT_REVENUE', 9000000000 + 26, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
-
--- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+-- 平台损益账户 (accountType=4, businessType=4, REVENUE)
 INSERT IGNORE INTO `account_26_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('026_PLATFORM_TCHANNEL_RECEIVABLE', 9000000000 + 26, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 4 * 10000000000000 + 26 * 100000000000 + 4 * 10000000 + 1 AS CHAR),
+  9000000000 + 26, 4, 4, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+-- 中间渠道应收 (accountType=5, businessType=5, ASSET)
 INSERT IGNORE INTO `account_26_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('026_PLATFORM_TCHANNEL_PAYABLE', 9000000000 + 26, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 5 * 10000000000000 + 26 * 100000000000 + 5 * 10000000 + 1 AS CHAR),
+  9000000000 + 26, 5, 5, 'ASSET', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+-- 中间渠道应付 (accountType=6, businessType=6, LIABILITY)
 INSERT IGNORE INTO `account_26_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('026_PLATFORM_TRANSACTION_FEE', 9000000000 + 26, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 6 * 10000000000000 + 26 * 100000000000 + 6 * 10000000 + 1 AS CHAR),
+  9000000000 + 26, 6, 6, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+-- 平台手续费 (accountType=7, businessType=7, REVENUE)
 INSERT IGNORE INTO `account_26_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('026_PLATFORM_CHARGE_FEE', 9000000000 + 26, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 7 * 10000000000000 + 26 * 100000000000 + 7 * 10000000 + 1 AS CHAR),
+  9000000000 + 26, 7, 7, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+-- 平台服务费 (accountType=8, businessType=8, REVENUE)
 INSERT IGNORE INTO `account_26_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('026_PLATFORM_TRANSIT', 9000000000 + 26, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 8 * 10000000000000 + 26 * 100000000000 + 8 * 10000000 + 1 AS CHAR),
+  9000000000 + 26, 8, 8, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
+
+-- 平台中间账户 (accountType=9, businessType=9, LIABILITY)
+INSERT IGNORE INTO `account_26_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 9 * 10000000000000 + 26 * 100000000000 + 9 * 10000000 + 1 AS CHAR),
+  9000000000 + 26, 9, 9, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
 -- ============================================
--- 初始化平台 fleet 账户数据
+-- 初始化平台 fleet 账户数据 (按位编码 account_no)
 -- ============================================
+--
+-- account_no 19 位 layout（与 payment-util/shadow.EncodeAccountID 对齐）：
+--   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
+--
+-- 平台 fleet 账户的字段固定值：
+--   currency      = 608 (PHP, ISO 4217)
+--   globalTbl     = 27 (00..99，本分片表序号)
+--   accountType   = 4..9 (PLATFORM / TRANSITRECEIVE / TRANSITPAYABLE /
+--                          TRANSACTIONFEE / CHARGEFEE / TRANSIT)
+--   businessType  = 4..9 (与 accountType 一一对应，见 platformAccountSpec)
+--   seq           = 1 (每 (currency, type, gtbl, biz) 组合下只有 1 个 fleet 账户)
+--   shadow        = 1 (0 主流量 / 1 shadow)
+--
+-- 算式：
+--   account_no = shadow * 1e18 + currency * 1e15 + accountType * 1e13 +
+--                globalTbl * 1e11 + businessType * 1e7 + seq
 --
 -- fleet user_id 段（与 payment-util/shadow/identity.go 对齐）：
---   主流量：MainFleetUserIDMin (1_000_000) + globalTableIdx (27)
---   shadow ：ShadowFleetUserIDMin (9_000_000_000) + globalTableIdx (27)
---           shadow 版本由 generate.sh 单独生成，写入 *_init_tmp_shadow.sql。
+--   主流量：MainFleetUserIDMin   (1_000_000)        + globalTableIdx (27)
+--   shadow：ShadowFleetUserIDMin (9_000_000_000)    + globalTableIdx (27)
 --
--- 主流量 fleet 段 [1_000_000, 9_999_999] 共 900 万容量，每个 globalTableIdx
--- (0-99) 占用一个 user_id（fleet account 当前 6 种类型 × 100 分片 = 600 个，
--- 留充足空间给未来加 platform 账户类型 / 扩 shard）。
---
--- 9000000000 由 generate.sh 替换：主流量 = 1_000_000，shadow = 9_000_000_000。
+-- 9000000000 / 1 由 generate.sh 替换。
 
--- 平台损益账户（资产类账户) 平台手续费收入
-INSERT IGNORE INTO  `account_27_shadow` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('027_PLATFORM_PROFIT_REVENUE', 9000000000 + 27, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
-
--- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+-- 平台损益账户 (accountType=4, businessType=4, REVENUE)
 INSERT IGNORE INTO `account_27_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('027_PLATFORM_TCHANNEL_RECEIVABLE', 9000000000 + 27, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 4 * 10000000000000 + 27 * 100000000000 + 4 * 10000000 + 1 AS CHAR),
+  9000000000 + 27, 4, 4, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+-- 中间渠道应收 (accountType=5, businessType=5, ASSET)
 INSERT IGNORE INTO `account_27_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('027_PLATFORM_TCHANNEL_PAYABLE', 9000000000 + 27, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 5 * 10000000000000 + 27 * 100000000000 + 5 * 10000000 + 1 AS CHAR),
+  9000000000 + 27, 5, 5, 'ASSET', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+-- 中间渠道应付 (accountType=6, businessType=6, LIABILITY)
 INSERT IGNORE INTO `account_27_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('027_PLATFORM_TRANSACTION_FEE', 9000000000 + 27, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 6 * 10000000000000 + 27 * 100000000000 + 6 * 10000000 + 1 AS CHAR),
+  9000000000 + 27, 6, 6, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+-- 平台手续费 (accountType=7, businessType=7, REVENUE)
 INSERT IGNORE INTO `account_27_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('027_PLATFORM_CHARGE_FEE', 9000000000 + 27, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 7 * 10000000000000 + 27 * 100000000000 + 7 * 10000000 + 1 AS CHAR),
+  9000000000 + 27, 7, 7, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+-- 平台服务费 (accountType=8, businessType=8, REVENUE)
 INSERT IGNORE INTO `account_27_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('027_PLATFORM_TRANSIT', 9000000000 + 27, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 8 * 10000000000000 + 27 * 100000000000 + 8 * 10000000 + 1 AS CHAR),
+  9000000000 + 27, 8, 8, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
+
+-- 平台中间账户 (accountType=9, businessType=9, LIABILITY)
+INSERT IGNORE INTO `account_27_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 9 * 10000000000000 + 27 * 100000000000 + 9 * 10000000 + 1 AS CHAR),
+  9000000000 + 27, 9, 9, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
 -- ============================================
--- 初始化平台 fleet 账户数据
+-- 初始化平台 fleet 账户数据 (按位编码 account_no)
 -- ============================================
+--
+-- account_no 19 位 layout（与 payment-util/shadow.EncodeAccountID 对齐）：
+--   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
+--
+-- 平台 fleet 账户的字段固定值：
+--   currency      = 608 (PHP, ISO 4217)
+--   globalTbl     = 28 (00..99，本分片表序号)
+--   accountType   = 4..9 (PLATFORM / TRANSITRECEIVE / TRANSITPAYABLE /
+--                          TRANSACTIONFEE / CHARGEFEE / TRANSIT)
+--   businessType  = 4..9 (与 accountType 一一对应，见 platformAccountSpec)
+--   seq           = 1 (每 (currency, type, gtbl, biz) 组合下只有 1 个 fleet 账户)
+--   shadow        = 1 (0 主流量 / 1 shadow)
+--
+-- 算式：
+--   account_no = shadow * 1e18 + currency * 1e15 + accountType * 1e13 +
+--                globalTbl * 1e11 + businessType * 1e7 + seq
 --
 -- fleet user_id 段（与 payment-util/shadow/identity.go 对齐）：
---   主流量：MainFleetUserIDMin (1_000_000) + globalTableIdx (28)
---   shadow ：ShadowFleetUserIDMin (9_000_000_000) + globalTableIdx (28)
---           shadow 版本由 generate.sh 单独生成，写入 *_init_tmp_shadow.sql。
+--   主流量：MainFleetUserIDMin   (1_000_000)        + globalTableIdx (28)
+--   shadow：ShadowFleetUserIDMin (9_000_000_000)    + globalTableIdx (28)
 --
--- 主流量 fleet 段 [1_000_000, 9_999_999] 共 900 万容量，每个 globalTableIdx
--- (0-99) 占用一个 user_id（fleet account 当前 6 种类型 × 100 分片 = 600 个，
--- 留充足空间给未来加 platform 账户类型 / 扩 shard）。
---
--- 9000000000 由 generate.sh 替换：主流量 = 1_000_000，shadow = 9_000_000_000。
+-- 9000000000 / 1 由 generate.sh 替换。
 
--- 平台损益账户（资产类账户) 平台手续费收入
-INSERT IGNORE INTO  `account_28_shadow` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('028_PLATFORM_PROFIT_REVENUE', 9000000000 + 28, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
-
--- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+-- 平台损益账户 (accountType=4, businessType=4, REVENUE)
 INSERT IGNORE INTO `account_28_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('028_PLATFORM_TCHANNEL_RECEIVABLE', 9000000000 + 28, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 4 * 10000000000000 + 28 * 100000000000 + 4 * 10000000 + 1 AS CHAR),
+  9000000000 + 28, 4, 4, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+-- 中间渠道应收 (accountType=5, businessType=5, ASSET)
 INSERT IGNORE INTO `account_28_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('028_PLATFORM_TCHANNEL_PAYABLE', 9000000000 + 28, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 5 * 10000000000000 + 28 * 100000000000 + 5 * 10000000 + 1 AS CHAR),
+  9000000000 + 28, 5, 5, 'ASSET', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+-- 中间渠道应付 (accountType=6, businessType=6, LIABILITY)
 INSERT IGNORE INTO `account_28_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('028_PLATFORM_TRANSACTION_FEE', 9000000000 + 28, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 6 * 10000000000000 + 28 * 100000000000 + 6 * 10000000 + 1 AS CHAR),
+  9000000000 + 28, 6, 6, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+-- 平台手续费 (accountType=7, businessType=7, REVENUE)
 INSERT IGNORE INTO `account_28_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('028_PLATFORM_CHARGE_FEE', 9000000000 + 28, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 7 * 10000000000000 + 28 * 100000000000 + 7 * 10000000 + 1 AS CHAR),
+  9000000000 + 28, 7, 7, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+-- 平台服务费 (accountType=8, businessType=8, REVENUE)
 INSERT IGNORE INTO `account_28_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('028_PLATFORM_TRANSIT', 9000000000 + 28, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 8 * 10000000000000 + 28 * 100000000000 + 8 * 10000000 + 1 AS CHAR),
+  9000000000 + 28, 8, 8, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
+
+-- 平台中间账户 (accountType=9, businessType=9, LIABILITY)
+INSERT IGNORE INTO `account_28_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 9 * 10000000000000 + 28 * 100000000000 + 9 * 10000000 + 1 AS CHAR),
+  9000000000 + 28, 9, 9, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
 -- ============================================
--- 初始化平台 fleet 账户数据
+-- 初始化平台 fleet 账户数据 (按位编码 account_no)
 -- ============================================
+--
+-- account_no 19 位 layout（与 payment-util/shadow.EncodeAccountID 对齐）：
+--   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
+--
+-- 平台 fleet 账户的字段固定值：
+--   currency      = 608 (PHP, ISO 4217)
+--   globalTbl     = 29 (00..99，本分片表序号)
+--   accountType   = 4..9 (PLATFORM / TRANSITRECEIVE / TRANSITPAYABLE /
+--                          TRANSACTIONFEE / CHARGEFEE / TRANSIT)
+--   businessType  = 4..9 (与 accountType 一一对应，见 platformAccountSpec)
+--   seq           = 1 (每 (currency, type, gtbl, biz) 组合下只有 1 个 fleet 账户)
+--   shadow        = 1 (0 主流量 / 1 shadow)
+--
+-- 算式：
+--   account_no = shadow * 1e18 + currency * 1e15 + accountType * 1e13 +
+--                globalTbl * 1e11 + businessType * 1e7 + seq
 --
 -- fleet user_id 段（与 payment-util/shadow/identity.go 对齐）：
---   主流量：MainFleetUserIDMin (1_000_000) + globalTableIdx (29)
---   shadow ：ShadowFleetUserIDMin (9_000_000_000) + globalTableIdx (29)
---           shadow 版本由 generate.sh 单独生成，写入 *_init_tmp_shadow.sql。
+--   主流量：MainFleetUserIDMin   (1_000_000)        + globalTableIdx (29)
+--   shadow：ShadowFleetUserIDMin (9_000_000_000)    + globalTableIdx (29)
 --
--- 主流量 fleet 段 [1_000_000, 9_999_999] 共 900 万容量，每个 globalTableIdx
--- (0-99) 占用一个 user_id（fleet account 当前 6 种类型 × 100 分片 = 600 个，
--- 留充足空间给未来加 platform 账户类型 / 扩 shard）。
---
--- 9000000000 由 generate.sh 替换：主流量 = 1_000_000，shadow = 9_000_000_000。
+-- 9000000000 / 1 由 generate.sh 替换。
 
--- 平台损益账户（资产类账户) 平台手续费收入
-INSERT IGNORE INTO  `account_29_shadow` (`account_no`, `user_id`, `account_business_type`,`account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('029_PLATFORM_PROFIT_REVENUE', 9000000000 + 29, 4, 4, 'REVENUE', 'PHP',0,0,0,1);
-
--- 平台中间账户（用于复式记账过渡 渠道应收款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_RECEIVABLE
+-- 平台损益账户 (accountType=4, businessType=4, REVENUE)
 INSERT IGNORE INTO `account_29_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('029_PLATFORM_TCHANNEL_RECEIVABLE', 9000000000 + 29, 5, 5, 'ASSET', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 4 * 10000000000000 + 29 * 100000000000 + 4 * 10000000 + 1 AS CHAR),
+  9000000000 + 29, 4, 4, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户（用于复式记账过渡 渠道应付款) AccountType_ACCOUNT_TYPE_TRANSIT_CHANNEL_PAYABLE
+-- 中间渠道应收 (accountType=5, businessType=5, ASSET)
 INSERT IGNORE INTO `account_29_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('029_PLATFORM_TCHANNEL_PAYABLE', 9000000000 + 29, 6, 6, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 5 * 10000000000000 + 29 * 100000000000 + 5 * 10000000 + 1 AS CHAR),
+  9000000000 + 29, 5, 5, 'ASSET', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益 AccountBusinessType_ACCOUNT_BUSINESS_TYPE_TRANSACTION_FEE
+-- 中间渠道应付 (accountType=6, businessType=6, LIABILITY)
 INSERT IGNORE INTO `account_29_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('029_PLATFORM_TRANSACTION_FEE', 9000000000 + 29, 7, 7, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 6 * 10000000000000 + 29 * 100000000000 + 6 * 10000000 + 1 AS CHAR),
+  9000000000 + 29, 6, 6, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 
--- 平台收益  AccountBusinessType_ACCOUNT_BUSINESS_TYPE_CHARGE_FEE
+-- 平台手续费 (accountType=7, businessType=7, REVENUE)
 INSERT IGNORE INTO `account_29_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('029_PLATFORM_CHARGE_FEE', 9000000000 + 29, 8, 8, 'REVENUE', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 7 * 10000000000000 + 29 * 100000000000 + 7 * 10000000 + 1 AS CHAR),
+  9000000000 + 29, 7, 7, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
 
--- 平台中间账户  ACCOUNT_TYPE_TRANSIT
+-- 平台服务费 (accountType=8, businessType=8, REVENUE)
 INSERT IGNORE INTO `account_29_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
-VALUES ('029_PLATFORM_TRANSIT', 9000000000 + 29, 9, 9, 'LIABILITY', 'PHP',0,0,0,1);
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 8 * 10000000000000 + 29 * 100000000000 + 8 * 10000000 + 1 AS CHAR),
+  9000000000 + 29, 8, 8, 'REVENUE', 'PHP', 0, 0, 0, 1
+);
+
+-- 平台中间账户 (accountType=9, businessType=9, LIABILITY)
+INSERT IGNORE INTO `account_29_shadow` (`account_no`, `user_id`, `account_business_type`, `account_type`, `account_category`, `currency`, `balance`, `frozen_balance`, `available_balance`, `status`)
+VALUES (
+  CAST(1 * 1000000000000000000 + 608 * 1000000000000000 + 9 * 10000000000000 + 29 * 100000000000 + 9 * 10000000 + 1 AS CHAR),
+  9000000000 + 29, 9, 9, 'LIABILITY', 'PHP', 0, 0, 0, 1
+);
 

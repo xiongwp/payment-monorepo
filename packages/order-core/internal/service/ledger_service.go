@@ -16,6 +16,7 @@ import (
 	"github.com/xiongwp/order-core/internal/domain"
 	"github.com/xiongwp/order-core/internal/idgen"
 	"github.com/xiongwp/order-core/internal/repo"
+	"github.com/xiongwp/payment-util/shadow"
 )
 
 // LedgerService higher-level operations on the GL.
@@ -135,12 +136,13 @@ func (s *ledgerService) EnsureChannelAccounts(ctx context.Context, channel strin
 
 // ─── posting helpers ────────────────────────────────────────────────────────
 
+// newTxnID 按位编码生成 GL 流水 ID（idType=110, 全局非分片所以 globalTbl=0）。
 func (s *ledgerService) newTxnID(ctx context.Context) (string, error) {
 	n, err := s.idg.NextID(ctx, idgen.BizTagLedgerTxn)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("gltxn_%d", n), nil
+	return shadow.EncodeIDStr(ctx, shadow.IDTypeOrderGLTxn, 0, n)
 }
 
 func (s *ledgerService) PostCharge(ctx context.Context, merchantID, channel, refType, refID string, grossMinor, feeMinor int64) (*domain.GLTransaction, error) {

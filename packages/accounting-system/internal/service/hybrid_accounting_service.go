@@ -15,6 +15,7 @@ import (
 	"github.com/accounting-system/internal/infrastructure/kafka"
 	"github.com/accounting-system/internal/infrastructure/sharding"
 	"github.com/accounting-system/internal/repository"
+	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -612,20 +613,21 @@ func (s *hybridAccountingService) syncUpdateBalanceBatch(
 	return txIDs, ""
 }
 
-// generateVoucherNo 生成凭证号（号段模式，严格单调递增）
+// generateVoucherNo 按位编码生成凭证号（与主路径共享 idType=001）。
+// hybrid 路径不在某个固定 shard 上，globalTbl 用 0 占位。
 func (s *hybridAccountingService) generateVoucherNo(ctx context.Context) (string, error) {
-	id, err := s.idGen.NextIDStr(ctx, idgen.BizTagVoucher)
+	seq, err := s.idGen.NextID(ctx, idgen.BizTagVoucher)
 	if err != nil {
 		return "", fmt.Errorf("hybrid: generate voucher no: %w", err)
 	}
-	return fmt.Sprintf("V%s", id), nil
+	return shadow.EncodeIDStr(ctx, shadow.IDTypeVoucher, 0, seq)
 }
 
-// generateTransactionID 生成交易流水号（号段模式，严格单调递增）
+// generateTransactionID 按位编码生成交易流水号（idType=002）。
 func (s *hybridAccountingService) generateTransactionID(ctx context.Context) (string, error) {
-	id, err := s.idGen.NextIDStr(ctx, idgen.BizTagTransaction)
+	seq, err := s.idGen.NextID(ctx, idgen.BizTagTransaction)
 	if err != nil {
 		return "", fmt.Errorf("hybrid: generate transaction id: %w", err)
 	}
-	return fmt.Sprintf("T%s", id), nil
+	return shadow.EncodeIDStr(ctx, shadow.IDTypeTransaction, 0, seq)
 }

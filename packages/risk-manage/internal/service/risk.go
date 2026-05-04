@@ -4,12 +4,13 @@ package service
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/binary"
 	"errors"
 	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/risk-manage/internal/audit"
 	"github.com/xiongwp/risk-manage/internal/engine"
 	"github.com/xiongwp/risk-manage/internal/eventbus"
@@ -165,7 +166,7 @@ func (s *RiskService) Screen(ctx context.Context, txn *engine.TxnContext) *engin
 	// 生产 key 永远不触发（sandbox.Detect 内部 IsTest 检查）。
 	principal, _ := auth.PrincipalFrom(ctx)
 	if sb := sandbox.Detect(principal, txn); sb != nil {
-		decisionID := newDecisionID()
+		decisionID := newDecisionID(ctx)
 		res := &engine.Result{
 			Decision:          sb.Decision,
 			RiskScore:         sb.RiskScore,
@@ -258,7 +259,7 @@ func (s *RiskService) Screen(ctx context.Context, txn *engine.TxnContext) *engin
 	// 提前生成 decision_id，让 ML 推理路径能把 id 透传到 ChampionChallengerService
 	// 的 SideEffect → ABTracker 收三元组 (decision_id, champion_score,
 	// challenger_score)，给后续 A/B 显著性检验用。
-	decisionID := newDecisionID()
+	decisionID := newDecisionID(ctx)
 
 	// 运营手动 ML 降级开关：disabled=true 时整个 ML 路径跳过；ForceScore
 	// 非 0 时即使 ML 跑成功也用强制值覆盖。给运营紧急关 ML 不重启用。
@@ -596,14 +597,27 @@ func recommendedActionFor(d engine.Decision) string {
 	return ""
 }
 
-// newDecisionID 16-byte crypto-rand → 32 hex 字符。比时间戳 + counter 更适合
-// 跨实例去重 / 分布式追踪。crypto/rand 失败兜底固定值（极罕见，调用方仍能继续）。
-func newDecisionID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "fallback-" + time.Now().UTC().Format("20060102150405.000000000")
+// newDecisionID 按位编码生成 risk decision ID（idType=400）。
+// seq 用 8-byte crypto-rand → uint64 → mod 1e13（fit 13-digit seq slot）。
+// 跨实例去重靠 crypto-rand 的高熵；shadow flag 由 ctx 决定。
+// crypto/rand 失败兜底用 ns 时间戳（极罕见）。
+func newDecisionID(ctx context.Context) string {
+	var b [8]byte
+	var seq int64
+	if _, err := rand.Read(b[:]); err == nil {
+		seq = int64(binary.BigEndian.Uint64(b[:])&0x7FFFFFFFFFFFFFFF) % 9_999_999_999_999
+	} else {
+		seq = time.Now().UTC().UnixNano() % 9_999_999_999_999
 	}
-	return hex.EncodeToString(b[:])
+	if seq <= 0 {
+		seq = 1
+	}
+	id, err := shadow.EncodeIDStr(ctx, shadow.IDTypeRiskDecision, 0, seq)
+	if err != nil {
+		// 极不可能失败（layout 约束都满足），兜底 nano timestamp 字符串
+		return time.Now().UTC().Format("20060102150405.000000000")
+	}
+	return id
 }
 
 // Report 交易后上报。

@@ -40,6 +40,7 @@ import (
 	"github.com/accounting-system/internal/infrastructure/database"
 	"github.com/accounting-system/internal/infrastructure/sharding"
 	"github.com/accounting-system/internal/repository"
+	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -1077,21 +1078,22 @@ func (s *freezeService) compensateFrozenDebit(
 	return tx.Commit().Error
 }
 
-// generateFreezeVoucherNo generates a voucher number routed to the given shard.
+// generateFreezeVoucherNo 按位编码生成冻结凭证号（与普通 voucher 共享 layout/idType=001）。
 func (s *freezeService) generateFreezeVoucherNo(ctx context.Context, dbIdx, tableIdx int) (string, error) {
-	id, err := s.idGen.NextIDStr(ctx, idgen.BizTagVoucher)
+	_ = dbIdx // dbIdx 由 globalTblIdx 派生，不需要单独传
+	seq, err := s.idGen.NextID(ctx, idgen.BizTagVoucher)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%01d%02d%s", dbIdx, tableIdx, id), nil
+	return shadow.EncodeIDStr(ctx, shadow.IDTypeVoucher, tableIdx, seq)
 }
 
-// generateFreezeTxID generates a transaction ID routed to the account's shard.
+// generateFreezeTxID 按位编码生成冻结流水号（idType=003 区分于普通 transaction）。
 func (s *freezeService) generateFreezeTxID(ctx context.Context, accountNo string) (string, error) {
-	dbIdx, tableIdx := s.router.RouteByAccountNo(accountNo)
-	id, err := s.idGen.NextIDStr(ctx, idgen.BizTagTransaction)
+	_, globalTblIdx := s.router.RouteByAccountNo(accountNo)
+	seq, err := s.idGen.NextID(ctx, idgen.BizTagFreezeTx)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%01d%02d%s", dbIdx, tableIdx, id), nil
+	return shadow.EncodeIDStr(ctx, shadow.IDTypeFreezeTx, globalTblIdx, seq)
 }

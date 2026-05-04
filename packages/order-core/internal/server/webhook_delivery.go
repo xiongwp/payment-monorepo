@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -111,8 +110,17 @@ func (s *WebhookDeliveryServer) TestSend(ctx context.Context, req *orderv1.TestW
 	} else {
 		payload = map[string]any{"message": "this is a test webhook from order-core admin"}
 	}
+	// 测试 webhook event ID 用 ns 时间戳当 seq；idType=199 与生产 webhook ID 隔开。
+	testSeq := time.Now().UnixNano() % 9_999_999_999_999
+	if testSeq <= 0 {
+		testSeq = 1
+	}
+	evtID, err := shadow.EncodeIDStr(ctx, shadow.IDTypeOrderEvtTest, 0, testSeq)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "encode evt id: %v", err)
+	}
 	evt := webhook.Event{
-		ID:         fmt.Sprintf("evt_test_%d", time.Now().UnixNano()),
+		ID:         evtID,
 		MerchantID: req.GetMerchantId(),
 		Type:       evtType,
 		Payload:    payload,

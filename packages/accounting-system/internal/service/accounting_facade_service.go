@@ -10,6 +10,7 @@ import (
 
 	"github.com/accounting-system/internal/idgen"
 	"github.com/accounting-system/internal/infrastructure/kafka"
+	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
 )
 
@@ -334,13 +335,25 @@ func (s *accountingFacadeService) BatchBooking(ctx context.Context, requests []*
 	})
 }
 
-// generateRequestID 生成请求ID（号段模式，严格单调递增）
+// generateRequestID 按位编码生成请求 ID（idType=004）。
+// fallback：idgen 失败时用 timestamp 当 seq；layout 自身保证 idType 段位独立，
+// 不会撞到其他 ID。
 func (s *accountingFacadeService) generateRequestID(ctx context.Context) string {
-	id, err := s.idGen.NextIDStr(ctx, idgen.BizTagAsyncTask)
+	seq, err := s.idGen.NextID(ctx, idgen.BizTagRequestID)
 	if err != nil {
-		// fallback：日志记录后退回原始格式，不阻断业务
-		s.logger.Warn("facade: generate request id failed", zap.Error(err))
-		return fmt.Sprintf("REQ_%d", time.Now().UnixNano())
+		s.logger.Warn("facade: generate request id failed, fallback to timestamp seq", zap.Error(err))
+		// 用 ns 时间戳的低 13 位（idType seq 容量是 13 位 1e13）当兜底 seq；
+		// 撞概率极低（同 idType + 同 globalTbl=0 + 同 ns 时间戳低 13 位才撞）。
+		seq = time.Now().UnixNano() % 9_999_999_999_999
+		if seq == 0 {
+			seq = 1
+		}
 	}
-	return fmt.Sprintf("REQ_%s", id)
+	id, encErr := shadow.EncodeIDStr(ctx, shadow.IDTypeRequestID, 0, seq)
+	if encErr != nil {
+		s.logger.Warn("facade: encode request id failed", zap.Error(encErr))
+		// 极不可能（除非 layout 边界超界）；返回 seq 字符串兜底，不阻断业务。
+		return fmt.Sprintf("%d", seq)
+	}
+	return id
 }

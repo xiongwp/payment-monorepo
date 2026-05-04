@@ -103,10 +103,11 @@ EOF
     sed "s/\${DB}/${db}/g; s/\${TABLE}/${table}/g" "$TEMPLATE" >> "$FULL_PATH"
     echo "" >> "$FULL_PATH"
 
-    # 主流量 fleet seed: USER_ID_OFFSET = MAIN_FLEET_OFFSET = 1_000_000
+    # 主流量 fleet seed: USER_ID_OFFSET=MAIN_FLEET_OFFSET=1_000_000, SHADOW_FLAG=0
     sed -e "s/\${DB}/${db}/g" \
         -e "s/\${TABLE}/${table}/g" \
         -e "s/\${USER_ID_OFFSET}/${MAIN_FLEET_OFFSET}/g" \
+        -e "s/\${SHADOW_FLAG}/0/g" \
         "$TEMPLATE_INIT" >> "$FULL_PATH_INIT"
     echo "" >> "$FULL_PATH_INIT"
 
@@ -118,11 +119,12 @@ EOF
     done
     echo "" >> "$FULL_PATH_SHADOW"
 
-    # 影子 fleet seed：USER_ID_OFFSET = SHADOW_FLEET_OFFSET = 9_000_000_000，
+    # 影子 fleet seed: USER_ID_OFFSET=SHADOW_FLEET_OFFSET=9_000_000_000, SHADOW_FLAG=1
     # 表名同时改成 *_shadow 后缀
     sed -e "s/\${DB}/${db}/g" \
         -e "s/\${TABLE}/${table}/g" \
         -e "s/\${USER_ID_OFFSET}/${SHADOW_FLEET_OFFSET}/g" \
+        -e "s/\${SHADOW_FLAG}/1/g" \
         -e "s/\`account_${table}\`/\`account_${table}_shadow\`/g" \
         "$TEMPLATE_INIT" >> "$FULL_PATH_INIT_SHADOW"
     echo "" >> "$FULL_PATH_INIT_SHADOW"

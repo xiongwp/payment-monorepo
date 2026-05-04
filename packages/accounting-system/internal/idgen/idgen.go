@@ -20,11 +20,17 @@ import (
 	"go.uber.org/zap"
 )
 
-// 业务标签常量
+// 业务标签常量。biz_tag 在 leaf_alloc 表里独立分号段，互不干扰。
+//
+// 命名约定：`accounting.<entity>` —— 跟其他系统隔开（order-core 用 `order.*`,
+// user-merchant 用 `usermerchant.*` 等）防止 leaf_alloc 跨系统冲突。
 const (
+	BizTagAccount     = "accounting.account"      // 账户号 seq（account_no encode 用，每 (currency, type, gtbl, biz) 组合一段）
 	BizTagVoucher     = "accounting.voucher"      // 凭证号（accounting_voucher 表）
 	BizTagTransaction = "accounting.transaction"  // 流水号（account_transaction 表）
 	BizTagAsyncTask   = "accounting.async_task"   // 异步任务ID（async_task 表）
+	BizTagFreezeTx    = "accounting.freeze_tx"    // 冻结流水号（freeze_compensate_outbox 关联）
+	BizTagRequestID   = "accounting.request_id"   // facade 层请求 ID（去重 key 兜底）
 )
 
 // defaultInitMaxID 业务标签初始 max_id（首次注册时使用）
@@ -51,9 +57,12 @@ func NewIDGeneratorFromManager(mgr *database.Manager, logger *zap.Logger) (IDGen
 		name string
 		desc string
 	}{
+		{BizTagAccount, "账户号 seq（account_no encode 用）"},
 		{BizTagVoucher, "账务系统凭证号（accounting_voucher）"},
 		{BizTagTransaction, "账务系统流水号（account_transaction）"},
 		{BizTagAsyncTask, "异步任务ID（async_task）"},
+		{BizTagFreezeTx, "冻结流水号（freeze_compensate_outbox）"},
+		{BizTagRequestID, "facade 请求 ID（去重兜底）"},
 	} {
 		if err := gen.Register(ctx, tag.name, defaultInitMaxID, defaultStep, tag.desc); err != nil {
 			return nil, fmt.Errorf("idgen: register biz_tag %q: %w", tag.name, err)

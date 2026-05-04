@@ -10,6 +10,7 @@ import (
 	"github.com/xiongwp/order-core/internal/domain"
 	"github.com/xiongwp/order-core/internal/idgen"
 	"github.com/xiongwp/order-core/internal/repo"
+	"github.com/xiongwp/payment-util/shadow"
 )
 
 // AccountingOutboxService 把 "charge/refund 已成交" 事件落到分片 outbox，
@@ -156,7 +157,10 @@ func (s *accountingOutboxService) enqueue(ctx context.Context, row *domain.Accou
 	if err != nil {
 		return fmt.Errorf("idgen for accounting outbox: %w", err)
 	}
-	row.ID = fmt.Sprintf("aob_%d", seq)
+	row.ID, err = shadow.EncodeIDStr(ctx, shadow.IDTypeOrderAccountingOutbox, 0, seq)
+	if err != nil {
+		return fmt.Errorf("encode accounting outbox id: %w", err)
+	}
 	_, err = s.outboxRepo.Insert(ctx, row)
 	switch {
 	case err == nil:

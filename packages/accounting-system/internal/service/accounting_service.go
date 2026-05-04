@@ -27,6 +27,8 @@ import (
 	"github.com/accounting-system/internal/infrastructure/sharding"
 	"github.com/accounting-system/internal/metrics"
 	"github.com/accounting-system/internal/repository"
+	"github.com/xiongwp/payment-util/money"
+	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
@@ -2507,6 +2509,16 @@ func validateOwnerIDForType(userID int64, accountType model.AccountType) error {
 // 平台/中间/手续费类型不能通过本方法创建（那是 CreatePlatformAccount / Fleet 的活），
 // 因为 owner_id 落段不同，registry 的 account_type 本身会阻止这种误用。
 func (s *accountingService) CreateAccount(ctx context.Context, userID int64, accountBusinessType model.AccountBusinessType, accountType model.AccountType, category model.AccountCategory, currency string) (*model.Account, error) {
+	// ── ID layout 边界校验（与 payment-util/shadow.EncodeAccountID 的位段对齐）──
+	// account_id 19 位 layout: shadow(1)+currency(3)+accountType(2)+globalTbl(2)+businessType(4)+seq(7)
+	// accountType 限 0-99，businessType 限 0-9999。超出会让 Encode 失败 → 直接前置拒绝给业务侧更友好错误。
+	if int64(accountType) > 99 {
+		return nil, fmt.Errorf("account_type %d exceeds layout max 99; expand layout in payment-util/shadow/identity.go before adding new types", accountType)
+	}
+	if int64(accountBusinessType) > 9999 {
+		return nil, fmt.Errorf("business_type %d exceeds layout max 9999; expand layout in payment-util/shadow/identity.go before registering new business types", accountBusinessType)
+	}
+
 	// ── 权威校验：从本地 registry 缓存查 business_type；miss 时兜底查一次 DB 并补 cache ──
 	// 启动时 ReloadRegistry 已把全部行 load 进来，热路径 0 次 DB 往返。
 	info := s.businessTypeLookup(accountBusinessType)
@@ -3212,8 +3224,12 @@ func (s *accountingService) createAccountInternal(ctx context.Context, userID in
 		return existing[0], nil
 	}
 
+	accountNo, err := s.generateAccountNo(ctx, userID, accountType, accountBusinessType, currency)
+	if err != nil {
+		return nil, fmt.Errorf("generateAccountNo: %w", err)
+	}
 	account := &model.Account{
-		AccountNo:           s.generateAccountNo(userID, accountBusinessType, currency),
+		AccountNo:           accountNo,
 		UserID:              userID,
 		AccountType:         accountType,
 		AccountCategory:     category,
@@ -3313,44 +3329,67 @@ func (s *accountingService) GetBalanceSnapshot(ctx context.Context, accountNo st
 
 // ─── ID 生成 ──────────────────────────────────────────────────────────────────
 
-// generateVoucherNo 生成凭证号，前3字符编码路由信息（1位db + 2位table）。
-// 路由来自 businessNo，确保凭证与业务订单落同一分片。
-// ID 后缀由号段模式生成器提供，严格单调递增，不依赖时钟。
+// generateVoucherNo 生成凭证号，按位编码 layout（payment-util/shadow.EncodeID）：
+//   shadow(1) | idType(3) | globalTbl(2) | seq(13)
+// idType=IDTypeVoucher (001)。globalTbl 来自 businessNo 路由，保证凭证与业务订单同片。
+// seq 由号段 idgen 提供，严格单调递增不依赖时钟。
 func (s *accountingService) generateVoucherNo(ctx context.Context, businessNo string) (string, error) {
-	dbIdx, tableIdx := s.router.RouteByNumericStr(businessNo)
-	id, err := s.idGen.NextIDStr(ctx, idgen.BizTagVoucher)
+	_, globalTblIdx := s.router.RouteByNumericStr(businessNo)
+	seq, err := s.idGen.NextID(ctx, idgen.BizTagVoucher)
 	if err != nil {
 		return "", fmt.Errorf("generateVoucherNo: %w", err)
 	}
-	return fmt.Sprintf("%01d%02d%s", dbIdx, tableIdx, id), nil
+	id, err := shadow.EncodeIDStr(ctx, shadow.IDTypeVoucher, globalTblIdx, seq)
+	if err != nil {
+		return "", fmt.Errorf("generateVoucherNo encode: %w", err)
+	}
+	return id, nil
 }
 
-// generateTransactionID 生成流水号，前3字符编码路由信息（1位db + 2位table）。
-// 路由来自 accountNo，确保流水与账户落同一分片。
-// ID 后缀由号段模式生成器提供，严格单调递增，不依赖时钟。
+// generateTransactionID 生成流水号，按位编码 layout：
+//   shadow(1) | idType(3) | globalTbl(2) | seq(13)
+// idType=IDTypeTransaction (002)。globalTbl 来自 accountNo 路由，保证流水与账户同片。
 func (s *accountingService) generateTransactionID(ctx context.Context, accountNo string) (string, error) {
-	dbIdx, tableIdx := s.router.RouteByAccountNo(accountNo)
-	id, err := s.idGen.NextIDStr(ctx, idgen.BizTagTransaction)
+	_, globalTblIdx := s.router.RouteByAccountNo(accountNo)
+	seq, err := s.idGen.NextID(ctx, idgen.BizTagTransaction)
 	if err != nil {
 		return "", fmt.Errorf("generateTransactionID: %w", err)
 	}
-	return fmt.Sprintf("%01d%02d%s", dbIdx, tableIdx, id), nil
+	id, err := shadow.EncodeIDStr(ctx, shadow.IDTypeTransaction, globalTblIdx, seq)
+	if err != nil {
+		return "", fmt.Errorf("generateTransactionID encode: %w", err)
+	}
+	return id, nil
 }
 
-// generateAccountNo 生成账户号，前3字符编码路由信息（1位db + 2位table）。
-// generateAccountNo 构造账户号。
-// 格式：{dbIdx:1d}{tblIdx:02d}{userID}-{businessType:03d}-{currency}
-// 首 3 字符给分片路由（RouteByAccountNo），末尾 -{currency} 保证同一
-// (user_id, business_type) 下不同币种账户有不同 account_no —— 否则会撞
-// uk_account_no 唯一键。历史上该字段不带 currency 后缀，那些旧行保留原样；
-// 新建账户一律按新格式生成。
-func (s *accountingService) generateAccountNo(userID int64, businessType model.AccountBusinessType, currency string) string {
-	dbIdx, tableIdx := s.router.RouteByUserID(userID)
-	suffix := ""
-	if currency != "" {
-		suffix = "-" + currency
+// generateAccountNo 按位编码生成账户号（19 位 int64 的十进制字符串形式）。
+// layout（payment-util/shadow.EncodeAccountID）：
+//   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
+//
+// - currency 走 ISO 4217 数字码（"PHP"→608），通过 payment-util/money 转换
+// - globalTbl 从 user_id 路由出来，保证账户与用户同分片
+// - seq 由 BizTagAccount 号段提供
+//
+// 同一 (currency, accountType, globalTbl, businessType) 组合最多 1000 万账户（seq 7 位）；
+// 跨 (currency, accountType, businessType) 不抢 seq 段位 → 即使热门 PHP USER 段消耗 1000 万，
+// USD MERCHANT 仍然干净。
+//
+// 唯一性：layout 自身保证同段位组合下 seq 单调递增 → uk_account_no 永远不撞。
+func (s *accountingService) generateAccountNo(ctx context.Context, userID int64, accountType model.AccountType, businessType model.AccountBusinessType, currencyCode string) (string, error) {
+	_, globalTblIdx := s.router.RouteByUserID(userID)
+	currencyNum, err := money.NumericCode(currencyCode)
+	if err != nil {
+		return "", fmt.Errorf("generateAccountNo: %w", err)
 	}
-	return fmt.Sprintf("%01d%02d%d-%03d%s", dbIdx, tableIdx, userID, businessType, suffix)
+	seq, err := s.idGen.NextID(ctx, idgen.BizTagAccount)
+	if err != nil {
+		return "", fmt.Errorf("generateAccountNo idgen: %w", err)
+	}
+	id, err := shadow.EncodeAccountID(ctx, currencyNum, int(accountType), globalTblIdx, int(businessType), seq)
+	if err != nil {
+		return "", fmt.Errorf("generateAccountNo encode: %w", err)
+	}
+	return strconv.FormatInt(id, 10), nil
 }
 
 // ─── 校验 ─────────────────────────────────────────────────────────────────────
