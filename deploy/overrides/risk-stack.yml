@@ -1,0 +1,182 @@
+# risk-manage 依赖系统：Redis (counter) + Kafka (audit topic) + ClickHouse
+# (audit OLAP) + NebulaGraph (device 关联图) + Prometheus + Grafana。
+#
+# 跟其它服务一样跑在 payment-stack network 让 risk-manage 容器 DNS 可达。
+# 使用：
+#   docker compose -f deploy/overrides/risk-stack.yml -p payment-stack up -d
+# deploy.sh 已经把它包进 up 流程；想单独起就用上面命令。
+
+services:
+  # ── Counter Redis backend ──────────────────────────────────────
+  risk-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "1gb", "--maxmemory-policy", "allkeys-lru"]
+    networks: [payment-stack]
+    ports: ["16379:6379"]
+    volumes: [risk_redis_data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  # ── Kafka (audit topic + Flink + CH Kafka engine 消费) ─────────
+  risk-zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    restart: unless-stopped
+    networks: [payment-stack]
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  risk-kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    restart: unless-stopped
+    networks: [payment-stack]
+    depends_on: [risk-zookeeper]
+    # 19094 host port (19090 order-core / 19091 risk-prometheus /
+    # 19092 api-gateway 都已占)
+    ports: ["19094:19094"]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: risk-zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:19094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://risk-kafka:9092,PLAINTEXT_HOST://localhost:19094
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes: [risk_kafka_data:/var/lib/kafka/data]
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── ClickHouse (audit 长期留存 + OLAP) ────────────────────────
+  risk-clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports:
+      - "18123:8123"
+      - "19000:9000"
+    environment:
+      CLICKHOUSE_DB: risk
+      CLICKHOUSE_USER: risk_writer
+      CLICKHOUSE_PASSWORD: change_me
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - risk_clickhouse_data:/var/lib/clickhouse
+      # init SQL 路径：deploy.sh 启动前会从 risk-manage repo cp 过来
+      - ./risk-clickhouse-init:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── NebulaGraph 3 节点 ─────────────────────────────────────────
+  risk-nebula-metad:
+    image: vesoft/nebula-metad:v3.8.0
+    restart: unless-stopped
+    networks: [payment-stack]
+    command:
+      - --meta_server_addrs=risk-nebula-metad:9559
+      - --local_ip=risk-nebula-metad
+      - --ws_ip=risk-nebula-metad
+      - --port=9559
+      - --data_path=/data/meta
+    volumes: [risk_nebula_meta:/data/meta]
+
+  risk-nebula-storaged:
+    image: vesoft/nebula-storaged:v3.8.0
+    restart: unless-stopped
+    networks: [payment-stack]
+    depends_on: [risk-nebula-metad]
+    command:
+      - --meta_server_addrs=risk-nebula-metad:9559
+      - --local_ip=risk-nebula-storaged
+      - --ws_ip=risk-nebula-storaged
+      - --port=9779
+      - --data_path=/data/storage
+    volumes: [risk_nebula_storage:/data/storage]
+
+  risk-nebula-graphd:
+    image: vesoft/nebula-graphd:v3.8.0
+    restart: unless-stopped
+    networks: [payment-stack]
+    depends_on: [risk-nebula-metad, risk-nebula-storaged]
+    ports: ["19669:9669"]
+    command:
+      - --meta_server_addrs=risk-nebula-metad:9559
+      - --local_ip=risk-nebula-graphd
+      - --ws_ip=risk-nebula-graphd
+      - --port=9669
+
+  # ── Prometheus + Grafana ──────────────────────────────────────
+  risk-prometheus:
+    image: prom/prometheus:v2.51.0
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports: ["19091:9090"]
+    volumes:
+      - ./risk-prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./risk-alerts.yaml:/etc/prometheus/alerts.yaml:ro
+      - risk_prometheus_data:/prometheus
+
+  risk-grafana:
+    image: grafana/grafana:10.4.0
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports: ["13000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: change_me
+    volumes:
+      - risk_grafana_data:/var/lib/grafana
+
+  # ── etcd（服务发现 + leader election 用）─────────────────────────
+  # 所有 server (accounting-system / order-core / payment-core / ...) 启动期
+  # 通过 RegisterSelf 写到 etcd；调用方走 etcd:///<service> resolver 拿活节点 +
+  # round_robin LB；cron worker 用 RunLeaderLoop 抢 etcd lease key 单实例化。
+  # network alias `etcd` 让所有服务的配置 (registry.endpoints: ["etcd:2379"])
+  # 都能直接命中。
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.10
+    restart: unless-stopped
+    networks:
+      payment-stack:
+        aliases: [etcd, accounting-etcd]
+    ports: ["12379:2379"]
+    environment:
+      ETCD_NAME: etcd0
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd:2379
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd:2380
+      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+      ETCD_INITIAL_CLUSTER: etcd0=http://etcd:2380
+      ETCD_DATA_DIR: /etcd-data
+    volumes: [risk_etcd_data:/etcd-data]
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ETCDCTL_API=3 etcdctl --endpoints=http://localhost:2379 endpoint health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  risk_redis_data:
+  risk_kafka_data:
+  risk_etcd_data:
+  risk_clickhouse_data:
+  risk_nebula_meta:
+  risk_nebula_storage:
+  risk_prometheus_data:
+  risk_grafana_data:
+
+networks:
+  payment-stack:
+    external: true

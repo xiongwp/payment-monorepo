@@ -1,0 +1,27 @@
+# accounting-admin-web 加入 payment-stack；联栈下 accounting-service 也在
+# payment-stack（不再有独立的 accounting-network 容器拓扑），故 accounting-network
+# 仅作为基础 compose 残留兼容（容器仍 attach 到它，但无别的 sibling）。
+# 改 host port 8081 避开 payment-admin-web 已占的 :8080。
+services:
+  accounting-admin-web:
+    networks:
+      - accounting-network
+      - payment-stack
+    ports: !override
+      - "8081:80"      # accounting 管理 UI（payment-admin-web 已占 8080）
+    environment:
+      # accounting-service gRPC：REGISTRY_ENDPOINTS 非空 → 走 etcd resolver 拿
+      # 所有副本（联栈多 pod 部署必走，因为容器去掉 container_name 后服务名跨
+      # compose 项目 DNS 不可解析）；GRPC_ADDR 仅作 fallback 直连地址。
+      REGISTRY_ENDPOINTS: "etcd:2379"
+      GRPC_ADDR: accounting-service:50051
+      # admin HTTP（GET /admin/instances 拉副本元信息）走 HTTP，不走 etcd 服务发现。
+      # 注意：accounting-admin-web 用容器名访问 8888，单实例时拨得通；多副本时
+      # 实际只命中其中一台（DNS 单条记录），通过它的 /admin/instances 再看到全部。
+      ACCOUNTING_ADMIN_HTTP_ADDR: http://accounting-service:8888
+
+networks:
+  accounting-network:
+    external: true   # deploy.sh ensure_network 会兜底创建
+  payment-stack:
+    external: true

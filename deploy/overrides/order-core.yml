@@ -1,0 +1,31 @@
+# order-core 联栈模式：同 payment-channel 思路
+#   - 加入 payment-stack network
+#   - depends_on 清空，MySQL 由 shared-db 单独起
+#   - 挂 config.docker.yaml（DSN 用容器名 meta/shard0..9）
+#   - 注入 ORDERCORE_PAYMENT_CORE_ENDPOINT：真 gRPC 调 payment-core（不再 mock）
+services:
+  order-core:
+    networks:
+      - payment-stack
+    environment:
+      ORDERCORE_LOG_DEV: "true"   # 联栈模式默认人读日志
+      ORDERCORE_PAYMENT_CORE_ENDPOINT: "payment-core:9090"
+      ORDERCORE_PAYMENT_CORE_RPC_TIMEOUT: "10s"
+      # accounting-system gRPC：endpoint 是 fallback；REGISTRY_ENDPOINTS 非空时
+      # 走 etcd resolver 拿所有 accounting-service 副本（联栈多 pod 必走）。
+      ORDERCORE_ACCOUNTING_ENDPOINT: "accounting-service:50051"
+      ORDERCORE_ACCOUNTING_RPC_TIMEOUT: "10s"
+      ORDERCORE_ACCOUNTING_CURRENCY: "PHP"
+      # etcd 自注册（cmd/server/registry.go）+ 调用方 etcd resolver（accounting /
+      # payment-core / risk / kms 等）。空则跳过注册 + 各 client 退回直连 endpoint
+      # （但 docker compose 跨项目 DNS 解析不到，所以联栈模式必须配）。
+      ORDERCORE_REGISTRY_ENDPOINTS: "etcd:2379"
+    depends_on: !override []
+    volumes: !override
+      - ${ORDER_DOCKER_CONFIG}:/app/config/config.yaml:ro
+    # 端口走 base compose 的 range（host 19220-19221:9091 / 19320-19321:9090）支持 scale=2。
+    # 这里不再 !override：让 base 的 range 生效；override 单值会在 scale=2 时撞 host 端口。
+
+networks:
+  payment-stack:
+    external: true

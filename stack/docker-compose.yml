@@ -1,0 +1,754 @@
+# 全栈总编排：infra（11 MySQL + Redis）+ 所有 Go 服务 + 两个 admin-web 前端。
+#
+# DB 拓扑（用户约定）：
+#   shared-meta (1 个 MySQL)     → 所有 meta 库：
+#                                    user_merchant_meta / paychan_meta /
+#                                    order_meta / account_meta
+#   shared-shard-N (N = 0..9)    → 每个分片 MySQL 容器装 3 个 database：
+#                                    paychan_db_N / order_db_N / accounting_db_N
+#                                  （30 个 sharded db 集中在 10 个物理分库里，
+#                                    同号 N 的三套分片同居一个 MySQL 实例）
+#
+# 启动顺序由 depends_on 决定，db-init 等 11 个 MySQL 全 healthy 后一次性灌 schema。
+#
+# 所有 Go 服务镜像都是"自包含"构建：每个 service 的 Dockerfile 自己 git-clone
+# 依赖的同级仓到 /src 下，context 只需是 service 自身目录。因此 build 时需要
+# 有效的 GitHub token 才能 clone 私仓：
+#   GITHUB_TOKEN=ghp_xxx ./deploy.sh up
+# token 通过 BuildKit secret 传给 Dockerfile 的 `--mount=type=secret,id=GITHUB_TOKEN`。
+#
+# 用法：cd payment-admin-web && GITHUB_TOKEN=ghp_xxx ./stack/deploy.sh up
+networks:
+  default:
+    name: payment-stack
+    external: true   # deploy.sh 的 ensure_network() 负责创建，compose 只 attach
+
+volumes:
+  shared-meta-data:
+  shared-shard-0-data:
+  shared-shard-1-data:
+  shared-shard-2-data:
+  shared-shard-3-data:
+  shared-shard-4-data:
+  shared-shard-5-data:
+  shared-shard-6-data:
+  shared-shard-7-data:
+  shared-shard-8-data:
+  shared-shard-9-data:
+  redis-master-data:
+  redis-replica-1-data:
+  redis-replica-2-data:
+  redis-sentinel-1-data:
+  redis-sentinel-2-data:
+  redis-sentinel-3-data:
+  kms-data:
+  kafka-data:
+  clickhouse-data:
+  nebula-meta:
+  nebula-storage:
+  prometheus-data:
+  grafana-data:
+  etcd-data:
+  risk-audit-data:
+
+# BuildKit secret：从环境变量读取 GITHUB_TOKEN 并透传给每个服务的构建。
+# Dockerfile 的 `--mount=type=secret,id=GITHUB_TOKEN` 从 /run/secrets/GITHUB_TOKEN
+# 读到 token 去 clone 私仓。
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN
+
+# yaml anchors：MySQL shard 容器除了 host port + volume + name 外完全相同。
+x-shard-base: &shard-base
+  image: mysql:8.0
+  command: &shard-cmd
+    - --default-authentication-plugin=mysql_native_password
+    - --max_connections=500
+    - --innodb_buffer_pool_size=256M
+    - --character-set-server=utf8mb4
+    - --collation-server=utf8mb4_general_ci
+  environment: &shard-env
+    MYSQL_ROOT_PASSWORD: password
+  healthcheck: &shard-health
+    test: ["CMD", "mysqladmin", "ping", "-h127.0.0.1", "-uroot", "-ppassword"]
+    interval: 5s
+    timeout: 3s
+    retries: 30
+
+services:
+  # ─── 基础设施：MySQL 元数据库 + 10 个分片 ─────────────────────────────────
+  shared-meta:
+    <<: *shard-base
+    container_name: shared-meta
+    ports: ["3306:3306"]
+    volumes: ["shared-meta-data:/var/lib/mysql"]
+    networks:
+      default:
+        aliases: [accounting_meta]
+
+  shared-shard-0:
+    <<: *shard-base
+    container_name: shared-shard-0
+    ports: ["3307:3306"]
+    volumes: ["shared-shard-0-data:/var/lib/mysql"]
+    networks: {default: {aliases: [accounting-mysql-0]}}
+  shared-shard-1:
+    <<: *shard-base
+    container_name: shared-shard-1
+    ports: ["3308:3306"]
+    volumes: ["shared-shard-1-data:/var/lib/mysql"]
+    networks: {default: {aliases: [accounting-mysql-1]}}
+  shared-shard-2:
+    <<: *shard-base
+    container_name: shared-shard-2
+    ports: ["3309:3306"]
+    volumes: ["shared-shard-2-data:/var/lib/mysql"]
+    networks: {default: {aliases: [accounting-mysql-2]}}
+  shared-shard-3:
+    <<: *shard-base
+    container_name: shared-shard-3
+    ports: ["3310:3306"]
+    volumes: ["shared-shard-3-data:/var/lib/mysql"]
+    networks: {default: {aliases: [accounting-mysql-3]}}
+  shared-shard-4:
+    <<: *shard-base
+    container_name: shared-shard-4
+    ports: ["3311:3306"]
+    volumes: ["shared-shard-4-data:/var/lib/mysql"]
+    networks: {default: {aliases: [accounting-mysql-4]}}
+  shared-shard-5:
+    <<: *shard-base
+    container_name: shared-shard-5
+    ports: ["3312:3306"]
+    volumes: ["shared-shard-5-data:/var/lib/mysql"]
+    networks: {default: {aliases: [accounting-mysql-5]}}
+  shared-shard-6:
+    <<: *shard-base
+    container_name: shared-shard-6
+    ports: ["3313:3306"]
+    volumes: ["shared-shard-6-data:/var/lib/mysql"]
+    networks: {default: {aliases: [accounting-mysql-6]}}
+  shared-shard-7:
+    <<: *shard-base
+    container_name: shared-shard-7
+    ports: ["3314:3306"]
+    volumes: ["shared-shard-7-data:/var/lib/mysql"]
+    networks: {default: {aliases: [accounting-mysql-7]}}
+  shared-shard-8:
+    <<: *shard-base
+    container_name: shared-shard-8
+    ports: ["3315:3306"]
+    volumes: ["shared-shard-8-data:/var/lib/mysql"]
+    networks: {default: {aliases: [accounting-mysql-8]}}
+  shared-shard-9:
+    <<: *shard-base
+    container_name: shared-shard-9
+    ports: ["3316:3306"]
+    volumes: ["shared-shard-9-data:/var/lib/mysql"]
+    networks: {default: {aliases: [accounting-mysql-9]}}
+
+  # ─── Redis HA：1 master + 2 replica + 3 sentinel ─────────────────────────
+  # 拓扑图：
+  #                   ┌─────────────────────┐
+  #                   │  3 sentinels 选 primary │
+  #                   │  + 监控 down / failover │
+  #                   └──┬────────┬────────┬─┘
+  #                      ↓        ↓        ↓
+  #                   redis-master  (RW)
+  #                     ↑          ↑
+  #                     │ replication
+  #                     │          │
+  #                   redis-replica-1    redis-replica-2   (RO)
+  #
+  # accounting-system 通过 sentinel 地址连接，而不是直连 master；master 故障
+  # 时 sentinel 选出新 master，客户端自动感知（go-redis UniversalClient 支持）。
+  #
+  # 所有 Redis 节点共用 AOF everysec + RDB 持久化策略；master 和 replica 的
+  # 数据 volume 分开，互不干扰。sentinel 本身也需要持久化 state（它会动态
+  # 写回 sentinel.conf），所以每个 sentinel 都挂一个独立 volume。
+
+  redis-master:
+    image: redis:7-alpine
+    container_name: redis-master
+    command: [
+      "redis-server",
+      "--port", "6379",
+      "--appendonly", "yes",
+      "--appendfsync", "everysec",
+      "--save", "300", "10",
+      "--save", "60", "10000",
+      # 开 min-replicas 保护：没至少 1 个 replica 在 10s 内 ACK 时拒绝写
+      # → 避免 split-brain 下老 master 继续收单导致数据不一致。
+      "--min-replicas-to-write", "1",
+      "--min-replicas-max-lag", "10",
+    ]
+    ports: ["6379:6379"]
+    volumes: ["redis-master-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-replica-1:
+    image: redis:7-alpine
+    container_name: redis-replica-1
+    command: [
+      "redis-server",
+      "--port", "6379",
+      "--replicaof", "redis-master", "6379",
+      "--appendonly", "yes",
+      "--appendfsync", "everysec",
+      "--save", "300", "10",
+      "--save", "60", "10000",
+      # replica 默认只读；不要让 client 误写到 replica 导致和 master 分叉。
+      "--replica-read-only", "yes",
+    ]
+    depends_on:
+      redis-master: {condition: service_healthy}
+    ports: ["6380:6379"]
+    volumes: ["redis-replica-1-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-replica-2:
+    image: redis:7-alpine
+    container_name: redis-replica-2
+    command: [
+      "redis-server",
+      "--port", "6379",
+      "--replicaof", "redis-master", "6379",
+      "--appendonly", "yes",
+      "--appendfsync", "everysec",
+      "--save", "300", "10",
+      "--save", "60", "10000",
+      "--replica-read-only", "yes",
+    ]
+    depends_on:
+      redis-master: {condition: service_healthy}
+    ports: ["6381:6379"]
+    volumes: ["redis-replica-2-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Sentinel 3 节点 quorum=2：1 sentinel 挂了剩 2 个仍可选主；2 个挂了才
+  # 完全无法 failover。每个 sentinel 启动时拼一份最小 sentinel.conf 到 volume，
+  # 让 redis-sentinel 进程可以回写 failover 状态（sentinel 要求 conf 可写）。
+  redis-sentinel-1:
+    image: redis:7-alpine
+    container_name: redis-sentinel-1
+    entrypoint: &sentinel-entry
+      - sh
+      - -c
+      - |
+        if [ ! -f /data/sentinel.conf ]; then
+          cat > /data/sentinel.conf <<'EOF'
+        port 26379
+        sentinel resolve-hostnames yes
+        sentinel announce-hostnames yes
+        sentinel monitor mymaster redis-master 6379 2
+        sentinel down-after-milliseconds mymaster 5000
+        sentinel failover-timeout mymaster 10000
+        sentinel parallel-syncs mymaster 1
+        EOF
+        fi
+        exec redis-sentinel /data/sentinel.conf
+    depends_on:
+      redis-master:    {condition: service_healthy}
+      redis-replica-1: {condition: service_healthy}
+      redis-replica-2: {condition: service_healthy}
+    ports: ["26379:26379"]
+    volumes: ["redis-sentinel-1-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-sentinel-2:
+    image: redis:7-alpine
+    container_name: redis-sentinel-2
+    entrypoint: *sentinel-entry
+    depends_on:
+      redis-master:    {condition: service_healthy}
+      redis-replica-1: {condition: service_healthy}
+      redis-replica-2: {condition: service_healthy}
+    ports: ["26380:26379"]
+    volumes: ["redis-sentinel-2-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-sentinel-3:
+    image: redis:7-alpine
+    container_name: redis-sentinel-3
+    entrypoint: *sentinel-entry
+    depends_on:
+      redis-master:    {condition: service_healthy}
+      redis-replica-1: {condition: service_healthy}
+      redis-replica-2: {condition: service_healthy}
+    ports: ["26381:26379"]
+    volumes: ["redis-sentinel-3-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── Kafka + Zookeeper (共享：accounting / risk-manage 用) ─────────────────
+  # 单 broker 不够生产用，但本地 dev / 内部环境足够。生产用 3-broker MSK /
+  # Strimzi。risk-manage 写 risk.decision.v1 topic；ClickHouse Kafka engine
+  # + Flink 消费同 topic。
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper: {condition: service_healthy}
+    ports: ["9092:9092"]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes: ["kafka-data:/var/lib/kafka/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:29092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─── etcd (accounting-system 服务发现 + 实例注册) ────────────────────────
+  etcd:
+    # 用官方 quay.io 镜像。bitnami/etcd:3.5 在 2024+ Docker Hub 镜像迁移后下架了：
+    #   "failed to resolve reference docker.io/bitnami/etcd:3.5: not found"
+    # bitnami env 名跟官方不同（ALLOW_NONE_AUTHENTICATION / ETCD_ADVERTISE_CLIENT_URLS），
+    # 官方镜像直接走 etcd CLI 参数。
+    image: quay.io/coreos/etcd:v3.5.15
+    container_name: etcd
+    restart: unless-stopped
+    ports: ["2379:2379"]
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd=http://etcd:2380
+      - --initial-cluster-token=stack-etcd
+      - --initial-cluster-state=new
+    volumes: ["etcd-data:/etcd-data"]
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── ClickHouse (audit 长期留存 + OLAP) ─────────────────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: clickhouse
+    restart: unless-stopped
+    ports:
+      - "8123:8123"   # HTTP
+      - "19000:9000"  # native (避开 metrics 9090)
+    environment:
+      CLICKHOUSE_DB: risk
+      CLICKHOUSE_USER: risk_writer
+      CLICKHOUSE_PASSWORD: change_me
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ../../risk-manage/deploy/clickhouse/init:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─── NebulaGraph 3-node (device 关联图) ─────────────────────────────────
+  nebula-metad:
+    image: vesoft/nebula-metad:v3.8.0
+    container_name: nebula-metad
+    restart: unless-stopped
+    command: [
+      "--meta_server_addrs=nebula-metad:9559",
+      "--local_ip=nebula-metad",
+      "--ws_ip=nebula-metad",
+      "--port=9559",
+      "--data_path=/data/meta",
+    ]
+    volumes: ["nebula-meta:/data/meta"]
+
+  nebula-storaged:
+    image: vesoft/nebula-storaged:v3.8.0
+    container_name: nebula-storaged
+    restart: unless-stopped
+    depends_on: [nebula-metad]
+    command: [
+      "--meta_server_addrs=nebula-metad:9559",
+      "--local_ip=nebula-storaged",
+      "--ws_ip=nebula-storaged",
+      "--port=9779",
+      "--data_path=/data/storage",
+    ]
+    volumes: ["nebula-storage:/data/storage"]
+
+  nebula-graphd:
+    image: vesoft/nebula-graphd:v3.8.0
+    container_name: nebula-graphd
+    restart: unless-stopped
+    depends_on: [nebula-metad, nebula-storaged]
+    ports: ["9669:9669"]
+    command: [
+      "--meta_server_addrs=nebula-metad:9559",
+      "--local_ip=nebula-graphd",
+      "--ws_ip=nebula-graphd",
+      "--port=9669",
+    ]
+
+  # ─── Prometheus + Grafana (监控) ───────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: unless-stopped
+    # host 端口换成 19091 让位 order-core 的 9091（e2e-accounting 默认拨这个）。
+    # 容器内 9090 不变，Grafana 仍按 prometheus:9090 拉数据。
+    ports: ["19091:9090"]
+    volumes:
+      - ../../risk-manage/deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../risk-manage/deploy/monitoring/alerts.yaml:/etc/prometheus/alerts.yaml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    restart: unless-stopped
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: change_me
+    volumes: ["grafana-data:/var/lib/grafana"]
+
+  # 一次性容器：11 个 MySQL healthy 后跑 bootstrap，把所有 schema 灌进去。
+  db-init:
+    image: mysql:8.0
+    container_name: db-init
+    restart: "no"
+    depends_on:
+      shared-meta:    {condition: service_healthy}
+      shared-shard-0: {condition: service_healthy}
+      shared-shard-1: {condition: service_healthy}
+      shared-shard-2: {condition: service_healthy}
+      shared-shard-3: {condition: service_healthy}
+      shared-shard-4: {condition: service_healthy}
+      shared-shard-5: {condition: service_healthy}
+      shared-shard-6: {condition: service_healthy}
+      shared-shard-7: {condition: service_healthy}
+      shared-shard-8: {condition: service_healthy}
+      shared-shard-9: {condition: service_healthy}
+    environment:
+      SHARED_DB_USER: root
+      SHARED_DB_PASS: password
+    volumes:
+      - ./init-db/bootstrap.sh:/bootstrap.sh:ro
+      - ../../user-merchant-core:/sql/user-merchant-core:ro
+      - ../../payment-channel:/sql/payment-channel:ro
+      - ../../order-core:/sql/order-core:ro
+      - ../../accounting-system:/sql/accounting-system:ro
+    entrypoint: ["/bin/bash", "/bootstrap.sh"]
+
+  # ─── Go 应用层（按依赖顺序往后） ──────────────────────────────────────────
+  kms-manage:
+    build:
+      context: ../../kms-manage
+      dockerfile: Dockerfile
+      secrets: [GITHUB_TOKEN]
+    image: kms-manage:local
+    container_name: kms-manage
+    restart: unless-stopped
+    environment:
+      KMSMANAGE_LOG_DEV: "true"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        KEYS=/var/lib/kms-manage/keys
+        mkdir -p "$$KEYS"
+        if [ -z "$$(ls -A $$KEYS/*.key 2>/dev/null)" ]; then
+          echo "[init] no keys found, generating master-001"
+          /usr/local/bin/kmsctl init-key "$$KEYS" master-001
+        fi
+        exec /usr/local/bin/kms-manage "$$@"
+    volumes: ["kms-data:/var/lib/kms-manage"]
+    ports: ["9290:9290", "9390:9390"]
+
+  risk-manage:
+    build:
+      context: ../../risk-manage
+      dockerfile: Dockerfile
+      secrets: [GITHUB_TOKEN]
+    image: risk-manage:local
+    restart: unless-stopped
+    # 端口用 range：scale 多副本时每个副本分到不同宿主机端口，
+    # 单副本时只占 9490 / 9590，跟原来等价。
+    ports:
+      - "9490-9499:9490"   # gRPC
+      - "9590-9599:9590"   # admin / metrics / pprof
+    depends_on:
+      redis-master:    {condition: service_healthy}
+      kafka:           {condition: service_healthy}
+      clickhouse:      {condition: service_healthy}
+      nebula-graphd:   {condition: service_started}
+    environment:
+      RISK_LOG_DEV: "false"
+      # Counter Redis (走 master；想用 sentinel 改 RISK_COUNTER_REDIS_ADDRS 列表)
+      RISK_COUNTER_REDIS_ADDR: "redis-master:6379"
+      # Audit Kafka (Flink + CH Kafka engine 同 topic 消费)
+      RISK_AUDIT_KAFKA_BROKERS: "kafka:29092"
+      RISK_AUDIT_KAFKA_TOPIC: "risk.decision.v1"
+      # Audit ClickHouse 直连
+      RISK_AUDIT_CLICKHOUSE_DSN: "clickhouse:9000"
+      RISK_AUDIT_CLICKHOUSE_DATABASE: "risk"
+      RISK_AUDIT_CLICKHOUSE_USERNAME: "risk_writer"
+      RISK_AUDIT_CLICKHOUSE_PASSWORD: "change_me"
+      # Audit FileSink + chain signing
+      RISK_AUDIT_FILE_PATH: "/var/lib/risk-manage/audit.log"
+      RISK_AUDIT_CHAIN_SIGNING: "true"
+      # NebulaGraph
+      RISK_LINKSTORE_NEBULA_ADDR: "nebula-graphd:9669"
+      RISK_LINKSTORE_NEBULA_SPACE: "risk_graph"
+      # Misc
+      RISK_SERVER_SHUTDOWN_TIMEOUT_SEC: "15"
+      RISK_SLOW_THRESHOLD_MS: "100"
+    volumes:
+      - risk-audit-data:/var/lib/risk-manage
+
+  payment-channel:
+    build:
+      context: ../../payment-channel
+      dockerfile: Dockerfile
+      secrets: [GITHUB_TOKEN]
+    image: payment-channel:local
+    restart: unless-stopped
+    depends_on:
+      db-init:    {condition: service_completed_successfully}
+      kms-manage: {condition: service_started}
+      paychan-mockserver: {condition: service_started}
+    environment:
+      PAYMENTCHANNEL_LOG_DEV: "true"
+      PAYMENTCHANNEL_KMS_ENDPOINT: "kms-manage:9290"
+    volumes:
+      - ../../payment-channel/config/config.docker.yaml:/app/config/config.yaml:ro
+    # 单副本（见 payment-channel/docker-compose.yml 注释）。
+    # host 端口映射避让 Kafka 9092；容器内 :9092 不变（DNS payment-channel:9092 仍然能调）。
+    ports:
+      - "19490:9092"  # gRPC AcquirerService（host 19490 → 容器 9092）
+      - "9192:9192"   # HTTP /wh/{adapter}
+      - "9093:9093"   # /metrics + /healthz
+
+  paychan-mockserver:
+    build:
+      context: ../../payment-channel
+      dockerfile: Dockerfile.mockserver
+      secrets: [GITHUB_TOKEN]
+    image: payment-channel-mockserver:local
+    container_name: paychan-mockserver
+    restart: unless-stopped
+    command: ["-addr", ":9400", "-webhook-delay", "200ms", "-print-gcash-pubkey=false"]
+    ports: ["9400:9400"]
+
+  accounting-system:
+    build:
+      context: ../../accounting-system
+      dockerfile: Dockerfile
+      secrets: [GITHUB_TOKEN]
+    image: accounting-system:local
+    container_name: accounting-system
+    restart: unless-stopped
+    depends_on:
+      db-init:           {condition: service_completed_successfully}
+      redis-master:      {condition: service_healthy}
+      redis-sentinel-1:  {condition: service_healthy}
+      redis-sentinel-2:  {condition: service_healthy}
+      redis-sentinel-3:  {condition: service_healthy}
+      kafka:             {condition: service_healthy}
+      etcd:              {condition: service_healthy}
+    environment:
+      # 共享 Kafka (settlement event producer)
+      KAFKA_BROKERS: "kafka:29092"
+      # 共享 etcd (服务发现 + instance 注册)
+      ETCD_ENDPOINTS: "etcd:2379"
+    volumes:
+      - ../../accounting-system/config/config.docker.yaml:/app/config/config.yaml:ro
+    ports: ["50051:50051", "8888:8888"]   # gRPC + admin HTTP（admin-web BFF 调）
+
+  payment-core:
+    # 自包含：Dockerfile 内 git-clone kms-manage/risk-manage/payment-channel/
+    # payment-util 到 /src/，所以 context 只用 payment-core 自身即可。
+    build:
+      context: ../../payment-core
+      dockerfile: Dockerfile
+      secrets: [GITHUB_TOKEN]
+    image: payment-core:local
+    container_name: payment-core
+    restart: unless-stopped
+    depends_on:
+      payment-channel: {condition: service_started}
+      kms-manage:      {condition: service_started}
+      risk-manage:     {condition: service_started}
+    environment:
+      PAYMENTCORE_LOG_DEV: "true"
+    volumes:
+      - ../../payment-core/config/config.docker.yaml:/app/config/config.yaml:ro
+    ports: ["9090:9090", "9190:9190"]
+
+  order-core:
+    # 自包含：Dockerfile 内 git-clone 6 个兄弟 repo
+    build:
+      context: ../../order-core
+      dockerfile: Dockerfile
+      secrets: [GITHUB_TOKEN]
+    image: order-core:local
+    container_name: order-core
+    restart: unless-stopped
+    depends_on:
+      db-init:           {condition: service_completed_successfully}
+      payment-core:      {condition: service_started}
+      accounting-system: {condition: service_started}
+    environment:
+      ORDERCORE_LOG_DEV: "true"
+      ORDERCORE_ACCOUNTING_ENDPOINT: "accounting-system:50051"
+      ORDERCORE_ACCOUNTING_ADMIN_HTTP_ADDR: "http://accounting-system:8888"
+    volumes:
+      - ../../order-core/config/config.docker.yaml:/app/config/config.yaml:ro
+    ports: ["9091:9091"]
+
+  user-merchant-core:
+    # 自包含：Dockerfile 内 git-clone payment-util / kms-manage
+    build:
+      context: ../../user-merchant-core
+      dockerfile: Dockerfile
+      secrets: [GITHUB_TOKEN]
+    image: user-merchant-core:local
+    container_name: user-merchant-core
+    restart: unless-stopped
+    depends_on:
+      db-init:           {condition: service_completed_successfully}
+      kms-manage:        {condition: service_started}
+      accounting-system: {condition: service_started}
+    environment:
+      USERMERCHANTCORE_LOG_DEV: "true"
+      USERMERCHANTCORE_KMS_ENDPOINT: "kms-manage:9290"
+      USERMERCHANTCORE_ACCOUNTING_ENDPOINT: "accounting-system:50051"
+      # 风控接入：register / login 都先 risk.Screen，通过后 risk.Report 写图边
+      USERMERCHANTCORE_RISK_ENDPOINT: "risk-manage:9490"
+    volumes:
+      - ../../user-merchant-core/config/config.docker.yaml:/app/config/config.yaml:ro
+    ports: ["9191:9191", "9291:9291"]
+
+  api-gateway:
+    # 公网入口网关；signup / login / verify-otp / me 等用户面 HTML 路由都在这。
+    # 自包含 Dockerfile：内部 git-clone payment-util / kms-manage /
+    # user-merchant-core / risk-manage 兄弟仓。
+    build:
+      context: ../../api-gateway
+      dockerfile: Dockerfile
+      secrets: [GITHUB_TOKEN]
+    image: api-gateway:local
+    container_name: api-gateway
+    restart: unless-stopped
+    depends_on:
+      user-merchant-core: {condition: service_started}
+      risk-manage:        {condition: service_started}
+      kms-manage:         {condition: service_started}
+    environment:
+      APIGW_LOG_DEV: "true"
+      # 下游 gRPC 容器 DNS（端口必须跟下游 server.grpc_port 对齐）
+      APIGW_USER_MERCHANT_ENDPOINT: "user-merchant-core:9191"
+      APIGW_RISK_ENDPOINT:          "risk-manage:9490"
+      APIGW_KMS_ENDPOINT:           "kms-manage:9290"
+      # 用户登录 cookie：dev/local 关 secure 让 http://localhost 也能拿到
+      APIGW_AUTH_COOKIE_SECURE: "false"
+    # 18080/18081/19092 host 映射避让：accounting-admin-web 8080、
+    # payment-admin-frontend 8081、accounting-system metrics 19090
+    ports: ["18080:8080", "18081:8081", "19092:9090"]
+
+  # ─── 前端 + 各自 BFF ──────────────────────────────────────────────────────
+  accounting-admin-web:
+    build:
+      context: ../../accounting-admin-web
+      dockerfile: Dockerfile
+      secrets: [GITHUB_TOKEN]
+    image: accounting-admin-web:local
+    container_name: accounting-admin-web
+    restart: unless-stopped
+    depends_on:
+      accounting-system: {condition: service_started}
+    environment:
+      GRPC_ADDR: "accounting-system:50051"
+      ACCOUNTING_ADMIN_HTTP_ADDR: "http://accounting-system:8888"
+    ports: ["8080:80"]
+
+  payment-admin-backend:
+    # 自包含：backend/Dockerfile 内 git-clone 8 个兄弟 repo
+    build:
+      context: ../../payment-admin-web/backend
+      dockerfile: Dockerfile
+      secrets: [GITHUB_TOKEN]
+    image: payment-admin-backend:local
+    container_name: payment-admin-backend
+    restart: unless-stopped
+    depends_on:
+      order-core:         {condition: service_started}
+      payment-core:       {condition: service_started}
+      kms-manage:         {condition: service_started}
+      risk-manage:        {condition: service_started}
+      user-merchant-core: {condition: service_started}
+    environment:
+      ORDER_GRPC_ADDR:        "order-core:9091"
+      PAYMENT_CORE_GRPC_ADDR: "payment-core:9090"
+      KMS_GRPC_ADDR:          "kms-manage:9290"
+      RISK_GRPC_ADDR:         "risk-manage:9490"
+      USER_MERCHANT_GRPC_ADDR: "user-merchant-core:9191"
+      PORT: "9190"
+
+  payment-admin-frontend:
+    # 前端 Dockerfile 只做 npm build，不需要 GITHUB_TOKEN
+    build:
+      context: ../../payment-admin-web
+      dockerfile: Dockerfile
+    image: payment-admin-frontend:local
+    container_name: payment-admin-frontend
+    restart: unless-stopped
+    depends_on:
+      payment-admin-backend: {condition: service_started}
+    ports: ["8081:80"]

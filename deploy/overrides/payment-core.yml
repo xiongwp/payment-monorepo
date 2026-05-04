@@ -1,0 +1,25 @@
+# payment-core：把 channel 指向同 network 里的 payment-channel 容器；
+# 同时把 KMS 端点指向 kms-manage 容器。host.docker.internal 只在没接 network
+# 时才用，联栈模式下不要用它。
+services:
+  payment-core:
+    networks:
+      - payment-stack
+    environment:
+      PAYCORE_LOG_DEV: "true"
+      PAYCORE_RISK_ENDPOINT: "risk-manage:9490"
+      PAYCORE_RISK_RPC_TIMEOUT: "3s"
+      # ↓ 联栈模式：走容器 DNS，不走 host.docker.internal
+      PAYCORE_CHANNEL_ENDPOINT: "payment-channel:9092"
+      PAYCORE_KMS_ENDPOINT: "kms-manage:9290"
+      PAYCORE_KMS_BEARER_TOKEN: "${KMS_TOKEN:-}"
+      PAYCORE_KMS_RPC_TIMEOUT: "3s"
+      # etcd 自注册（cmd/server/registry.go）：让 BFF / order-core 等
+      # 通过 etcd resolver 拿到所有 payment-core 副本。空则跳过注册。
+      PAYCORE_REGISTRY_ENDPOINTS: "etcd:2379"
+    # 联栈模式不需要 host.docker.internal，!reset 清掉父 compose 的 extra_hosts
+    extra_hosts: !reset []
+
+networks:
+  payment-stack:
+    external: true

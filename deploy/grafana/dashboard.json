@@ -1,0 +1,78 @@
+{
+  "annotations": {"list": []},
+  "description": "Payment Gateway Operations Dashboard",
+  "editable": true,
+  "title": "Payment Gateway",
+  "uid": "payment-gateway-main",
+  "version": 1,
+  "time": {"from": "now-1h", "to": "now"},
+  "refresh": "10s",
+  "panels": [
+    {
+      "title": "Transaction Volume (per minute)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [{"expr": "sum(rate(paycore_charge_total[1m])) by (payment_method)", "legendFormat": "{{payment_method}}"}]
+    },
+    {
+      "title": "Success Rate (%)",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "sum(rate(paycore_charge_total{result='succeeded'}[5m])) / sum(rate(paycore_charge_total[5m])) * 100"}],
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"value": 0, "color": "red"}, {"value": 95, "color": "yellow"}, {"value": 99, "color": "green"}]}}}
+    },
+    {
+      "title": "Risk Deny Rate (%)",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0},
+      "targets": [{"expr": "sum(rate(risk_screen_total{decision='DENY'}[5m])) / sum(rate(risk_screen_total[5m])) * 100"}],
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"value": 0, "color": "green"}, {"value": 5, "color": "yellow"}, {"value": 15, "color": "red"}]}}}
+    },
+    {
+      "title": "Charge Latency p50 / p95 / p99",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, rate(paycore_charge_duration_seconds_bucket[5m]))", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, rate(paycore_charge_duration_seconds_bucket[5m]))", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.99, rate(paycore_charge_duration_seconds_bucket[5m]))", "legendFormat": "p99"}
+      ]
+    },
+    {
+      "title": "Circuit Breaker Status",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 12, "x": 12, "y": 8},
+      "targets": [{"expr": "paycore_charge_total{result='circuit_open'}", "legendFormat": "{{payment_method}} → {{adapter}}"}]
+    },
+    {
+      "title": "Per-Adapter Error Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "targets": [{"expr": "sum(rate(paycore_charge_total{result='error'}[5m])) by (adapter)", "legendFormat": "{{adapter}}"}]
+    },
+    {
+      "title": "gRPC Request Rate (all services)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {"expr": "sum(rate(paycore_grpc_request_total[1m]))", "legendFormat": "payment-core"},
+        {"expr": "sum(rate(kms_grpc_request_total[1m]))", "legendFormat": "kms-manage"},
+        {"expr": "sum(rate(risk_grpc_request_total[1m]))", "legendFormat": "risk-manage"}
+      ]
+    },
+    {
+      "title": "Risk Screen Decisions",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 20},
+      "targets": [{"expr": "sum(risk_screen_total) by (decision)", "legendFormat": "{{decision}}"}]
+    },
+    {
+      "title": "KMS Operations",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 20},
+      "targets": [{"expr": "sum(rate(kms_op_total[5m])) by (op)", "legendFormat": "{{op}}"}]
+    }
+  ],
+  "templating": {"list": []},
+  "schemaVersion": 36
+}

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+.idea/
+.vscode/
+backend/payment-admin-backend
+/backend/server

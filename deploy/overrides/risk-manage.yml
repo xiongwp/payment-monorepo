@@ -1,0 +1,46 @@
+# risk-manage 加入 payment-stack network 接 sibling 服务 + 风控依赖
+# (Redis / Kafka / ClickHouse / NebulaGraph)。
+#
+# 风控依赖系统在 deploy/overrides/risk-stack.yml；deploy.sh up 已经按
+# ALL_SERVICES 顺序在 risk-manage 之前起 risk-stack，不需要 docker compose
+# 级别的 depends_on (跨 compose project 不工作 → "undefined service")。
+services:
+  risk-manage:
+    networks:
+      - payment-stack
+    environment:
+      RISK_LOG_DEV: "false"
+      # Counter Redis backend
+      RISK_COUNTER_REDIS_ADDR: risk-redis:6379
+      # Audit Kafka sink
+      RISK_AUDIT_KAFKA_BROKERS: risk-kafka:9092
+      RISK_AUDIT_KAFKA_TOPIC: risk.decision.v1
+      # Audit ClickHouse 直连 (Kafka engine 已经会消费同 topic；这里双写仅
+      # 给小流量"写入立即可查"场景；高 QPS 应该删掉这条只走 Kafka)
+      RISK_AUDIT_CLICKHOUSE_DSN: risk-clickhouse:9000
+      RISK_AUDIT_CLICKHOUSE_DATABASE: risk
+      RISK_AUDIT_CLICKHOUSE_USERNAME: risk_writer
+      RISK_AUDIT_CLICKHOUSE_PASSWORD: change_me
+      # Audit FileSink + chain signing
+      RISK_AUDIT_FILE_PATH: /var/lib/risk-manage/audit.log
+      RISK_AUDIT_CHAIN_SIGNING: "true"
+      # NebulaGraph
+      RISK_LINKSTORE_NEBULA_ADDR: risk-nebula-graphd:9669
+      RISK_LINKSTORE_NEBULA_SPACE: risk_graph
+      # Misc
+      RISK_SERVER_SHUTDOWN_TIMEOUT_SEC: "15"
+      RISK_SLOW_THRESHOLD_MS: "100"
+      # etcd 自注册（cmd/server/registry.go）：让 BFF / payment-core /
+      # api-gateway / user-merchant-core 通过 etcd resolver 拿到所有
+      # risk-manage 副本。空则跳过注册。
+      RISK_REGISTRY_ENDPOINTS: "etcd:2379"
+    volumes:
+      - risk_audit_data:/var/lib/risk-manage
+
+volumes:
+  risk_audit_data:
+
+networks:
+  payment-stack:
+    external: true
+

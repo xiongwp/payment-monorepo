@@ -1,0 +1,69 @@
+# Prometheus alerting rules for the payment gateway stack.
+# Import into Prometheus or Grafana Alerting.
+groups:
+  - name: payment_gateway
+    interval: 30s
+    rules:
+      # 支付成功率 < 95% 持续 5 分钟
+      - alert: PaymentSuccessRateLow
+        expr: |
+          (sum(rate(paycore_charge_total{result="succeeded"}[5m]))
+           / sum(rate(paycore_charge_total[5m]))) < 0.95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "支付成功率低于 95%"
+          description: "当前 {{ $value | humanizePercentage }}，检查 payment-channel / 渠道状态"
+
+      # 任何 adapter 熔断打开
+      - alert: CircuitBreakerOpen
+        expr: increase(paycore_charge_total{result="circuit_open"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "熔断器打开: {{ $labels.adapter }}"
+          description: "adapter {{ $labels.adapter }} 连续失败触发熔断"
+
+      # 风控拒绝率 > 10% 持续 5 分钟
+      - alert: RiskDenyRateHigh
+        expr: |
+          (sum(rate(risk_screen_total{decision="DENY"}[5m]))
+           / sum(rate(risk_screen_total[5m]))) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "风控拒绝率超过 10%"
+          description: "可能是规则过严或遭受攻击，当前 {{ $value | humanizePercentage }}"
+
+      # Charge p99 延迟 > 5s
+      - alert: ChargeLatencyHigh
+        expr: histogram_quantile(0.99, rate(paycore_charge_duration_seconds_bucket[5m])) > 5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Charge p99 延迟超过 5 秒"
+          description: "当前 p99={{ $value }}s，检查 payment-channel 下游响应"
+
+      # gRPC 错误率 > 5%
+      - alert: GRPCErrorRateHigh
+        expr: |
+          sum(rate(paycore_grpc_request_total{code!="OK"}[5m]))
+          / sum(rate(paycore_grpc_request_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "gRPC 错误率超 5%"
+
+      # 服务实例 down
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "服务宕机: {{ $labels.job }}"
