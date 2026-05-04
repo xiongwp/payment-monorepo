@@ -1,0 +1,87 @@
+version: "3.9"
+
+# 完整 10 分库 + meta 一键起。生产可剪裁为 1-2 分库做开发。
+# order-core 的 gRPC 接入 external 网络 `payment-stack`，让 payment-admin-backend
+# / payment-core 通过容器 DNS (order-core:9091) 调到它；MySQL 也跟着进这个网络，
+# 方便排查时在任一容器里用 `mysql -h order-meta` 连进去。
+#
+# Dockerfile 自己 git-clone 六个兄弟仓（需要 GITHUB_TOKEN secret）。
+
+
+networks:
+  default:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true
+
+x-mysql-base: &mysql-base
+  image: mysql:8.0
+  # 不传 --default-authentication-plugin：8.0.34+ 弃用、8.4 已删。
+  # go-sql-driver/mysql v1.7+ 支持默认的 caching_sha2_password，无需强制 native。
+  command: ["mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+  environment:
+    MYSQL_ROOT_PASSWORD: password
+  healthcheck:
+    test: ["CMD", "mysqladmin", "ping", "-uroot", "-ppassword", "--silent"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+
+services:
+  db-net-bootstrap:
+    image: docker:25-cli
+    container_name: order-db-net-bootstrap
+    restart: "no"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["sh", "-c"]
+    command: |
+      '
+      set -e
+      NET="${SHARED_DB_NETWORK:-payment-stack}"
+      for c in shared-meta shared-shard-0 shared-shard-1 shared-shard-2 shared-shard-3 shared-shard-4 shared-shard-5 shared-shard-6 shared-shard-7 shared-shard-8 shared-shard-9; do
+        if docker inspect "$$c" >/dev/null 2>&1; then
+          docker network connect "$$NET" "$$c" 2>/dev/null && echo "[db-net] attached $$c" || echo "[db-net]   $$c already on $$NET"
+        else
+          echo "[db-net]   skip $$c (no such container)"
+        fi
+      done
+      '
+
+  order-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      secrets:
+        - GITHUB_TOKEN
+    image: order-core:latest
+    # container_name 故意不写：支持 docker compose --scale=2 多副本部署。
+    depends_on:
+      db-net-bootstrap:
+        condition: service_completed_successfully
+    ports:
+      # host 端口用 range 支持 scale=2；容器内 gRPC 9091、metrics 9090。
+      - "19220-19221:9091"  # gRPC
+      - "19320-19321:9090"  # /metrics + /healthz
+    environment:
+      ORDERCORE_LOG_DEV: "false"
+      # accounting-system 接入：onboarding（admin HTTP）+ 运行时记账（gRPC）。
+      # 容器内通过 compose DNS 解析 accounting-system；端口走 admin :8888 / gRPC :50051。
+      # 之前漏注这俩 env，order-core 启动时 viper.GetString 返空 → onboarding skip
+      # （没注册 GCASH_RECEIVABLE）+ accounting client nil（outbox 投递不出去 →
+      # PI 已 SUCCEEDED 但 fleet 余额永远不动 → e2e 失败）。
+      ORDERCORE_ACCOUNTING_ENDPOINT: "accounting-system:50051"
+      ORDERCORE_ACCOUNTING_ADMIN_HTTP_ADDR: "http://accounting-system:8888"
+      # payment-core 渠道转发（同 compose network）
+      ORDERCORE_PAYMENT_CORE_ENDPOINT: "payment-core:9090"
+      # etcd 服务发现 + 自注册
+      ORDERCORE_REGISTRY_ENDPOINTS: "etcd:2379"
+    volumes:
+      # viper 只认 config.yaml。把 docker 变体盖在它上面，避免容器装载本地开发
+      # 的 127.0.0.1:3306-3316 端口映射。
+      - ./config/config.docker.yaml:/app/config/config.yaml:ro
+
+# BuildKit secret：从环境变量读取 GITHUB_TOKEN，不写入镜像层。
+# 用法：GITHUB_TOKEN=ghp_xxx docker compose build
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

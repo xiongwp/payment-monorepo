@@ -1,0 +1,124 @@
+server:
+  grpc_port: 9091
+
+# 下游 payment-core（统一支付网关）连接信息。
+# endpoint 为空时 → 降级成本地 mock，适合离线开发 / 单测；
+# 想联栈测试就填具体地址（docker 联栈模式："payment-core:9090"）。
+payment_core:
+  endpoint: ""
+  rpc_timeout: 10s
+
+sharding:
+  db_count: 10
+  table_per_db: 10
+
+expire_worker:
+  interval: 60s
+  limit: 200
+
+# 过期 pending Charge → expired + PI → failed
+charge_expire_worker:
+  interval: 60s
+  limit: 200
+
+# 对账 worker：长时间 pending 的 Charge 查渠道真实状态
+reconcile_worker:
+  channel_name: payment-core
+  interval: 120s
+  stale_after: 300s   # 5 分钟未终态才 Query
+  limit: 100
+
+# accounting-system 接入（HybridDoubleEntryBooking）。
+#
+# Onboarding 改运维操作（accounting-admin-web 上注册 business_type + 建 fleet）。
+# order-core 启动期不再调 accounting-system admin HTTP；从下方 channels 静态读
+# (name → business_type i32) 映射，和 accounting 侧已注册的 ID 必须一致。
+#
+# 运行期记账：用 GetAccount(user_id, business_type) 同时拿主账户和对端 channel
+# 平台账户 — accounting-system 按 user_id 路由，主账户和对端天然落同一物理分片，
+# 双分录走单库事务。
+#
+# 新渠道上线：
+#   1. accounting-admin-web 注册渠道 business_type_code（拿到 ID, e.g. 105）
+#   2. accounting-admin-web 建 fleet 100 个平台账户
+#   3. 在下方 channels 加 {name: <pm>, business_type: 105}，重启 order-core
+#
+# endpoint 空 → outbox worker 不投递（行保留 pending）。
+accounting:
+  endpoint: ""                                  # e.g. accounting-system:50051
+  rpc_timeout: 10s
+  currency: "PHP"
+  channels:
+    - {name: gcash,     business_type: 101}
+    - {name: shopeepay, business_type: 102}
+    - {name: maya,      business_type: 103}
+    - {name: grabpay,   business_type: 104}
+
+# accounting_outbox worker 参数。
+accounting_outbox:
+  poll_interval: 5s
+  batch_size: 100
+  max_attempts: 10
+  base_backoff: 2s
+  max_backoff: 5m
+
+database:
+  meta:
+    name: order_meta
+    dsn: "root:password@tcp(127.0.0.1:3316)/order_meta?charset=utf8mb4&parseTime=True&loc=Local"
+    max_open_conns: 20
+    max_idle_conns: 5
+    conn_max_lifetime: 3600
+  shards:
+    - name: order_db_0
+      dsn: "root:password@tcp(127.0.0.1:3306)/order_db_0?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: order_db_1
+      dsn: "root:password@tcp(127.0.0.1:3307)/order_db_1?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: order_db_2
+      dsn: "root:password@tcp(127.0.0.1:3308)/order_db_2?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: order_db_3
+      dsn: "root:password@tcp(127.0.0.1:3309)/order_db_3?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: order_db_4
+      dsn: "root:password@tcp(127.0.0.1:3310)/order_db_4?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: order_db_5
+      dsn: "root:password@tcp(127.0.0.1:3311)/order_db_5?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: order_db_6
+      dsn: "root:password@tcp(127.0.0.1:3312)/order_db_6?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: order_db_7
+      dsn: "root:password@tcp(127.0.0.1:3313)/order_db_7?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: order_db_8
+      dsn: "root:password@tcp(127.0.0.1:3314)/order_db_8?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+    - name: order_db_9
+      dsn: "root:password@tcp(127.0.0.1:3315)/order_db_9?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 50
+      conn_max_lifetime: 3600
+
+# 商户 / KYC / 渠道凭据 已搬迁至 user-merchant-core。order-core 不再直接调 kms-manage。

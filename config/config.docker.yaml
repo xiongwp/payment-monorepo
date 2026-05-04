@@ -1,0 +1,80 @@
+server:
+  grpc_port: 9091
+
+metrics:
+  addr: ":9090"
+
+sharding:
+  db_count: 10
+  table_per_db: 10
+
+expire_worker:
+  interval: 60s
+  limit: 200
+
+refund_retry_worker:
+  interval: 60s
+  limit: 200
+
+channel:
+  default_name: payment-core
+
+# 联栈 docker 模式：通过容器 DNS 找到 payment-core 网关。
+payment_core:
+  endpoint: "payment-core:9090"
+  rpc_timeout: 10s
+
+# 用户那边 `shared-shard-0..9` 是真分片集群：每个节点只放对应 shard 的 schema。
+# DSN 按 shard index 映射；meta 放在独立的 `shared-meta` 节点上（若没有独立
+# meta 节点，改成任一 shard，比如 shared-shard-0）。
+database:
+  meta:
+    name: order_meta
+    dsn: "root:password@tcp(shared-meta:3306)/order_meta?charset=utf8mb4&parseTime=True&loc=Local"
+    max_open_conns: 20
+    max_idle_conns: 5
+    conn_max_lifetime: 3600
+  shards:
+    - { name: order_db_0, dsn: "root:password@tcp(shared-shard-0:3306)/order_db_0?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
+    - { name: order_db_1, dsn: "root:password@tcp(shared-shard-1:3306)/order_db_1?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
+    - { name: order_db_2, dsn: "root:password@tcp(shared-shard-2:3306)/order_db_2?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
+    - { name: order_db_3, dsn: "root:password@tcp(shared-shard-3:3306)/order_db_3?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
+    - { name: order_db_4, dsn: "root:password@tcp(shared-shard-4:3306)/order_db_4?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
+    - { name: order_db_5, dsn: "root:password@tcp(shared-shard-5:3306)/order_db_5?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
+    - { name: order_db_6, dsn: "root:password@tcp(shared-shard-6:3306)/order_db_6?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
+    - { name: order_db_7, dsn: "root:password@tcp(shared-shard-7:3306)/order_db_7?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
+    - { name: order_db_8, dsn: "root:password@tcp(shared-shard-8:3306)/order_db_8?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
+    - { name: order_db_9, dsn: "root:password@tcp(shared-shard-9:3306)/order_db_9?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 50, max_idle_conns: 20 }
+
+# accounting-system 接入：仅运行期记账走 gRPC（HybridDoubleEntryBooking）。
+# endpoint 通过 compose env 注入（ORDERCORE_ACCOUNTING_ENDPOINT）。
+# Onboarding 改为运维在 accounting-admin-web 上操作（注册 business_type + 建 fleet），
+# order-core 启动 / 运行期均不再调 accounting-system 的 admin HTTP 接口。
+accounting:
+  endpoint: ""                    # injected by ORDERCORE_ACCOUNTING_ENDPOINT
+  admin_http_addr: ""             # injected by ORDERCORE_ACCOUNTING_ADMIN_HTTP_ADDR
+  rpc_timeout: 10s
+  currency: "PHP"
+  # 列每个 channel 的 (name, business_type)，business_type 必须跟 accounting 侧
+  # 已注册的 ID 一致（运维上 admin-web 注册 GCASH_RECEIVABLE 后拿到 ID 填这里）。
+  channels:
+    - {name: gcash,     business_type: 101}
+    - {name: shopeepay, business_type: 102}
+    - {name: maya,      business_type: 103}
+    - {name: grabpay,   business_type: 104}
+
+# accounting_outbox worker 参数
+accounting_outbox:
+  poll_interval: 5s
+  batch_size: 100
+  max_attempts: 10
+  base_backoff: 2s
+  max_backoff: 5m
+  # 归档（低频 cron）：status=sent 且 sent_at 超过 archive_retain 的行删除。
+  # status=failed 不动，保留供运维核查（同时 CountDeadLetters 上报 metric）。
+  archive_retain:   168h   # 7d
+  archive_interval: 1h
+  archive_batch:    1000
+
+# 日切对账由专门的 reconplatform 系统统一处理（直接读 order-core / accounting-system
+# DB 快照，不在 order-core 内置 worker），原 reconciliation 配置块已删除。
