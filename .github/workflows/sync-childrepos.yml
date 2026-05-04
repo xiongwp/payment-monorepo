@@ -47,6 +47,11 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # 关闭这个 job 的所有 GITHUB_TOKEN 默认权限。
+    # 我们一律用 CHILDREPO_PAT；不希望 actions/checkout 或 git-subtree 内部
+    # 任何路径误用 github-actions[bot] 的 token（之前症状：fetch 用 PAT 没问题，
+    # push 阶段被 bot token 劫持，报 "denied to github-actions[bot]"）。
+    permissions: {}
     # 需要完整历史，否则 git subtree push 会因为缺 squashed merge commit 失败
     steps:
       - name: Checkout (full history)
@@ -76,6 +81,27 @@ jobs:
           git config --local  --unset-all "http.https://github.com/.extraheader" 2>/dev/null || true
           # 列一下还残留什么 http.* 配置，便于 CI log 排查
           git config --list --show-scope | grep -E '^[^[:space:]]+\s+http\.' || echo "  (no http.* config remaining)"
+
+      - name: Force ALL github.com URLs through CHILDREPO_PAT
+        # 关键：实测发现 git-subtree push 内部 fetch 阶段用了 remote URL 里的 PAT，
+        # 但 push 阶段被某种隐藏路径劫持回 github-actions[bot] token。
+        #
+        # url.<base>.insteadOf 是 git 客户端最早层的 URL 重写，所有 https://github.com/
+        # 和 git@github.com: 形式的 URL 一律先重写成 https://x-access-token:PAT@github.com/，
+        # 任何 git 子操作（包括 git-subtree 内部的 push）都绕不过去。
+        env:
+          GH_TOKEN: ${{ secrets.CHILDREPO_PAT }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::Secret CHILDREPO_PAT is not set." >&2
+            exit 1
+          fi
+          git config --global "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" "https://github.com/"
+          git config --global --add "url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" "git@github.com:"
+          # 验证（token 在 log 里会被自动 mask 成 ***）
+          echo "url.insteadOf rules now configured:"
+          git config --global --get-all url.https://x-access-token:***@github.com/.insteadOf 2>/dev/null \
+            || git config --global --list | grep '^url\.' | sed 's/x-access-token:[^@]*@/x-access-token:***@/'
 
       - name: Add child-repo remotes (HTTPS + PAT)
         # 镜像 monorepo 本地的 git remote 配置；保持 packages/<name> ↔ remote-name ↔ child-repo 三者同名。
