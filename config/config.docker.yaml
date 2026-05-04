@@ -1,0 +1,76 @@
+# config.docker.yaml — for `docker-compose up` via deploy.sh 联栈模式。
+#
+# 联栈模式下 meta DB 指向共享的 shared-meta 节点上的 user_merchant_meta 库
+# （由 deploy/shared-db/init/meta_init.sql 的合并 init 建出来）。
+
+server:
+  grpc_port: 9191
+
+metrics:
+  addr: ":9291"
+
+database:
+  meta:
+    name: user_merchant_meta
+    dsn: "root:password@tcp(shared-meta:3306)/user_merchant_meta?charset=utf8mb4&parseTime=True&loc=Local"
+    max_open_conns: 50
+    max_idle_conns: 20
+    conn_max_lifetime: 3600
+
+# kms-manage gRPC（联栈下用容器 DNS）
+kms:
+  endpoint: "kms-manage:9290"
+  bearer_token: ""
+  rpc_timeout: 5s
+
+# risk-manage gRPC（联栈）
+risk:
+  endpoint: "risk-manage:9490"
+  rpc_timeout: 3s
+
+# accounting-system gRPC（联栈，注册时建 USER_BALANCE 主账户）
+accounting:
+  endpoint: "accounting-system:50051"
+  rpc_timeout: 5s
+
+cache:
+  merchant:
+    size: 10000
+    ttl: 60s
+    warmup: 1000
+  secret:
+    size: 1024
+    ttl: 5m
+
+rate_limit:
+  rps: 0
+  burst: 0
+  per_key:
+    header: ""
+    rps: 0
+    burst: 0
+    capacity: 10000
+    ttl: 10m
+  per_merchant:
+    default_rps: 100
+
+timeouts:
+  default: 5s
+  by_method:
+    "/usermerchant.v1.MerchantService/AuthenticateByAPIKey": 1s
+    "/usermerchant.v1.MerchantSecretService/BulkGetPlaintext": 3s
+
+retention:
+  enabled: false
+  duration: 61320h
+  interval: 24h
+
+otel:
+  endpoint: ""
+  env: "docker"
+  sample_ratio: 0.1
+  export_timeout: 10s
+  insecure: true
+
+auth:
+  tokens: []

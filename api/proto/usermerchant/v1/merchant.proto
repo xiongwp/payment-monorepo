@@ -1,0 +1,249 @@
+syntax = "proto3";
+
+package usermerchant.v1;
+
+option go_package = "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1;usermerchantv1";
+
+// ─── Merchants + KYC ────────────────────────────────────────────────────────
+
+enum KycStatus {
+  KYC_STATUS_UNSPECIFIED     = 0;
+  KYC_STATUS_PENDING         = 1;
+  KYC_STATUS_SUBMITTED       = 2;
+  KYC_STATUS_REVIEWING       = 3;
+  KYC_STATUS_NEEDS_MORE_INFO = 4;
+  KYC_STATUS_APPROVED        = 5;
+  KYC_STATUS_REJECTED        = 6;
+  KYC_STATUS_SUSPENDED       = 7;
+  KYC_STATUS_TERMINATED      = 8;
+}
+
+enum MerchantStatus {
+  MERCHANT_STATUS_UNSPECIFIED = 0;
+  MERCHANT_STATUS_PENDING     = 1;
+  MERCHANT_STATUS_ACTIVE      = 2;
+  MERCHANT_STATUS_SUSPENDED   = 3;
+  MERCHANT_STATUS_TERMINATED  = 4;
+}
+
+message Merchant {
+  string id              = 1;
+  string name            = 2;
+  string legal_name      = 3;
+  string country         = 4;
+  string business_type   = 5;
+  string tax_id          = 6;
+  string contact_email   = 7;
+  string contact_phone   = 8;
+  string website         = 9;
+  string mcc             = 10;
+
+  string webhook_url     = 11;
+  // webhook_secret is intentionally omitted; returned only on Create / RotateAPIKeys.
+
+  KycStatus     kyc_status  = 20;
+  int32         kyc_level   = 21;
+  string        kyc_reason  = 22;
+  string        kyc_reviewer = 23;
+  int64         kyc_reviewed_at_ms = 24;
+
+  string risk_tier        = 30;
+  int32  rate_limit_rps   = 31;
+
+  string settle_currency  = 40;
+  string settle_method    = 41;
+  string settle_account   = 42;
+  string settle_bank      = 43;
+  string settle_holder    = 44;
+
+  MerchantStatus status   = 50;
+  map<string,string> metadata = 51;
+
+  int64 created_ms = 60;
+  int64 updated_ms = 61;
+}
+
+message MerchantKycDocument {
+  string id            = 1;
+  string merchant_id   = 2;
+  string doc_type      = 3;
+  string doc_number    = 4;
+  string file_url      = 5;
+  string mime_type     = 6;
+  int32  size_bytes    = 7;
+  string uploaded_by   = 8;
+  string review_status = 9;
+  string review_note   = 10;
+  int64  expires_at_ms = 11;
+  int64  created_ms    = 12;
+  int64  updated_ms    = 13;
+}
+
+message MerchantKycAudit {
+  int64     id           = 1;
+  string    merchant_id  = 2;
+  KycStatus from_status  = 3;
+  KycStatus to_status    = 4;
+  string    reason       = 5;
+  string    actor        = 6;
+  int64     created_ms   = 7;
+}
+
+// ─── RPCs ───────────────────────────────────────────────────────────────────
+
+message CreateMerchantRequest {
+  string name            = 1;
+  string legal_name      = 2;
+  string country         = 3;
+  string business_type   = 4;
+  string tax_id          = 5;
+  string contact_email   = 6;
+  string contact_phone   = 7;
+  string website         = 8;
+  string mcc             = 9;
+  string webhook_url     = 10;
+  string settle_currency = 11;
+  string settle_method   = 12;
+  string settle_account  = 13;
+  string settle_bank     = 14;
+  string settle_holder   = 15;
+  map<string,string> metadata = 16;
+}
+
+message CreateMerchantResponse {
+  Merchant merchant         = 1;
+  // One-time plaintext secrets — client must persist safely, never shown again.
+  string   live_secret_key  = 2;
+  string   test_secret_key  = 3;
+  string   webhook_secret   = 4;
+}
+
+message GetMerchantRequest { string id = 1; }
+message GetMerchantResponse { Merchant merchant = 1; }
+
+// BatchGet：一次最多 100 个 id；按 id 返回 map 便于调用方直接 lookup。
+// 找不到的 id 会从结果里省略（不报错），让调用方自己决定怎么处理。
+message BatchGetMerchantsRequest {
+  repeated string ids = 1;
+}
+message BatchGetMerchantsResponse {
+  map<string, Merchant> merchants = 1;
+}
+
+message ListMerchantsRequest {
+  MerchantStatus status     = 1;
+  KycStatus      kyc_status = 2;
+  int32          limit      = 3;
+  int32          offset     = 4;
+}
+message ListMerchantsResponse {
+  repeated Merchant merchants = 1;
+  int64             total     = 2;
+}
+
+message UpdateMerchantRequest {
+  string id = 1;
+  map<string,string> fields = 2; // whitelisted subset of mutable fields
+}
+message UpdateMerchantResponse { Merchant merchant = 1; }
+
+message RotateApiKeyRequest {
+  string id   = 1;
+  string kind = 2; // "live" | "test"
+}
+message RotateApiKeyResponse {
+  string plaintext = 1; // returned once
+}
+
+// KYC transitions — individual RPCs rather than generic set_status, so policy
+// is enforced server-side.
+message KycTransitionRequest {
+  string id     = 1;
+  string actor  = 2;
+  string reason = 3;
+}
+message KycTransitionResponse { Merchant merchant = 1; }
+
+message AddKycDocumentRequest {
+  string merchant_id = 1;
+  string doc_type    = 2;
+  string doc_number  = 3;
+  string file_url    = 4;
+  string mime_type   = 5;
+  int32  size_bytes  = 6;
+  string uploaded_by = 7;
+}
+message AddKycDocumentResponse { MerchantKycDocument document = 1; }
+
+message ListKycDocumentsRequest { string merchant_id = 1; }
+message ListKycDocumentsResponse { repeated MerchantKycDocument documents = 1; }
+
+message ReviewKycDocumentRequest {
+  string id     = 1;
+  string status = 2; // accepted / rejected / expired
+  string note   = 3;
+}
+message ReviewKycDocumentResponse {}
+
+message ListKycAuditsRequest {
+  string merchant_id = 1;
+  int32  limit       = 2;
+}
+message ListKycAuditsResponse { repeated MerchantKycAudit audits = 1; }
+
+service MerchantService {
+  rpc Create           (CreateMerchantRequest)    returns (CreateMerchantResponse);
+  rpc Get              (GetMerchantRequest)       returns (GetMerchantResponse);
+  rpc BatchGet         (BatchGetMerchantsRequest) returns (BatchGetMerchantsResponse);
+  rpc List             (ListMerchantsRequest)     returns (ListMerchantsResponse);
+  rpc Update           (UpdateMerchantRequest)    returns (UpdateMerchantResponse);
+  rpc RotateApiKey     (RotateApiKeyRequest)      returns (RotateApiKeyResponse);
+
+  rpc SubmitKyc        (KycTransitionRequest)     returns (KycTransitionResponse);
+  rpc StartReview      (KycTransitionRequest)     returns (KycTransitionResponse);
+  rpc Approve          (KycTransitionRequest)     returns (KycTransitionResponse);
+  rpc Reject           (KycTransitionRequest)     returns (KycTransitionResponse);
+  rpc RequestMoreInfo  (KycTransitionRequest)     returns (KycTransitionResponse);
+  rpc Suspend          (KycTransitionRequest)     returns (KycTransitionResponse);
+  rpc Unsuspend        (KycTransitionRequest)     returns (KycTransitionResponse);
+  rpc Terminate        (KycTransitionRequest)     returns (KycTransitionResponse);
+
+  rpc AddDocument      (AddKycDocumentRequest)    returns (AddKycDocumentResponse);
+  rpc ListDocuments    (ListKycDocumentsRequest)  returns (ListKycDocumentsResponse);
+  rpc ReviewDocument   (ReviewKycDocumentRequest) returns (ReviewKycDocumentResponse);
+
+  rpc ListAudits       (ListKycAuditsRequest)     returns (ListKycAuditsResponse);
+}
+
+// ─── Audit Log（append-only，链式签名） ─────────────────────────────────────
+
+message AuditLogEntry {
+  int64  id           = 1;
+  string actor        = 2;
+  string actor_ip     = 3;
+  string method       = 4;
+  string target_id    = 5;
+  string request_body = 6;  // JSON，敏感字段已 redact
+  string status_code  = 7;
+  string response_err = 8;
+  int32  duration_ms  = 9;
+  string trace_id     = 10;
+  string prev_hash    = 11;
+  string row_hash     = 12;
+  int64  created_ms   = 13;
+}
+
+message ListAuditLogsRequest {
+  string actor  = 1;  // 可选：按操作人过滤
+  string target = 2;  // 可选：按 target_id 过滤（通常 merchant_id）
+  int32  limit  = 3;  // <=0 时默认 50，上限 500
+  int32  offset = 4;
+}
+
+message ListAuditLogsResponse {
+  repeated AuditLogEntry entries = 1;
+}
+
+service AuditService {
+  rpc List (ListAuditLogsRequest) returns (ListAuditLogsResponse);
+}

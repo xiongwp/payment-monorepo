@@ -1,0 +1,81 @@
+server:
+  grpc_port: 9191
+
+metrics:
+  addr: ":9291"
+
+database:
+  meta:
+    name: user_merchant_meta
+    dsn: "root:password@tcp(127.0.0.1:3326)/user_merchant_meta?charset=utf8mb4&parseTime=True&loc=Local"
+    max_open_conns: 50
+    max_idle_conns: 20
+    conn_max_lifetime: 3600
+  # replicas：可选；填 >=1 个 DSN 后 List / Auth / Document/Audit 列表等
+  # 只读路径会 round-robin 到这里，写路径永远走 meta。空列表时退回 meta。
+  replicas: []
+
+# KMS client (kms-manage gRPC). Leave endpoint empty to disable
+# merchant-secret service (BulkGetPlaintext / Put will error until configured).
+kms:
+  endpoint: ""                     # e.g. kms-manage:9290
+  bearer_token: ""
+  rpc_timeout: 5s
+
+# merchant 缓存（进程内 LRU+TTL）。热路径 Get/AuthenticateByAPIKey 走缓存，
+# Update/Rotate/TransitionKYC 主动失效，TTL 兜底。
+cache:
+  merchant:
+    size: 10000       # 条目数上限（万级商户即可全量常驻）
+    ttl: 60s          # miss 兜底 TTL；主动失效覆盖后更新
+    warmup: 1000      # 启动时预热 active 商户数量；<=0 关闭
+  # 渠道凭据解密结果缓存（BulkGetPlaintext 热路径）。TTL 短一点保持安全性。
+  secret:
+    size: 1024        # 条目粒度是 (merchant,channel)
+    ttl: 5m           # 容忍 rotate 后最多 5 分钟延迟
+
+# rate limit interceptor (0 = off)
+rate_limit:
+  rps: 0
+  burst: 0
+  # 按调用方 key 单独分桶，比全局限流更友好；header 为空则不启用。
+  # 典型配置：让 admin-backend 给每个被代理商户请求附带 x-merchant-id header。
+  per_key:
+    header: ""       # e.g. "x-merchant-id"
+    rps: 0           # <=0 关闭
+    burst: 0
+    capacity: 10000  # 并发不同 key 上限；超过后最冷的桶被 LRU 淘汰
+    ttl: 10m
+  # 按 merchant 粒度的自适应限流：resolver 从 x-merchant-id header 或 Bearer API
+  # key 还原 merchant_id，用缓存里的 rate_limit_rps 作为桶速率；商户配置改动后
+  # 下一次桶重建自动生效。default_rps 是缓存 miss 或字段 0 的兜底，<=0 = 放行。
+  per_merchant:
+    default_rps: 100
+
+# 每 RPC 默认 context timeout；不配置 = 不注入，让调用方 deadline 决定。
+# by_method 只对命中项生效，其它走 default。
+timeouts:
+  default: 5s
+  by_method:
+    "/usermerchant.v1.MerchantService/AuthenticateByAPIKey": 1s
+    "/usermerchant.v1.MerchantSecretService/BulkGetPlaintext": 3s
+
+# 软删商户在 Terminated 之后保留 N 天供合规审计，到期后真删（级联 KYC doc + audit）。
+# 合规要求 ≥ 7 年时把 duration 调到 61320h (7y)。
+retention:
+  enabled: false
+  duration: 61320h    # 7y 默认；dev 可置 24h
+  interval: 24h
+
+# OpenTelemetry：endpoint 空 → 关闭（tracex 还会自己生成 trace_id 串日志）。
+# 典型 collector：otel-collector:4317；sample_ratio 生产常用 0.05–0.1。
+otel:
+  endpoint: ""
+  env: "dev"
+  sample_ratio: 0.1
+  export_timeout: 10s
+  insecure: true
+
+# bearer tokens accepted by AuthInterceptor; empty list = auth disabled
+auth:
+  tokens: []

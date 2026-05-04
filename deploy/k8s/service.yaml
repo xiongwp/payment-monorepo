@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-merchant-core
+  labels: { app: user-merchant-core }
+spec:
+  type: ClusterIP
+  selector: { app: user-merchant-core }
+  ports:
+    - { name: grpc,    port: 9191, targetPort: grpc }
+    - { name: metrics, port: 9291, targetPort: metrics }
+---
+# headless 副本：grpc-go 客户端的 dns:/// resolver 走它，可拿到所有 endpoints
+# 做客户端 LB（avoid Service 单点 5-tuple-hash 偏分布）。
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-merchant-core-headless
+  labels: { app: user-merchant-core }
+spec:
+  clusterIP: None
+  selector: { app: user-merchant-core }
+  ports:
+    - { name: grpc, port: 9191, targetPort: grpc }

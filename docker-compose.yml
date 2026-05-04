@@ -1,0 +1,76 @@
+version: "3.9"
+
+# user-merchant-core 联栈：自带 meta DB，gRPC 接入 `payment-stack` 共享网络
+# 让 payment-admin-backend / payment-core / payment-channel 用容器 DNS
+# （user-merchant-core:9191）拿到 merchant 相关接口。
+#
+# Dockerfile 自己 git-clone payment-util / kms-manage（需要 GITHUB_TOKEN secret）。
+# 想拉 PR 分支覆盖默认 main：
+#   build:
+#     args:
+#       PAYMENT_UTIL_REF: claude/fix-payment-util-pvFNu
+
+networks:
+  default:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true
+
+x-mysql-base: &mysql-base
+  image: mysql:8.0
+  command: ["mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+  environment:
+    MYSQL_ROOT_PASSWORD: password
+  healthcheck:
+    test: ["CMD", "mysqladmin", "ping", "-uroot", "-ppassword", "--silent"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+
+services:
+  meta:
+    <<: *mysql-base
+    container_name: user-merchant-meta
+    ports: ["3326:3306"]
+    volumes:
+      - meta-data:/var/lib/mysql
+      - ./database/metadb/init/init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+
+  user-merchant-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      secrets:
+        - GITHUB_TOKEN
+    image: user-merchant-core:latest
+    # 不写 container_name → compose 用 <project>-<service>-<n> 自动命名，
+    # 允许 docker compose --scale user-merchant-core=N 起多副本（同 accounting-service
+    # / order-core 模式）。固定 container_name 跟 --scale 互斥，会报：
+    #   "Docker requires each container to have a unique name. Remove the custom
+    #    name to scale the service"
+    depends_on:
+      meta: { condition: service_healthy }
+    ports:
+      # range 让多副本各自拿固定可推算的端口；单副本时 9191 / 9291 仍用第一档。
+      # 历史问题：之前固定 "9191:9191" → 第二个 scale 副本起不来，端口冲突。
+      - "9191-9200:9191"  # gRPC
+      - "9291-9300:9291"  # /metrics + /healthz （错开 payment-core metrics 9190）
+    environment:
+      USERMERCHANTCORE_LOG_DEV: "false"
+      USERMERCHANTCORE_DATABASE_META_DSN: "root:password@tcp(meta:3306)/user_merchant_meta?charset=utf8mb4&parseTime=True&loc=Local"
+      # ── 服务发现 + 下游 endpoint（payment-stack 内 DNS）──
+      USERMERCHANTCORE_REGISTRY_ENDPOINTS: "etcd:2379"
+      USERMERCHANTCORE_KMS_ENDPOINT: "kms-manage:9390"
+      USERMERCHANTCORE_ACCOUNTING_ENDPOINT: "accounting-system:50051"
+      USERMERCHANTCORE_RISK_ENDPOINT: "risk-manage:9590"
+    volumes:
+      # config 路径是相对于 user-merchant-core/docker-compose.yml 所在目录
+      - ./config:/app/config:ro
+
+volumes:
+  meta-data:
+
+# BuildKit secret：从环境变量读取 GITHUB_TOKEN，不写入镜像层。
+# 用法：GITHUB_TOKEN=ghp_xxx docker compose build
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

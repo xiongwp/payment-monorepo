@@ -1,0 +1,102 @@
+# kube-prometheus-stack PrometheusRule。每条规则都对应一个 SLO / runbook 节点。
+# 阈值是初始建议；上线后按真实流量校准。
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: user-merchant-core
+  labels: { release: prometheus }
+spec:
+  groups:
+    - name: user-merchant-core.rpc
+      interval: 30s
+      rules:
+        - alert: UserMerchantHighErrorRate
+          expr: |
+            sum(rate(user_merchant_grpc_request_total{code!~"OK|NotFound|InvalidArgument|FailedPrecondition"}[5m]))
+              /
+            sum(rate(user_merchant_grpc_request_total[5m])) > 0.01
+          for: 5m
+          labels: { severity: warning, service: user-merchant-core }
+          annotations:
+            summary: "5xx-equivalent error rate > 1% for 5m"
+            runbook: "docs/RUNBOOK.md#high-error-rate"
+
+        - alert: UserMerchantP99LatencyHigh
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(user_merchant_grpc_request_duration_seconds_bucket[5m])) by (le, method)
+            ) > 0.5
+          for: 10m
+          labels: { severity: warning, service: user-merchant-core }
+          annotations:
+            summary: "p99 latency > 500ms (method={{ $labels.method }})"
+            runbook: "docs/RUNBOOK.md#p99-latency-high"
+
+        - alert: UserMerchantAuthCacheMissSpike
+          expr: |
+            sum(rate(user_merchant_cache_lookup_total{index="by_key_hash",result="miss"}[5m]))
+              /
+            sum(rate(user_merchant_cache_lookup_total{index="by_key_hash"}[5m])) > 0.30
+          for: 10m
+          labels: { severity: warning, service: user-merchant-core }
+          annotations:
+            summary: "Auth cache miss ratio > 30%; warmup or rotate storm?"
+            runbook: "docs/RUNBOOK.md#auth-cache-miss-spike"
+
+    - name: user-merchant-core.db
+      interval: 30s
+      rules:
+        - alert: UserMerchantDBPoolSaturated
+          expr: |
+            user_merchant_db_pool_in_use{db="meta"} / user_merchant_db_pool_open{db="meta"} > 0.85
+          for: 5m
+          labels: { severity: warning, service: user-merchant-core }
+          annotations:
+            summary: "Meta DB pool > 85% utilised; consider raising MaxOpenConns or adding replicas"
+            runbook: "docs/RUNBOOK.md#db-pool-saturated"
+
+        - alert: UserMerchantDBWaitGrowing
+          expr: |
+            rate(user_merchant_db_pool_wait_seconds_total{db="meta"}[5m]) > 0.1
+          for: 5m
+          labels: { severity: critical, service: user-merchant-core }
+          annotations:
+            summary: "Connections waited > 0.1s/s — pool exhausted"
+            runbook: "docs/RUNBOOK.md#db-pool-saturated"
+
+    - name: user-merchant-core.kms
+      interval: 30s
+      rules:
+        - alert: UserMerchantKMSErrorRate
+          expr: |
+            sum(rate(user_merchant_kms_rpc_total{result="error"}[5m]))
+              /
+            sum(rate(user_merchant_kms_rpc_total[5m])) > 0.05
+          for: 5m
+          labels: { severity: critical, service: user-merchant-core }
+          annotations:
+            summary: "KMS error rate > 5%; secret Put/BulkGet impacted"
+            runbook: "docs/RUNBOOK.md#kms-down"
+
+        - alert: UserMerchantKMSP99Latency
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(user_merchant_kms_rpc_duration_seconds_bucket[5m])) by (le, op)
+            ) > 1.0
+          for: 10m
+          labels: { severity: warning, service: user-merchant-core }
+          annotations:
+            summary: "KMS {{ $labels.op }} p99 > 1s"
+            runbook: "docs/RUNBOOK.md#kms-down"
+
+    - name: user-merchant-core.health
+      interval: 30s
+      rules:
+        - alert: UserMerchantPodNotReady
+          expr: |
+            kube_pod_status_ready{namespace=~".+", pod=~"user-merchant-core-.*", condition="true"} == 0
+          for: 5m
+          labels: { severity: critical, service: user-merchant-core }
+          annotations:
+            summary: "Pod {{ $labels.pod }} not ready for 5m"
+            runbook: "docs/RUNBOOK.md#pod-not-ready"
