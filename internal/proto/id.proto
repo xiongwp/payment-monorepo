@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package id;
+
+option go_package = "id-generator/internal/proto";
+
+service IDService {
+  rpc GetID (IDRequest) returns (IDResponse);
+  rpc GetIDs (BatchRequest) returns (BatchResponse);
+}
+
+
+message IDRequest {
+  int64 user_id = 1; 
+}
+
+message IDResponse {
+  int64 id = 1;
+}
+
+
+message BatchRequest {
+  int32 count = 1;
+}
+
+message BatchResponse {
+  repeated int64 ids = 1;
+}

@@ -1,0 +1,44 @@
+
+
+
+services:
+
+  mysql:
+    image: mysql:8.0
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --max_connections=500
+      --innodb_buffer_pool_size=256M
+    networks:
+      - accounting-network
+    container_name: mysql-generator
+    environment:
+        MYSQL_ROOT_PASSWORD: password
+        MYSQL_DATABASE: idgen
+    ports:
+      - "3318:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./internal/database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+
+  id-service:
+    build: .
+    environment:
+      ETCD_ENDPOINT: accounting-etcd:2379
+    depends_on:
+      - mysql
+    ports:
+      - "9090:9090"
+    networks:
+      - accounting-network
+
+networks:
+  accounting-network:
+    external: true
+
+volumes:
+  etcd-data:
+  mysql-data:
