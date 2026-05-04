@@ -1,0 +1,247 @@
+// 用户身份服务（User）：注册 / 登录 / 多渠道认证 / 邮箱/手机验证 / OTP /
+// SSO / RBAC / 多币种账户引用。
+//
+// 表设计：users / user_profiles / user_auths / login_logs / user_sessions /
+// roles / user_roles / permissions / role_permissions / user_accounts /
+// user_settings + email_codes。
+//
+// user_accounts 是 (user_id, currency) → accounting-system account_id 的引用
+// 表；用户可同时持有 USD / PHP 等多币种账户，余额 / 流水都在 accounting-system 里。
+//
+// 风控集成：register / login / password_change / bind_phone / bind_email /
+// 2fa_disable 都先 risk.Screen，通过后 risk.Report 写图边。
+syntax = "proto3";
+
+package usermerchant.v1;
+
+option go_package = "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1;usermerchantv1";
+
+service UserService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc OAuthLogin(OAuthLoginRequest) returns (LoginResponse);
+  rpc VerifyOTP(VerifyOTPRequest) returns (LoginResponse);
+
+  rpc SendCode(SendCodeRequest) returns (SendCodeResponse);
+  rpc VerifyCode(VerifyCodeRequest) returns (VerifyCodeResponse);
+
+  rpc BindIdentity(BindIdentityRequest) returns (BindIdentityResponse);
+  rpc UnbindIdentity(UnbindIdentityRequest) returns (UnbindIdentityResponse);
+  rpc ListIdentities(ListIdentitiesRequest) returns (ListIdentitiesResponse);
+
+  rpc EnableTOTP(EnableTOTPRequest) returns (EnableTOTPResponse);
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+
+  rpc GetUser(GetUserRequest) returns (User);
+
+  // 多币种账户引用：accounting-system 创建账户后回写 user_accounts。
+  rpc BindUserAccount(BindUserAccountRequest) returns (BindUserAccountResponse);
+  rpc ListUserAccounts(ListUserAccountsRequest) returns (ListUserAccountsResponse);
+
+  rpc IntrospectToken(IntrospectTokenRequest) returns (IntrospectTokenResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc LogoutAll(LogoutAllRequest) returns (LogoutResponse);
+
+  rpc HasPermission(HasPermissionRequest) returns (HasPermissionResponse);
+  rpc ListPermissions(ListPermissionsRequest) returns (ListPermissionsResponse);
+
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+}
+
+enum UserStatus {
+  USER_STATUS_UNSPECIFIED = 0;
+  USER_STATUS_ACTIVE      = 1;
+  USER_STATUS_DISABLED    = 2;
+  USER_STATUS_LOCKED      = 3;
+  USER_STATUS_DELETED     = 4;
+}
+
+// IdentityType 多渠道认证类型。password 是用户名/邮箱/手机 + 密码主登录。
+enum IdentityType {
+  IDENTITY_TYPE_UNSPECIFIED = 0;
+  IDENTITY_TYPE_PASSWORD    = 1;
+  IDENTITY_TYPE_EMAIL       = 2;
+  IDENTITY_TYPE_PHONE       = 3;
+  IDENTITY_TYPE_WECHAT      = 4;
+  IDENTITY_TYPE_GITHUB      = 5;
+  IDENTITY_TYPE_GOOGLE      = 6;
+  IDENTITY_TYPE_APPLE       = 7;
+}
+
+message User {
+  string     id              = 1;
+  string     username        = 2;
+  string     email           = 3;
+  string     phone           = 4;
+  UserStatus status          = 5;
+  bool       totp_enabled    = 6;
+  bool       email_verified  = 7;
+  bool       phone_verified  = 8;
+  int64      created_ms      = 9;
+  int64      updated_ms      = 10;
+  int64      last_login_ms   = 11;
+}
+
+message Identity {
+  IdentityType type        = 1;
+  string       identifier  = 2;
+  bool         verified    = 3;
+  int64        created_ms  = 4;
+}
+
+// UserAccount user_id+currency → accounting-system account_id 引用。
+message UserAccount {
+  string user_id    = 1;
+  string currency   = 2; // ISO-4217 大写
+  string account_id = 3; // accounting-system 主键
+  string status     = 4; // active / closed
+  int64  created_ms = 5;
+}
+
+// ─── RPCs ───────────────────────────────────────────────────────
+
+message RegisterRequest {
+  string username = 1;
+  string password = 2;
+  string email    = 3;
+  string phone    = 4;
+  string currency = 5; // 默认币种（首次开户时调用方再调 accounting-system）
+
+  string ip_address       = 10;
+  string device_id        = 11;
+  string user_agent       = 12;
+  string risk_session_id  = 13;
+  string fingerprint_hash = 14;
+  string ua_hash          = 15;
+  map<string, string> metadata = 20;
+}
+
+message RegisterResponse {
+  User   user        = 1;
+  string jwt         = 2;
+  bool   risk_review = 3;
+  // 风控触发 step-up：needs_otp=true + otp_challenge 非空时，user / jwt 都为空。
+  // 调用方（api-gateway 用户面）应跳到 /verify-otp 让用户填邮件验证码，再调
+  // VerifyOTP；通过后那边返 user + jwt 完成 register 全流程。
+  bool   needs_otp     = 4;
+  string otp_challenge = 5;
+}
+
+message LoginRequest {
+  string login_id = 1; // username / email / phone 任一
+  string password = 2;
+
+  string ip_address       = 10;
+  string device_id        = 11;
+  string user_agent       = 12;
+  string risk_session_id  = 13;
+  string fingerprint_hash = 14;
+  map<string, string> metadata = 20;
+}
+
+message LoginResponse {
+  string jwt           = 1;
+  User   user          = 2;
+  bool   needs_otp     = 3;
+  string otp_challenge = 4;
+}
+
+message OAuthLoginRequest {
+  IdentityType type        = 1;
+  string       identifier  = 2;
+  string       credential  = 3;
+  string       email       = 4;
+  string ip_address       = 10;
+  string device_id        = 11;
+  string user_agent       = 12;
+  string risk_session_id  = 13;
+  map<string, string> metadata = 20;
+}
+
+message VerifyOTPRequest {
+  string otp_challenge = 1;
+  string code          = 2;
+}
+
+message SendCodeRequest {
+  IdentityType type        = 1;
+  string       identifier  = 2;
+  string       purpose     = 3;
+}
+message SendCodeResponse { bool sent = 1; }
+
+message VerifyCodeRequest {
+  IdentityType type        = 1;
+  string       identifier  = 2;
+  string       code        = 3;
+  string       purpose     = 4;
+}
+message VerifyCodeResponse { bool ok = 1; }
+
+message BindIdentityRequest {
+  string       user_id     = 1;
+  IdentityType type        = 2;
+  string       identifier  = 3;
+  string       credential  = 4;
+  string       email_code  = 5;
+}
+message BindIdentityResponse { Identity identity = 1; }
+
+message UnbindIdentityRequest {
+  string       user_id     = 1;
+  IdentityType type        = 2;
+  string       identifier  = 3;
+}
+message UnbindIdentityResponse { bool ok = 1; }
+
+message ListIdentitiesRequest  { string user_id = 1; }
+message ListIdentitiesResponse { repeated Identity identities = 1; }
+
+message EnableTOTPRequest  { string user_id = 1; }
+message EnableTOTPResponse {
+  string secret_base32 = 1;
+  string otpauth_url   = 2;
+}
+
+message ChangePasswordRequest {
+  string user_id      = 1;
+  string old_password = 2;
+  string email_code   = 3;
+  string new_password = 4;
+}
+message ChangePasswordResponse { bool ok = 1; }
+
+message GetUserRequest         { string user_id = 1; }
+
+message BindUserAccountRequest {
+  string user_id    = 1;
+  string currency   = 2;
+  string account_id = 3;
+}
+message BindUserAccountResponse { bool ok = 1; }
+
+message ListUserAccountsRequest  { string user_id = 1; }
+message ListUserAccountsResponse { repeated UserAccount accounts = 1; }
+
+message IntrospectTokenRequest { string jwt = 1; }
+message IntrospectTokenResponse {
+  bool   valid          = 1;
+  string user_id        = 2;
+  bool   email_verified = 3;
+  int64  expires_ms     = 4;
+  repeated string scopes      = 5;
+  repeated string permissions = 6;
+}
+
+message LogoutRequest    { string jwt = 1; string user_id = 2; }
+message LogoutResponse   { bool ok = 1; }
+message LogoutAllRequest { string user_id = 1; }
+
+message HasPermissionRequest  { string user_id = 1; string permission_code = 2; }
+message HasPermissionResponse { bool allowed = 1; }
+
+message ListPermissionsRequest  { string user_id = 1; }
+message ListPermissionsResponse { repeated string codes = 1; }
+
+message DeleteUserRequest  { string user_id = 1; string reason = 2; }
+message DeleteUserResponse { bool ok = 1; }
