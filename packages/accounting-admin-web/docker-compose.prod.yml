@@ -1,0 +1,28 @@
+version: '3.8'
+
+# ─── 与 accounting-system 合并部署（生产） ────────────────────────────────────
+# 用法（在 accounting-system 目录）:
+#   docker-compose \
+#     -f docker-compose.yml \
+#     -f ../accounting-admin-web/docker-compose.prod.yml \
+#     up -d
+
+services:
+  accounting-admin-web:
+    build:
+      context: ../accounting-admin-web
+      dockerfile: Dockerfile
+    image: accounting-admin-web:latest
+    container_name: accounting-admin-web
+    ports:
+      - "80:80"
+    environment:
+      - BACKEND_HOST=accounting-service
+      - BACKEND_PORT=8888
+      - TZ=Asia/Shanghai
+    depends_on:
+      accounting-service:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - accounting-network
