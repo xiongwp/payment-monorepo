@@ -14,12 +14,14 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
 )
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:9090", "grpc address")
+	shadowFl := flag.Bool("shadow", false, "send as shadow traffic (x-shadow=1; payment-core 透传给 channel/risk/kms)")
 	flag.Parse()
 
 	args := flag.Args()
@@ -51,6 +53,10 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if *shadowFl {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-shadow", "1")
+		fmt.Fprintln(os.Stderr, "[grpc-client] shadow=1 — server will route to *_shadow tables")
+	}
 
 	extra := map[string]string{"country": *country, "payment_method": *pm}
 	if *adapter != "" {

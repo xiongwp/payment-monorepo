@@ -13,6 +13,7 @@ import (
 	"github.com/xiongwp/id-generator/internal/segment"
 	"github.com/xiongwp/id-generator/internal/service"
 	"github.com/xiongwp/id-generator/internal/worker"
+	"github.com/xiongwp/payment-util/shadow"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
@@ -66,27 +67,37 @@ func main() {
 	} else {
 		log.Println("success started to connect database")
 	}
-	// ================================
-	// 5️⃣ 初始化 segment buffer
-	// ================================
-	buf := &segment.Buffer{
-		DB: db,
-	}
-	buf.Load() // 预加载第一个 segment
 
 	// ================================
-	// 6️⃣ 启动 gRPC 服务
+	// 5️⃣ 初始化 segment buffer（主 + 影子各一个）
+	// ================================
+	bufMain := segment.NewMainBuffer(db)
+	bufMain.Load() // 预加载主号段
+
+	// 影子 buffer 用同一个 db connection（id_segment / id_segment_shadow 在同库）。
+	// init_shadow.sql 必须已经导入；否则 Load 会 fatal — 这是有意为之，让运维
+	// 看到 shadow 表缺失第一时间发现。
+	bufShadow := segment.NewShadowBuffer(db)
+	bufShadow.Load() // 预加载影子号段
+
+	// ================================
+	// 6️⃣ 启动 gRPC 服务（装 shadow interceptor 翻 metadata 进 ctx）
 	// ================================
 	lis, err := net.Listen("tcp", ":9090")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(
+			shadow.UnaryServerInterceptor(),
+		),
+	)
 
 	pb.RegisterIDServiceServer(grpcServer, &service.Server{
-		Sf:  sf,
-		Seg: buf,
+		Sf:        sf,
+		SegMain:   bufMain,
+		SegShadow: bufShadow,
 	})
 
 	log.Println("gRPC server started at :9090")

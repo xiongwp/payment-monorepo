@@ -32,20 +32,20 @@ func NewNotifyLogRepository(mgr *Manager, r *sharding.Router) NotifyLogRepositor
 	return &notifyLogRepo{mgr: mgr, router: r}
 }
 
-func (r *notifyLogRepo) shardOf(piID string) (*gorm.DB, string, error) {
+func (r *notifyLogRepo) shardOf(ctx context.Context, piID string) (*gorm.DB, string, error) {
 	dbIdx, tblIdx := r.router.RouteByPrefixedID(piID)
 	db, err := r.mgr.GetShard(dbIdx)
 	if err != nil {
 		return nil, "", err
 	}
-	return db, r.router.GetTableName("notify_log", tblIdx), nil
+	return db, r.router.TableName(ctx, "notify_log", tblIdx), nil
 }
 
 func (r *notifyLogRepo) Create(ctx context.Context, n *domain.NotifyLog) error {
 	if n.PaymentIntentID == "" {
 		return fmt.Errorf("%w: payment_intent_id required", domain.ErrValidation)
 	}
-	db, tbl, err := r.shardOf(n.PaymentIntentID)
+	db, tbl, err := r.shardOf(ctx, n.PaymentIntentID)
 	if err != nil {
 		return err
 	}
@@ -53,7 +53,7 @@ func (r *notifyLogRepo) Create(ctx context.Context, n *domain.NotifyLog) error {
 }
 
 func (r *notifyLogRepo) Get(ctx context.Context, piID, id string) (*domain.NotifyLog, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func (r *notifyLogRepo) Get(ctx context.Context, piID, id string) (*domain.Notif
 }
 
 func (r *notifyLogRepo) ListByPI(ctx context.Context, piID string) ([]*domain.NotifyLog, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +85,7 @@ func (r *notifyLogRepo) UpdateFields(ctx context.Context, piID, id string, field
 	if len(fields) == 0 {
 		return r.Get(ctx, piID, id)
 	}
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +113,7 @@ func (r *notifyLogRepo) ListDue(ctx context.Context, now time.Time, limit int) (
 		if err != nil {
 			return nil, err
 		}
-		tbl := r.router.GetTableName("notify_log", tblIdx)
+		tbl := r.router.TableName(ctx, "notify_log", tblIdx)
 		var part []*domain.NotifyLog
 		err = db.WithContext(ctx).Table(tbl).
 			Where("status IN ? AND (next_retry_at IS NULL OR next_retry_at < ?)", dueStates, now).

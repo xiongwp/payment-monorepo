@@ -8,6 +8,7 @@ import (
 	"github.com/accounting-system/internal/domain/model"
 	"github.com/accounting-system/internal/infrastructure/database"
 	"github.com/accounting-system/internal/infrastructure/sharding"
+	"github.com/xiongwp/payment-util/shadow"
 )
 
 // ShardTrialBalanceRow holds the aggregated result for one (account_category, account_type)
@@ -80,8 +81,9 @@ func (r *trialBalanceRepository) QueryShardSummary(ctx context.Context, dbIndex,
 // QueryShardSummaryByCurrency 同 QueryShardSummary 语义，currency 非空时 WHERE 额外加
 // `AND s.currency = ?`（snapshot 表有 currency 列；day-cut 按币种跑时写进去）。
 func (r *trialBalanceRepository) QueryShardSummaryByCurrency(ctx context.Context, dbIndex, tableIndex int, snapshotDate, currency string, runID int) ([]ShardTrialBalanceRow, error) {
-	snapshotTable := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
-	accountTable := fmt.Sprintf("account_%02d", tableIndex)
+	// shadow 路由：压测流量自动加 _shadow 后缀，与 callback 路径保持一致。
+	snapshotTable := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
+	accountTable := shadow.TableName(ctx, fmt.Sprintf("account_%02d", tableIndex))
 
 	db, err := r.dbManager.GetDB(dbIndex)
 	if err != nil {

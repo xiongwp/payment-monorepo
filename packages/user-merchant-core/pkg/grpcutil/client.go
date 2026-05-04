@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -51,6 +52,9 @@ func Dial(opt ClientDialOptions) (*grpc.ClientConn, error) {
 		tracex.OTelClientInterceptor(),
 		authClientInterceptor(opt.BearerToken),
 		traceClientInterceptor(opt.TraceMetadataKey),
+		// Shadow 透传：ctx.IsShadow=true 时 outbound metadata 加 x-shadow=1，
+		// 让下游服务（accounting / kms / risk）也走影子路径。
+		shadow.UnaryClientInterceptor(),
 		timeoutClientInterceptor(opt.Timeout),
 		retryClientInterceptor(opt.MaxRetries),
 	)

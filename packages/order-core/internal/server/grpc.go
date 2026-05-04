@@ -21,6 +21,7 @@ import (
 	"github.com/xiongwp/order-core/internal/domain"
 	"github.com/xiongwp/order-core/internal/repo"
 	"github.com/xiongwp/order-core/internal/service"
+	"github.com/xiongwp/order-core/internal/shadow"
 	"github.com/xiongwp/order-core/internal/webhook"
 )
 
@@ -133,6 +134,10 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 		grpc.ChainUnaryInterceptor(
 			RecoverInterceptor(s.logger),
 			trace.UnaryServerInterceptor(s.logger),
+			// shadow 在 trace 之后立即装：x-shadow metadata → ctx，后续所有 handler /
+			// repo / 出站 RPC 都能 IsShadow(ctx) 决策。比 Auth 更外层是为了 dev 流量
+			// 即便鉴权关掉也能 shadow 标识落表（如压测期常关 auth）。
+			shadow.UnaryServerInterceptor(),
 			LoggingInterceptor(s.logger),
 			MetricsInterceptor(),
 			RateLimitInterceptor(s.rateLimit, s.rateBurst),

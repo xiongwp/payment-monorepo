@@ -95,7 +95,7 @@ func (r *accountingOutboxRepo) Insert(ctx context.Context, row *domain.Accountin
 		now := time.Now()
 		row.NextAttemptAt = &now
 	}
-	db, tbl, err := r.shardOf(row.PaymentIntentID)
+	db, tbl, err := r.shardOf(ctx, row.PaymentIntentID)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +144,7 @@ func (r *accountingOutboxRepo) ListPending(ctx context.Context, now time.Time, l
 			return nil, err
 		}
 		for j := 0; j < r.router.TablePerDB(); j++ {
-			tbl := r.router.GetTableName(accountingOutboxTable, i*r.router.TablePerDB()+j)
+			tbl := r.router.TableName(ctx, accountingOutboxTable, i*r.router.TablePerDB()+j)
 			var rows []*domain.AccountingOutbox
 			// 走 idx_status_next (status, next_attempt_at) 复合索引：
 			//   - Insert 已保证 next_attempt_at 非 NULL → 主路径是等值+范围，吃满索引
@@ -179,7 +179,7 @@ func markCondition(db *gorm.DB, row *domain.AccountingOutbox) *gorm.DB {
 }
 
 func (r *accountingOutboxRepo) MarkSent(ctx context.Context, row *domain.AccountingOutbox) error {
-	db, tbl, err := r.shardOf(row.PaymentIntentID)
+	db, tbl, err := r.shardOf(ctx, row.PaymentIntentID)
 	if err != nil {
 		return err
 	}
@@ -201,7 +201,7 @@ func (r *accountingOutboxRepo) MarkSent(ctx context.Context, row *domain.Account
 }
 
 func (r *accountingOutboxRepo) MarkRetry(ctx context.Context, row *domain.AccountingOutbox, nextAt time.Time, errMsg string) error {
-	db, tbl, err := r.shardOf(row.PaymentIntentID)
+	db, tbl, err := r.shardOf(ctx, row.PaymentIntentID)
 	if err != nil {
 		return err
 	}
@@ -222,7 +222,7 @@ func (r *accountingOutboxRepo) MarkRetry(ctx context.Context, row *domain.Accoun
 }
 
 func (r *accountingOutboxRepo) MarkFailed(ctx context.Context, row *domain.AccountingOutbox, errMsg string) error {
-	db, tbl, err := r.shardOf(row.PaymentIntentID)
+	db, tbl, err := r.shardOf(ctx, row.PaymentIntentID)
 	if err != nil {
 		return err
 	}
@@ -276,7 +276,7 @@ func (r *accountingOutboxRepo) ClaimBatch(ctx context.Context, now time.Time, pe
 			return claimToken, total, err
 		}
 		for j := 0; j < r.router.TablePerDB(); j++ {
-			tbl := r.router.GetTableName(accountingOutboxTable, i*r.router.TablePerDB()+j)
+			tbl := r.router.TableName(ctx, accountingOutboxTable, i*r.router.TablePerDB()+j)
 			// MySQL 不允许 UPDATE + 子查询同表，但单表 LIMIT 没问题：
 			// `UPDATE t SET ... WHERE ... ORDER BY ... LIMIT N` 是合法 InnoDB 用法。
 			// claim_token 兼容 NULL（migrate 后的老数据）和 ''（gorm Create 插入的零值）。
@@ -312,7 +312,7 @@ func (r *accountingOutboxRepo) ListByClaimToken(ctx context.Context, claimToken 
 			return nil, err
 		}
 		for j := 0; j < r.router.TablePerDB(); j++ {
-			tbl := r.router.GetTableName(accountingOutboxTable, i*r.router.TablePerDB()+j)
+			tbl := r.router.TableName(ctx, accountingOutboxTable, i*r.router.TablePerDB()+j)
 			var rows []*domain.AccountingOutbox
 			if err := db.WithContext(ctx).Table(tbl).
 				Where("claim_token = ?", claimToken).
@@ -338,7 +338,7 @@ func (r *accountingOutboxRepo) PurgeSentBefore(ctx context.Context, before time.
 			return total, err
 		}
 		for j := 0; j < r.router.TablePerDB(); j++ {
-			tbl := r.router.GetTableName(accountingOutboxTable, i*r.router.TablePerDB()+j)
+			tbl := r.router.TableName(ctx, accountingOutboxTable, i*r.router.TablePerDB()+j)
 			res := db.WithContext(ctx).Table(tbl).
 				Where("status = ?", domain.AccountingOutboxSent).
 				Where("sent_at IS NOT NULL AND sent_at < ?", before).
@@ -362,7 +362,7 @@ func (r *accountingOutboxRepo) CountDeadLetters(ctx context.Context) (int64, err
 			return total, err
 		}
 		for j := 0; j < r.router.TablePerDB(); j++ {
-			tbl := r.router.GetTableName(accountingOutboxTable, i*r.router.TablePerDB()+j)
+			tbl := r.router.TableName(ctx, accountingOutboxTable, i*r.router.TablePerDB()+j)
 			var cnt int64
 			if err := db.WithContext(ctx).Table(tbl).
 				Where("status = ?", domain.AccountingOutboxFailed).

@@ -7,7 +7,10 @@ import (
 	"time"
 
 	"github.com/xiongwp/order-core/internal/domain"
+	"github.com/xiongwp/order-core/internal/shadow"
 )
+
+const adminAuditTable = "admin_audit_log"
 
 // AdminAuditRepository append-only log of admin actions.
 type AdminAuditRepository interface {
@@ -43,7 +46,7 @@ func (r *adminAuditRepo) Insert(ctx context.Context, a *domain.AdminAuditLog) er
 	if len(a.RequestBody) > maxBody {
 		a.RequestBody = a.RequestBody[:maxBody] + "...[truncated]"
 	}
-	return r.mgr.GetMeta().WithContext(ctx).Create(a).Error
+	return r.mgr.GetMeta().WithContext(ctx).Table(shadow.TableName(ctx, adminAuditTable)).Create(a).Error
 }
 
 func (r *adminAuditRepo) List(ctx context.Context, f AuditFilter) ([]*domain.AdminAuditLog, int64, error) {
@@ -51,7 +54,7 @@ func (r *adminAuditRepo) List(ctx context.Context, f AuditFilter) ([]*domain.Adm
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	q := r.mgr.GetMeta().WithContext(ctx).Model(&domain.AdminAuditLog{})
+	q := r.mgr.GetMeta().WithContext(ctx).Table(shadow.TableName(ctx, adminAuditTable))
 	if f.Actor != "" {
 		q = q.Where("actor = ?", f.Actor)
 	}

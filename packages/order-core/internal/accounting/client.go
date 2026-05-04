@@ -31,6 +31,7 @@ import (
 	"github.com/xiongwp/payment-util/serviceregistry"
 
 	"github.com/xiongwp/order-core/internal/domain"
+	"github.com/xiongwp/order-core/internal/shadow"
 	"github.com/xiongwp/order-core/internal/trace"
 )
 
@@ -91,7 +92,11 @@ func New(cfg Config) (*Client, error) {
 	// round_robin 由 DialWithFallback 内部统一加（etcd / DNS 两条路都生效）。
 	conn, err := serviceregistry.DialWithFallback(cfg.RegistryEndpoints, service, cfg.Addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithUnaryInterceptor(trace.UnaryClientInterceptor()),
+		// trace + shadow 都得透传到下游 accounting-system，让记账落到对应（主 / 影子）分区
+		grpc.WithChainUnaryInterceptor(
+			trace.UnaryClientInterceptor(),
+			shadow.UnaryClientInterceptor(),
+		),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("accounting: dial %s (fallback %s): %w", service, cfg.Addr, err)

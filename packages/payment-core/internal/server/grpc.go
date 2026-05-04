@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -57,6 +58,9 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(
 		RecoverInterceptor(s.logger),
 		trace.UnaryServerInterceptor(s.logger),
+		// shadow 紧跟 trace：把 metadata x-shadow 翻进 ctx；payment-core 是无状态路由
+		// 层，shadow ctx 仅供日志 + 出站 RPC（channel / kms / risk）透传给下游。
+		shadow.UnaryServerInterceptor(),
 		LoggingInterceptor(s.logger),
 		MetricsInterceptor(),
 		RateLimitInterceptor(s.rps, s.burst),

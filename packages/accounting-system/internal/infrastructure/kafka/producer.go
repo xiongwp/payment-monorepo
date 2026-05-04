@@ -7,13 +7,23 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
 )
 
-// Producer Kafka生产者
+// Producer Kafka 生产者。
+//
+// 主 / 影子流量按 ctx 路由到不同 topic（base / base_shadow）：
+//
+//   - Writer 不设 Topic（保留为空），让每条 kafka.Message 自带 Topic
+//   - SendMessage / SendBatch 内部 shadow.KafkaTopic(ctx, baseTopic) 切换
+//
+// 影子流量的 ledger entry 不会进主 topic，下游消费方按订阅哪个 topic 决定
+// 是否处理压测数据。
 type Producer struct {
-	writer *kafka.Writer
-	logger *zap.Logger
+	writer    *kafka.Writer
+	baseTopic string // 主 topic 名；影子流量自动加 _shadow 后缀
+	logger    *zap.Logger
 }
 
 // ProducerConfig 生产者配置
@@ -25,12 +35,12 @@ type ProducerConfig struct {
 	MaxAttempts  int
 }
 
-// NewProducer 创建生产者
+// NewProducer 创建生产者。Writer.Topic 留空，由每条 message.Topic 决定主 / 影路由。
 func NewProducer(config ProducerConfig, logger *zap.Logger) *Producer {
 	writer := &kafka.Writer{
 		Addr:         kafka.TCP(config.Brokers...),
-		Topic:        config.Topic,
-		Balancer:     &kafka.Hash{}, // 使用Hash分区策略
+		// Topic 留空：让每条 message 上自带 Topic（主 / 影路由用）
+		Balancer:     &kafka.Hash{}, // 使用 Hash 分区策略
 		BatchSize:    config.BatchSize,
 		BatchTimeout: config.BatchTimeout,
 		MaxAttempts:  config.MaxAttempts,
@@ -38,20 +48,21 @@ func NewProducer(config ProducerConfig, logger *zap.Logger) *Producer {
 	}
 
 	return &Producer{
-		writer: writer,
-		logger: logger,
+		writer:    writer,
+		baseTopic: config.Topic,
+		logger:    logger,
 	}
 }
 
 // Message 消息
 type Message struct {
-	Key   string      `json:"key"`
-	Type  string      `json:"type"`
-	Data  interface{} `json:"data"`
-	Timestamp int64    `json:"timestamp"`
+	Key       string      `json:"key"`
+	Type      string      `json:"type"`
+	Data      interface{} `json:"data"`
+	Timestamp int64       `json:"timestamp"`
 }
 
-// SendMessage 发送消息
+// SendMessage 发送消息。topic 由 ctx 决定（主 / 影）。
 func (p *Producer) SendMessage(ctx context.Context, key string, msgType string, data interface{}) error {
 	msg := Message{
 		Key:       key,
@@ -66,7 +77,9 @@ func (p *Producer) SendMessage(ctx context.Context, key string, msgType string, 
 		return fmt.Errorf("marshal message failed: %w", err)
 	}
 
+	topic := shadow.KafkaTopic(ctx, p.baseTopic)
 	kafkaMsg := kafka.Message{
+		Topic: topic,
 		Key:   []byte(key),
 		Value: msgBytes,
 		Time:  time.Now(),
@@ -77,6 +90,7 @@ func (p *Producer) SendMessage(ctx context.Context, key string, msgType string, 
 			zap.Error(err),
 			zap.String("key", key),
 			zap.String("type", msgType),
+			zap.String("topic", topic),
 		)
 		return fmt.Errorf("send message failed: %w", err)
 	}
@@ -84,13 +98,15 @@ func (p *Producer) SendMessage(ctx context.Context, key string, msgType string, 
 	p.logger.Debug("message sent",
 		zap.String("key", key),
 		zap.String("type", msgType),
+		zap.String("topic", topic),
 	)
 
 	return nil
 }
 
-// SendBatch 批量发送消息
+// SendBatch 批量发送消息。整批走同一 ctx 的 topic（不允许混发主 / 影）。
 func (p *Producer) SendBatch(ctx context.Context, messages []Message) error {
+	topic := shadow.KafkaTopic(ctx, p.baseTopic)
 	kafkaMessages := make([]kafka.Message, len(messages))
 
 	for i, msg := range messages {
@@ -101,6 +117,7 @@ func (p *Producer) SendBatch(ctx context.Context, messages []Message) error {
 		}
 
 		kafkaMessages[i] = kafka.Message{
+			Topic: topic,
 			Key:   []byte(msg.Key),
 			Value: msgBytes,
 			Time:  time.Now(),
@@ -111,11 +128,12 @@ func (p *Producer) SendBatch(ctx context.Context, messages []Message) error {
 		p.logger.Error("send batch messages failed",
 			zap.Error(err),
 			zap.Int("count", len(messages)),
+			zap.String("topic", topic),
 		)
 		return fmt.Errorf("send batch messages failed: %w", err)
 	}
 
-	p.logger.Debug("batch messages sent", zap.Int("count", len(messages)))
+	p.logger.Debug("batch messages sent", zap.Int("count", len(messages)), zap.String("topic", topic))
 
 	return nil
 }

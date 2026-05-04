@@ -12,12 +12,14 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	channelv1 "github.com/xiongwp/payment-channel/api/proto/channel/v1"
 )
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:9092", "grpc address")
+	shadowFl := flag.Bool("shadow", false, "shadow=1 — adapter 入口短路返回 mock，不真发外部渠道")
 	flag.Parse()
 
 	args := flag.Args()
@@ -45,6 +47,10 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if *shadowFl {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-shadow", "1")
+		fmt.Fprintln(os.Stderr, "[grpc-client] shadow=1 — adapter 短路放行，不发外部渠道")
+	}
 
 	idk := *idem
 	if idk == "" {

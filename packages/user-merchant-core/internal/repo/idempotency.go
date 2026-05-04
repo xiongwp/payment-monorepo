@@ -8,8 +8,13 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 )
+
+const tblIdempotency = "idempotency_key"
+
+func idempotencyTable(ctx context.Context) string { return shadow.TableName(ctx, tblIdempotency) }
 
 // IdempotencyRepository 读写 idempotency_key 表。
 type IdempotencyRepository interface {
@@ -36,8 +41,9 @@ func NewIdempotencyRepository(mgr *Manager) IdempotencyRepository {
 func (r *idempotencyRepo) db() *gorm.DB { return r.mgr.GetMeta() }
 
 func (r *idempotencyRepo) Get(ctx context.Context, key, method string) (*domain.IdempotencyRecord, bool, error) {
+	tbl := idempotencyTable(ctx)
 	var rec domain.IdempotencyRecord
-	err := r.db().WithContext(ctx).
+	err := r.db().WithContext(ctx).Table(tbl).
 		Where("idempotency_key = ? AND method = ?", key, method).
 		First(&rec).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -46,10 +52,13 @@ func (r *idempotencyRepo) Get(ctx context.Context, key, method string) (*domain.
 	if err != nil {
 		return nil, false, err
 	}
-	// 过期视为 miss，同时异步清掉（不卡主路径）
+	// 过期视为 miss，同时异步清掉（不卡主路径）。
+	// async goroutine 用 WithoutCancel 保留 shadow flag 但脱离 cancel 链。
 	if !rec.Expires.IsZero() && time.Now().After(rec.Expires) {
+		asyncCtx := shadow.WithoutCancel(ctx)
 		go func() {
-			_ = r.db().Where("idempotency_key = ? AND method = ?", key, method).
+			_ = r.db().WithContext(asyncCtx).Table(idempotencyTable(asyncCtx)).
+				Where("idempotency_key = ? AND method = ?", key, method).
 				Delete(&domain.IdempotencyRecord{}).Error
 		}()
 		return nil, false, nil
@@ -59,7 +68,8 @@ func (r *idempotencyRepo) Get(ctx context.Context, key, method string) (*domain.
 
 func (r *idempotencyRepo) TryInsert(ctx context.Context, rec *domain.IdempotencyRecord) error {
 	// ON CONFLICT DO NOTHING：撞 PK 不报错，靠 RowsAffected 判断是否首发。
-	res := r.db().WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(rec)
+	res := r.db().WithContext(ctx).Table(idempotencyTable(ctx)).
+		Clauses(clause.OnConflict{DoNothing: true}).Create(rec)
 	if res.Error != nil {
 		return res.Error
 	}
@@ -70,7 +80,8 @@ func (r *idempotencyRepo) TryInsert(ctx context.Context, rec *domain.Idempotency
 }
 
 func (r *idempotencyRepo) GC(ctx context.Context, before time.Time) (int64, error) {
-	res := r.db().WithContext(ctx).Where("expires < ?", before).
+	res := r.db().WithContext(ctx).Table(idempotencyTable(ctx)).
+		Where("expires < ?", before).
 		Delete(&domain.IdempotencyRecord{})
 	return res.RowsAffected, res.Error
 }

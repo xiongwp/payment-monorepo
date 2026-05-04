@@ -24,6 +24,7 @@ import (
 	"github.com/xiongwp/payment-channel/internal/domain"
 	"github.com/xiongwp/payment-channel/internal/metrics"
 	"github.com/xiongwp/payment-channel/internal/repo"
+	"github.com/xiongwp/payment-util/shadow"
 )
 
 // idemCacheTTL 幂等查询结果在进程内的缓存 TTL。
@@ -128,6 +129,12 @@ func (s *AcquirerService) lookupIdem(ctx context.Context, adapter, action, piID,
 // ─── Charge ──────────────────────────────────────────────────────────────
 
 func (s *AcquirerService) Charge(ctx context.Context, adapterName string, req *channel.ChargeRequest) (*channel.ChargeResponse, error) {
+	// Shadow 短路：压测流量绝不真打到外部渠道。返回 deterministic mock；
+	// 不查 / 写 acquirer_tx 表，不刷 idem cache，不走 adapter。
+	if shadow.IsShadow(ctx) {
+		return shadowChargeResponse(adapterName, req), nil
+	}
+
 	ad, ok := s.reg.Get(adapterName)
 	if !ok {
 		return nil, fmt.Errorf("adapter %s not registered", adapterName)
@@ -229,6 +236,9 @@ func (s *AcquirerService) Charge(ctx context.Context, adapterName string, req *c
 // ─── Capture / Void / Refund / Query（同构，简化版） ───────────────────
 
 func (s *AcquirerService) Capture(ctx context.Context, adapterName string, req *channel.CaptureRequest) (*channel.OpResponse, error) {
+	if shadow.IsShadow(ctx) {
+		return shadowOpResponse(adapterName, domain.ActionCapture, req.IdempotencyKey), nil
+	}
 	ad, ok := s.reg.Get(adapterName)
 	if !ok {
 		return nil, fmt.Errorf("adapter %s not registered", adapterName)
@@ -247,6 +257,9 @@ func (s *AcquirerService) Capture(ctx context.Context, adapterName string, req *
 }
 
 func (s *AcquirerService) Void(ctx context.Context, adapterName string, req *channel.VoidRequest) (*channel.OpResponse, error) {
+	if shadow.IsShadow(ctx) {
+		return shadowOpResponse(adapterName, domain.ActionVoid, req.IdempotencyKey), nil
+	}
 	ad, ok := s.reg.Get(adapterName)
 	if !ok {
 		return nil, fmt.Errorf("adapter %s not registered", adapterName)
@@ -265,6 +278,9 @@ func (s *AcquirerService) Void(ctx context.Context, adapterName string, req *cha
 }
 
 func (s *AcquirerService) Refund(ctx context.Context, adapterName string, req *channel.RefundRequest) (*channel.OpResponse, error) {
+	if shadow.IsShadow(ctx) {
+		return shadowOpResponse(adapterName, domain.ActionRefund, req.IdempotencyKey), nil
+	}
 	ad, ok := s.reg.Get(adapterName)
 	if !ok {
 		return nil, fmt.Errorf("adapter %s not registered", adapterName)
@@ -283,6 +299,9 @@ func (s *AcquirerService) Refund(ctx context.Context, adapterName string, req *c
 }
 
 func (s *AcquirerService) Query(ctx context.Context, adapterName string, req *channel.QueryRequest) (*channel.QueryResponse, error) {
+	if shadow.IsShadow(ctx) {
+		return shadowQueryResponse(adapterName, req.ExternalRefNo), nil
+	}
 	ad, ok := s.reg.Get(adapterName)
 	if !ok {
 		return nil, fmt.Errorf("adapter %s not registered", adapterName)

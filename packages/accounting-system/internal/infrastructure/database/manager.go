@@ -39,6 +39,11 @@ type Manager struct {
 
 // openConn 创建并配置单条 GORM 连接（含启动重试，应对 Docker 中 MySQL 慢启动）
 // gormLog 为可选 GORM 日志器；传 nil 时使用 GORM 默认（Silent，不输出 SQL 日志）。
+//
+// 自动注册 shadow callback：所有 query / create / update / delete 在生成 SQL 前
+// 检查 stmt.Context 的 shadow flag，若 true 则把 stmt.Table 改为 *_shadow。
+// 这样 22 个 repository 不用一处一处改，改 router.GetTableName 出来的主表名
+// 也能自动被改写。
 func openConn(cfg DBConfig, gormLog gormlogger.Interface) (*gorm.DB, error) {
 	gormCfg := &gorm.Config{PrepareStmt: true, SkipDefaultTransaction: true}
 	if gormLog != nil {
@@ -47,6 +52,9 @@ func openConn(cfg DBConfig, gormLog gormlogger.Interface) (*gorm.DB, error) {
 	db, err := gorm.Open(mysql.Open(cfg.DSN), gormCfg)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", cfg.Name, err)
+	}
+	if err := registerShadowCallback(db); err != nil {
+		return nil, fmt.Errorf("register shadow callback for %s: %w", cfg.Name, err)
 	}
 	sqlDB, err := db.DB()
 	if err != nil {

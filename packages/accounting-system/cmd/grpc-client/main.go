@@ -14,12 +14,14 @@ import (
 	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 var (
-	addr    = flag.String("addr", "localhost:53667", "gRPC server address")
-	runCase = flag.String("case", "tc01", "test case: all|tc01~tc12")
-	timeout = flag.Duration("timeout", 10*time.Second, "per-call timeout")
+	addr     = flag.String("addr", "localhost:53667", "gRPC server address")
+	runCase  = flag.String("case", "tc01", "test case: all|tc01~tc12")
+	timeout  = flag.Duration("timeout", 10*time.Second, "per-call timeout")
+	shadowFl = flag.Bool("shadow", false, "shadow=1 — server 路由到 *_shadow 表 + Redis _shadow key + Kafka _shadow topic")
 )
 
 func main() {
@@ -38,7 +40,10 @@ func main() {
 	c := accountingv1.NewAccountingServiceClient(conn)
 	fmt.Printf("✓ connected to %s\n\n", *addr)
 
-	tc := &testClient{c: c, timeout: *timeout}
+	tc := &testClient{c: c, timeout: *timeout, shadow: *shadowFl}
+	if *shadowFl {
+		fmt.Fprintln(log.Writer(), "🌑 shadow=1 — 所有 RPC 走 *_shadow 路径")
+	}
 
 	switch *runCase {
 	case "tc00":
@@ -79,14 +84,21 @@ func main() {
 type testClient struct {
 	c       accountingv1.AccountingServiceClient
 	timeout time.Duration
+	shadow  bool // 影子流量开关（-shadow flag 注入）
 	// 跨 case 共享的账户号
 	userAccNo     string
 	platformAccNo string
 	merchantAccNo string
 }
 
+// ctx 构造每次 RPC 用的 ctx。shadow=true 时挂 x-shadow=1 metadata，
+// server 端 interceptor 翻进 ctx 后所有 SQL/Redis/Kafka 自动走 _shadow 路径。
 func (tc *testClient) ctx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), tc.timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), tc.timeout)
+	if tc.shadow {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-shadow", "1")
+	}
+	return ctx, cancel
 }
 func (tc *testClient) TC0O_DoBalanceTest() {
 	fmt.Println("\n[TC00] 余额整体测试（创建账户 → 充值 → 提现 → 支付 → 转账）")

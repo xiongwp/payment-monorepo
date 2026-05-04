@@ -2,9 +2,13 @@ module github.com/xiongwp/id-generator
 
 go 1.26.1
 
+// shadow / trace / health 等跨仓共享包；本地 + docker 构建走同级目录 replace。
+replace github.com/xiongwp/payment-util => ../payment-util
+
 require (
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/prometheus/client_golang v1.23.2
+	github.com/xiongwp/payment-util v0.0.1
 	go.etcd.io/etcd/client/v3 v3.6.10
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11

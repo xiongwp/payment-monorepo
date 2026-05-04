@@ -240,12 +240,18 @@ type fooRepo struct {
 
 func NewFooRepository(mgr, r) FooRepository { ... }
 
-func (r *fooRepo) shardOf(parentID) (*gorm.DB, string, error) {
+// shardOf 必须接收 ctx 并通过 router.TableName(ctx, ...) 拼表名，
+// 让 shadow 流量自动落到 _shadow 后缀的影子表。
+func (r *fooRepo) shardOf(ctx context.Context, parentID string) (*gorm.DB, string, error) {
     dbIdx, tblIdx := r.router.RouteByPrefixedID(parentID)
     db, _ := r.mgr.GetShard(dbIdx)
-    return db, r.router.GetTableName("foo", tblIdx), nil
+    return db, r.router.TableName(ctx, "foo", tblIdx), nil
 }
 ```
+
+> **不要** 直接用 `router.GetTableName(...)`（只返主表），新代码必须走
+> `router.TableName(ctx, ...)`。前者已被标记 deprecated，仅供 schema migrator
+> 等启动期工具使用。
 
 GORM 日志一律走 `internal/repo/gorm_logger.go::ZapGormLogger`，
 启动时 `repo.SetSQLLogger(logger.Named("sql"))`。

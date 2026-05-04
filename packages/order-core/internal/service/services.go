@@ -1006,7 +1006,7 @@ func (s *refundService) Create(ctx context.Context, in *CreateRefundInput) (*dom
 		// 我们用 ch_id 解析分片，但查询需要 piID 字段。
 		// 实际做法：用 charge_id 所在分片 + charge 表反查 payment_intent_id。
 		dbIdx, tblIdx := s.router.RouteByPrefixedID(chargeID)
-		tblName := s.router.GetTableName("charge", tblIdx)
+		tblName := s.router.TableName(ctx, "charge", tblIdx)
 		_ = dbIdx
 		_ = tblName
 		return nil, fmt.Errorf("%w: please supply payment_intent_id together with charge_id", domain.ErrValidation)

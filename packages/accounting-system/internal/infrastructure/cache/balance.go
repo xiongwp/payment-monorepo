@@ -22,6 +22,7 @@ import (
 
 	"github.com/accounting-system/internal/metrics"
 	"github.com/redis/go-redis/v9"
+	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
 )
 
@@ -29,6 +30,12 @@ const (
 	balanceKeyPrefix = "balance:"
 	balanceTTL       = 24 * time.Hour // 无操作后24小时过期，防止内存泄漏
 )
+
+// balanceKey 按 ctx 决定主流量 key（balance:acct123）还是影子 key（balance:acct123_shadow）。
+// 影子流量数据不污染主余额；同一 Lua 脚本在两个 key 空间各自原子。
+func balanceKey(ctx context.Context, accountNo string) string {
+	return shadow.RedisKey(ctx, balanceKeyPrefix+accountNo)
+}
 
 // BalanceInfo 账户余额快照
 type BalanceInfo struct {
@@ -225,7 +232,7 @@ return 1
 // 如果业务确实需要"强制刷新 Redis 用 MySQL 最新值覆盖"（极少见，仅在 ops
 // 介入修复时），用 RefreshAccount。
 func (c *BalanceCache) WarmAccount(ctx context.Context, info BalanceInfo) error {
-	key := balanceKeyPrefix + info.AccountNo
+	key := balanceKey(ctx, info.AccountNo)
 	res, err := c.rdb.Eval(ctx, luaWarmIfMissing, []string{key},
 		info.Balance, info.Available, info.Frozen, info.Version,
 		info.Category, info.Status, int(balanceTTL.Seconds()),
@@ -243,7 +250,7 @@ func (c *BalanceCache) WarmAccount(ctx context.Context, info BalanceInfo) error 
 // 危险：调用前必须确认没有 in-flight Transfer 在用同一账户（例如 ops 介入
 // 修复时先停服或 freeze 账户）。日常运行不应使用。
 func (c *BalanceCache) RefreshAccount(ctx context.Context, info BalanceInfo) error {
-	key := balanceKeyPrefix + info.AccountNo
+	key := balanceKey(ctx, info.AccountNo)
 	pipe := c.rdb.Pipeline()
 	pipe.HSet(ctx, key,
 		"balance", info.Balance,
@@ -263,7 +270,7 @@ func (c *BalanceCache) RefreshAccount(ctx context.Context, info BalanceInfo) err
 
 // GetBalance 读取账户余额（缓存 miss 返回 ErrAccountNotInCache）
 func (c *BalanceCache) GetBalance(ctx context.Context, accountNo string) (*BalanceInfo, error) {
-	key := balanceKeyPrefix + accountNo
+	key := balanceKey(ctx, accountNo)
 	vals, err := c.rdb.HGetAll(ctx, key).Result()
 	if err != nil {
 		return nil, fmt.Errorf("hgetall %s: %w", key, err)
@@ -296,7 +303,7 @@ func (c *BalanceCache) GetBalance(ctx context.Context, accountNo string) (*Balan
 
 // Exists 判断账户是否在缓存中
 func (c *BalanceCache) Exists(ctx context.Context, accountNo string) (bool, error) {
-	n, err := c.rdb.Exists(ctx, balanceKeyPrefix+accountNo).Result()
+	n, err := c.rdb.Exists(ctx, balanceKey(ctx, accountNo)).Result()
 	return n > 0, err
 }
 
@@ -316,11 +323,13 @@ func (c *BalanceCache) Transfer(ctx context.Context, voucherNo string, entries m
 		return nil
 	}
 
-	idemKey := transferIdempotencyKeyPrefix + voucherNo
+	// 幂等 key 也按 ctx 隔离主 / 影：相同 voucherNo 在主和影流量下生成不同
+	// idemKey，避免压测被误判成主流量重试 / 反之亦然。
+	idemKey := shadow.RedisKey(ctx, transferIdempotencyKeyPrefix+voucherNo)
 	if voucherNo == "" {
 		// 兜底：无幂等键时生成随机一次性 key，不触发 already_applied 分支。
 		// 不应在热路径出现（所有 Outbox-backed 调用都应传 voucherNo）。
-		idemKey = fmt.Sprintf("%snovoucher:%d", transferIdempotencyKeyPrefix, time.Now().UnixNano())
+		idemKey = shadow.RedisKey(ctx, fmt.Sprintf("%snovoucher:%d", transferIdempotencyKeyPrefix, time.Now().UnixNano()))
 	}
 
 	// KEYS = [idemKey, balance-key-1, balance-key-2, ...]
@@ -330,7 +339,9 @@ func (c *BalanceCache) Transfer(ctx context.Context, voucherNo string, entries m
 	keys = append(keys, idemKey)
 	args = append(args, transferIdempotencyTTL)
 	for accNo, delta := range entries {
-		keys = append(keys, balanceKeyPrefix+accNo)
+		// 影子流量进 _shadow 副本 key 池；Lua 脚本一次只跑一个 ctx 视角，
+		// 主 / 影 entries 不能混在同一次 Transfer（业务侧由 ctx.IsShadow 保证）。
+		keys = append(keys, balanceKey(ctx, accNo))
 		args = append(args, delta)
 	}
 
@@ -365,7 +376,7 @@ func (c *BalanceCache) Transfer(ctx context.Context, voucherNo string, entries m
 func (c *BalanceCache) Invalidate(ctx context.Context, accountNos ...string) error {
 	keys := make([]string, len(accountNos))
 	for i, no := range accountNos {
-		keys[i] = balanceKeyPrefix + no
+		keys[i] = balanceKey(ctx, no)
 	}
 	return c.rdb.Del(ctx, keys...).Err()
 }

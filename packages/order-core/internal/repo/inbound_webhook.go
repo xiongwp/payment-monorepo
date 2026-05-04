@@ -38,7 +38,7 @@ func NewInboundWebhookRepository(mgr *Manager, r *sharding.Router) InboundWebhoo
 // shardOf 路由：优先按 piID（与 PI 同分片），没有 piID 时按 (channel,event_id) 哈希。
 // 同一事件必须永远落在同一分片（否则唯一约束失效），所以 channel/event_id 哈希在
 // piID 缺失时是 deterministic 的兜底。
-func (r *inboundWebhookRepo) shardOf(channel, eventID, piID string) (*gorm.DB, string, error) {
+func (r *inboundWebhookRepo) shardOf(ctx context.Context, channel, eventID, piID string) (*gorm.DB, string, error) {
 	var dbIdx, tblIdx int
 	if piID != "" {
 		dbIdx, tblIdx = r.router.RouteByPrefixedID(piID)
@@ -55,7 +55,7 @@ func (r *inboundWebhookRepo) shardOf(channel, eventID, piID string) (*gorm.DB, s
 	if err != nil {
 		return nil, "", err
 	}
-	return db, r.router.GetTableName("inbound_webhook", tblIdx), nil
+	return db, r.router.TableName(ctx, "inbound_webhook", tblIdx), nil
 }
 
 func (r *inboundWebhookRepo) Insert(ctx context.Context, w *domain.InboundWebhook) (*domain.InboundWebhook, error) {
@@ -65,7 +65,7 @@ func (r *inboundWebhookRepo) Insert(ctx context.Context, w *domain.InboundWebhoo
 	if w.ProcessStatus == "" {
 		w.ProcessStatus = domain.InboundWebhookPending
 	}
-	db, tbl, err := r.shardOf(w.ChannelName, w.EventID, w.PaymentIntentID)
+	db, tbl, err := r.shardOf(ctx, w.ChannelName, w.EventID, w.PaymentIntentID)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +94,7 @@ func (r *inboundWebhookRepo) Insert(ctx context.Context, w *domain.InboundWebhoo
 }
 
 func (r *inboundWebhookRepo) GetByEvent(ctx context.Context, channel, eventID, piHint string) (*domain.InboundWebhook, error) {
-	db, tbl, err := r.shardOf(channel, eventID, piHint)
+	db, tbl, err := r.shardOf(ctx, channel, eventID, piHint)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func (r *inboundWebhookRepo) GetByEvent(ctx context.Context, channel, eventID, p
 }
 
 func (r *inboundWebhookRepo) MarkProcessed(ctx context.Context, w *domain.InboundWebhook, status domain.InboundWebhookProcessStatus, errMsg string) error {
-	db, tbl, err := r.shardOf(w.ChannelName, w.EventID, w.PaymentIntentID)
+	db, tbl, err := r.shardOf(ctx, w.ChannelName, w.EventID, w.PaymentIntentID)
 	if err != nil {
 		return err
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/accounting-system/internal/trace"
 	"github.com/shopspring/decimal"
 	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -190,6 +191,9 @@ func (s *Server) ListenAndServe(ctx context.Context, port int, loadShed LoadShed
 		grpc.ChainUnaryInterceptor(
 			recoveryInterceptor(s.logger),
 			trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
+			// shadow 紧跟 trace：把 metadata x-shadow 翻进 ctx；后续 repo / Redis /
+			// Kafka / 出站 RPC 都按 ctx 决策主 / 影路径。
+			shadow.UnaryServerInterceptor(),
 			timeoutInterceptor(maxRPCDuration),
 			// 鉴权放在 loadshed 之前：未授权请求不应占用 inflight slot。放在 timeout
 			// 之后保留请求级 deadline；放在 trace 之后让被拒请求也带 trace-id 可定位。

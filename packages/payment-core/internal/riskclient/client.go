@@ -15,6 +15,7 @@ import (
 
 	riskv1 "github.com/xiongwp/risk-manage/api/proto/risk/v1"
 	"github.com/xiongwp/payment-util/serviceregistry"
+	"github.com/xiongwp/payment-util/shadow"
 
 	"github.com/xiongwp/payment-core/internal/trace"
 )
@@ -121,7 +122,11 @@ func Dial(registry []string, endpoint string, rpcTimeout time.Duration) (Client,
 	const serviceName = "risk-manage"
 	conn, err := serviceregistry.DialWithFallback(registry, serviceName, endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithUnaryInterceptor(trace.UnaryClientInterceptor()),
+		// risk-manage 看到 x-shadow=1 会直接 ALLOW（短路放行），不消耗风控资源
+		grpc.WithChainUnaryInterceptor(
+			trace.UnaryClientInterceptor(),
+			shadow.UnaryClientInterceptor(),
+		),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
 		}),

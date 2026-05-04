@@ -8,8 +8,15 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 )
+
+const tblMerchantSecret = "merchant_channel_secret"
+
+func merchantSecretTable(ctx context.Context) string {
+	return shadow.TableName(ctx, tblMerchantSecret)
+}
 
 // MerchantSecretRepository 商户渠道凭据（密文）存储。non-sharded（meta DB）。
 type MerchantSecretRepository interface {
@@ -37,7 +44,7 @@ func (r *merchantSecretRepo) Upsert(ctx context.Context, s *domain.MerchantChann
 		return nil, fmt.Errorf("%w: merchant_id/channel/field_name/ciphertext required", domain.ErrValidation)
 	}
 	// Use ON DUPLICATE KEY UPDATE to bump version + refresh ciphertext.
-	err := r.db().WithContext(ctx).Clauses(clause.OnConflict{
+	err := r.db().WithContext(ctx).Table(merchantSecretTable(ctx)).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "merchant_id"}, {Name: "channel"}, {Name: "field_name"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"ciphertext":  s.Ciphertext,
@@ -55,7 +62,7 @@ func (r *merchantSecretRepo) Upsert(ctx context.Context, s *domain.MerchantChann
 
 func (r *merchantSecretRepo) Get(ctx context.Context, merchantID, channel, fieldName string) (*domain.MerchantChannelSecret, error) {
 	var s domain.MerchantChannelSecret
-	err := r.db().WithContext(ctx).
+	err := r.db().WithContext(ctx).Table(merchantSecretTable(ctx)).
 		Where("merchant_id = ? AND channel = ? AND field_name = ?", merchantID, channel, fieldName).
 		First(&s).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -69,7 +76,7 @@ func (r *merchantSecretRepo) Get(ctx context.Context, merchantID, channel, field
 
 func (r *merchantSecretRepo) ListByMerchantChannel(ctx context.Context, merchantID, channel string) ([]*domain.MerchantChannelSecret, error) {
 	var out []*domain.MerchantChannelSecret
-	err := r.dbRO().WithContext(ctx).
+	err := r.dbRO().WithContext(ctx).Table(merchantSecretTable(ctx)).
 		Where("merchant_id = ? AND channel = ?", merchantID, channel).
 		Order("field_name ASC").Find(&out).Error
 	return out, err
@@ -77,14 +84,14 @@ func (r *merchantSecretRepo) ListByMerchantChannel(ctx context.Context, merchant
 
 func (r *merchantSecretRepo) ListByMerchant(ctx context.Context, merchantID string) ([]*domain.MerchantChannelSecret, error) {
 	var out []*domain.MerchantChannelSecret
-	err := r.dbRO().WithContext(ctx).
+	err := r.dbRO().WithContext(ctx).Table(merchantSecretTable(ctx)).
 		Where("merchant_id = ?", merchantID).
 		Order("channel ASC, field_name ASC").Find(&out).Error
 	return out, err
 }
 
 func (r *merchantSecretRepo) Delete(ctx context.Context, merchantID, channel, fieldName string) error {
-	return r.db().WithContext(ctx).
+	return r.db().WithContext(ctx).Table(merchantSecretTable(ctx)).
 		Where("merchant_id = ? AND channel = ? AND field_name = ?", merchantID, channel, fieldName).
 		Delete(&domain.MerchantChannelSecret{}).Error
 }

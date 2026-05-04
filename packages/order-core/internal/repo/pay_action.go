@@ -31,20 +31,20 @@ func NewPayActionRepository(mgr *Manager, r *sharding.Router) PayActionRepositor
 	return &payActionRepo{mgr: mgr, router: r}
 }
 
-func (r *payActionRepo) shardOf(piID string) (*gorm.DB, string, error) {
+func (r *payActionRepo) shardOf(ctx context.Context, piID string) (*gorm.DB, string, error) {
 	dbIdx, tblIdx := r.router.RouteByPrefixedID(piID)
 	db, err := r.mgr.GetShard(dbIdx)
 	if err != nil {
 		return nil, "", err
 	}
-	return db, r.router.GetTableName("pay_action", tblIdx), nil
+	return db, r.router.TableName(ctx, "pay_action", tblIdx), nil
 }
 
 func (r *payActionRepo) Create(ctx context.Context, a *domain.PayAction) error {
 	if a.PaymentIntentID == "" {
 		return fmt.Errorf("%w: payment_intent_id required", domain.ErrValidation)
 	}
-	db, tbl, err := r.shardOf(a.PaymentIntentID)
+	db, tbl, err := r.shardOf(ctx, a.PaymentIntentID)
 	if err != nil {
 		return err
 	}
@@ -52,7 +52,7 @@ func (r *payActionRepo) Create(ctx context.Context, a *domain.PayAction) error {
 }
 
 func (r *payActionRepo) Get(ctx context.Context, piID, id string) (*domain.PayAction, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func (r *payActionRepo) Get(ctx context.Context, piID, id string) (*domain.PayAc
 }
 
 func (r *payActionRepo) ListByPI(ctx context.Context, piID string) ([]*domain.PayAction, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func (r *payActionRepo) ListByPI(ctx context.Context, piID string) ([]*domain.Pa
 
 // PendingByPI 返回该 PI 下仍处于 pending 的动作（最多一条）
 func (r *payActionRepo) PendingByPI(ctx context.Context, piID string) (*domain.PayAction, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func (r *payActionRepo) UpdateFields(ctx context.Context, piID, id string, field
 	if len(fields) == 0 {
 		return r.Get(ctx, piID, id)
 	}
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +119,7 @@ func (r *payActionRepo) UpdateFields(ctx context.Context, piID, id string, field
 }
 
 func (r *payActionRepo) IncrementAttempt(ctx context.Context, piID, id string) error {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return err
 	}

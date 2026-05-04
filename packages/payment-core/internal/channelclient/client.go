@@ -16,6 +16,7 @@ import (
 
 	channelv1 "github.com/xiongwp/payment-channel/api/proto/channel/v1"
 	"github.com/xiongwp/payment-util/serviceregistry"
+	"github.com/xiongwp/payment-util/shadow"
 
 	"github.com/xiongwp/payment-core/internal/trace"
 )
@@ -77,7 +78,11 @@ func Dial(registry []string, endpoint string, rpcTimeout time.Duration) (Client,
 	const serviceName = "payment-channel"
 	conn, err := serviceregistry.DialWithFallback(registry, serviceName, endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithUnaryInterceptor(trace.UnaryClientInterceptor()), // 注入 trace_id 到下游 metadata
+		// trace + shadow 都需要透传到下游 payment-channel
+		grpc.WithChainUnaryInterceptor(
+			trace.UnaryClientInterceptor(),
+			shadow.UnaryClientInterceptor(),
+		),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                30 * time.Second,
 			Timeout:             10 * time.Second,

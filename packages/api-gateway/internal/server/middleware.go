@@ -17,11 +17,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 
 	"github.com/xiongwp/api-gateway/internal/ratelimit"
 )
+
+// ─── shadow ──────────────────────────────────────────────────────────────────
+
+// ShadowMiddleware 把 X-Shadow HTTP header 翻进 request ctx。
+// 后续 handler 调下游 gRPC 时，shadow.UnaryClientInterceptor 会自动把
+// x-shadow=1 metadata 透传给下游服务。
+//
+// 安全：生产网关应只信任 IDC 内网 / 压测平台来源的 X-Shadow header；公网入口
+// 该 middleware 之前要先加一层 IP 白名单（或剥离来自不可信源的 X-Shadow）。
+// 当前 api-gateway 的 APIKey 已经过滤掉非授权调用方，可视为可信源。
+func ShadowMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := shadow.HTTPHeaderToContext(r.Context(), r.Header)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
 
 // ─── recovery ────────────────────────────────────────────────────────────────
 

@@ -33,7 +33,10 @@ services:
     ports: ["3326:3306"]
     volumes:
       - meta-data:/var/lib/mysql
+      # docker-entrypoint-initdb.d 按字典序执行；00_init 先建主表，
+      # 01_init_shadow.sql LIKE 主表 + INSERT shadow leaf_alloc seed。
       - ./database/metadb/init/init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./database/metadb/init/init_shadow.sql:/docker-entrypoint-initdb.d/01_init_shadow.sql:ro
 
   user-merchant-core:
     build:

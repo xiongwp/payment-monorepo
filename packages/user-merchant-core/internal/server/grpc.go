@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/xiongwp/payment-util/shadow"
 	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
 	"github.com/xiongwp/user-merchant-core/internal/cache"
 	"github.com/xiongwp/user-merchant-core/internal/repo"
@@ -145,6 +146,8 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 			// log 字段；没配 OTel 就是 no-op 拦截器，tracex 退回自生 id。
 			tracexOTelInterceptor(),
 			trace.UnaryServerInterceptor(s.logger),
+			// Shadow 标识：把 metadata x-shadow 翻进 ctx，后续 repo / 出站 client 自动按 ctx 选主/影路径。
+			shadow.UnaryServerInterceptor(),
 			// Timeout 在日志之前注入：所有后续拦截器 + handler 都能拿到新 ctx，
 			// 超时后 handler goroutine 里的 DB / 下游 RPC 会立即被取消。
 			grpcutil.TimeoutInterceptor(s.timeouts),

@@ -36,17 +36,17 @@ func NewPaymentIntentRepository(mgr *Manager, r *sharding.Router) PaymentIntentR
 	return &piRepo{mgr: mgr, router: r}
 }
 
-func (r *piRepo) shardOf(id string) (*gorm.DB, string, error) {
+func (r *piRepo) shardOf(ctx context.Context, id string) (*gorm.DB, string, error) {
 	dbIdx, tblIdx := r.router.RouteByPrefixedID(id)
 	db, err := r.mgr.GetShard(dbIdx)
 	if err != nil {
 		return nil, "", err
 	}
-	return db, r.router.GetTableName("payment_intent", tblIdx), nil
+	return db, r.router.TableName(ctx, "payment_intent", tblIdx), nil
 }
 
 func (r *piRepo) Create(ctx context.Context, pi *domain.PaymentIntent) error {
-	db, tbl, err := r.shardOf(pi.ID)
+	db, tbl, err := r.shardOf(ctx, pi.ID)
 	if err != nil {
 		return err
 	}
@@ -54,7 +54,7 @@ func (r *piRepo) Create(ctx context.Context, pi *domain.PaymentIntent) error {
 }
 
 func (r *piRepo) Get(ctx context.Context, id string) (*domain.PaymentIntent, error) {
-	db, tbl, err := r.shardOf(id)
+	db, tbl, err := r.shardOf(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func (r *piRepo) GetByIdempotencyKey(ctx context.Context, mchID, businessID, key
 	if err != nil {
 		return nil, err
 	}
-	tbl := r.router.GetTableName("payment_intent", tblIdx)
+	tbl := r.router.TableName(ctx, "payment_intent", tblIdx)
 	var pi domain.PaymentIntent
 	err = db.WithContext(ctx).Table(tbl).
 		Where("mch_id = ? AND idempotency_key = ?", mchID, key).
@@ -98,7 +98,7 @@ func (r *piRepo) GetByIdempotencyKey(ctx context.Context, mchID, businessID, key
 }
 
 func (r *piRepo) UpdateStatus(ctx context.Context, id string, from, to domain.PaymentIntentStatus, mutate func(*domain.PaymentIntent)) (*domain.PaymentIntent, error) {
-	db, tbl, err := r.shardOf(id)
+	db, tbl, err := r.shardOf(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +173,7 @@ func (r *piRepo) UpdateFields(ctx context.Context, id string, fields map[string]
 	if len(fields) == 0 {
 		return r.Get(ctx, id)
 	}
-	db, tbl, err := r.shardOf(id)
+	db, tbl, err := r.shardOf(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +196,7 @@ func (r *piRepo) List(ctx context.Context, mchID string, page, size int) ([]*dom
 	if err != nil {
 		return nil, 0, err
 	}
-	tbl := r.router.GetTableName("payment_intent", tblIdx)
+	tbl := r.router.TableName(ctx, "payment_intent", tblIdx)
 	if page <= 0 {
 		page = 1
 	}
@@ -228,7 +228,7 @@ func (r *piRepo) ListExpired(ctx context.Context, now time.Time, limit int) ([]*
 			if err != nil {
 				return nil, err
 			}
-			tbl := r.router.GetTableName("payment_intent", tblIdx)
+			tbl := r.router.TableName(ctx, "payment_intent", tblIdx)
 			var part []*domain.PaymentIntent
 			err = db.WithContext(ctx).Table(tbl).
 				Where("expired_at IS NOT NULL AND expired_at < ? AND status IN ?", now, openStates).

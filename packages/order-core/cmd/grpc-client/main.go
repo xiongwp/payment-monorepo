@@ -48,10 +48,12 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:9091", "gRPC server address")
 	token := flag.String("token", "", "Bearer token (if auth enabled on server)")
 	timeout := flag.Duration("timeout", 5*time.Second, "rpc timeout")
+	shadowFlag := flag.Bool("shadow", false, "Send as shadow traffic (x-shadow=1 metadata; routes to _shadow tables on server)")
+	traceID := flag.String("trace_id", "", "Override traceparent x-trace-id (debug only; default = auto)")
 	flag.Parse()
 	args := flag.Args()
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: grpc-client [-addr ...] <command> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: grpc-client [-addr ...] [-shadow] [-trace_id ID] <command> [flags]")
 		os.Exit(2)
 	}
 
@@ -65,6 +67,13 @@ func main() {
 	defer cancel()
 	if *token != "" {
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+*token)
+	}
+	if *shadowFlag {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-shadow", "1")
+		fmt.Fprintln(os.Stderr, "[grpc-client] shadow=1 — server will route to _shadow tables")
+	}
+	if *traceID != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-trace-id", *traceID)
 	}
 
 	cmd := args[0]

@@ -16,6 +16,7 @@ import (
 
 	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
 	"github.com/xiongwp/payment-util/serviceregistry"
+	"github.com/xiongwp/payment-util/shadow"
 
 	"github.com/xiongwp/payment-core/internal/trace"
 )
@@ -58,8 +59,12 @@ func Dial(registry []string, endpoint, bearerToken string, rpcTimeout time.Durat
 	const serviceName = "kms-manage"
 	conn, err := serviceregistry.DialWithFallback(registry, serviceName, endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		// 把入站 x-trace-id 透传到 kms-manage server，让跨服务 trace 不断
-		grpc.WithUnaryInterceptor(trace.UnaryClientInterceptor()),
+		// trace + shadow 都透传到 kms-manage：kms 可对 shadow 流量返 mock 密文
+		// 或走影子路径（按 kms-manage 自身实现），这里负责标识。
+		grpc.WithChainUnaryInterceptor(
+			trace.UnaryClientInterceptor(),
+			shadow.UnaryClientInterceptor(),
+		),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                30 * time.Second,
 			Timeout:             10 * time.Second,

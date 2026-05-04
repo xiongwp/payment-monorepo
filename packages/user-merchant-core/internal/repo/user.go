@@ -8,11 +8,45 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 )
 
+// 11 张用户域表的主 / 影子表名 helper（与 init_shadow.sql 一一对应）
+const (
+	tblUsers           = "users"
+	tblUserProfiles    = "user_profiles"
+	tblUserAuths       = "user_auths"
+	tblLoginLogs       = "login_logs"
+	tblUserSessions    = "user_sessions"
+	tblUserAccounts    = "user_accounts"
+	tblUserSettings    = "user_settings"
+	tblRoles           = "roles"
+	tblUserRoles       = "user_roles"
+	tblPermissions     = "permissions"
+	tblRolePermissions = "role_permissions"
+	tblEmailCodes      = "email_codes"
+)
+
+func usersTbl(ctx context.Context) string         { return shadow.TableName(ctx, tblUsers) }
+func userProfilesTbl(ctx context.Context) string  { return shadow.TableName(ctx, tblUserProfiles) }
+func userAuthsTbl(ctx context.Context) string     { return shadow.TableName(ctx, tblUserAuths) }
+func loginLogsTbl(ctx context.Context) string     { return shadow.TableName(ctx, tblLoginLogs) }
+func userSessionsTbl(ctx context.Context) string  { return shadow.TableName(ctx, tblUserSessions) }
+func userAccountsTbl(ctx context.Context) string  { return shadow.TableName(ctx, tblUserAccounts) }
+func userSettingsTbl(ctx context.Context) string  { return shadow.TableName(ctx, tblUserSettings) }
+func rolesTbl(ctx context.Context) string         { return shadow.TableName(ctx, tblRoles) }
+func userRolesTbl(ctx context.Context) string     { return shadow.TableName(ctx, tblUserRoles) }
+func permissionsTbl(ctx context.Context) string   { return shadow.TableName(ctx, tblPermissions) }
+func rolePermissionsTbl(ctx context.Context) string {
+	return shadow.TableName(ctx, tblRolePermissions)
+}
+func emailCodesTbl(ctx context.Context) string { return shadow.TableName(ctx, tblEmailCodes) }
+
 // UserRepository 用户身份 + 多渠道认证 + 会话 + 权限 + 钱包 + 设置 + 验证码
-// 11 张表的 CRUD。所有走 meta DB（不分片）。
+// 12 张表的 CRUD。所有走 meta DB（不分片）。
+//
+// 所有访问点都按 ctx 解析主 / 影子表名，shadow 流量自动落到 *_shadow。
 type UserRepository interface {
 	CreateUser(ctx context.Context, u *domain.User) error
 	GetUser(ctx context.Context, userID int64) (*domain.User, error)
@@ -36,8 +70,6 @@ type UserRepository interface {
 	MarkAuthVerified(ctx context.Context, authType, identifier string) error
 
 	InsertLoginLog(ctx context.Context, l *domain.LoginLog) error
-	// CountRecentFailedLogins 给风控用：统计 since 之后该 user / ip 失败登录次数。
-	// userID==0 时 fallback 用 ip 维度查（用户不存在时密码错误也要风控；防扫号）。
 	CountRecentFailedLogins(ctx context.Context, userID int64, ip string, since time.Time) (int, error)
 
 	CreateSession(ctx context.Context, s *domain.UserSession) error
@@ -83,7 +115,7 @@ func (r *userRepo) CreateUser(ctx context.Context, u *domain.User) error {
 	if u.Status == 0 {
 		u.Status = domain.UserStatusActive
 	}
-	err := r.db().WithContext(ctx).Create(u).Error
+	err := r.db().WithContext(ctx).Table(usersTbl(ctx)).Create(u).Error
 	if err != nil {
 		msg := err.Error()
 		if errors.Is(err, gorm.ErrDuplicatedKey) || containsAny(msg, "Duplicate", "duplicate") {
@@ -104,7 +136,7 @@ func (r *userRepo) CreateUser(ctx context.Context, u *domain.User) error {
 
 func (r *userRepo) GetUser(ctx context.Context, userID int64) (*domain.User, error) {
 	var u domain.User
-	err := r.dbRO().WithContext(ctx).First(&u, userID).Error
+	err := r.dbRO().WithContext(ctx).Table(usersTbl(ctx)).Where("id = ?", userID).First(&u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, domain.ErrUserNotFound
 	}
@@ -113,7 +145,7 @@ func (r *userRepo) GetUser(ctx context.Context, userID int64) (*domain.User, err
 
 func (r *userRepo) GetUserByUsername(ctx context.Context, username string) (*domain.User, error) {
 	var u domain.User
-	err := r.dbRO().WithContext(ctx).Where("username = ?", username).Take(&u).Error
+	err := r.dbRO().WithContext(ctx).Table(usersTbl(ctx)).Where("username = ?", username).Take(&u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, domain.ErrUserNotFound
 	}
@@ -122,7 +154,7 @@ func (r *userRepo) GetUserByUsername(ctx context.Context, username string) (*dom
 
 func (r *userRepo) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
 	var u domain.User
-	err := r.dbRO().WithContext(ctx).Where("email = ?", email).Take(&u).Error
+	err := r.dbRO().WithContext(ctx).Table(usersTbl(ctx)).Where("email = ?", email).Take(&u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, domain.ErrUserNotFound
 	}
@@ -131,7 +163,7 @@ func (r *userRepo) GetUserByEmail(ctx context.Context, email string) (*domain.Us
 
 func (r *userRepo) GetUserByPhone(ctx context.Context, phone string) (*domain.User, error) {
 	var u domain.User
-	err := r.dbRO().WithContext(ctx).Where("phone = ?", phone).Take(&u).Error
+	err := r.dbRO().WithContext(ctx).Table(usersTbl(ctx)).Where("phone = ?", phone).Take(&u).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, domain.ErrUserNotFound
 	}
@@ -139,16 +171,17 @@ func (r *userRepo) GetUserByPhone(ctx context.Context, phone string) (*domain.Us
 }
 
 func (r *userRepo) UpdateUser(ctx context.Context, u *domain.User) error {
-	return r.db().WithContext(ctx).Save(u).Error
+	return r.db().WithContext(ctx).Table(usersTbl(ctx)).Save(u).Error
 }
 
 func (r *userRepo) UpdateLastLogin(ctx context.Context, userID int64, t time.Time) error {
-	return r.db().WithContext(ctx).Model(&domain.User{}).
+	return r.db().WithContext(ctx).Table(usersTbl(ctx)).
 		Where("id = ?", userID).
 		Updates(map[string]any{"last_login_at": t, "failed_login_count": 0, "locked_until": nil}).Error
 }
 
 func (r *userRepo) IncrFailedLogin(ctx context.Context, userID int64) (int, error) {
+	tbl := usersTbl(ctx)
 	tx := r.db().WithContext(ctx).Begin()
 	defer func() {
 		if p := recover(); p != nil {
@@ -156,14 +189,14 @@ func (r *userRepo) IncrFailedLogin(ctx context.Context, userID int64) (int, erro
 			panic(p)
 		}
 	}()
-	if err := tx.Model(&domain.User{}).
+	if err := tx.Table(tbl).
 		Where("id = ?", userID).
 		UpdateColumn("failed_login_count", gorm.Expr("failed_login_count + 1")).Error; err != nil {
 		tx.Rollback()
 		return 0, err
 	}
 	var u domain.User
-	if err := tx.First(&u, userID).Error; err != nil {
+	if err := tx.Table(tbl).Where("id = ?", userID).First(&u).Error; err != nil {
 		tx.Rollback()
 		return 0, err
 	}
@@ -174,22 +207,22 @@ func (r *userRepo) IncrFailedLogin(ctx context.Context, userID int64) (int, erro
 }
 
 func (r *userRepo) ResetFailedLogin(ctx context.Context, userID int64) error {
-	return r.db().WithContext(ctx).Model(&domain.User{}).
+	return r.db().WithContext(ctx).Table(usersTbl(ctx)).
 		Where("id = ?", userID).
 		Updates(map[string]any{"failed_login_count": 0, "locked_until": nil}).Error
 }
 
 func (r *userRepo) LockUser(ctx context.Context, userID int64, until time.Time) error {
-	return r.db().WithContext(ctx).Model(&domain.User{}).
+	return r.db().WithContext(ctx).Table(usersTbl(ctx)).
 		Where("id = ?", userID).
 		Updates(map[string]any{"status": domain.UserStatusLocked, "locked_until": until}).Error
 }
 
 func (r *userRepo) SoftDelete(ctx context.Context, userID int64, _ string) error {
-	return r.db().WithContext(ctx).Model(&domain.User{}).
+	return r.db().WithContext(ctx).Table(usersTbl(ctx)).
 		Where("id = ?", userID).
 		Updates(map[string]any{
-			"status": domain.UserStatusDeleted,
+			"status":   domain.UserStatusDeleted,
 			"username": nil, "email": nil, "phone": nil,
 			"password_hash": "", "totp_secret": "",
 		}).Error
@@ -198,12 +231,12 @@ func (r *userRepo) SoftDelete(ctx context.Context, userID int64, _ string) error
 // ── Profile ──────────────────────────────────────────────────────────
 
 func (r *userRepo) UpsertProfile(ctx context.Context, p *domain.UserProfile) error {
-	return r.db().WithContext(ctx).Save(p).Error
+	return r.db().WithContext(ctx).Table(userProfilesTbl(ctx)).Save(p).Error
 }
 
 func (r *userRepo) GetProfile(ctx context.Context, userID int64) (*domain.UserProfile, error) {
 	var p domain.UserProfile
-	err := r.dbRO().WithContext(ctx).Where("user_id = ?", userID).Take(&p).Error
+	err := r.dbRO().WithContext(ctx).Table(userProfilesTbl(ctx)).Where("user_id = ?", userID).Take(&p).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -216,7 +249,7 @@ func (r *userRepo) AddAuth(ctx context.Context, a *domain.UserAuth) error {
 	if a.UserID == 0 || a.AuthType == "" || a.Identifier == "" {
 		return fmt.Errorf("%w: user_id/auth_type/identifier required", domain.ErrValidation)
 	}
-	err := r.db().WithContext(ctx).Create(a).Error
+	err := r.db().WithContext(ctx).Table(userAuthsTbl(ctx)).Create(a).Error
 	if err != nil {
 		msg := err.Error()
 		if errors.Is(err, gorm.ErrDuplicatedKey) || containsAny(msg, "Duplicate", "duplicate") {
@@ -228,7 +261,7 @@ func (r *userRepo) AddAuth(ctx context.Context, a *domain.UserAuth) error {
 
 func (r *userRepo) FindAuth(ctx context.Context, authType, identifier string) (*domain.UserAuth, error) {
 	var a domain.UserAuth
-	err := r.dbRO().WithContext(ctx).
+	err := r.dbRO().WithContext(ctx).Table(userAuthsTbl(ctx)).
 		Where("auth_type = ? AND identifier = ?", authType, identifier).Take(&a).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, domain.ErrAuthNotFound
@@ -238,18 +271,18 @@ func (r *userRepo) FindAuth(ctx context.Context, authType, identifier string) (*
 
 func (r *userRepo) ListAuths(ctx context.Context, userID int64) ([]*domain.UserAuth, error) {
 	var out []*domain.UserAuth
-	err := r.dbRO().WithContext(ctx).Where("user_id = ?", userID).Find(&out).Error
+	err := r.dbRO().WithContext(ctx).Table(userAuthsTbl(ctx)).Where("user_id = ?", userID).Find(&out).Error
 	return out, err
 }
 
 func (r *userRepo) RemoveAuth(ctx context.Context, userID int64, authType, identifier string) error {
-	return r.db().WithContext(ctx).
+	return r.db().WithContext(ctx).Table(userAuthsTbl(ctx)).
 		Where("user_id = ? AND auth_type = ? AND identifier = ?", userID, authType, identifier).
 		Delete(&domain.UserAuth{}).Error
 }
 
 func (r *userRepo) MarkAuthVerified(ctx context.Context, authType, identifier string) error {
-	return r.db().WithContext(ctx).Model(&domain.UserAuth{}).
+	return r.db().WithContext(ctx).Table(userAuthsTbl(ctx)).
 		Where("auth_type = ? AND identifier = ?", authType, identifier).
 		Update("verified", true).Error
 }
@@ -257,16 +290,12 @@ func (r *userRepo) MarkAuthVerified(ctx context.Context, authType, identifier st
 // ── Login log / Session / Wallet / Settings / RBAC / EmailCode ──────────
 
 func (r *userRepo) InsertLoginLog(ctx context.Context, l *domain.LoginLog) error {
-	return r.db().WithContext(ctx).Create(l).Error
+	return r.db().WithContext(ctx).Table(loginLogsTbl(ctx)).Create(l).Error
 }
 
-// CountRecentFailedLogins 给 risk.Screen 富化 metadata 用。两个维度都查：
-//   - userID > 0 时 (user_id=? OR ip=?) 同账号 ＋ 同 IP 任一命中算
-//   - userID == 0 时仅按 IP（用户名错误那种 case，没法绑定账号）
-// status=0 = failed。 索引：login_logs(user_id, created_at) + (created_at)。
 func (r *userRepo) CountRecentFailedLogins(ctx context.Context, userID int64, ip string, since time.Time) (int, error) {
 	var n int64
-	q := r.dbRO().WithContext(ctx).Model(&domain.LoginLog{}).
+	q := r.dbRO().WithContext(ctx).Table(loginLogsTbl(ctx)).
 		Where("status = 0 AND created_at >= ?", since)
 	if userID > 0 && ip != "" {
 		q = q.Where("user_id = ? OR ip = ?", userID, ip)
@@ -282,12 +311,12 @@ func (r *userRepo) CountRecentFailedLogins(ctx context.Context, userID int64, ip
 }
 
 func (r *userRepo) CreateSession(ctx context.Context, s *domain.UserSession) error {
-	return r.db().WithContext(ctx).Create(s).Error
+	return r.db().WithContext(ctx).Table(userSessionsTbl(ctx)).Create(s).Error
 }
 
 func (r *userRepo) GetSession(ctx context.Context, token string) (*domain.UserSession, error) {
 	var s domain.UserSession
-	err := r.dbRO().WithContext(ctx).Where("token = ?", token).Take(&s).Error
+	err := r.dbRO().WithContext(ctx).Table(userSessionsTbl(ctx)).Where("token = ?", token).Take(&s).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, domain.ErrSessionNotFound
 	}
@@ -295,26 +324,28 @@ func (r *userRepo) GetSession(ctx context.Context, token string) (*domain.UserSe
 }
 
 func (r *userRepo) DeleteSession(ctx context.Context, token string) error {
-	return r.db().WithContext(ctx).Where("token = ?", token).Delete(&domain.UserSession{}).Error
+	return r.db().WithContext(ctx).Table(userSessionsTbl(ctx)).
+		Where("token = ?", token).Delete(&domain.UserSession{}).Error
 }
 
 func (r *userRepo) DeleteAllUserSessions(ctx context.Context, userID int64) error {
-	return r.db().WithContext(ctx).Where("user_id = ?", userID).Delete(&domain.UserSession{}).Error
+	return r.db().WithContext(ctx).Table(userSessionsTbl(ctx)).
+		Where("user_id = ?", userID).Delete(&domain.UserSession{}).Error
 }
 
 func (r *userRepo) AddUserAccount(ctx context.Context, a *domain.UserAccount) error {
-	return r.db().WithContext(ctx).Create(a).Error
+	return r.db().WithContext(ctx).Table(userAccountsTbl(ctx)).Create(a).Error
 }
 
 func (r *userRepo) ListUserAccounts(ctx context.Context, userID int64) ([]*domain.UserAccount, error) {
 	var out []*domain.UserAccount
-	err := r.dbRO().WithContext(ctx).Where("user_id = ?", userID).Find(&out).Error
+	err := r.dbRO().WithContext(ctx).Table(userAccountsTbl(ctx)).Where("user_id = ?", userID).Find(&out).Error
 	return out, err
 }
 
 func (r *userRepo) GetUserAccount(ctx context.Context, userID int64, currency string) (*domain.UserAccount, error) {
 	var a domain.UserAccount
-	err := r.dbRO().WithContext(ctx).
+	err := r.dbRO().WithContext(ctx).Table(userAccountsTbl(ctx)).
 		Where("user_id = ? AND currency = ?", userID, currency).Take(&a).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
@@ -324,12 +355,12 @@ func (r *userRepo) GetUserAccount(ctx context.Context, userID int64, currency st
 
 func (r *userRepo) UpsertSettings(ctx context.Context, userID int64, settingsJSON string) error {
 	s := &domain.UserSettings{UserID: userID, Settings: settingsJSON}
-	return r.db().WithContext(ctx).Save(s).Error
+	return r.db().WithContext(ctx).Table(userSettingsTbl(ctx)).Save(s).Error
 }
 
 func (r *userRepo) GetSettings(ctx context.Context, userID int64) (string, error) {
 	var s domain.UserSettings
-	err := r.dbRO().WithContext(ctx).Where("user_id = ?", userID).Take(&s).Error
+	err := r.dbRO().WithContext(ctx).Table(userSettingsTbl(ctx)).Where("user_id = ?", userID).Take(&s).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", nil
 	}
@@ -337,20 +368,24 @@ func (r *userRepo) GetSettings(ctx context.Context, userID int64) (string, error
 }
 
 func (r *userRepo) AssignRole(ctx context.Context, userID, roleID int64) error {
-	return r.db().WithContext(ctx).Create(&domain.UserRole{UserID: userID, RoleID: roleID}).Error
+	return r.db().WithContext(ctx).Table(userRolesTbl(ctx)).
+		Create(&domain.UserRole{UserID: userID, RoleID: roleID}).Error
 }
 
 func (r *userRepo) RemoveRole(ctx context.Context, userID, roleID int64) error {
-	return r.db().WithContext(ctx).
+	return r.db().WithContext(ctx).Table(userRolesTbl(ctx)).
 		Where("user_id = ? AND role_id = ?", userID, roleID).
 		Delete(&domain.UserRole{}).Error
 }
 
+// ListRoles / ListPermissions / HasPermission 用 Joins 跨表，shadow 路由要求
+// 所有参与表都跟随 ctx；用 SQL alias（"AS roles" 等）保留旧字段引用，
+// 这样 WHERE / ON 子句不需要重写。
 func (r *userRepo) ListRoles(ctx context.Context, userID int64) ([]*domain.Role, error) {
 	var roles []*domain.Role
 	err := r.dbRO().WithContext(ctx).
-		Table("roles").
-		Joins("INNER JOIN user_roles ON user_roles.role_id = roles.id").
+		Table(rolesTbl(ctx) + " AS roles").
+		Joins("INNER JOIN " + userRolesTbl(ctx) + " AS user_roles ON user_roles.role_id = roles.id").
 		Where("user_roles.user_id = ?", userID).
 		Find(&roles).Error
 	return roles, err
@@ -359,9 +394,9 @@ func (r *userRepo) ListRoles(ctx context.Context, userID int64) ([]*domain.Role,
 func (r *userRepo) ListPermissions(ctx context.Context, userID int64) ([]*domain.Permission, error) {
 	var perms []*domain.Permission
 	err := r.dbRO().WithContext(ctx).
-		Table("permissions").
-		Joins("INNER JOIN role_permissions ON role_permissions.permission_id = permissions.id").
-		Joins("INNER JOIN user_roles ON user_roles.role_id = role_permissions.role_id").
+		Table(permissionsTbl(ctx) + " AS permissions").
+		Joins("INNER JOIN " + rolePermissionsTbl(ctx) + " AS role_permissions ON role_permissions.permission_id = permissions.id").
+		Joins("INNER JOIN " + userRolesTbl(ctx) + " AS user_roles ON user_roles.role_id = role_permissions.role_id").
 		Where("user_roles.user_id = ?", userID).
 		Distinct("permissions.id, permissions.name, permissions.code").
 		Find(&perms).Error
@@ -370,7 +405,7 @@ func (r *userRepo) ListPermissions(ctx context.Context, userID int64) ([]*domain
 
 func (r *userRepo) FindRoleByName(ctx context.Context, name string) (*domain.Role, error) {
 	var role domain.Role
-	err := r.dbRO().WithContext(ctx).Where("name = ?", name).Take(&role).Error
+	err := r.dbRO().WithContext(ctx).Table(rolesTbl(ctx)).Where("name = ?", name).Take(&role).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -380,21 +415,21 @@ func (r *userRepo) FindRoleByName(ctx context.Context, name string) (*domain.Rol
 func (r *userRepo) HasPermission(ctx context.Context, userID int64, code string) (bool, error) {
 	var n int64
 	err := r.dbRO().WithContext(ctx).
-		Table("permissions").
-		Joins("INNER JOIN role_permissions ON role_permissions.permission_id = permissions.id").
-		Joins("INNER JOIN user_roles ON user_roles.role_id = role_permissions.role_id").
+		Table(permissionsTbl(ctx) + " AS permissions").
+		Joins("INNER JOIN " + rolePermissionsTbl(ctx) + " AS role_permissions ON role_permissions.permission_id = permissions.id").
+		Joins("INNER JOIN " + userRolesTbl(ctx) + " AS user_roles ON user_roles.role_id = role_permissions.role_id").
 		Where("user_roles.user_id = ? AND permissions.code = ?", userID, code).
 		Count(&n).Error
 	return n > 0, err
 }
 
 func (r *userRepo) CreateEmailCode(ctx context.Context, c *domain.EmailCode) error {
-	return r.db().WithContext(ctx).Create(c).Error
+	return r.db().WithContext(ctx).Table(emailCodesTbl(ctx)).Create(c).Error
 }
 
 func (r *userRepo) FindLatestActiveCode(ctx context.Context, identifier, purpose string) (*domain.EmailCode, error) {
 	var c domain.EmailCode
-	err := r.dbRO().WithContext(ctx).
+	err := r.dbRO().WithContext(ctx).Table(emailCodesTbl(ctx)).
 		Where("identifier = ? AND purpose = ? AND used_at IS NULL AND expires_at > ?",
 			identifier, purpose, time.Now()).
 		Order("id DESC").Take(&c).Error
@@ -405,7 +440,7 @@ func (r *userRepo) FindLatestActiveCode(ctx context.Context, identifier, purpose
 }
 
 func (r *userRepo) IncrCodeAttempts(ctx context.Context, codeID int64) error {
-	return r.db().WithContext(ctx).Model(&domain.EmailCode{}).
+	return r.db().WithContext(ctx).Table(emailCodesTbl(ctx)).
 		Where("id = ?", codeID).
 		UpdateColumn("attempts", gorm.Expr("attempts + 1")).Error
 }
@@ -414,16 +449,12 @@ func (r *userRepo) IncrCodeAttempts(ctx context.Context, codeID int64) error {
 // RowsAffected==0 → 该 code 已被并发请求消费过 → 返 ErrEmailCodeUsed 让
 // 调用方拒绝本次操作。
 //
-// 旧行为非 CAS Update("used_at", &now)：两个并发 VerifyCode 拿到同一 ec
-// 都过 hashCode 校验、都跑 MarkCodeUsed → 同一 OTP 被消费两次 →
-// reset_password / bind_phone / verify_email 等敏感操作可重复触发。
-//
 // 攻击场景：OTP 泄漏（嗅探、剪贴板、社工）后，攻击者跟合法用户同时
 // VerifyCode → 各自完成各自的操作（双重 reset password / 抢绑手机等）→
 // 账号接管。CAS 后只有第一个赢 transition 的请求继续，第二个直接拒。
 func (r *userRepo) MarkCodeUsed(ctx context.Context, codeID int64) error {
 	now := time.Now()
-	res := r.db().WithContext(ctx).Model(&domain.EmailCode{}).
+	res := r.db().WithContext(ctx).Table(emailCodesTbl(ctx)).
 		Where("id = ? AND used_at IS NULL", codeID).
 		Update("used_at", &now)
 	if res.Error != nil {

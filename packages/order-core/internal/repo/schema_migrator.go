@@ -22,6 +22,142 @@ import (
 //go:embed schema_migration.sql
 var embeddedMetaMigration string
 
+// shardTableBases 列出所有按 100 分片的业务表前缀；ApplyShadowTables 据此对每个
+// (shard, base) 建一份 _shadow 副本。新增分片表时这里要同步登记，
+// 同时 database/orderdb/scripts/generate.sh 的 SHADOW_BASES 也要保持一致。
+var shardTableBases = []string{
+	"payment_intent",
+	"charge",
+	"refund",
+	"pay_action",
+	"dispute",
+	"dispute_event",
+	"inbound_webhook",
+	"notify_log",
+	"accounting_outbox",
+}
+
+// metaShadowTables order_meta 库需要建影子副本的表清单。
+// 与 database/metadb/init/init_shadow.sql 一一对应。
+// leaf_alloc 也复制：让 shadow 流量从 leaf_alloc_shadow 取号，避免压测消耗主号段。
+var metaShadowTables = []string{
+	"leaf_alloc",
+	"webhook_deliveries",
+	"admin_audit_log",
+	"gl_account",
+	"gl_transaction",
+	"gl_entry",
+}
+
+// ApplyMetaShadowTables 在 order_meta 上给每张需要影子的 meta 表创建 _shadow 副本。
+// 启动期幂等兜底（init_shadow.sql 早跑过则全是 no-op）。
+func (m *Manager) ApplyMetaShadowTables(ctx context.Context, logger *zap.Logger) error {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	logger = logger.Named("meta-shadow-migrator")
+	if m.meta == nil {
+		return fmt.Errorf("ApplyMetaShadowTables: meta DB not configured")
+	}
+
+	created, skipped, failed := 0, 0, 0
+	start := time.Now()
+	for _, base := range metaShadowTables {
+		shadowTbl := base + "_shadow"
+		mainExists, err := tableExists(ctx, m.meta, m.metaName, base)
+		if err != nil {
+			failed++
+			logger.Warn("introspect main failed", zap.String("tbl", base), zap.Error(err))
+			continue
+		}
+		if !mainExists {
+			skipped++ // init.sql 还没跑或者该表本部署不需要
+			continue
+		}
+		ddl := fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s` LIKE `%s`", shadowTbl, base)
+		if err := m.meta.WithContext(ctx).Exec(ddl).Error; err != nil {
+			failed++
+			logger.Warn("create LIKE failed", zap.String("tbl", shadowTbl), zap.Error(err))
+			continue
+		}
+		created++
+	}
+	logger.Info("meta shadow tables ensured",
+		zap.Int("created_or_existing", created),
+		zap.Int("skipped_no_main", skipped),
+		zap.Int("failed", failed),
+		zap.Duration("duration", time.Since(start)))
+	return nil
+}
+
+// ApplyShadowTables 启动期对每张业务分片表创建 _shadow 副本：
+//
+//	CREATE TABLE IF NOT EXISTS payment_intent_42_shadow LIKE payment_intent_42
+//
+// 行为：
+//   - 主表不存在 → 跳过（init 流程未跑完 / 该业务表不在本 shard）
+//   - 影子表已存在 → 跳过
+//   - 单表错误不阻断其他表
+//
+// LIKE 复制结构（含索引），不复制 trigger / FK（业务表本就没用）。运行期 shadow
+// 流量经 Router.TableName(ctx,…) 直接落到 _shadow 表，与主表 schema 同步演进。
+func (m *Manager) ApplyShadowTables(ctx context.Context, tablePerDB int, logger *zap.Logger) error {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	logger = logger.Named("shadow-migrator")
+
+	created, skipped, failed := 0, 0, 0
+	start := time.Now()
+	for shardIdx, db := range m.shards {
+		dbName := m.shardNames[shardIdx]
+		for tIdx := 0; tIdx < tablePerDB; tIdx++ {
+			global := shardIdx*tablePerDB + tIdx
+			suffix := fmt.Sprintf("%02d", global)
+			for _, base := range shardTableBases {
+				main := fmt.Sprintf("%s_%s", base, suffix)
+				shadowTbl := main + "_shadow"
+
+				mainExists, err := tableExists(ctx, db, dbName, main)
+				if err != nil {
+					failed++
+					logger.Warn("shadow migrator: introspect main failed",
+						zap.String("db", dbName), zap.String("tbl", main), zap.Error(err))
+					continue
+				}
+				if !mainExists {
+					skipped++
+					continue
+				}
+				ddl := fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s` LIKE `%s`", shadowTbl, main)
+				if err := db.WithContext(ctx).Exec(ddl).Error; err != nil {
+					failed++
+					logger.Warn("shadow migrator: create LIKE failed",
+						zap.String("db", dbName), zap.String("tbl", shadowTbl), zap.Error(err))
+					continue
+				}
+				created++
+			}
+		}
+	}
+	logger.Info("shadow tables ensured",
+		zap.Int("created_or_existing", created),
+		zap.Int("skipped_no_main", skipped),
+		zap.Int("failed", failed),
+		zap.Duration("duration", time.Since(start)))
+	return nil
+}
+
+// tableExists INFORMATION_SCHEMA 查表是否存在（schema 内）。
+func tableExists(ctx context.Context, db *gorm.DB, dbName, tbl string) (bool, error) {
+	var n int
+	err := db.WithContext(ctx).Raw(
+		"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?",
+		dbName, tbl,
+	).Scan(&n).Error
+	return n > 0, err
+}
+
 // ApplyShardMigrations runs idempotent ALTER TABLE additions across all 100
 // accounting_outbox_NN tables to roll forward old shard DBs that don't yet
 // have the claim_token column / idx_claim index.

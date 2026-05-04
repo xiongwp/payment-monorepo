@@ -8,8 +8,24 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 )
+
+// merchant 域 3 个表的主 / 影子表名 helper
+const (
+	tblMerchant            = "merchants"
+	tblMerchantKYCDocument = "merchant_kyc_document"
+	tblMerchantKYCAudit    = "merchant_kyc_audit"
+)
+
+func merchantTbl(ctx context.Context) string    { return shadow.TableName(ctx, tblMerchant) }
+func merchantKYCDocTbl(ctx context.Context) string {
+	return shadow.TableName(ctx, tblMerchantKYCDocument)
+}
+func merchantKYCAuditTbl(ctx context.Context) string {
+	return shadow.TableName(ctx, tblMerchantKYCAudit)
+}
 
 // MerchantRepository merchants 表（meta 库，非分片）+ 配套 KYC 文档/审计表。
 type MerchantRepository interface {
@@ -83,7 +99,7 @@ func (r *merchantRepo) Create(ctx context.Context, m *domain.Merchant) error {
 	if m.RateLimitRPS == 0 {
 		m.RateLimitRPS = 100
 	}
-	err := r.db().WithContext(ctx).Create(m).Error
+	err := r.db().WithContext(ctx).Table(merchantTbl(ctx)).Create(m).Error
 	if isDupKey(err) {
 		return fmt.Errorf("%w: duplicate email or id", domain.ErrValidation)
 	}
@@ -93,7 +109,7 @@ func (r *merchantRepo) Create(ctx context.Context, m *domain.Merchant) error {
 func (r *merchantRepo) Get(ctx context.Context, id string) (*domain.Merchant, error) {
 	var m domain.Merchant
 	// 默认过滤软删行；Terminated 的商户真实身份应走一条合规导出 API（不经这里）。
-	err := r.db().WithContext(ctx).Where("id = ? AND deleted_at IS NULL", id).First(&m).Error
+	err := r.db().WithContext(ctx).Table(merchantTbl(ctx)).Where("id = ? AND deleted_at IS NULL", id).First(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, domain.ErrMerchantNotFound
 	}
@@ -113,14 +129,14 @@ func (r *merchantRepo) BatchGet(ctx context.Context, ids []string) ([]*domain.Me
 		ids = ids[:500]
 	}
 	var out []*domain.Merchant
-	err := r.dbRO().WithContext(ctx).
+	err := r.dbRO().WithContext(ctx).Table(merchantTbl(ctx)).
 		Where("id IN ? AND deleted_at IS NULL", ids).Find(&out).Error
 	return out, err
 }
 
 // SoftDelete 设置 deleted_at=now；行仍在表内供审计/合规 SELECT，但不再对外可见。
 func (r *merchantRepo) SoftDelete(ctx context.Context, id string) error {
-	res := r.db().WithContext(ctx).Model(&domain.Merchant{}).
+	res := r.db().WithContext(ctx).Table(merchantTbl(ctx)).
 		Where("id = ? AND deleted_at IS NULL", id).
 		Update("deleted_at", time.Now())
 	if res.Error != nil {
@@ -139,7 +155,7 @@ func (r *merchantRepo) PurgeDeletedBefore(ctx context.Context, cutoff time.Time)
 	err := r.db().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 先锁定要删的 id
 		var ids []string
-		if err := tx.Model(&domain.Merchant{}).
+		if err := tx.Table(merchantTbl(ctx)).
 			Where("deleted_at IS NOT NULL AND deleted_at < ?", cutoff).
 			Limit(5000).Pluck("id", &ids).Error; err != nil {
 			return err
@@ -147,15 +163,15 @@ func (r *merchantRepo) PurgeDeletedBefore(ctx context.Context, cutoff time.Time)
 		if len(ids) == 0 {
 			return nil
 		}
-		if err := tx.Where("merchant_id IN ?", ids).
+		if err := tx.Table(merchantKYCDocTbl(ctx)).Where("merchant_id IN ?", ids).
 			Delete(&domain.MerchantKYCDocument{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("merchant_id IN ?", ids).
+		if err := tx.Table(merchantKYCAuditTbl(ctx)).Where("merchant_id IN ?", ids).
 			Delete(&domain.MerchantKYCAudit{}).Error; err != nil {
 			return err
 		}
-		res := tx.Where("id IN ?", ids).Delete(&domain.Merchant{})
+		res := tx.Table(merchantTbl(ctx)).Where("id IN ?", ids).Delete(&domain.Merchant{})
 		if res.Error != nil {
 			return res.Error
 		}
@@ -167,7 +183,7 @@ func (r *merchantRepo) PurgeDeletedBefore(ctx context.Context, cutoff time.Time)
 
 func (r *merchantRepo) GetByEmail(ctx context.Context, email string) (*domain.Merchant, error) {
 	var m domain.Merchant
-	err := r.db().WithContext(ctx).Where("contact_email = ?", email).First(&m).Error
+	err := r.db().WithContext(ctx).Table(merchantTbl(ctx)).Where("contact_email = ?", email).First(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, domain.ErrMerchantNotFound
 	}
@@ -181,7 +197,7 @@ func (r *merchantRepo) GetByKeyHash(ctx context.Context, hash string) (*domain.M
 	var m domain.Merchant
 	// Auth 热路径：可容忍复制延迟（rotate/suspend 有 cache.Invalidate 兜底），走 RO。
 	// 软删商户的 key 立刻失效。
-	err := r.dbRO().WithContext(ctx).
+	err := r.dbRO().WithContext(ctx).Table(merchantTbl(ctx)).
 		Where("(live_key_hash = ? OR test_key_hash = ?) AND deleted_at IS NULL",
 			hash, hash).First(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -199,7 +215,7 @@ func (r *merchantRepo) List(ctx context.Context, status domain.MerchantStatus, k
 	}
 	// admin 翻页的 List 容忍滞后，走 RO。默认隐藏软删行 —— 合规导出要看全部的
 	// 走另一条 export 路径。
-	q := r.dbRO().WithContext(ctx).Model(&domain.Merchant{}).Where("deleted_at IS NULL")
+	q := r.dbRO().WithContext(ctx).Table(merchantTbl(ctx)).Where("deleted_at IS NULL")
 	if status != "" {
 		q = q.Where("status = ?", status)
 	}
@@ -218,14 +234,14 @@ func (r *merchantRepo) List(ctx context.Context, status domain.MerchantStatus, k
 }
 
 func (r *merchantRepo) Update(ctx context.Context, m *domain.Merchant) error {
-	return r.db().WithContext(ctx).Save(m).Error
+	return r.db().WithContext(ctx).Table(merchantTbl(ctx)).Save(m).Error
 }
 
 func (r *merchantRepo) UpdateFields(ctx context.Context, id string, fields map[string]any) (*domain.Merchant, error) {
 	if len(fields) == 0 {
 		return r.Get(ctx, id)
 	}
-	if err := r.db().WithContext(ctx).Model(&domain.Merchant{}).
+	if err := r.db().WithContext(ctx).Table(merchantTbl(ctx)).
 		Where("id = ?", id).Updates(fields).Error; err != nil {
 		return nil, err
 	}
@@ -241,7 +257,7 @@ func (r *merchantRepo) TransitionKYC(ctx context.Context, id string, from, to do
 	var updated *domain.Merchant
 	err := r.db().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Compare-and-swap on current KYC status: reject if concurrent change moved it.
-		res := tx.Model(&domain.Merchant{}).
+		res := tx.Table(merchantTbl(ctx)).
 			Where("id = ? AND kyc_status = ?", id, from).
 			Updates(map[string]any{
 				"kyc_status":      to,
@@ -255,7 +271,7 @@ func (r *merchantRepo) TransitionKYC(ctx context.Context, id string, from, to do
 		if res.RowsAffected == 0 {
 			// Either not found or kyc_status changed under us.
 			var cur domain.Merchant
-			if err := tx.Where("id = ?", id).First(&cur).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			if err := tx.Table(merchantTbl(ctx)).Where("id = ?", id).First(&cur).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 				return domain.ErrMerchantNotFound
 			} else if err != nil {
 				return err
@@ -265,20 +281,20 @@ func (r *merchantRepo) TransitionKYC(ctx context.Context, id string, from, to do
 		// Sync business status: approved→active, rejected/terminated→terminated, suspended→suspended.
 		switch to {
 		case domain.KYCStatusApproved:
-			_ = tx.Model(&domain.Merchant{}).Where("id = ?", id).Update("status", domain.MerchantStatusActive).Error
+			_ = tx.Table(merchantTbl(ctx)).Where("id = ?", id).Update("status", domain.MerchantStatusActive).Error
 		case domain.KYCStatusSuspended:
-			_ = tx.Model(&domain.Merchant{}).Where("id = ?", id).Update("status", domain.MerchantStatusSuspended).Error
+			_ = tx.Table(merchantTbl(ctx)).Where("id = ?", id).Update("status", domain.MerchantStatusSuspended).Error
 		case domain.KYCStatusRejected, domain.KYCStatusTerminated:
-			_ = tx.Model(&domain.Merchant{}).Where("id = ?", id).Update("status", domain.MerchantStatusTerminated).Error
+			_ = tx.Table(merchantTbl(ctx)).Where("id = ?", id).Update("status", domain.MerchantStatusTerminated).Error
 		}
 		audit := &domain.MerchantKYCAudit{
 			MerchantID: id, FromStatus: from, ToStatus: to, Reason: reason, Actor: actor,
 		}
-		if err := tx.Create(audit).Error; err != nil {
+		if err := tx.Table(merchantKYCAuditTbl(ctx)).Create(audit).Error; err != nil {
 			return err
 		}
 		var m domain.Merchant
-		if err := tx.Where("id = ?", id).First(&m).Error; err != nil {
+		if err := tx.Table(merchantTbl(ctx)).Where("id = ?", id).First(&m).Error; err != nil {
 			return err
 		}
 		updated = &m
@@ -296,7 +312,7 @@ func (r *merchantRepo) AddDocument(ctx context.Context, d *domain.MerchantKYCDoc
 	if d.ReviewStatus == "" {
 		d.ReviewStatus = "pending"
 	}
-	return r.db().WithContext(ctx).Create(d).Error
+	return r.db().WithContext(ctx).Table(merchantKYCDocTbl(ctx)).Create(d).Error
 }
 
 // ListActive 用于启动 warmup；按 updated DESC 取热商户（被动端 Update 倾向热）。
@@ -306,7 +322,7 @@ func (r *merchantRepo) ListActive(ctx context.Context, limit int) ([]*domain.Mer
 		limit = 1000
 	}
 	var out []*domain.Merchant
-	err := r.db().WithContext(ctx).
+	err := r.db().WithContext(ctx).Table(merchantTbl(ctx)).
 		Where("status = ?", domain.MerchantStatusActive).
 		Order("updated DESC").
 		Limit(limit).Find(&out).Error
@@ -315,13 +331,13 @@ func (r *merchantRepo) ListActive(ctx context.Context, limit int) ([]*domain.Mer
 
 func (r *merchantRepo) ListDocuments(ctx context.Context, merchantID string) ([]*domain.MerchantKYCDocument, error) {
 	var out []*domain.MerchantKYCDocument
-	err := r.dbRO().WithContext(ctx).Where("merchant_id = ?", merchantID).
+	err := r.dbRO().WithContext(ctx).Table(merchantKYCDocTbl(ctx)).Where("merchant_id = ?", merchantID).
 		Order("created DESC").Find(&out).Error
 	return out, err
 }
 
 func (r *merchantRepo) ReviewDocument(ctx context.Context, id, status, note string) error {
-	return r.db().WithContext(ctx).Model(&domain.MerchantKYCDocument{}).
+	return r.db().WithContext(ctx).Table(merchantKYCDocTbl(ctx)).
 		Where("id = ?", id).
 		Updates(map[string]any{"review_status": status, "review_note": note}).Error
 }
@@ -333,7 +349,7 @@ func (r *merchantRepo) ListKYCAudits(ctx context.Context, merchantID string, lim
 		limit = 100
 	}
 	var out []*domain.MerchantKYCAudit
-	err := r.dbRO().WithContext(ctx).Where("merchant_id = ?", merchantID).
+	err := r.dbRO().WithContext(ctx).Table(merchantKYCAuditTbl(ctx)).Where("merchant_id = ?", merchantID).
 		Order("created DESC").Limit(limit).Find(&out).Error
 	return out, err
 }

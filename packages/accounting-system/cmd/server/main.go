@@ -166,6 +166,7 @@ func NewDatabaseManager(v *viper.Viper, loggers *logging.Loggers, logger *zap.Lo
 		return nil, err
 	}
 	logger.Info("database ready", zap.Int("shards", mgr.DBCount()))
+
 	// 暴露每个 shard 的连接池指标（accounting_db_*{db="shardN"|"meta"}）。
 	// 接近 max_open 时报警；wait_seconds_total rate 是 pool exhaustion 信号。
 	metrics.RegisterDBStats(mgr.SQLDBs())

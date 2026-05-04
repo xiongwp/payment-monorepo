@@ -21,7 +21,11 @@ services:
       - "3318:3306"
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./internal/database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # docker-entrypoint-initdb.d 按字典序执行：
+      #   01_init.sql        建主表 + INSERT 主流量号段
+      #   02_init_shadow.sql LIKE 主表 + INSERT 影子号段（依赖 01 已建主表）
+      - ./internal/database/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./internal/database/init_shadow.sql:/docker-entrypoint-initdb.d/02_init_shadow.sql:ro
 
 
   id-service:

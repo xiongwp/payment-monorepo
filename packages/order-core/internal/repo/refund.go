@@ -50,20 +50,20 @@ func NewRefundRepository(mgr *Manager, r *sharding.Router) RefundRepository {
 	return &refundRepo{mgr: mgr, router: r}
 }
 
-func (r *refundRepo) shardOf(piID string) (*gorm.DB, string, error) {
+func (r *refundRepo) shardOf(ctx context.Context, piID string) (*gorm.DB, string, error) {
 	dbIdx, tblIdx := r.router.RouteByPrefixedID(piID)
 	db, err := r.mgr.GetShard(dbIdx)
 	if err != nil {
 		return nil, "", err
 	}
-	return db, r.router.GetTableName("refund", tblIdx), nil
+	return db, r.router.TableName(ctx, "refund", tblIdx), nil
 }
 
 func (r *refundRepo) Create(ctx context.Context, rf *domain.Refund) error {
 	if rf.PaymentIntentID == "" {
 		return fmt.Errorf("%w: payment_intent_id required", domain.ErrValidation)
 	}
-	db, tbl, err := r.shardOf(rf.PaymentIntentID)
+	db, tbl, err := r.shardOf(ctx, rf.PaymentIntentID)
 	if err != nil {
 		return err
 	}
@@ -71,7 +71,7 @@ func (r *refundRepo) Create(ctx context.Context, rf *domain.Refund) error {
 }
 
 func (r *refundRepo) Get(ctx context.Context, piID, refundID string) (*domain.Refund, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func (r *refundRepo) GetByRefundID(ctx context.Context, refundID string) (*domai
 	if err != nil {
 		return nil, err
 	}
-	tbl := r.router.GetTableName("refund", tblIdx)
+	tbl := r.router.TableName(ctx, "refund", tblIdx)
 	var rf domain.Refund
 	err = db.WithContext(ctx).Table(tbl).Where("id = ?", refundID).First(&rf).Error
 	if err != nil {
@@ -121,7 +121,7 @@ func (r *refundRepo) ListRetryDue(ctx context.Context, now time.Time, limit int)
 		if err != nil {
 			return nil, err
 		}
-		tbl := r.router.GetTableName("refund", sh[1])
+		tbl := r.router.TableName(ctx, "refund", sh[1])
 		var part []*domain.Refund
 		// 条件：
 		//   (status=pending AND (next_retry_at IS NULL OR next_retry_at<=now))
@@ -144,7 +144,7 @@ func (r *refundRepo) ListRetryDue(ctx context.Context, now time.Time, limit int)
 }
 
 func (r *refundRepo) ListByPI(ctx context.Context, piID string) ([]*domain.Refund, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +156,7 @@ func (r *refundRepo) ListByPI(ctx context.Context, piID string) ([]*domain.Refun
 }
 
 func (r *refundRepo) ListByCharge(ctx context.Context, piID, chargeID string) ([]*domain.Refund, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +168,7 @@ func (r *refundRepo) ListByCharge(ctx context.Context, piID, chargeID string) ([
 }
 
 func (r *refundRepo) SumSucceededByCharge(ctx context.Context, piID, chargeID string) (int64, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return 0, err
 	}
@@ -188,7 +188,7 @@ func (r *refundRepo) SumSucceededByCharge(ctx context.Context, piID, chargeID st
 // 在调用方使用 FOR UPDATE 锁住 charge 行的 tx 内调用，与 INSERT refund 形成
 // "原子检查-后插入"模式。
 func (r *refundRepo) SumActiveByCharge(ctx context.Context, piID, chargeID string) (int64, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return 0, err
 	}
@@ -204,7 +204,7 @@ func (r *refundRepo) UpdateFields(ctx context.Context, piID, refundID string, fi
 	if len(fields) == 0 {
 		return r.Get(ctx, piID, refundID)
 	}
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +222,7 @@ func (r *refundRepo) UpdateFields(ctx context.Context, piID, refundID string, fi
 // CASUpdateStatus 见接口注释。fields 里若包含 "status" 会被本函数覆盖成 to。
 func (r *refundRepo) CASUpdateStatus(ctx context.Context, piID, refundID string,
 	from, to domain.RefundStatus, fields map[string]any) (*domain.Refund, bool, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, false, err
 	}

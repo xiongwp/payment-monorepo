@@ -9,7 +9,20 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/xiongwp/order-core/internal/domain"
+	"github.com/xiongwp/order-core/internal/shadow"
 )
+
+// ledger 主 / 影子表名常量（避免到处拼字面量）
+const (
+	tblGLAccount     = "gl_account"
+	tblGLTransaction = "gl_transaction"
+	tblGLEntry       = "gl_entry"
+)
+
+// 内联 helper：按 ctx 解析表名
+func glAccount(ctx context.Context) string     { return shadow.TableName(ctx, tblGLAccount) }
+func glTransaction(ctx context.Context) string { return shadow.TableName(ctx, tblGLTransaction) }
+func glEntry(ctx context.Context) string       { return shadow.TableName(ctx, tblGLEntry) }
 
 // LedgerRepository GL accounts + entries + transactions. All non-sharded
 // (meta DB): ledger tables are the canonical source of truth and must be
@@ -53,6 +66,9 @@ func (r *ledgerRepo) Post(ctx context.Context, txnID string, req *domain.Posting
 		return nil, fmt.Errorf("%w: txn_id required", domain.ErrValidation)
 	}
 
+	// 解析主 / 影子表（一个 ctx 内固定，避免事务里部分表分歧）
+	tblAcct, tblTxn, tblEntry := glAccount(ctx), glTransaction(ctx), glEntry(ctx)
+
 	var out *domain.GLTransaction
 	err := r.db().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 1) account existence + type consistency check
@@ -62,7 +78,7 @@ func (r *ledgerRepo) Post(ctx context.Context, txnID string, req *domain.Posting
 				continue
 			}
 			var a domain.GLAccount
-			if err := tx.Where("id = ?", l.AccountID).First(&a).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			if err := tx.Table(tblAcct).Where("id = ?", l.AccountID).First(&a).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 				return fmt.Errorf("%w: %s", domain.ErrLedgerAccountNotFound, l.AccountID)
 			} else if err != nil {
 				return err
@@ -88,7 +104,7 @@ func (r *ledgerRepo) Post(ctx context.Context, txnID string, req *domain.Posting
 			TotalCredit: total,
 			Memo:        req.Memo,
 		}
-		if err := tx.Create(txn).Error; err != nil {
+		if err := tx.Table(tblTxn).Create(txn).Error; err != nil {
 			return err
 		}
 
@@ -105,17 +121,15 @@ func (r *ledgerRepo) Post(ctx context.Context, txnID string, req *domain.Posting
 				Currency:     accounts[l.AccountID].Currency,
 				Memo:         l.Memo,
 			}
-			if err := tx.Create(entry).Error; err != nil {
+			if err := tx.Table(tblEntry).Create(entry).Error; err != nil {
 				return err
 			}
 			perAccountDebit[l.AccountID] += l.Debit
 			perAccountCredit[l.AccountID] += l.Credit
 		}
 		for id, a := range accounts {
-			// Optimistic lock: UPDATE ... WHERE id=? AND version=?; if rows=0 retry
-			// by refetching + reapplying once (then give up).
 			for attempt := 0; attempt < 3; attempt++ {
-				res := tx.Model(&domain.GLAccount{}).
+				res := tx.Table(tblAcct).
 					Where("id = ? AND version = ?", id, a.Version).
 					Updates(map[string]any{
 						"debit_balance":  gorm.Expr("debit_balance + ?", perAccountDebit[id]),
@@ -128,9 +142,8 @@ func (r *ledgerRepo) Post(ctx context.Context, txnID string, req *domain.Posting
 				if res.RowsAffected == 1 {
 					break
 				}
-				// Concurrent update; refetch and retry.
 				var fresh domain.GLAccount
-				if err := tx.Where("id = ?", id).First(&fresh).Error; err != nil {
+				if err := tx.Table(tblAcct).Where("id = ?", id).First(&fresh).Error; err != nil {
 					return err
 				}
 				a.Version = fresh.Version
@@ -157,12 +170,12 @@ func (r *ledgerRepo) CreateAccount(ctx context.Context, a *domain.GLAccount) err
 	if a.Status == "" {
 		a.Status = "active"
 	}
-	return r.db().WithContext(ctx).Create(a).Error
+	return r.db().WithContext(ctx).Table(glAccount(ctx)).Create(a).Error
 }
 
 func (r *ledgerRepo) GetAccount(ctx context.Context, id string) (*domain.GLAccount, error) {
 	var a domain.GLAccount
-	err := r.db().WithContext(ctx).Where("id = ?", id).First(&a).Error
+	err := r.db().WithContext(ctx).Table(glAccount(ctx)).Where("id = ?", id).First(&a).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, domain.ErrLedgerAccountNotFound
 	}
@@ -176,7 +189,7 @@ func (r *ledgerRepo) ListAccounts(ctx context.Context, ownerType domain.AccountO
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	q := r.db().WithContext(ctx).Model(&domain.GLAccount{})
+	q := r.db().WithContext(ctx).Table(glAccount(ctx))
 	if ownerType != "" {
 		q = q.Where("owner_type = ?", ownerType)
 	}
@@ -221,7 +234,7 @@ func (r *ledgerRepo) ListEntries(ctx context.Context, accountID string, since, u
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	q := r.db().WithContext(ctx).Model(&domain.GLEntry{})
+	q := r.db().WithContext(ctx).Table(glEntry(ctx))
 	if accountID != "" {
 		q = q.Where("account_id = ?", accountID)
 	}
@@ -246,7 +259,7 @@ func (r *ledgerRepo) ListTransactions(ctx context.Context, eventType, refType, r
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	q := r.db().WithContext(ctx).Model(&domain.GLTransaction{})
+	q := r.db().WithContext(ctx).Table(glTransaction(ctx))
 	if eventType != "" {
 		q = q.Where("event_type = ?", eventType)
 	}
@@ -269,13 +282,13 @@ func (r *ledgerRepo) ListTransactions(ctx context.Context, eventType, refType, r
 
 func (r *ledgerRepo) GetTransaction(ctx context.Context, id string) (*domain.GLTransaction, []*domain.GLEntry, error) {
 	var txn domain.GLTransaction
-	if err := r.db().WithContext(ctx).Where("id = ?", id).First(&txn).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := r.db().WithContext(ctx).Table(glTransaction(ctx)).Where("id = ?", id).First(&txn).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil, fmt.Errorf("transaction not found: %s", id)
 	} else if err != nil {
 		return nil, nil, err
 	}
 	var entries []*domain.GLEntry
-	if err := r.db().WithContext(ctx).Where("txn_id = ?", id).Order("id").Find(&entries).Error; err != nil {
+	if err := r.db().WithContext(ctx).Table(glEntry(ctx)).Where("txn_id = ?", id).Order("id").Find(&entries).Error; err != nil {
 		return nil, nil, err
 	}
 	return &txn, entries, nil

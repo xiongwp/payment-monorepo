@@ -11,11 +11,13 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 var (
-	addr    = flag.String("addr", "localhost:9090", "gRPC server address")
-	timeout = flag.Duration("timeout", 10*time.Second, "per-call timeout")
+	addr     = flag.String("addr", "localhost:9090", "gRPC server address")
+	timeout  = flag.Duration("timeout", 10*time.Second, "per-call timeout")
+	shadowFl = flag.Bool("shadow", false, "send as shadow traffic (x-shadow=1; routes to id_segment_shadow)")
 )
 
 func main() {
@@ -42,6 +44,10 @@ func main() {
 	// 超时控制
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	if *shadowFl {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-shadow", "1")
+		fmt.Println("🌑 shadow=1 — server will route to id_segment_shadow")
+	}
 
 	userID := int64(12345)
 

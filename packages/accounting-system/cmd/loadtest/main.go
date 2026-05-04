@@ -39,8 +39,20 @@ import (
 	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/resolver"
 )
+
+// shadowOutboundInterceptor 在每个 outbound RPC 上挂 x-shadow=1 metadata（如果 -shadow=true）。
+// 装到 conn 后所有 cli.XxxRPC 自动透传，无需逐个 ctx 改造。
+func shadowOutboundInterceptor(enabled bool) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		if enabled {
+			ctx = metadata.AppendToOutgoingContext(ctx, "x-shadow", "1")
+		}
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+}
 
 // ─── flags ────────────────────────────────────────────────────────────────────
 
@@ -58,6 +70,8 @@ var (
 	flagSetupOnly   = flag.Bool("setup-only", false, "仅执行账户创建和充值，不跑压测")
 	flagTxnOnly     = flag.Bool("txn-only", false, "跳过账户创建，直接读取账户文件执行压测")
 	flagAccountFile = flag.String("account-file", "/tmp/loadtest_accounts.txt", "账户号持久化文件")
+	// shadow 默认 true：压测**绝不**应该打到主流量数据。需要打主流量必须显式 -shadow=false。
+	flagShadow = flag.Bool("shadow", true, "send all RPC as shadow traffic (x-shadow=1; routes to *_shadow tables, _shadow Redis keys, _shadow Kafka topics). Default true — compress safety net.")
 )
 
 // ─── metrics ──────────────────────────────────────────────────────────────────
@@ -99,12 +113,19 @@ func main() {
 		"static:///"+*flagAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy":"round_robin"}`),
+		grpc.WithUnaryInterceptor(shadowOutboundInterceptor(*flagShadow)),
 	)
 	if err != nil {
 		log.Fatalf("连接 gRPC 失败 %s: %v", *flagAddr, err)
 	}
 	defer conn.Close()
 	cli := accountingv1.NewAccountingServiceClient(conn)
+
+	if *flagShadow {
+		log.Println("🌑 shadow=true（默认）— 所有 RPC 走 *_shadow 路径；不影响主流量数据")
+	} else {
+		log.Println("⚠️  shadow=false — 直接打主流量！压测会消耗真实余额、号段、Kafka 主 topic。确认目的后再继续。")
+	}
 
 	if *flagTxnOnly {
 		if err := loadAccountsFromFile(*flagAccountFile); err != nil {

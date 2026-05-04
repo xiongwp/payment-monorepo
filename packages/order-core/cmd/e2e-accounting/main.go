@@ -39,6 +39,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	grpcreflection "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	grpcreflectionv1 "google.golang.org/grpc/reflection/grpc_reflection_v1"
 
@@ -76,10 +77,17 @@ func main() {
 		btFlag   = flag.Int("business_type", 0, "渠道应收 business_type_id；0 时按 pm 自动从 /admin/business-types 查")
 		btCode   = flag.String("business_type_code", "", "渠道应收 business_type_code，例如 GCASH_RECEIVABLE；空串时用 {pm}_RECEIVABLE")
 		timeout  = flag.Duration("timeout", 10*time.Second, "单次 RPC 超时")
+		shadowFl = flag.Bool("shadow", false, "shadow=1 — e2e 走影子表 + 影子 fleet user_id 段（[9e9, 9.01e9)）。默认 false 跑主流量 e2e")
 	)
 	flag.Parse()
 
 	ctx := context.Background()
+	if *shadowFl {
+		// 把 x-shadow=1 挂在所有派生 ctx 的根上：order-core 接到后翻进 ctx，
+		// 透传给 payment-core / accounting / payment-channel 全链路。
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-shadow", "1")
+		fmt.Fprintln(os.Stderr, "🌑 e2e shadow=1 — 全链路走影子路径")
+	}
 
 	// 服务发现模式：
 	//   - -etcd 非空（in-network e2e）：用 payment-util/serviceregistry etcd resolver

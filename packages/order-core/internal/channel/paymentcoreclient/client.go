@@ -17,6 +17,7 @@ import (
 	"github.com/xiongwp/payment-util/serviceregistry"
 
 	"github.com/xiongwp/order-core/internal/channel"
+	"github.com/xiongwp/order-core/internal/shadow"
 	"github.com/xiongwp/order-core/internal/trace"
 )
 
@@ -40,8 +41,12 @@ func Dial(name string, registry []string, endpoint string, rpcTimeout time.Durat
 	const serviceName = "payment-core" // etcd 里 payment-core 的注册名
 	conn, err := serviceregistry.DialWithFallback(registry, serviceName, endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		// 把入站 x-trace-id 自动透传到 outgoing metadata
-		grpc.WithUnaryInterceptor(trace.UnaryClientInterceptor()),
+		// 入站 x-trace-id + x-shadow 都需要自动透传到 outgoing metadata；
+		// 用 ChainUnaryInterceptor 把两个 client interceptor 串起来。
+		grpc.WithChainUnaryInterceptor(
+			trace.UnaryClientInterceptor(),
+			shadow.UnaryClientInterceptor(),
+		),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                30 * time.Second,
 			Timeout:             10 * time.Second,

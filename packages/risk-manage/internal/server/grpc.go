@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xiongwp/payment-util/shadow"
 	putil "github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -69,6 +70,7 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 		grpc.ChainUnaryInterceptor(
 			recoverInterceptor(s.logger),
 			putil.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
+			shadow.UnaryServerInterceptor(),        // 把 metadata x-shadow 翻进 ctx；后续 RPC handler 短路放行 shadow 流量
 			loggingInterceptor(s.logger),
 			metricsInterceptor(),
 			authInterceptor(s.auth, s.apiKeys, s.logger),
@@ -130,7 +132,28 @@ func (s *Server) SetShutdownTimeout(d time.Duration) {
 
 // ─── RPC handlers ──────────────────────────────
 
+// shadowAllowResponse 构造 shadow 流量的统一 ALLOW 响应。
+//
+// 压测流量在 risk-manage 这一步永远放行：不查黑名单、不查 Redis 频控、不调外部
+// 反欺诈、不写 ML 训练样本。返回的 reason 用 "shadow:bypass" 让上游日志 / 看板
+// 能区分（与真实 ALLOW 决策区分开）。
+func shadowAllowResponse() *riskv1.ScreenResponse {
+	return &riskv1.ScreenResponse{
+		Decision:  riskv1.Decision_ALLOW,
+		RiskScore: 0,
+		RiskLevel: "shadow",
+		Reason:    "shadow:bypass",
+	}
+}
+
 func (s *Server) Screen(ctx context.Context, req *riskv1.ScreenRequest) (*riskv1.ScreenResponse, error) {
+	// Shadow 短路：压测流量直接 ALLOW，不消耗任何风控资源、不污染统计。
+	// 必须放在 RequireMerchantMatch 之前 — shadow 流量可能用通用压测租户身份，
+	// merchant_id 校验对它不适用。
+	if shadow.IsShadow(ctx) {
+		metrics.ScreenTotal.WithLabelValues("shadow_bypass").Inc()
+		return shadowAllowResponse(), nil
+	}
 	// Tenant 隔离：商户 key 调 Screen 必须 merchant_id 匹配；空时自动注入 principal 的 merchant_id。
 	if err := auth.RequireMerchantMatch(ctx, req.GetMerchantId()); err != nil {
 		return nil, status.Error(codes.PermissionDenied, err.Error())
@@ -220,6 +243,18 @@ func (s *Server) BulkScreen(ctx context.Context, req *riskv1.BulkScreenRequest) 
 	if len(in) > bulkScreenMaxBatch {
 		in = in[:bulkScreenMaxBatch]
 	}
+	// Shadow 短路：所有 row 都 ALLOW，不调底层 svc。和 Screen 单笔一致语义。
+	if shadow.IsShadow(ctx) {
+		metrics.ScreenTotal.WithLabelValues("shadow_bypass").Add(float64(len(in)))
+		results := make([]*riskv1.BulkScreenResult, len(in))
+		for i := range in {
+			results[i] = &riskv1.BulkScreenResult{
+				Index:    int32(i),
+				Response: shadowAllowResponse(),
+			}
+		}
+		return &riskv1.BulkScreenResponse{Results: results, TotalMs: 0}, nil
+	}
 	// principal 鉴权一次：批内每笔再 RequireMerchantMatch 防混租
 	merchantID := auth.FillMerchantID(ctx, "")
 	start := time.Now()
@@ -262,6 +297,12 @@ func (s *Server) BulkScreen(ctx context.Context, req *riskv1.BulkScreenRequest) 
 }
 
 func (s *Server) Report(ctx context.Context, req *riskv1.ReportRequest) (*riskv1.ReportResponse, error) {
+	// Shadow 短路：不写任何 outcome，避免压测样本污染 ML 训练 / 反馈环。
+	if shadow.IsShadow(ctx) {
+		// metric 单独打一个 label 区分 — 不计入正常 Report 总量
+		// （ScreenTotal 复用即可：shadow 流量根本没经过 Screen，所以这里 noop log）
+		return &riskv1.ReportResponse{}, nil
+	}
 	if err := auth.RequireMerchantMatch(ctx, req.GetMerchantId()); err != nil {
 		return nil, status.Error(codes.PermissionDenied, err.Error())
 	}

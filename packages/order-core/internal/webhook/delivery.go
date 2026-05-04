@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/xiongwp/order-core/internal/metrics"
+	"github.com/xiongwp/order-core/internal/shadow"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -60,7 +61,17 @@ type Delivery struct {
 	UpdatedAt  time.Time `gorm:"column:updated_at"`
 }
 
+// TableName 默认主表（gorm 默认 fallback）。
+// 影子流量必须显式走 dispatcherTable(ctx) / Dispatcher.tbl(ctx)，gorm 默认不会感知 ctx。
 func (Delivery) TableName() string { return "webhook_deliveries" }
+
+// dispatcherTable 给定 ctx 返回 webhook_deliveries 主表 / 影子表名。
+// shadow=true → "webhook_deliveries_shadow"
+const webhookDeliveriesBase = "webhook_deliveries"
+
+func dispatcherTable(ctx context.Context) string {
+	return shadow.TableName(ctx, webhookDeliveriesBase)
+}
 
 // DefaultRetryDelays 指数退避间隔（可通过 DispatcherConfig 覆盖）
 var DefaultRetryDelays = []time.Duration{
@@ -107,6 +118,7 @@ func NewDispatcher(db *gorm.DB, cfg DispatcherConfig, logger *zap.Logger) *Dispa
 }
 
 // Enqueue 把事件写入 DB 等待投递。幂等（event_id UNIQUE）。
+// ctx 中的 shadow flag 决定写入主表还是影子表（webhook_deliveries / _shadow）。
 func (d *Dispatcher) Enqueue(ctx context.Context, url, secret string, evt Event) error {
 	payload, _ := json.Marshal(evt.Payload)
 	delivery := Delivery{
@@ -118,18 +130,20 @@ func (d *Dispatcher) Enqueue(ctx context.Context, url, secret string, evt Event)
 		Status:      "pending",
 		MaxAttempts: len(d.delays),
 	}
-	err := d.db.WithContext(ctx).Create(&delivery).Error
+	tbl := dispatcherTable(ctx)
+	err := d.db.WithContext(ctx).Table(tbl).Create(&delivery).Error
 	if err != nil {
 		return err
 	}
-	// 立即尝试第一次投递（异步，不阻塞调用方）
-	// wave L: 使用非阻塞 select 获取 semaphore；超并发时直接让 retry worker 兜底，
-	// 不再 spawn 阻塞的 goroutine，防止事件爆发时 goroutine 堆积。
+	// 立即尝试第一次投递（异步，不阻塞调用方）。
+	// async goroutine 用 context.WithoutCancel 保留 ctx 值（含 shadow flag）但脱离 cancel 链；
+	// 否则 Enqueue 返回后 ctx canceled，tryDeliver 内部 NewRequestWithContext 直接报错。
+	asyncCtx := contextWithoutCancel(ctx)
 	select {
 	case d.sem <- struct{}{}:
 		go func() {
 			defer func() { <-d.sem }()
-			d.tryDeliver(delivery.ID, url, secret, payload)
+			d.tryDeliver(asyncCtx, delivery.ID, url, secret, payload)
 		}()
 	default:
 		// 队列满，下一轮 retry worker（30s 内）会捡起这条 pending。
@@ -138,6 +152,19 @@ func (d *Dispatcher) Enqueue(ctx context.Context, url, secret string, evt Event)
 	}
 	return nil
 }
+
+// contextWithoutCancel 是 context.WithoutCancel 的兼容垫片（Go 1.21+ 已内置）。
+// 这里手写一份避免对最低 Go 版本的硬要求；只保留 Value 不传 cancel/deadline。
+func contextWithoutCancel(parent context.Context) context.Context {
+	return detachedContext{parent: parent}
+}
+
+type detachedContext struct{ parent context.Context }
+
+func (detachedContext) Deadline() (time.Time, bool)       { return time.Time{}, false }
+func (detachedContext) Done() <-chan struct{}             { return nil }
+func (detachedContext) Err() error                        { return nil }
+func (d detachedContext) Value(key interface{}) interface{} { return d.parent.Value(key) }
 
 // RunRetryWorker 后台 worker：轮询 pending + retry-ready，重发。
 func (d *Dispatcher) RunRetryWorker(ctx context.Context, interval time.Duration) {
@@ -172,18 +199,21 @@ func (d *Dispatcher) processRetries(ctx context.Context) {
 	// 历史 last_error 不再被 claim 操作覆盖，便于排查投递失败原因。
 	claimToken := fmt.Sprintf("claim:%d:%d", time.Now().UnixNano(), rand.Int63())
 	farFuture := now.Add(24 * time.Hour)
+	tbl := dispatcherTable(ctx) // 主表 / 影子表（按 ctx）
+	// 表名是受信常量（webhook_deliveries / _shadow），用 fmt.Sprintf 拼入 SQL 安全。
 	updateRes := d.db.WithContext(ctx).Exec(
-		"UPDATE webhook_deliveries "+
-			"SET next_retry_at = ?, claim_token = ? "+
-			"WHERE id IN ("+
-			"  SELECT id FROM ("+
-			"    SELECT id FROM webhook_deliveries "+
-			"    WHERE status IN ('pending','failed') "+
-			"      AND (next_retry_at IS NULL OR next_retry_at <= ?) "+
-			"      AND attempts < max_attempts "+
-			"    ORDER BY next_retry_at ASC LIMIT ?"+
-			"  ) AS t "+
-			") ",
+		fmt.Sprintf(
+			"UPDATE %s "+
+				"SET next_retry_at = ?, claim_token = ? "+
+				"WHERE id IN ("+
+				"  SELECT id FROM ("+
+				"    SELECT id FROM %s "+
+				"    WHERE status IN ('pending','failed') "+
+				"      AND (next_retry_at IS NULL OR next_retry_at <= ?) "+
+				"      AND attempts < max_attempts "+
+				"    ORDER BY next_retry_at ASC LIMIT ?"+
+				"  ) AS t "+
+				") ", tbl, tbl),
 		farFuture, claimToken, now, d.batchSize,
 	)
 	if updateRes.Error != nil {
@@ -195,7 +225,7 @@ func (d *Dispatcher) processRetries(ctx context.Context) {
 	}
 
 	var deliveries []Delivery
-	if err := d.db.WithContext(ctx).
+	if err := d.db.WithContext(ctx).Table(tbl).
 		Where("claim_token = ?", claimToken).
 		Find(&deliveries).Error; err != nil {
 		d.logger.Warn("webhook claim re-read failed", zap.Error(err))
@@ -205,7 +235,7 @@ func (d *Dispatcher) processRetries(ctx context.Context) {
 	// wave L: 批量拉 merchant webhook_secret，避免 N+1。
 	mchSecrets := d.fetchMerchantSecrets(ctx, deliveries)
 	for _, del := range deliveries {
-		d.tryDeliver(del.ID, del.URL, mchSecrets[del.MerchantID], []byte(del.Payload))
+		d.tryDeliver(ctx, del.ID, del.URL, mchSecrets[del.MerchantID], []byte(del.Payload))
 	}
 }
 
@@ -245,23 +275,39 @@ func (d *Dispatcher) fetchMerchantSecrets(ctx context.Context, deliveries []Deli
 	return out
 }
 
-func (d *Dispatcher) tryDeliver(id int64, url, secret string, payload []byte) {
+func (d *Dispatcher) tryDeliver(parent context.Context, id int64, url, secret string, payload []byte) {
+	tbl := dispatcherTable(parent) // 主 / 影子表
+	// 影子流量绝不真发到商户：直接标 succeeded + last_error 注明 dryrun，
+	// 投递记录留在 webhook_deliveries_shadow 供压测核查。商户生产 URL 不被打扰。
+	if shadow.IsShadow(parent) {
+		metrics.WebhookDeliveryTotal.WithLabelValues("shadow_dryrun").Inc()
+		d.db.WithContext(parent).Table(tbl).Where("id = ?", id).Updates(map[string]interface{}{
+			"status":      "succeeded",
+			"http_status": 0,
+			"attempts":    gorm.Expr("attempts + 1"),
+			"last_error":  "shadow:dryrun (HTTP suppressed)",
+		})
+		d.logger.Info("webhook shadow dryrun (no HTTP send)",
+			zap.Int64("delivery_id", id), zap.String("url", url))
+		return
+	}
 	if url == "" {
-		d.markFailed(id, 0, "webhook URL is empty", 0)
+		d.markFailed(parent, tbl, id, 0, "webhook URL is empty", 0)
 		return
 	}
 	if secret == "" {
-		d.markFailed(id, 0, "webhook secret is empty — refusing to send unsigned webhook", 0)
+		d.markFailed(parent, tbl, id, 0, "webhook secret is empty — refusing to send unsigned webhook", 0)
 		return
 	}
 	ts := fmt.Sprintf("%d", time.Now().Unix())
 	sig := sign(secret, ts, payload)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// 给 HTTP 调用一个 10s 上限，但保留 parent 中的 shadow flag。
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		d.markFailed(id, 0, err.Error(), 0)
+		d.markFailed(parent, tbl, id, 0, err.Error(), 0)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -274,7 +320,7 @@ func (d *Dispatcher) tryDeliver(id int64, url, secret string, payload []byte) {
 	metrics.WebhookDeliveryLatency.Observe(time.Since(deliveryStart).Seconds())
 	if err != nil {
 		metrics.WebhookDeliveryTotal.WithLabelValues("transport_error").Inc()
-		d.markFailed(id, 0, err.Error(), 0)
+		d.markFailed(parent, tbl, id, 0, err.Error(), 0)
 		return
 	}
 	defer resp.Body.Close()
@@ -282,7 +328,7 @@ func (d *Dispatcher) tryDeliver(id int64, url, secret string, payload []byte) {
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		metrics.WebhookDeliveryTotal.WithLabelValues("succeeded").Inc()
-		d.db.Model(&Delivery{}).Where("id = ?", id).Updates(map[string]interface{}{
+		d.db.Table(tbl).Where("id = ?", id).Updates(map[string]interface{}{
 			"status":      "succeeded",
 			"http_status": resp.StatusCode,
 			"attempts":    gorm.Expr("attempts + 1"),
@@ -292,11 +338,9 @@ func (d *Dispatcher) tryDeliver(id int64, url, secret string, payload []byte) {
 			zap.Int64("delivery_id", id), zap.Int("status", resp.StatusCode))
 		return
 	}
-	// 商户返回 Retry-After（秒级或 HTTP-date）→ 尊重它，覆盖默认指数退避。
-	// 限制 ≤ 1 hour 防止恶意/误配的服务端把我们卡死。
 	retryAfterSec := parseRetryAfter(resp.Header.Get("Retry-After"))
 	metrics.WebhookDeliveryTotal.WithLabelValues("http_error").Inc()
-	d.markFailed(id, resp.StatusCode, string(respBody), retryAfterSec)
+	d.markFailed(parent, tbl, id, resp.StatusCode, string(respBody), retryAfterSec)
 }
 
 // parseRetryAfter 解析 RFC 7231 §7.1.3：HTTP-date 或 delta-seconds。
@@ -329,9 +373,11 @@ func parseRetryAfter(s string) int {
 // Retry-After 时长（被 parseRetryAfter 限制为 ≤3600s）；否则用默认指数退避表
 // 加 ±25% jitter——同一时刻大批失败时（典型场景：商户回调端宕机）jitter 把
 // 重试时刻铺开到一个区间，避免下一波 retry tick 撞同一秒造成"二次雷暴"。
-func (d *Dispatcher) markFailed(id int64, httpStatus int, errMsg string, retryAfterSec int) {
+// markFailed 推下一次重试。tbl 由调用方根据 ctx 解析（主表 / 影子表），
+// 这样同一行不会跨表跳转。
+func (d *Dispatcher) markFailed(ctx context.Context, tbl string, id int64, httpStatus int, errMsg string, retryAfterSec int) {
 	var del Delivery
-	d.db.First(&del, id)
+	d.db.WithContext(ctx).Table(tbl).Where("id = ?", id).First(&del)
 
 	nextAttempt := del.Attempts + 1
 	updates := map[string]interface{}{
@@ -365,7 +411,7 @@ func (d *Dispatcher) markFailed(id int64, httpStatus int, errMsg string, retryAf
 			zap.Time("next", next),
 			zap.Bool("retry_after_hint", retryAfterSec > 0))
 	}
-	d.db.Model(&Delivery{}).Where("id = ?", id).Updates(updates)
+	d.db.WithContext(ctx).Table(tbl).Where("id = ?", id).Updates(updates)
 }
 
 // jitter 给定 base 加上 ±25% 随机扰动，避免大批同时失败的 retry 撞在同一秒。

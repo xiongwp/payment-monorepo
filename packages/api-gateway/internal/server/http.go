@@ -90,7 +90,10 @@ func NewServer(cfg Config, logger *zap.Logger, registers ...MuxRegister) *Server
 	publicMux.HandleFunc("/v1/ping", handlePing)
 
 	// 中间件按外→内顺序 wrap。最外层 recovery 兜底任何 panic。
+	// shadow 在鉴权之后、限流之前：要 APIKey 验过的可信调用方才信任 X-Shadow header；
+	// shadow 流量进 ctx 后限流 / 日志可以单独打 label（如有需要）。
 	var publicHandler http.Handler = publicMux
+	publicHandler = ShadowMiddleware()(publicHandler)
 	if cfg.AuthEnabled {
 		publicHandler = APIKeyMiddleware(cfg.AuthTokens, logger)(publicHandler)
 	}

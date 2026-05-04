@@ -52,20 +52,20 @@ func NewChargeRepository(mgr *Manager, r *sharding.Router) ChargeRepository {
 	return &chargeRepo{mgr: mgr, router: r}
 }
 
-func (r *chargeRepo) shardOf(piID string) (*gorm.DB, string, error) {
+func (r *chargeRepo) shardOf(ctx context.Context, piID string) (*gorm.DB, string, error) {
 	dbIdx, tblIdx := r.router.RouteByPrefixedID(piID)
 	db, err := r.mgr.GetShard(dbIdx)
 	if err != nil {
 		return nil, "", err
 	}
-	return db, r.router.GetTableName("charge", tblIdx), nil
+	return db, r.router.TableName(ctx, "charge", tblIdx), nil
 }
 
 func (r *chargeRepo) Create(ctx context.Context, c *domain.Charge) error {
 	if c.PaymentIntentID == "" {
 		return fmt.Errorf("%w: payment_intent_id required", domain.ErrValidation)
 	}
-	db, tbl, err := r.shardOf(c.PaymentIntentID)
+	db, tbl, err := r.shardOf(ctx, c.PaymentIntentID)
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func (r *chargeRepo) Create(ctx context.Context, c *domain.Charge) error {
 }
 
 func (r *chargeRepo) Get(ctx context.Context, piID, chargeID string) (*domain.Charge, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +90,7 @@ func (r *chargeRepo) Get(ctx context.Context, piID, chargeID string) (*domain.Ch
 }
 
 func (r *chargeRepo) GetForUpdate(ctx context.Context, tx *gorm.DB, piID, chargeID string) (*domain.Charge, error) {
-	_, tbl, err := r.shardOf(piID)
+	_, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func (r *chargeRepo) GetByChargeID(ctx context.Context, chargeID string) (*domai
 	if err != nil {
 		return nil, err
 	}
-	tbl := r.router.GetTableName("charge", tblIdx)
+	tbl := r.router.TableName(ctx, "charge", tblIdx)
 	var c domain.Charge
 	err = db.WithContext(ctx).Table(tbl).Where("id = ?", chargeID).First(&c).Error
 	if err != nil {
@@ -130,7 +130,7 @@ func (r *chargeRepo) GetByChargeID(ctx context.Context, chargeID string) (*domai
 }
 
 func (r *chargeRepo) ListByPI(ctx context.Context, piID string) ([]*domain.Charge, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +152,7 @@ func (r *chargeRepo) ListExpired(ctx context.Context, now time.Time, limit int) 
 			if err != nil {
 				return nil, err
 			}
-			tbl := r.router.GetTableName("charge", tblIdx)
+			tbl := r.router.TableName(ctx, "charge", tblIdx)
 			var part []*domain.Charge
 			err = db.WithContext(ctx).Table(tbl).
 				Where("status = ? AND expired_at IS NOT NULL AND expired_at < ?", domain.ChargeStatusPending, now).
@@ -172,7 +172,7 @@ func (r *chargeRepo) ListPendingForReconcile(ctx context.Context, before time.Ti
 			if err != nil {
 				return nil, err
 			}
-			tbl := r.router.GetTableName("charge", tblIdx)
+			tbl := r.router.TableName(ctx, "charge", tblIdx)
 			var part []*domain.Charge
 			err = db.WithContext(ctx).Table(tbl).
 				Where("status = ? AND created < ?", domain.ChargeStatusPending, before).
@@ -185,7 +185,7 @@ func (r *chargeRepo) UpdateFields(ctx context.Context, piID, chargeID string, fi
 	if len(fields) == 0 {
 		return r.Get(ctx, piID, chargeID)
 	}
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +203,7 @@ func (r *chargeRepo) UpdateFields(ctx context.Context, piID, chargeID string, fi
 // CASUpdateStatus 见接口注释。fields 里若包含 "status" 会被本函数覆盖成 to。
 func (r *chargeRepo) CASUpdateStatus(ctx context.Context, piID, chargeID string,
 	from, to domain.ChargeStatus, fields map[string]any) (*domain.Charge, bool, error) {
-	db, tbl, err := r.shardOf(piID)
+	db, tbl, err := r.shardOf(ctx, piID)
 	if err != nil {
 		return nil, false, err
 	}

@@ -184,12 +184,18 @@ func newDBManager(v *viper.Viper, logger *zap.Logger) (*repo.Manager, error) {
 		if err := mgr.ApplyMetaMigration(ctx, logger); err != nil {
 			logger.Warn("meta migration had failures (continuing)", zap.Error(err))
 		}
+		// 紧跟着建 meta 影子表（webhook_deliveries_shadow / gl_*_shadow / admin_audit_log_shadow）
+		// init_shadow.sql 早跑过则全 no-op；幂等。
+		if err := mgr.ApplyMetaShadowTables(ctx, logger); err != nil {
+			logger.Warn("meta shadow tables apply had failures (continuing)", zap.Error(err))
+		}
 	}
 
 	// Shard 自愈迁移：给现存 accounting_outbox_NN 表加 claim_token 列 + idx_claim 索引
 	// （新建的库已在 init 模板里带了）。INFORMATION_SCHEMA 检查后 ALTER，幂等可重复跑。
+	// ApplyShadowTables 紧跟其后：每张分片业务表都建一份 _shadow 副本（CREATE … LIKE）。
 	if !v.GetBool("database.skip_auto_migrate") {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		tablePerDB := v.GetInt("sharding.table_per_db")
 		if tablePerDB <= 0 {
@@ -197,6 +203,9 @@ func newDBManager(v *viper.Viper, logger *zap.Logger) (*repo.Manager, error) {
 		}
 		if err := mgr.ApplyShardMigrations(ctx, tablePerDB, logger); err != nil {
 			logger.Warn("shard migrations had failures (continuing)", zap.Error(err))
+		}
+		if err := mgr.ApplyShadowTables(ctx, tablePerDB, logger); err != nil {
+			logger.Warn("shadow tables apply had failures (continuing)", zap.Error(err))
 		}
 	}
 	return mgr, nil

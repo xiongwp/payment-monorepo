@@ -12,6 +12,7 @@ import (
 
 	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
 	"github.com/xiongwp/order-core/internal/repo"
+	"github.com/xiongwp/order-core/internal/shadow"
 	"github.com/xiongwp/order-core/internal/webhook"
 )
 
@@ -33,7 +34,7 @@ func (s *WebhookDeliveryServer) List(ctx context.Context, req *orderv1.ListWebho
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	q := s.mgr.GetMeta().WithContext(ctx).Table("webhook_deliveries")
+	q := s.mgr.GetMeta().WithContext(ctx).Table(shadow.TableName(ctx, "webhook_deliveries"))
 	if req.GetMerchantId() != "" {
 		q = q.Where("merchant_id = ?", req.GetMerchantId())
 	}
@@ -60,7 +61,7 @@ func (s *WebhookDeliveryServer) Retry(ctx context.Context, req *orderv1.RetryWeb
 	// pending/failed so the worker picks it up. We keep attempts counter
 	// truthful — manual retries also consume attempts. Ops can reset attempts
 	// via DB if needed.
-	res := s.mgr.GetMeta().WithContext(ctx).Table("webhook_deliveries").
+	res := s.mgr.GetMeta().WithContext(ctx).Table(shadow.TableName(ctx, "webhook_deliveries")).
 		Where("id = ?", req.GetId()).
 		Updates(map[string]any{
 			"status":        "pending",
@@ -73,7 +74,7 @@ func (s *WebhookDeliveryServer) Retry(ctx context.Context, req *orderv1.RetryWeb
 		return nil, status.Error(codes.NotFound, "delivery not found")
 	}
 	var d webhook.Delivery
-	if err := s.mgr.GetMeta().WithContext(ctx).Table("webhook_deliveries").
+	if err := s.mgr.GetMeta().WithContext(ctx).Table(shadow.TableName(ctx, "webhook_deliveries")).
 		Where("id = ?", req.GetId()).First(&d).Error; err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -121,7 +122,7 @@ func (s *WebhookDeliveryServer) TestSend(ctx context.Context, req *orderv1.TestW
 	}
 	// Return the row we just created
 	var d webhook.Delivery
-	if err := s.mgr.GetMeta().WithContext(ctx).Table("webhook_deliveries").
+	if err := s.mgr.GetMeta().WithContext(ctx).Table(shadow.TableName(ctx, "webhook_deliveries")).
 		Where("event_id = ?", evt.ID).First(&d).Error; err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}

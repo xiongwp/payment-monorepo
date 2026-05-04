@@ -10,6 +10,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -60,6 +61,9 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(
 		RecoverInterceptor(s.logger),
 		trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
+		// shadow 标识翻进 ctx；AcquirerService 5 个方法入口检查 IsShadow 短路放行 —
+		// 压测流量绝不真打到外部渠道（GCash / Maya 等），返回 mock 结果。
+		shadow.UnaryServerInterceptor(),
 		MetricsInterceptor(),
 		RateLimitInterceptor(s.rateLimitRPS, s.rateBurst),
 		AuthInterceptor(s.authTokens, s.logger),

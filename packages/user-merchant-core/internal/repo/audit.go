@@ -5,8 +5,13 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 )
+
+const tblAuditLog = "admin_audit_log"
+
+func auditTable(ctx context.Context) string { return shadow.TableName(ctx, tblAuditLog) }
 
 // AuditRepository append-only 审计日志；只提供 Insert + List（无 Update/Delete）。
 type AuditRepository interface {
@@ -30,12 +35,12 @@ func (r *auditRepo) db() *gorm.DB   { return r.mgr.GetMeta() }
 func (r *auditRepo) dbRO() *gorm.DB { return r.mgr.GetMetaRO() }
 
 func (r *auditRepo) Insert(ctx context.Context, row *domain.AdminAuditLog) error {
-	return r.db().WithContext(ctx).Create(row).Error
+	return r.db().WithContext(ctx).Table(auditTable(ctx)).Create(row).Error
 }
 
 func (r *auditRepo) LastHash(ctx context.Context) (string, error) {
 	var row domain.AdminAuditLog
-	err := r.db().WithContext(ctx).Order("id DESC").Limit(1).First(&row).Error
+	err := r.db().WithContext(ctx).Table(auditTable(ctx)).Order("id DESC").Limit(1).First(&row).Error
 	if err == gorm.ErrRecordNotFound {
 		return "", nil
 	}
@@ -49,7 +54,7 @@ func (r *auditRepo) List(ctx context.Context, actor, target string, limit, offse
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
-	q := r.dbRO().WithContext(ctx).Model(&domain.AdminAuditLog{})
+	q := r.dbRO().WithContext(ctx).Table(auditTable(ctx))
 	if actor != "" {
 		q = q.Where("actor = ?", actor)
 	}

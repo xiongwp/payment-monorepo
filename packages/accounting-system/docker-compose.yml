@@ -39,6 +39,7 @@ services:
     volumes:
       - mysql-metadata-data:/var/lib/mysql
       - ./database/metadb/init/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./database/metadb/init/init_shadow.sql:/docker-entrypoint-initdb.d/zz_init_shadow.sql:ro
 
   mysql-0:
     <<: *mysql-common
@@ -52,6 +53,8 @@ services:
       - mysql-0-data:/var/lib/mysql
       - ./database/accountingdb/init/0_init.sql:/docker-entrypoint-initdb.d/0_init.sql:ro
       - ./database/accountingdb/init/0_init_tmp.sql:/docker-entrypoint-initdb.d/0_init_tmp.sql:ro
+      - ./database/accountingdb/init/0_init_shadow.sql:/docker-entrypoint-initdb.d/0_init_shadow.sql:ro
+      - ./database/accountingdb/init/0_init_tmp_shadow.sql:/docker-entrypoint-initdb.d/0_init_tmp_shadow.sql:ro
 
   mysql-1:
     <<: *mysql-common
@@ -65,6 +68,8 @@ services:
       - mysql-1-data:/var/lib/mysql
       - ./database/accountingdb/init/1_init.sql:/docker-entrypoint-initdb.d/1_init.sql:ro
       - ./database/accountingdb/init/1_init_tmp.sql:/docker-entrypoint-initdb.d/1_init_tmp.sql:ro
+      - ./database/accountingdb/init/1_init_shadow.sql:/docker-entrypoint-initdb.d/1_init_shadow.sql:ro
+      - ./database/accountingdb/init/1_init_tmp_shadow.sql:/docker-entrypoint-initdb.d/1_init_tmp_shadow.sql:ro
 
   mysql-2:
     <<: *mysql-common
@@ -78,6 +83,8 @@ services:
       - mysql-2-data:/var/lib/mysql
       - ./database/accountingdb/init/2_init.sql:/docker-entrypoint-initdb.d/2_init.sql:ro
       - ./database/accountingdb/init/2_init_tmp.sql:/docker-entrypoint-initdb.d/2_init_tmp.sql:ro
+      - ./database/accountingdb/init/2_init_shadow.sql:/docker-entrypoint-initdb.d/2_init_shadow.sql:ro
+      - ./database/accountingdb/init/2_init_tmp_shadow.sql:/docker-entrypoint-initdb.d/2_init_tmp_shadow.sql:ro
 
   mysql-3:
     <<: *mysql-common
@@ -91,6 +98,8 @@ services:
       - mysql-3-data:/var/lib/mysql
       - ./database/accountingdb/init/3_init.sql:/docker-entrypoint-initdb.d/3_init.sql:ro
       - ./database/accountingdb/init/3_init_tmp.sql:/docker-entrypoint-initdb.d/3_init_tmp.sql:ro
+      - ./database/accountingdb/init/3_init_shadow.sql:/docker-entrypoint-initdb.d/3_init_shadow.sql:ro
+      - ./database/accountingdb/init/3_init_tmp_shadow.sql:/docker-entrypoint-initdb.d/3_init_tmp_shadow.sql:ro
 
   mysql-4:
     <<: *mysql-common
@@ -104,6 +113,8 @@ services:
       - mysql-4-data:/var/lib/mysql
       - ./database/accountingdb/init/4_init.sql:/docker-entrypoint-initdb.d/4_init.sql:ro
       - ./database/accountingdb/init/4_init_tmp.sql:/docker-entrypoint-initdb.d/4_init_tmp.sql:ro
+      - ./database/accountingdb/init/4_init_shadow.sql:/docker-entrypoint-initdb.d/4_init_shadow.sql:ro
+      - ./database/accountingdb/init/4_init_tmp_shadow.sql:/docker-entrypoint-initdb.d/4_init_tmp_shadow.sql:ro
 
   mysql-5:
     <<: *mysql-common
@@ -117,6 +128,8 @@ services:
       - mysql-5-data:/var/lib/mysql
       - ./database/accountingdb/init/5_init.sql:/docker-entrypoint-initdb.d/5_init.sql:ro
       - ./database/accountingdb/init/5_init_tmp.sql:/docker-entrypoint-initdb.d/5_init_tmp.sql:ro
+      - ./database/accountingdb/init/5_init_shadow.sql:/docker-entrypoint-initdb.d/5_init_shadow.sql:ro
+      - ./database/accountingdb/init/5_init_tmp_shadow.sql:/docker-entrypoint-initdb.d/5_init_tmp_shadow.sql:ro
 
   mysql-6:
     <<: *mysql-common
@@ -130,6 +143,8 @@ services:
       - mysql-6-data:/var/lib/mysql
       - ./database/accountingdb/init/6_init.sql:/docker-entrypoint-initdb.d/6_init.sql:ro
       - ./database/accountingdb/init/6_init_tmp.sql:/docker-entrypoint-initdb.d/6_init_tmp.sql:ro
+      - ./database/accountingdb/init/6_init_shadow.sql:/docker-entrypoint-initdb.d/6_init_shadow.sql:ro
+      - ./database/accountingdb/init/6_init_tmp_shadow.sql:/docker-entrypoint-initdb.d/6_init_tmp_shadow.sql:ro
 
   mysql-7:
     <<: *mysql-common
@@ -143,6 +158,8 @@ services:
       - mysql-7-data:/var/lib/mysql
       - ./database/accountingdb/init/7_init.sql:/docker-entrypoint-initdb.d/7_init.sql:ro
       - ./database/accountingdb/init/7_init_tmp.sql:/docker-entrypoint-initdb.d/7_init_tmp.sql:ro
+      - ./database/accountingdb/init/7_init_shadow.sql:/docker-entrypoint-initdb.d/7_init_shadow.sql:ro
+      - ./database/accountingdb/init/7_init_tmp_shadow.sql:/docker-entrypoint-initdb.d/7_init_tmp_shadow.sql:ro
 
   mysql-8:
     <<: *mysql-common
@@ -156,6 +173,8 @@ services:
       - mysql-8-data:/var/lib/mysql
       - ./database/accountingdb/init/8_init.sql:/docker-entrypoint-initdb.d/8_init.sql:ro
       - ./database/accountingdb/init/8_init_tmp.sql:/docker-entrypoint-initdb.d/8_init_tmp.sql:ro
+      - ./database/accountingdb/init/8_init_shadow.sql:/docker-entrypoint-initdb.d/8_init_shadow.sql:ro
+      - ./database/accountingdb/init/8_init_tmp_shadow.sql:/docker-entrypoint-initdb.d/8_init_tmp_shadow.sql:ro
 
   mysql-9:
     <<: *mysql-common
@@ -169,6 +188,8 @@ services:
       - mysql-9-data:/var/lib/mysql
       - ./database/accountingdb/init/9_init.sql:/docker-entrypoint-initdb.d/9_init.sql:ro
       - ./database/accountingdb/init/9_init_tmp.sql:/docker-entrypoint-initdb.d/9_init_tmp.sql:ro
+      - ./database/accountingdb/init/9_init_shadow.sql:/docker-entrypoint-initdb.d/9_init_shadow.sql:ro
+      - ./database/accountingdb/init/9_init_tmp_shadow.sql:/docker-entrypoint-initdb.d/9_init_tmp_shadow.sql:ro
 
   redis:
     image: redis:7-alpine

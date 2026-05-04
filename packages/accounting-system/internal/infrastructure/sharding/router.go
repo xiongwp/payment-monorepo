@@ -1,8 +1,11 @@
 package sharding
 
 import (
+	"context"
 	"fmt"
 	"strconv"
+
+	"github.com/xiongwp/payment-util/shadow"
 )
 
 const (
@@ -116,10 +119,18 @@ func (r *Router) RouteByAccountNo(accountNo string) (dbIndex, globalTableIndex i
 	return 0, 0
 }
 
-// GetTableName 获取表名（使用全局表序号）
-// 例：GetTableName("account", 15) → "account_15"
+// GetTableName 获取主表名（不感知 shadow）。
+//
+// Deprecated: 仅供启动期工具（schema 自愈）使用。业务 repo 一律改用
+// TableName(ctx, …)，否则压测流量会落到主表。
 func (r *Router) GetTableName(baseTableName string, globalTableIndex int) string {
 	return fmt.Sprintf("%s_%02d", baseTableName, globalTableIndex)
+}
+
+// TableName 根据 ctx 决定返回主表名 / 影子表名（"<base>_<NN>" 或 "<base>_<NN>_shadow"）。
+// 所有业务 repo 的访问点都应走此方法，让 shadow 流量自动落到 _shadow 表。
+func (r *Router) TableName(ctx context.Context, baseTableName string, globalTableIndex int) string {
+	return shadow.TableName(ctx, fmt.Sprintf("%s_%02d", baseTableName, globalTableIndex))
 }
 
 // GetAllShards 获取所有分片信息（10库 × 每库10表 = 100条）

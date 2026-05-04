@@ -8,6 +8,7 @@ import (
 	"github.com/accounting-system/internal/domain/model"
 	"github.com/accounting-system/internal/infrastructure/database"
 	"github.com/accounting-system/internal/infrastructure/sharding"
+	"github.com/xiongwp/payment-util/shadow"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -92,7 +93,7 @@ func NewBalanceSnapshotRepository(dbManager *database.Manager, router *sharding.
 
 // Upsert inserts or updates a single balance snapshot, conflicting on (account_no, snapshot_date, run_id).
 func (r *balanceSnapshotRepository) Upsert(ctx context.Context, dbIndex, tableIndex int, snapshot *model.AccountBalanceSnapshot) error {
-	tableName := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
+	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 
 	db, err := r.dbManager.GetDB(dbIndex)
 	if err != nil {
@@ -125,7 +126,7 @@ func (r *balanceSnapshotRepository) UpsertBatch(ctx context.Context, dbIndex, ta
 	if len(snapshots) == 0 {
 		return nil
 	}
-	tableName := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
+	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 
 	db, err := r.dbManager.GetDB(dbIndex)
 	if err != nil {
@@ -165,7 +166,7 @@ func (r *balanceSnapshotRepository) UpsertBatchIncremental(ctx context.Context, 
 	if len(snapshots) == 0 {
 		return nil
 	}
-	tableName := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
+	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 
 	db, err := r.dbManager.GetDB(dbIndex)
 	if err != nil {
@@ -200,7 +201,7 @@ func (r *balanceSnapshotRepository) UpsertBatchIncrementalTx(tx *gorm.DB, tableI
 	if len(snapshots) == 0 {
 		return nil
 	}
-	tableName := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
+	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 	const batchSize = 500
 	return tx.Table(tableName).
 		Clauses(clause.OnConflict{
@@ -223,7 +224,7 @@ func (r *balanceSnapshotRepository) UpsertBatchIncrementalTx(tx *gorm.DB, tableI
 // UpdateBufferedFinal 单账户 finalize 更新（fixBufferedAccountBalances 用）。
 // 单条而非批量，因为 buffered 账户通常 < 100 个/分片，调用频率低不必为之优化批量。
 func (r *balanceSnapshotRepository) UpdateBufferedFinal(ctx context.Context, dbIndex, tableIndex int, snapshotDate string, runID int, accountNo string, beginningBalance, endingBalance int64) error {
-	tableName := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
+	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 	db, err := r.dbManager.GetDB(dbIndex)
 	if err != nil {
 		return fmt.Errorf("balance_snapshot UpdateBufferedFinal: get db[%d]: %w", dbIndex, err)
@@ -243,7 +244,7 @@ func (r *balanceSnapshotRepository) UpdateBufferedFinal(ctx context.Context, dbI
 // GetReadDB 在未配置 read_dsn 时回落到主库，不影响行为。
 func (r *balanceSnapshotRepository) GetByAccountAndDate(ctx context.Context, accountNo, date string) (*model.AccountBalanceSnapshot, error) {
 	dbIndex, tableIndex := r.router.RouteByAccountNo(accountNo)
-	tableName := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
+	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 
 	db, err := r.dbManager.GetReadDB(dbIndex)
 	if err != nil {
@@ -272,7 +273,7 @@ func (r *balanceSnapshotRepository) GetByAccountAndDate(ctx context.Context, acc
 // ListDistinctDates returns distinct snapshot_dates in the given shard, ordered DESC.
 // 走只读副本：日期列表是聚合查询（DISTINCT），且 snapshot 表数据稳定。
 func (r *balanceSnapshotRepository) ListDistinctDates(ctx context.Context, dbIndex, tableIndex int) ([]string, error) {
-	tableName := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
+	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 
 	db, err := r.dbManager.GetReadDB(dbIndex)
 	if err != nil {
@@ -295,7 +296,7 @@ func (r *balanceSnapshotRepository) ListDistinctDates(ctx context.Context, dbInd
 // 这里 read-after-write 一致性比命中 replica 重要。
 func (r *balanceSnapshotRepository) GetByAccountDateRun(ctx context.Context, accountNo, date string, runID int) (*model.AccountBalanceSnapshot, error) {
 	dbIndex, tableIndex := r.router.RouteByAccountNo(accountNo)
-	tableName := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
+	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 
 	db, err := r.dbManager.GetDB(dbIndex)
 	if err != nil {
@@ -319,7 +320,7 @@ func (r *balanceSnapshotRepository) GetByAccountDateRun(ctx context.Context, acc
 // 走只读副本：snapshot 数据稳定。
 func (r *balanceSnapshotRepository) GetLatest(ctx context.Context, accountNo string) (*model.AccountBalanceSnapshot, error) {
 	dbIndex, tableIndex := r.router.RouteByAccountNo(accountNo)
-	tableName := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
+	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 
 	db, err := r.dbManager.GetReadDB(dbIndex)
 	if err != nil {
@@ -346,7 +347,7 @@ func (r *balanceSnapshotRepository) GetLatest(ctx context.Context, accountNo str
 //
 // 走主库：sealRunSnapshots 紧跟在 chunk loop 之后调用，replica 可能未复制完。
 func (r *balanceSnapshotRepository) ListByCutAndRun(ctx context.Context, dbIndex, tableIndex int, cutDate string, runID int) ([]*model.AccountBalanceSnapshot, error) {
-	tableName := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
+	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 	db, err := r.dbManager.GetDB(dbIndex)
 	if err != nil {
 		return nil, fmt.Errorf("balance_snapshot ListByCutAndRun: get db[%d]: %w", dbIndex, err)
@@ -368,7 +369,7 @@ func (r *balanceSnapshotRepository) ListByCutAndRun(ctx context.Context, dbIndex
 // 实现：取 snapshot_date < beforeDate 的最大 snapshot_date 行；同 date 多 run 取
 // 最大 run_id（重跑修正后的 ending 优先于旧 run）。
 func (r *balanceSnapshotRepository) GetPrevEnding(ctx context.Context, dbIndex, tableIndex int, accountNo, beforeDate string) (int64, bool, error) {
-	tableName := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
+	tableName := shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex))
 	db, err := r.dbManager.GetDB(dbIndex)
 	if err != nil {
 		return 0, false, fmt.Errorf("balance_snapshot GetPrevEnding: get db[%d]: %w", dbIndex, err)
@@ -414,7 +415,8 @@ func (r *balanceSnapshotRepository) SetBeginAndEnd(ctx context.Context, dbIndex,
 		return nil
 	}
 
-	tableName := fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)
+	// shadow 路由：压测流量走 _shadow 副本表，与 callback 路径一致
+	tableName := shadow.TableName(ctx, shadow.TableName(ctx, fmt.Sprintf("account_balance_snapshot_%02d", tableIndex)))
 	db, err := r.dbManager.GetDB(dbIndex)
 	if err != nil {
 		return fmt.Errorf("balance_snapshot SetBeginAndEnd: get db[%d]: %w", dbIndex, err)

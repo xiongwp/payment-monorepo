@@ -52,13 +52,20 @@ func NewBalanceBufferRepository(dbManager *database.Manager, router *sharding.Ro
 	return &balanceBufferRepository{dbManager: dbManager, router: router}
 }
 
+// tableName 已弃用：旧版本不接 ctx，shadow 路径会落主表。新代码用 tableNameCtx。
+// Deprecated: use tableNameCtx(ctx, tableIndex)
 func (r *balanceBufferRepository) tableName(tableIndex int) string {
 	return r.router.GetTableName("account_balance_buffer", tableIndex)
 }
 
+// tableNameCtx 按 ctx 解析主 / 影子表名（callback 不覆盖 raw Exec，必须显式带 ctx）。
+func (r *balanceBufferRepository) tableNameCtx(ctx context.Context, tableIndex int) string {
+	return r.router.TableName(ctx, "account_balance_buffer", tableIndex)
+}
+
 // Upsert 首次写入时同时设置 flush_scheduled_at（触发时间）；后续写入只累加 delta 和 count，不改变调度时间。
 func (r *balanceBufferRepository) Upsert(ctx context.Context, tx *gorm.DB, accountNo string, delta int64, tableIndex int, flushScheduledAt time.Time) error {
-	tableName := r.tableName(tableIndex)
+	tableName := r.tableNameCtx(ctx, tableIndex)
 	return tx.WithContext(ctx).Exec(
 		"INSERT INTO "+tableName+
 			" (account_no, pending_delta, pending_count, flush_scheduled_at)"+
@@ -79,7 +86,7 @@ func (r *balanceBufferRepository) FindDueForFlush(ctx context.Context, dbIndex, 
 		return nil, fmt.Errorf("balance_buffer FindDueForFlush: get db[%d]: %w", dbIndex, err)
 	}
 	var rows []model.AccountBalanceBuffer
-	if err := db.WithContext(ctx).Table(r.tableName(tableIndex)).
+	if err := db.WithContext(ctx).Table(r.tableNameCtx(ctx, tableIndex)).
 		Where("flush_scheduled_at IS NULL OR flush_scheduled_at <= ? OR pending_count >= ?",
 			now, model.BufferFlushThreshold).
 		Order("pending_count DESC, flush_scheduled_at ASC").
@@ -102,7 +109,7 @@ func (r *balanceBufferRepository) FindDueForFlush(ctx context.Context, dbIndex, 
 //   - SKIP LOCKED 更适合"工作队列"语义,直接返回空行,调用方已经有 locked == nil 的分支。
 func (r *balanceBufferRepository) LockRow(ctx context.Context, tx *gorm.DB, accountNo string, tableIndex int) (*model.AccountBalanceBuffer, error) {
 	var row model.AccountBalanceBuffer
-	result := tx.WithContext(ctx).Table(r.tableName(tableIndex)).
+	result := tx.WithContext(ctx).Table(r.tableNameCtx(ctx, tableIndex)).
 		Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
 		Where("account_no = ?", accountNo).
 		Take(&row)
@@ -121,7 +128,7 @@ func (r *balanceBufferRepository) LockRow(ctx context.Context, tx *gorm.DB, acco
 // RescheduleRow 刷新完成后重置 pending 计数，并将 flush_scheduled_at 延后一个间隔。
 // 保留行记录（不删除），形成循环调度的任务链。
 func (r *balanceBufferRepository) RescheduleRow(ctx context.Context, tx *gorm.DB, accountNo string, tableIndex int, nextScheduledAt time.Time) error {
-	return tx.WithContext(ctx).Table(r.tableName(tableIndex)).
+	return tx.WithContext(ctx).Table(r.tableNameCtx(ctx, tableIndex)).
 		Where("account_no = ?", accountNo).
 		Updates(map[string]interface{}{
 			"pending_delta":     0,
@@ -131,7 +138,7 @@ func (r *balanceBufferRepository) RescheduleRow(ctx context.Context, tx *gorm.DB
 }
 
 func (r *balanceBufferRepository) DeleteRow(ctx context.Context, tx *gorm.DB, accountNo string, tableIndex int) error {
-	return tx.WithContext(ctx).Table(r.tableName(tableIndex)).
+	return tx.WithContext(ctx).Table(r.tableNameCtx(ctx, tableIndex)).
 		Where("account_no = ?", accountNo).
 		Delete(&model.AccountBalanceBuffer{}).Error
 }
@@ -142,7 +149,7 @@ func (r *balanceBufferRepository) GetPendingDelta(ctx context.Context, dbIndex, 
 		return 0, fmt.Errorf("balance_buffer GetPendingDelta: get db[%d]: %w", dbIndex, err)
 	}
 	var row model.AccountBalanceBuffer
-	result := db.WithContext(ctx).Table(r.tableName(tableIndex)).
+	result := db.WithContext(ctx).Table(r.tableNameCtx(ctx, tableIndex)).
 		Where("account_no = ?", accountNo).
 		Take(&row)
 	if result.Error != nil {

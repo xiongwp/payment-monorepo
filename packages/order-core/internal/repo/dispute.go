@@ -38,13 +38,13 @@ func NewDisputeRepository(mgr *Manager, r *sharding.Router) DisputeRepository {
 	return &disputeRepo{mgr: mgr, router: r}
 }
 
-func (r *disputeRepo) shard(piID string) (*gorm.DB, string, string, error) {
+func (r *disputeRepo) shard(ctx context.Context, piID string) (*gorm.DB, string, string, error) {
 	dbIdx, tblIdx := r.router.RouteByPrefixedID(piID)
 	db, err := r.mgr.GetShard(dbIdx)
 	if err != nil {
 		return nil, "", "", err
 	}
-	return db, r.router.GetTableName("dispute", tblIdx), r.router.GetTableName("dispute_event", tblIdx), nil
+	return db, r.router.TableName(ctx, "dispute", tblIdx), r.router.TableName(ctx, "dispute_event", tblIdx), nil
 }
 
 // ─── CRUD ────────────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ func (r *disputeRepo) Create(ctx context.Context, d *domain.Dispute) error {
 	if d.Status == "" {
 		d.Status = domain.DisputeNeedsResponse
 	}
-	db, tbl, _, err := r.shard(d.PaymentIntentID)
+	db, tbl, _, err := r.shard(ctx, d.PaymentIntentID)
 	if err != nil {
 		return err
 	}
@@ -67,7 +67,7 @@ func (r *disputeRepo) Create(ctx context.Context, d *domain.Dispute) error {
 }
 
 func (r *disputeRepo) Get(ctx context.Context, piID, id string) (*domain.Dispute, error) {
-	db, tbl, _, err := r.shard(piID)
+	db, tbl, _, err := r.shard(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func (r *disputeRepo) Get(ctx context.Context, piID, id string) (*domain.Dispute
 }
 
 func (r *disputeRepo) GetByChannelDisputeID(ctx context.Context, piID, channel, channelDisputeID string) (*domain.Dispute, error) {
-	db, tbl, _, err := r.shard(piID)
+	db, tbl, _, err := r.shard(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func (r *disputeRepo) GetByChannelDisputeID(ctx context.Context, piID, channel, 
 }
 
 func (r *disputeRepo) ListByPI(ctx context.Context, piID string) ([]*domain.Dispute, error) {
-	db, tbl, _, err := r.shard(piID)
+	db, tbl, _, err := r.shard(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +129,7 @@ func (r *disputeRepo) ListByMerchant(ctx context.Context, merchantID string, sta
 			return nil, 0, err
 		}
 		for t := 0; t < r.router.TablePerDB(); t++ {
-			tbl := r.router.GetTableName("dispute", i*r.router.TablePerDB()+t)
+			tbl := r.router.TableName(ctx, "dispute", i*r.router.TablePerDB()+t)
 			q := db.WithContext(ctx).Table(tbl).Where("merchant_id = ?", merchantID)
 			if status != "" {
 				q = q.Where("status = ?", status)
@@ -162,7 +162,7 @@ func (r *disputeRepo) UpdateFields(ctx context.Context, piID, id string, fields 
 	if len(fields) == 0 {
 		return r.Get(ctx, piID, id)
 	}
-	db, tbl, _, err := r.shard(piID)
+	db, tbl, _, err := r.shard(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +177,7 @@ func (r *disputeRepo) Transition(ctx context.Context, piID, id string, from, to 
 	if !from.CanTransition(to) {
 		return nil, fmt.Errorf("%w: %s → %s", domain.ErrDisputeInvalidTransition, from, to)
 	}
-	db, tbl, evtTbl, err := r.shard(piID)
+	db, tbl, evtTbl, err := r.shard(ctx, piID)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +224,7 @@ func (r *disputeRepo) ListEvents(ctx context.Context, piID, disputeID string, li
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	db, _, evtTbl, err := r.shard(piID)
+	db, _, evtTbl, err := r.shard(ctx, piID)
 	if err != nil {
 		return nil, err
 	}

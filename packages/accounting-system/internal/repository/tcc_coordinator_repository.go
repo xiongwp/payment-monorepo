@@ -67,7 +67,8 @@ func (r *tccCoordinatorRepository) shardTable(ctx context.Context, tccID string)
 	if err != nil {
 		return nil, "", err
 	}
-	tableName := r.router.GetTableName("tcc_coordinator", tblIdx)
+	// shadow 路由：raw Exec 不经过 callback，所以这里必须显式按 ctx 拼影子后缀。
+	tableName := r.router.TableName(ctx, "tcc_coordinator", tblIdx)
 	return db.WithContext(ctx), tableName, nil
 }
 
