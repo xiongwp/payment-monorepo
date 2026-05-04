@@ -1,0 +1,70 @@
+# config.docker.lite.yaml — for docker-compose.lite.yml.
+# All 10 logical shards point at a single MySQL instance (paychan-mysql-lite).
+
+server:
+  grpc_port: 9092
+  webhook_http_addr: ":9192"
+
+metrics:
+  addr: ":9093"
+
+sharding:
+  db_count: 10
+  table_per_db: 10
+
+auth:
+  tokens: []
+
+rate_limit:
+  rps: 2000
+  burst: 4000
+
+database:
+  meta:
+    name: paychan_meta
+    dsn: "root:password@tcp(paychan-mysql-lite:3306)/paychan_meta?charset=utf8mb4&parseTime=True&loc=Local"
+    max_open_conns: 20
+    max_idle_conns: 5
+    conn_max_lifetime: 3600
+  shards:
+    - { name: paychan_db_0, dsn: "root:password@tcp(paychan-mysql-lite:3306)/paychan_db_0?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5, conn_max_lifetime: 3600 }
+    - { name: paychan_db_1, dsn: "root:password@tcp(paychan-mysql-lite:3306)/paychan_db_1?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5, conn_max_lifetime: 3600 }
+    - { name: paychan_db_2, dsn: "root:password@tcp(paychan-mysql-lite:3306)/paychan_db_2?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5, conn_max_lifetime: 3600 }
+    - { name: paychan_db_3, dsn: "root:password@tcp(paychan-mysql-lite:3306)/paychan_db_3?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5, conn_max_lifetime: 3600 }
+    - { name: paychan_db_4, dsn: "root:password@tcp(paychan-mysql-lite:3306)/paychan_db_4?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5, conn_max_lifetime: 3600 }
+    - { name: paychan_db_5, dsn: "root:password@tcp(paychan-mysql-lite:3306)/paychan_db_5?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5, conn_max_lifetime: 3600 }
+    - { name: paychan_db_6, dsn: "root:password@tcp(paychan-mysql-lite:3306)/paychan_db_6?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5, conn_max_lifetime: 3600 }
+    - { name: paychan_db_7, dsn: "root:password@tcp(paychan-mysql-lite:3306)/paychan_db_7?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5, conn_max_lifetime: 3600 }
+    - { name: paychan_db_8, dsn: "root:password@tcp(paychan-mysql-lite:3306)/paychan_db_8?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5, conn_max_lifetime: 3600 }
+    - { name: paychan_db_9, dsn: "root:password@tcp(paychan-mysql-lite:3306)/paychan_db_9?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5, conn_max_lifetime: 3600 }
+
+channel:
+  gcash:
+    env: sandbox
+    partner_id: "MOCK_PARTNER"
+    notify_url: "http://payment-channel:9192/wh/gcash"
+    base_url: "http://paychan-mockserver:9400"
+  maya:
+    env: sandbox
+    public_key: "pk_mock"
+    secret_key: "sk_mock"
+    base_url: "http://paychan-mockserver:9400"
+  grabpay:
+    env: sandbox
+    partner_id: "p"
+    partner_secret: "s"
+    merchant_id: "m"
+    notify_url: "http://payment-channel:9192/wh/grabpay"
+    base_url: "http://paychan-mockserver:9400"
+  coinsph:    { env: sandbox, merchant_id: m, secret_key: k, base_url: "http://paychan-mockserver:9400" }
+  instapay:   { env: sandbox, client_id: c, client_secret: s, partner_id: p, sender_account: "000", sender_name: mock, base_url: "http://paychan-mockserver:9400" }
+  pesonet:    { env: sandbox, client_id: c, client_secret: s, partner_id: p, sender_account: "000", sender_name: mock, base_url: "http://paychan-mockserver:9400" }
+  bdo:        { env: sandbox, client_id: c, client_secret: s, partner_id: p, partner_secret: s, base_url: "http://paychan-mockserver:9400" }
+  bpi:        { env: sandbox, client_id: c, client_secret: s, partner_id: p, sender_account: "000", sender_name: mock, base_url: "http://paychan-mockserver:9400" }
+  metrobank:  { env: sandbox, client_id: c, client_secret: s, partner_id: p, partner_secret: s, base_url: "http://paychan-mockserver:9400" }
+  landbank:   { env: sandbox, merchant_id: m, secret_key: k, base_url: "http://paychan-mockserver:9400" }
+  paymongo:   { env: sandbox, secret_key: sk_test_mock, webhook_secret: whsec_mock, base_url: "http://paychan-mockserver:9400" }
+  xendit:     { env: sandbox, secret_key: xnd_development_mock, verification_token: mock_token, base_url: "http://paychan-mockserver:9400" }
+  dragonpay:  { env: sandbox, merchant_id: MOCK, merchant_key: MOCKKEY, base_url: "http://paychan-mockserver:9400" }
+  shopeepay:  { env: sandbox, partner_id: p, partner_key: k, merchant_ext_id: m, store_ext_id: s, base_url: "http://paychan-mockserver:9400" }
+  billease:   { env: sandbox, client_id: c, client_secret: s, base_url: "http://paychan-mockserver:9400" }

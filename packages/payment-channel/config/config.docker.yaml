@@ -1,0 +1,190 @@
+# config.docker.yaml — for `docker-compose up payment-channel`.
+#
+# 用户那边 `shared-shard-0..9` 是真分片集群，每个节点存自己那一片的数据
+# （shared-shard-2 只有 paychan_db_2 那个 schema）。所以 DSN 必须按 shard
+# index 映射到对应节点。`paychan_meta` 单独放在 `shared-meta` 节点上；如果
+# 没有独立 meta 节点，改成任一 shard 节点（比如 shared-shard-0）即可。
+# 首次上线前：scripts/init-shared-db.sh
+
+server:
+  grpc_port: 9092
+  webhook_http_addr: ":9192"
+
+metrics:
+  addr: ":9093"
+
+sharding:
+  db_count: 10
+  table_per_db: 10
+
+auth:
+  tokens: []
+
+rate_limit:
+  rps: 2000
+  burst: 4000
+
+database:
+  meta:
+    name: paychan_meta
+    dsn: "root:password@tcp(shared-meta:3306)/paychan_meta?charset=utf8mb4&parseTime=True&loc=Local"
+    max_open_conns: 20
+    max_idle_conns: 5
+    conn_max_lifetime: 3600
+  shards:
+    - name: paychan_db_0
+      dsn: "root:password@tcp(shared-shard-0:3306)/paychan_db_0?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: paychan_db_1
+      dsn: "root:password@tcp(shared-shard-1:3306)/paychan_db_1?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: paychan_db_2
+      dsn: "root:password@tcp(shared-shard-2:3306)/paychan_db_2?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: paychan_db_3
+      dsn: "root:password@tcp(shared-shard-3:3306)/paychan_db_3?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: paychan_db_4
+      dsn: "root:password@tcp(shared-shard-4:3306)/paychan_db_4?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: paychan_db_5
+      dsn: "root:password@tcp(shared-shard-5:3306)/paychan_db_5?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: paychan_db_6
+      dsn: "root:password@tcp(shared-shard-6:3306)/paychan_db_6?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: paychan_db_7
+      dsn: "root:password@tcp(shared-shard-7:3306)/paychan_db_7?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: paychan_db_8
+      dsn: "root:password@tcp(shared-shard-8:3306)/paychan_db_8?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: paychan_db_9
+      dsn: "root:password@tcp(shared-shard-9:3306)/paychan_db_9?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+
+# 15 个 PH 渠道统一指向容器内 mockserver。
+channel:
+  gcash:
+    env: sandbox
+    partner_id: "MOCK_PARTNER"
+    notify_url: "http://payment-channel:9192/wh/gcash"
+    base_url: "http://paychan-mockserver:9400"
+  maya:
+    env: sandbox
+    public_key: "pk_mock"
+    secret_key: "sk_mock"
+    redirect_ok: "http://127.0.0.1:9091/ret?r=ok"
+    redirect_fail: "http://127.0.0.1:9091/ret?r=fail"
+    redirect_cancel: "http://127.0.0.1:9091/ret?r=cancel"
+    base_url: "http://paychan-mockserver:9400"
+  grabpay:
+    env: sandbox
+    partner_id: "p"
+    partner_secret: "s"
+    merchant_id: "m"
+    notify_url: "http://payment-channel:9192/wh/grabpay"
+    base_url: "http://paychan-mockserver:9400"
+  coinsph:
+    env: sandbox
+    merchant_id: "m"
+    secret_key: "k"
+    notify_url: "http://payment-channel:9192/wh/coinsph"
+    base_url: "http://paychan-mockserver:9400"
+  instapay:
+    env: sandbox
+    client_id: "c"
+    client_secret: "s"
+    partner_id: "p"
+    sender_account: "000"
+    sender_name: "mock"
+    base_url: "http://paychan-mockserver:9400"
+  pesonet:
+    env: sandbox
+    client_id: "c"
+    client_secret: "s"
+    partner_id: "p"
+    sender_account: "000"
+    sender_name: "mock"
+    base_url: "http://paychan-mockserver:9400"
+  bdo:
+    env: sandbox
+    client_id: "c"
+    client_secret: "s"
+    partner_id: "p"
+    partner_secret: "s"
+    base_url: "http://paychan-mockserver:9400"
+  bpi:
+    env: sandbox
+    client_id: "c"
+    client_secret: "s"
+    partner_id: "p"
+    sender_account: "000"
+    sender_name: "mock"
+    base_url: "http://paychan-mockserver:9400"
+  metrobank:
+    env: sandbox
+    client_id: "c"
+    client_secret: "s"
+    partner_id: "p"
+    partner_secret: "s"
+    base_url: "http://paychan-mockserver:9400"
+  landbank:
+    env: sandbox
+    merchant_id: "m"
+    secret_key: "k"
+    return_url: "http://127.0.0.1:9091/ret?channel=landbank"
+    base_url: "http://paychan-mockserver:9400"
+  paymongo:
+    env: sandbox
+    secret_key: "sk_test_mock"
+    webhook_secret: "whsec_mock"
+    base_url: "http://paychan-mockserver:9400"
+  xendit:
+    env: sandbox
+    secret_key: "xnd_development_mock"
+    verification_token: "mock_token"
+    base_url: "http://paychan-mockserver:9400"
+  dragonpay:
+    env: sandbox
+    merchant_id: "MOCK"
+    merchant_key: "MOCKKEY"
+    notify_url: "http://payment-channel:9192/wh/dragonpay"
+    base_url: "http://paychan-mockserver:9400"
+  shopeepay:
+    env: sandbox
+    partner_id: "p"
+    partner_key: "k"
+    merchant_ext_id: "m"
+    store_ext_id: "s"
+    notify_url: "http://payment-channel:9192/wh/shopeepay"
+    base_url: "http://paychan-mockserver:9400"
+  billease:
+    env: sandbox
+    client_id: "c"
+    client_secret: "s"
+    callback_url: "http://payment-channel:9192/wh/billease"
+    success_url: "http://127.0.0.1:9091/ret?r=ok"
+    failure_url: "http://127.0.0.1:9091/ret?r=fail"
+    cancel_url: "http://127.0.0.1:9091/ret?r=cancel"
+    base_url: "http://paychan-mockserver:9400"
