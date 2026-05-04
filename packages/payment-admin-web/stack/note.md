@@ -1,0 +1,1 @@
+docker compose up -d --scale accounting-system=2

@@ -1,0 +1,29 @@
+# api-gateway 加入共享 network，开发模式日志。
+# user_merchant.endpoint 走容器 DNS（payment-stack network）。
+services:
+  api-gateway:
+    networks:
+      - payment-stack
+    # 联栈模式 host 端口重映射（避开 admin-web :8080 / admin-bff :19190 /
+    # order-core metrics 19090）：
+    #   - 18080  公网 HTTP（用户登录注册页 / 业务 API）
+    #   - 18081  admin HTTP
+    #   - 19092  Prometheus metrics（19090 已被 order-core 占用）
+    # !override 强制替换 base compose 的 8080/8081/9090，否则 host 侧仍会
+    # 重复绑定那三个端口，跟 admin-web / order-core 冲突。
+    ports: !override
+      - "18080:8080"
+      - "18081:8081"
+      - "19092:9090"
+    environment:
+      APIGW_LOG_DEV: "true"
+      # api-gateway 用户面 BFF 调下游 gRPC 容器 DNS（端口必须跟下游 server.grpc_port 对齐）
+      APIGW_USER_MERCHANT_ENDPOINT: "user-merchant-core:9191"
+      APIGW_RISK_ENDPOINT: "risk-manage:9490"
+      APIGW_KMS_ENDPOINT: "kms-manage:9290"
+      # 用户登录 cookie：开发关 secure 让 http://localhost 也能拿到
+      APIGW_AUTH_COOKIE_SECURE: "false"
+
+networks:
+  payment-stack:
+    external: true

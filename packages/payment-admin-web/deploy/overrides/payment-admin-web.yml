@@ -1,0 +1,32 @@
+# admin-web 联栈模式：后端直接走容器名访问 order-core / payment-core /
+# kms-manage / risk-manage / user-merchant-core。
+services:
+  payment-admin-backend:
+    networks:
+      - payment-stack
+    environment:
+      # GRPC_ADDR 是直连 fallback；REGISTRY_ENDPOINTS 非空时 BFF 优先走 etcd
+      # resolver（mustDial 见 backend/cmd/server/main.go），自动 round_robin
+      # 到所有注册的副本。
+      ORDER_GRPC_ADDR: "order-core:9091"
+      PAYMENT_CORE_GRPC_ADDR: "payment-core:9090"
+      KMS_GRPC_ADDR: "kms-manage:9290"
+      RISK_GRPC_ADDR: "risk-manage:9490"
+      USER_MERCHANT_GRPC_ADDR: "user-merchant-core:9191"
+      REGISTRY_ENDPOINTS: "etcd:2379"
+      PORT: "9190"
+      ADMIN_BEARER_TOKEN: ""
+    extra_hosts: !reset []
+    # !reset 清掉父 compose 的 ports 再指定新的（否则两个 mapping 会共存，冲突）
+    ports: !override
+      - "19190:9190"   # host 侧避让 payment-core metrics 9190
+
+  payment-admin-web:
+    networks:
+      - payment-stack
+    ports: !override
+      - "8080:80"      # 管理 UI
+
+networks:
+  payment-stack:
+    external: true

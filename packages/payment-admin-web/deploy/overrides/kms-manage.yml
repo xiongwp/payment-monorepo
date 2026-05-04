@@ -1,0 +1,23 @@
+# kms-manage 加入共享 network。keystore 目录由 deploy.sh 通过 KMS_KEYS_DIR
+# 注入绝对路径（payment-admin-web/deploy/kms-keys）；启动前先跑 deploy.sh
+# init-kms 生成 master key。
+services:
+  kms:
+    networks:
+      - payment-stack
+    environment:
+      KMS_LOG_DEV: "true"   # 联栈模式默认人读日志
+      # etcd 自注册：让 BFF 通过 etcd resolver 解析到所有 kms-manage 副本。
+      # 无此 env → registry.endpoints 空 → 注册被跳过 → BFF 报
+      # "Unavailable: no children to pick from"。
+      KMS_REGISTRY_ENDPOINTS: "etcd:2379"
+    # keystore 必须 RW：base compose 的 entrypoint 启动时要 chmod 0700 目录
+    # + chmod 0600 *.key 自我修正权限（host 拷过来的 key 经常是 0644，
+    # 启动检查会拒绝）。:ro 会让 chmod 报 "Read-only file system"，启动失败。
+    # 生产推荐 ReadOnlyMany PV + 在 PV 创建时把权限设好后用 :ro。
+    volumes:
+      - ${KMS_KEYS_DIR}:/var/lib/kms-manage/keys
+
+networks:
+  payment-stack:
+    external: true

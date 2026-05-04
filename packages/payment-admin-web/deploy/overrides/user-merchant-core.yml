@@ -1,0 +1,22 @@
+# user-merchant-core 联栈模式：同 order-core / payment-channel 思路
+#   - 加入 payment-stack network
+#   - depends_on 清空，meta 用 shared-meta 节点上的 user_merchant_meta 库
+#   - 用 config.docker.yaml 覆盖掉默认 config.yaml（viper 只认 config.yaml）
+#   - host 侧 metrics 避让 payment-core metrics 9190（container 9291 不冲突）
+services:
+  user-merchant-core:
+    networks:
+      - payment-stack
+    environment:
+      USERMERCHANTCORE_LOG_DEV: "true"   # 联栈模式默认人读日志
+      # etcd 自注册（cmd/server/registry.go）：BFF / api-gateway 通过 etcd
+      # resolver 拿到所有 user-merchant-core 副本。空则跳过注册。
+      USERMERCHANTCORE_REGISTRY_ENDPOINTS: "etcd:2379"
+    depends_on: !override []
+    volumes: !override
+      - ${USER_MERCHANT_DOCKER_CONFIG}:/app/config/config.yaml:ro
+    # 端口走 base compose 的 range (19240-19241:9191 / 19340-19341:9291) 支持 scale=2。
+
+networks:
+  payment-stack:
+    external: true

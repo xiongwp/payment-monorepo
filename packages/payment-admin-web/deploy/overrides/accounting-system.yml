@@ -1,0 +1,85 @@
+# accounting-system 在 payment-admin-web/deploy.sh 联栈模式下的部署。
+#
+# 关键改动 vs accounting-system/docker-compose.yml：
+#   - 不再起 11 个 accounting 专属 MySQL（mysql-0..9 + mysql-metadata）。
+#     共享 deploy/shared-db/docker-compose.yml 的 1 meta + 10 shard 实例：
+#       accounting_meta       → shared-meta  (network alias)
+#       accounting-mysql-0..9 → shared-shard-0..9 (network alias)
+#     accounting_db_N + account_meta 的 schema 由
+#     deploy/shared-db/generate-shared-init.sh 拼到共享 init SQL 里。
+#   - 不再起独立的 redis / kafka / zookeeper / etcd；
+#     redis 走 risk-stack 起的 risk-redis（单实例），kafka 留空降级为 nil。
+#   - accounting-service / accounting-batchtask 加入 payment-stack network，
+#     供 payment-admin-web BFF / order-core / user-merchant-core 通过容器 DNS 调用。
+#
+# 多副本 (scale)：
+#   accounting-service 无状态横向扩容；accounting-batchtask 物理多副本但
+#   每个 task type 用 etcd leader election 卡单实例真跑（cron 不并行）。
+#   docker compose -f deploy/overrides/accounting-system.yml \
+#       up -d --build --scale accounting-service=2 --scale accounting-batchtask=2
+#   实现要点：
+#     1) 都不写 container_name → compose 自动给 -1 / -2 后缀
+#     2) host 端口用 range；compose 给每副本依次分配
+#     3) sibling 通过 DNS 'accounting-service' 拿到 N 个 IP，gRPC client
+#        round_robin LB 真均摊（已在 admin-web BFF / batchtask 等处生效）
+#     4) batchtask leader election 让同一 task 同一时刻只有一个 batchtask 副本跑
+
+services:
+  accounting-service:
+    build:
+      context: ../../../accounting-system
+      dockerfile: Dockerfile
+      secrets:
+        - GITHUB_TOKEN
+    image: accounting-system:local
+    # 故意不写 container_name；scale=N 时会与现有名冲突。
+    restart: unless-stopped
+    ports:
+      # 端口 range：scale=N 时每个副本依次拿 8888 / 8889 / ... 作为 host port，
+      # 容器内仍是 8888。最多 10 副本（host 8888-8897 / 50051-50060）。
+      - "8888-8897:8888"     # admin HTTP
+      - "50051-50060:50051"  # gRPC
+    volumes:
+      # 挂联栈版本的 config，覆盖镜像内 baked 的 config.yaml。
+      - ./accounting-config.shared.yaml:/app/config/config.yaml:ro
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      - payment-stack
+
+  accounting-batchtask:
+    # **关键**：与 accounting-service 共享同一 image，避免发版漂移
+    # （历史 bug：service 已部署 cut_date 修复，batchtask 仍跑旧代码 →
+    # TCC Recovery Worker 写入与原 booking 不一致的 cut_date → 试算不平）。
+    # 改服务代码后只需 `docker compose build accounting-service`，本服务自动同步。
+    image: accounting-system:local
+    # 故意不写 container_name：scale=2 由 compose 自动加 -1/-2 后缀。
+    # 多副本下每个 task type 通过 etcd leader election 卡单实例真跑（cmd/batchtask/main.go
+    # runDaemon 走 serviceregistry.RunLeaderLoop），cron 不会并行。
+    # batchtask 跑 busybox crond（需 root），覆盖 image 默认的 USER appuser。
+    user: root
+    entrypoint: ["/app/entrypoint.sh"]
+    command: []
+    restart: unless-stopped
+    depends_on:
+      - accounting-service
+    volumes:
+      - ./accounting-config.shared.yaml:/app/config/config.yaml:ro
+    environment:
+      - TZ=Asia/Shanghai
+      # batchtask 通过 DNS 'accounting-service:50051' 走 etcd resolver 拿
+      # 所有副本（DialFromEndpoints + round_robin）。GRPC_ADDR 仅在 registry.endpoints
+      # 留空时作直连 fallback。
+      - GRPC_ADDR=accounting-service:50051
+    networks:
+      - payment-stack
+
+networks:
+  payment-stack:
+    external: true
+
+# Build context 切到 ../../../accounting-system；GITHUB_TOKEN secret 在这一层 compose
+# 声明，accounting-system Dockerfile 用 BuildKit secret 从私仓拉 payment-util / proto。
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

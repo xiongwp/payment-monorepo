@@ -1,0 +1,26 @@
+# payment-channel 联栈模式：
+#   - 加入 payment-stack network
+#   - depends_on 清空（MySQL 由 shared-db compose 单独起，不从这里带起 11 个）
+#   - 挂 config.docker.yaml（里头 DSN 指向 meta/shard0..9，正好也是 shared-db 的服务名）
+services:
+  payment-channel:
+    networks:
+      - payment-stack
+    environment:
+      PAYCHAN_LOG_DEV: "true"   # 联栈模式默认人读日志，方便 docker logs 看
+      # etcd 自注册（cmd/server/registry.go）：让 payment-core 通过 etcd
+      # resolver 拨 "payment-channel" 拿到本副本。空 → 跳过注册 → payment-core
+      # 拨号 "no children to pick from"，Charge 阻塞到 ctx 超时被 cancel。
+      PAYCHAN_REGISTRY_ENDPOINTS: "etcd:2379"
+    depends_on: !override []
+    volumes: !override
+      - ${PAYCHAN_DOCKER_CONFIG}:/app/config/config.yaml:ro
+
+  # ---- 下面这堆 MySQL 定义仍在 base compose 里；我们希望 stack 模式下
+  # ---- deploy.sh 只启动 payment-channel 这一个 service，不让它们起来。
+  # ---- 这通过 deploy.sh 里的 \`compose up payment-channel\` 参数实现；
+  # ---- 由于 payment-channel.depends_on 已清空，这些 mysql 服务不会被带起来。
+
+networks:
+  payment-stack:
+    external: true

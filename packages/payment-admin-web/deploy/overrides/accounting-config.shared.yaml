@@ -1,0 +1,165 @@
+# accounting-system 在 payment-admin-web/deploy.sh 联栈模式下的 config 覆盖。
+#
+# 与 accounting-system/config/config.docker.yaml 的差异：
+#   - meta + 10 shards 走 shared-meta / accounting-mysql-N
+#     （后者通过 deploy/shared-db/docker-compose.yml 的 network alias
+#      落到 shared-shard-N 上，11 个物理 MySQL 复用 paychan/order/user-merchant 用的同一组）
+#   - Redis 改单实例模式连 risk-redis（联栈下无 Sentinel 集群，
+#     stack/ 模式才有 redis-master + 3 sentinel 拓扑）
+#   - Kafka brokers 留空（settlement producer 降级为 nil；hot path 仍正常）
+
+server:
+  name: accounting-system
+  host: 0.0.0.0
+  port: 8888
+  grpc_port: 50051
+  env: production
+
+database:
+  shard_count: 10
+  table_count: 100
+  meta_database:
+    name: account_meta
+    # accounting_meta 是 shared-meta 的 network alias（deploy/shared-db/docker-compose.yml）
+    dsn: "root:password@tcp(accounting_meta:3306)/account_meta?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+    max_open_conns: 50
+    max_idle_conns: 20
+    conn_max_lifetime: 3600
+  databases:
+    # accounting-mysql-N 是 shared-shard-N 的 network alias；同一物理实例同时跑
+    # paychan_db_N / order_db_N / accounting_db_N。
+    - name: accounting_db_0
+      dsn: "root:password@tcp(accounting-mysql-0:3306)/accounting_db_0?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 100
+      max_idle_conns: 10
+      conn_max_lifetime: 3600
+    - name: accounting_db_1
+      dsn: "root:password@tcp(accounting-mysql-1:3306)/accounting_db_1?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 100
+      max_idle_conns: 10
+      conn_max_lifetime: 3600
+    - name: accounting_db_2
+      dsn: "root:password@tcp(accounting-mysql-2:3306)/accounting_db_2?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 100
+      max_idle_conns: 10
+      conn_max_lifetime: 3600
+    - name: accounting_db_3
+      dsn: "root:password@tcp(accounting-mysql-3:3306)/accounting_db_3?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 100
+      max_idle_conns: 10
+      conn_max_lifetime: 3600
+    - name: accounting_db_4
+      dsn: "root:password@tcp(accounting-mysql-4:3306)/accounting_db_4?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 100
+      max_idle_conns: 10
+      conn_max_lifetime: 3600
+    - name: accounting_db_5
+      dsn: "root:password@tcp(accounting-mysql-5:3306)/accounting_db_5?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 100
+      max_idle_conns: 10
+      conn_max_lifetime: 3600
+    - name: accounting_db_6
+      dsn: "root:password@tcp(accounting-mysql-6:3306)/accounting_db_6?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 100
+      max_idle_conns: 10
+      conn_max_lifetime: 3600
+    - name: accounting_db_7
+      dsn: "root:password@tcp(accounting-mysql-7:3306)/accounting_db_7?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 100
+      max_idle_conns: 10
+      conn_max_lifetime: 3600
+    - name: accounting_db_8
+      dsn: "root:password@tcp(accounting-mysql-8:3306)/accounting_db_8?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 100
+      max_idle_conns: 10
+      conn_max_lifetime: 3600
+    - name: accounting_db_9
+      dsn: "root:password@tcp(accounting-mysql-9:3306)/accounting_db_9?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 100
+      max_idle_conns: 10
+      conn_max_lifetime: 3600
+
+# 联栈下没有 Redis Sentinel；用 risk-stack 起的单实例 risk-redis。
+redis:
+  mode: "single"
+  addrs:
+    - "risk-redis:6379"
+  password: ""
+  db: 0
+  pool_size: 100
+  min_idle_conns: 10
+
+hot_path:
+  enabled: true
+  account_allowlist: []
+
+# 联栈无 Kafka broker；settlement producer 自动降级为 nil。
+kafka:
+  brokers: []
+  topics:
+    accounting: "accounting-topic"
+    snapshot: "snapshot-topic"
+    day_cut: "day-cut-topic"
+    settlement: "accounting-settlement"
+  consumer_group: "accounting-consumer-group"
+  settlement_consumer_group: "accounting-settlement-group"
+  producer:
+    batch_size: 100
+    batch_timeout: 10ms
+    max_attempts: 3
+  consumer:
+    max_wait: 1s
+    min_bytes: 1
+    max_bytes: 10485760
+
+day_cut:
+  enabled: true
+  cron: "0 0 0 * * ?"
+  timeout: 3600
+
+async_task:
+  retry_interval: 60
+  max_retry_count: 3
+  scan_interval: 10
+
+log:
+  level: info
+  file: ./logs/accounting.log
+  max_size: 100
+  max_backups: 10
+  max_age: 30
+  compress: true
+
+logging:
+  dir: ""
+  level: "info"
+  slow_query_ms: 200
+  enable_stdout: true
+
+# 服务注册中心（etcd）。endpoints 留空时跳过自注册。
+# 联栈用 stack/docker-compose.yml 起的 etcd 容器（container_name: etcd）。
+# advertise_host 留空则取 os.Hostname()；docker compose --scale 起多副本时
+# 每个容器的 hostname 都不一样（如 ${COMPOSE_PROJECT}-accounting-service-1 等），
+# sibling 容器通过 etcd 拿到这些 hostname，docker DNS 内部能解析。
+registry:
+  endpoints:
+    - "etcd:2379"
+  service_name: "accounting-service"
+  ttl: "10s"
+
+batchtask:
+  grpc_addr: "accounting-service:50051"
+  dial_timeout_seconds: 15
+  tasks:
+    - type: "process_async_tasks"
+      interval_seconds: 60
+      batch_size: 100
+    - type: "day_cut_watchdog"
+      interval_seconds: 300
+      stuck_threshold_seconds: 300
+    - type: "list_manual_tasks"
+      interval_seconds: 600
+      limit: 50
+    - type: "recover_stuck_tasks"
+      interval_seconds: 300
+      stuck_threshold_seconds: 300

@@ -1,0 +1,61 @@
+# payment-admin-web 完整栈：后端 BFF + 前端静态。
+#
+# 镜像构建是自包含的：
+#   - backend/Dockerfile 会自己 git-clone 8 个 sibling 仓
+#   - 前端 Dockerfile 只做 npm build，不依赖任何 sibling
+# 私仓访问需要 GITHUB_TOKEN：
+#   GITHUB_TOKEN=ghp_xxx docker compose build
+#
+# 后端依赖 order-core / payment-core / kms-manage / risk-manage /
+# user-merchant-core 五个 gRPC。接入 external 网络 `payment-stack` 后，
+# 可以直接用容器 DNS 调用。前提是这些兄弟服务的 compose 也接到了同一个
+# payment-stack 上（它们的 compose 已默认如此）。
+
+networks:
+  default:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true
+
+services:
+  payment-admin-backend:
+    build:
+      # backend 自己的目录作为 context —— Dockerfile 里 git-clone 所有 sibling
+      # 到 /src/ 下，go.mod 的 `replace ../../<sibling>` 靠的是镜像内相对路径，
+      # 不依赖 docker context 里有什么。
+      context: ./backend
+      dockerfile: Dockerfile
+      secrets:
+        - GITHUB_TOKEN
+    image: payment-admin-backend:local
+    container_name: payment-admin-backend
+    restart: unless-stopped
+    environment:
+      ORDER_GRPC_ADDR: "order-core:9091"
+      PAYMENT_CORE_GRPC_ADDR: "payment-core:9090"
+      KMS_GRPC_ADDR: "kms-manage:9290"
+      RISK_GRPC_ADDR: "risk-manage:9490"
+      USER_MERCHANT_GRPC_ADDR: "user-merchant-core:9191"
+      ACCOUNTING_ADMIN_HTTP_ADDR: "http://accounting-system:8888"
+      # 服务发现：BFF 也用 etcd resolver 跨副本负载均衡
+      REGISTRY_ENDPOINTS: "etcd:2379"
+      PORT: "9190"
+      ADMIN_BEARER_TOKEN: ""
+    ports:
+      - "8190:9190"   # HTTP API (host 8190 → container 9190，避开 payment-core metrics 9190)
+
+  payment-admin-web:
+    build:
+      context: .
+    image: payment-admin-web:local
+    container_name: payment-admin-web
+    restart: unless-stopped
+    depends_on:
+      - payment-admin-backend
+    ports:
+      - "8080:80"
+
+# BuildKit secret：GITHUB_TOKEN 环境变量被读取并通过 Dockerfile 里的
+# `--mount=type=secret,id=GITHUB_TOKEN` 传给 git clone（私仓必需）。
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

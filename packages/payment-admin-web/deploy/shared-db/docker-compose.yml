@@ -1,0 +1,168 @@
+# ┌────────────────────────────────────────────────────────────────────────┐
+# │ 共享 MySQL 栈 —— 1 meta + 10 shard 容器                                  │
+# │   shared-meta:    paychan_meta / order_meta / user_merchant_meta /      │
+# │                   account_meta（network alias accounting_meta）         │
+# │   shared-shard-N: paychan_db_N / order_db_N / accounting_db_N           │
+# │                   (network alias accounting-mysql-N)                    │
+# │ 所有系统的 metadb 都在 shared-meta；所有系统的分库分表都在 10 个 shard。 │
+# └────────────────────────────────────────────────────────────────────────┘
+#
+# 需要先跑 generate-shared-init.sh 产 init/ 下的 SQL。deploy.sh 会代劳。
+#
+# 端口映射到 host（方便 mysql -h127.0.0.1 -P3307 直连调试）：
+#   meta        :3400
+#   shard0..9   :3410..3419
+x-mysql-base: &mysql-base
+  image: mysql:8.0
+  # 不传 --default-authentication-plugin：8.0.34+ 弃用、8.4 已删。
+  command: ["mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+  environment:
+    MYSQL_ROOT_PASSWORD: password
+  healthcheck:
+    test: ["CMD", "mysqladmin", "ping", "-uroot", "-ppassword", "--silent"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+
+services:
+  # shared-meta 同时承担 paychan_meta / order_meta / user_merchant_meta / account_meta。
+  # accounting-system 配置里写死 host=accounting_meta，通过 network alias 解析到这里。
+  meta:
+    <<: *mysql-base
+    container_name: shared-meta
+    ports: ["3400:3306"]
+    volumes:
+      - meta-data:/var/lib/mysql
+      - ./init/meta_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+    networks:
+      payment-stack:
+        aliases: [accounting_meta]
+
+  # shared-shard-N 同时承担 paychan_db_N / order_db_N / accounting_db_N。
+  # accounting-system 配置里写死 host=accounting-mysql-N，靠 network alias 走到 shared-shard-N。
+  shard0:
+    <<: *mysql-base
+    container_name: shared-shard-0
+    ports: ["3410:3306"]
+    volumes:
+      - shard0-data:/var/lib/mysql
+      - ./init/0_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+    networks:
+      payment-stack:
+        aliases: [accounting-mysql-0]
+
+  shard1:
+    <<: *mysql-base
+    container_name: shared-shard-1
+    ports: ["3411:3306"]
+    volumes:
+      - shard1-data:/var/lib/mysql
+      - ./init/1_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+    networks:
+      payment-stack:
+        aliases: [accounting-mysql-1]
+
+  shard2:
+    <<: *mysql-base
+    container_name: shared-shard-2
+    ports: ["3412:3306"]
+    volumes:
+      - shard2-data:/var/lib/mysql
+      - ./init/2_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+    networks:
+      payment-stack:
+        aliases: [accounting-mysql-2]
+
+  shard3:
+    <<: *mysql-base
+    container_name: shared-shard-3
+    ports: ["3413:3306"]
+    volumes:
+      - shard3-data:/var/lib/mysql
+      - ./init/3_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+    networks:
+      payment-stack:
+        aliases: [accounting-mysql-3]
+
+  shard4:
+    <<: *mysql-base
+    container_name: shared-shard-4
+    ports: ["3414:3306"]
+    volumes:
+      - shard4-data:/var/lib/mysql
+      - ./init/4_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+    networks:
+      payment-stack:
+        aliases: [accounting-mysql-4]
+
+  shard5:
+    <<: *mysql-base
+    container_name: shared-shard-5
+    ports: ["3415:3306"]
+    volumes:
+      - shard5-data:/var/lib/mysql
+      - ./init/5_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+    networks:
+      payment-stack:
+        aliases: [accounting-mysql-5]
+
+  shard6:
+    <<: *mysql-base
+    container_name: shared-shard-6
+    ports: ["3416:3306"]
+    volumes:
+      - shard6-data:/var/lib/mysql
+      - ./init/6_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+    networks:
+      payment-stack:
+        aliases: [accounting-mysql-6]
+
+  shard7:
+    <<: *mysql-base
+    container_name: shared-shard-7
+    ports: ["3417:3306"]
+    volumes:
+      - shard7-data:/var/lib/mysql
+      - ./init/7_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+    networks:
+      payment-stack:
+        aliases: [accounting-mysql-7]
+
+  shard8:
+    <<: *mysql-base
+    container_name: shared-shard-8
+    ports: ["3418:3306"]
+    volumes:
+      - shard8-data:/var/lib/mysql
+      - ./init/8_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+    networks:
+      payment-stack:
+        aliases: [accounting-mysql-8]
+
+  shard9:
+    <<: *mysql-base
+    container_name: shared-shard-9
+    ports: ["3419:3306"]
+    volumes:
+      - shard9-data:/var/lib/mysql
+      - ./init/9_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+    networks:
+      payment-stack:
+        aliases: [accounting-mysql-9]
+
+networks:
+  payment-stack:
+    external: true
+
+volumes:
+  meta-data:
+  shard0-data:
+  shard1-data:
+  shard2-data:
+  shard3-data:
+  shard4-data:
+  shard5-data:
+  shard6-data:
+  shard7-data:
+  shard8-data:
+  shard9-data:
