@@ -1,0 +1,8 @@
+# PDB 保证滚动 / drain 期间至少 2 个 ready；配合 maxUnavailable=0 滚动策略。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kms-manage
+spec:
+  minAvailable: 2
+  selector: { matchLabels: { app: kms-manage } }

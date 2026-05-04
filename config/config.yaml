@@ -1,0 +1,27 @@
+# kms-manage 配置样例
+server:
+  grpc_port: 9290
+
+metrics:
+  addr: ":9390"
+
+keystore:
+  dir: /var/lib/kms-manage/keys
+
+# gRPC Bearer token 鉴权；空数组=不校验。
+# 生产环境应配置 token 并在 payment-core 的 kms.bearer_token 里填同一个值。
+auth:
+  tokens: []
+
+rate_limit:
+  rps: 500
+  burst: 1000
+
+# 服务发现：把当前进程注册到 etcd，让 BFF / payment-core 通过
+# "etcd:///kms-manage" 解析所有副本 + round_robin LB。
+# endpoints 为空时跳过自注册（dev / 单实例部署，调用方走直连 fallback）。
+registry:
+  endpoints: []  # 例：["etcd-0:2379","etcd-1:2379","etcd-2:2379"]
+  service_name: kms-manage
+  advertise_host: ""  # 留空 → os.Hostname()；K8s 推荐用 POD_IP（也可 REGISTRY_ADVERTISE_ADDR env 覆盖）
+  ttl: 10s

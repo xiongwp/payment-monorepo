@@ -1,0 +1,17 @@
+# kube-prometheus-stack 的 ServiceMonitor —— 让 Prometheus operator 自动发现
+# 本服务的 /metrics。如果用裸 Prometheus，在 prometheus.yml scrape_configs
+# 直接配 service discovery 就行，不需要这个文件。
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kms-manage
+  labels:
+    release: prometheus    # 与 kube-prometheus-stack helm release 名一致
+spec:
+  selector:
+    matchLabels: { app: kms-manage }
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
