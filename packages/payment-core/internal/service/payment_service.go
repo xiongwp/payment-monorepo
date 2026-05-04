@@ -274,10 +274,29 @@ func (s *PaymentService) Charge(ctx context.Context, req *channel.PaymentRequest
 			callCtx, cancel = context.WithTimeout(ctx, d)
 			defer cancel()
 		}
+		// P0-6 防雪崩：risk-manage 在前面调用持续失败时熔断保护，避免本服务
+		// 把 goroutine 全部 hang 在 3s 超时上，连带把 channel 调用也阻塞。
+		// breaker open 时按 fail-open/close 策略走，跟 RPC 真挂等价处理。
+		riskBreaker := s.breakers.Get("risk-manage")
+		if !riskBreaker.Allow() {
+			metrics.RiskScreenTotal.WithLabelValues("circuit_open").Inc()
+			s.logger.Warn("risk circuit breaker open; treating as risk-unavailable",
+				zap.String("pi_id", req.PaymentIntentID))
+			if s.riskFailClose {
+				return &channel.PaymentResponse{
+					ResultType:     channel.ResultFailed,
+					FailureCode:    "risk_unavailable",
+					FailureMessage: "risk engine breaker open; transaction denied (fail-close policy)",
+				}, nil
+			}
+			// fail-open: 跳过 risk 直接进路由（与 sr=nil err=nil 等价）
+			goto skipRiskDecision
+		}
 		screenStart := time.Now()
 		sr, err := s.risk.Screen(callCtx, screenReq)
 		screenLat := time.Since(screenStart).Seconds()
 		if err != nil {
+			riskBreaker.RecordFailure()
 			// I4: fail-open vs fail-close 可配。当前默认 fail-open（risk 挂了不阻塞支付）。
 			// 高风险场景可以改为 fail-close：返回 channel_unavailable 拒绝交易。
 			if s.riskFailClose {
@@ -296,6 +315,7 @@ func (s *PaymentService) Charge(ctx context.Context, req *channel.PaymentRequest
 			s.logger.Warn("risk screen failed, allowing (fail-open)",
 				zap.String("pi_id", req.PaymentIntentID), zap.Error(err))
 		} else {
+			riskBreaker.RecordSuccess()
 			outcome := "review"
 			switch sr.Decision {
 			case riskclient.Allow:
@@ -358,6 +378,7 @@ func (s *PaymentService) Charge(ctx context.Context, req *channel.PaymentRequest
 			}
 		}
 	}
+skipRiskDecision:
 
 	// ── 路由 ──────────────────────────────────────────────────
 	adapter, err := s.router.Route(routing.MatchInput{

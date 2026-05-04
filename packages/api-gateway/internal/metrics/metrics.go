@@ -58,11 +58,23 @@ var (
 			Help:      "Requests rejected due to auth failure.",
 		},
 	)
+
+	// ShadowHeaderRejected 不可信源伪造 X-Shadow header 被 strip 的次数。
+	// 这个数字非零意味着外部探测在试图把流量绕到影子环境，告警阈值很低（持续 > 0/min）。
+	ShadowHeaderRejected = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "api_gateway",
+			Subsystem: "shadow",
+			Name:      "header_rejected_total",
+			Help:      "X-Shadow header from untrusted source stripped at the edge.",
+		},
+		[]string{"path"},
+	)
 )
 
 // Register 把所有指标注册到全局 registry。main 启动时调一次；重复注册会 panic。
 func Register() {
-	prometheus.MustRegister(HTTPRequestsTotal, HTTPRequestDuration, RateLimitHits, AuthRejects)
+	prometheus.MustRegister(HTTPRequestsTotal, HTTPRequestDuration, RateLimitHits, AuthRejects, ShadowHeaderRejected)
 }
 
 // Serve 单独的 metrics HTTP server。/metrics 总是 200 即使其余端口异常。

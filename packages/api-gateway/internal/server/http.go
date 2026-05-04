@@ -44,6 +44,13 @@ type Config struct {
 
 	// Admin token；空 = warn-only。
 	AdminToken string
+
+	// Shadow flag 边界控制（防 X-Shadow header 外部伪造）。
+	// 默认（全空）= 所有外部 X-Shadow header 都被 strip 掉，最安全。
+	// 内网压测平台 / 内部服务调用要透传 shadow flag，必须配 TrustedCIDRs 或 TrustedHeader*。
+	ShadowTrustedCIDRs       []string
+	ShadowTrustedHeaderName  string
+	ShadowTrustedHeaderValue string
 }
 
 // Server 持有公网 HTTP + 内部 admin HTTP 两个 *http.Server，统一启停。
@@ -93,7 +100,11 @@ func NewServer(cfg Config, logger *zap.Logger, registers ...MuxRegister) *Server
 	// shadow 在鉴权之后、限流之前：要 APIKey 验过的可信调用方才信任 X-Shadow header；
 	// shadow 流量进 ctx 后限流 / 日志可以单独打 label（如有需要）。
 	var publicHandler http.Handler = publicMux
-	publicHandler = ShadowMiddleware()(publicHandler)
+	publicHandler = ShadowMiddleware(ShadowConfig{
+		TrustedCIDRs:       cfg.ShadowTrustedCIDRs,
+		TrustedHeaderName:  cfg.ShadowTrustedHeaderName,
+		TrustedHeaderValue: cfg.ShadowTrustedHeaderValue,
+	}, logger)(publicHandler)
 	if cfg.AuthEnabled {
 		publicHandler = APIKeyMiddleware(cfg.AuthTokens, logger)(publicHandler)
 	}

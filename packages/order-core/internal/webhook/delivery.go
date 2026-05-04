@@ -328,7 +328,10 @@ func (d *Dispatcher) tryDeliver(parent context.Context, id int64, url, secret st
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		metrics.WebhookDeliveryTotal.WithLabelValues("succeeded").Inc()
-		d.db.Table(tbl).Where("id = ?", id).Updates(map[string]interface{}{
+		// 关键：必须 .WithContext(parent) — tbl 已经经 shadow.TableName(ctx) 解出
+		// 影子后缀，但 GORM callback 路径里 stmt.Context 来自 db 链上的 WithContext，
+		// 漏带会让 callback 看不到 IsShadow=true，shadow 流量更新最终落到主表。
+		d.db.WithContext(parent).Table(tbl).Where("id = ?", id).Updates(map[string]interface{}{
 			"status":      "succeeded",
 			"http_status": resp.StatusCode,
 			"attempts":    gorm.Expr("attempts + 1"),

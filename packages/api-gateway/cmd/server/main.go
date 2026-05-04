@@ -115,6 +115,14 @@ func newServerConfig(v *viper.Viper) server.Config {
 		MerchantBurst: getIntDefault(v, "rate_limit.merchant_burst", 2000),
 
 		AdminToken: adminToken,
+
+		// shadow 流量边界（防 X-Shadow header 外部伪造）。
+		// 默认全空 = 所有外部 X-Shadow 都被 strip。
+		// 内网压测平台 / IDC 内部要透传必须配下面任一字段。
+		// yaml: shadow.trusted_cidrs / shadow.trusted_header_name / shadow.trusted_header_value
+		ShadowTrustedCIDRs:       v.GetStringSlice("shadow.trusted_cidrs"),
+		ShadowTrustedHeaderName:  v.GetString("shadow.trusted_header_name"),
+		ShadowTrustedHeaderValue: v.GetString("shadow.trusted_header_value"),
 	}
 }
 

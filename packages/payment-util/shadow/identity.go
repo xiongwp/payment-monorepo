@@ -83,7 +83,66 @@ const (
 	ShadowUserIDMax int64 = 9_899_999_999
 )
 
+// FleetIDLayout fleet 账户的 user_id 分配两维 layout：
+//
+//	user_id - MainFleetUserIDMin = channelCode * FleetChannelStride + globalTableIdx
+//
+// 这样 fleet 账户支持**两种独立扩展**：
+//   - 横向：globalTableIdx ∈ [0, FleetChannelStride-1]（默认 1000；一个 channel
+//     可以分配最多 1000 个 shard，远超当前 100 上限，给未来 4× 扩容预留充足空间）
+//   - 纵向：channelCode ∈ [0, MaxFleetChannels-1]（默认 9000；可以给每个支付渠道 /
+//     业务线 / 国家分配独立 fleet 账户段）
+//
+// 之前的 layout `MainFleetUserID(globalTbl) = 1_000_000 + globalTbl` 把 channel
+// 和 shard 拍扁到同一维，导致：
+//   1. 扩 shard 时新 shard 没有对应 fleet user_id（旧 fleet 锁死在 user_id 1_000_000-99）
+//   2. 多 channel 没法独立分配 fleet（不同渠道 transit account 全挤一起）
+//
+// **总容量 = 9000 × 1000 = 9_000_000**，落在 fleet 段 [1_000_000, 9_999_999] 内。
+// 即便每个 channel 用满 1000 shard，也只占 channelCode×stride 一行号段，不溢出。
+const (
+	// FleetChannelStride 单个 channel 内可分配的 shard 数量上限。1000 足够给当前
+	// 100 shard × 10× 头部空间。改这个值会让所有 fleet user_id 整体平移——只能在
+	// 全新部署时改。
+	FleetChannelStride int = 1000
+	// MaxFleetChannels 全局允许的 channel 段位数量。9000 等于把 fleet 段 [1e6, 1e7)
+	// 的 9_000_000 容量除以 1000 stride。
+	MaxFleetChannels int = 9000
+)
+
+// FleetChannelDefault 默认 channel 段位（兼容旧调用：MainFleetUserID(globalTbl)
+// 等价于 FleetUserID(0, globalTbl)）。新建系统强烈建议显式指定 channel。
+const FleetChannelDefault int = 0
+
+// FleetUserID 给定 (channelCode, globalTableIdx) 计算 fleet user_id（按 ctx 自动
+// 区分主流量 / shadow 段）。
+//
+// 用法：
+//
+//	// 默认 channel + 当前分片
+//	uid := FleetUserID(ctx, FleetChannelDefault, globalTableIdx)
+//
+//	// 渠道独立 fleet（gcash channel 占 channelCode=10）
+//	uid := FleetUserID(ctx, 10, globalTableIdx)
+func FleetUserID(ctx context.Context, channelCode, globalTableIdx int) int64 {
+	if channelCode < 0 || channelCode >= MaxFleetChannels {
+		// 越界给 0，调用方应该自己检查；不 panic 是因为 ctx 路径不该 panic
+		channelCode = 0
+	}
+	if globalTableIdx < 0 || globalTableIdx >= FleetChannelStride {
+		globalTableIdx = 0
+	}
+	offset := int64(channelCode*FleetChannelStride + globalTableIdx)
+	if IsShadow(ctx) {
+		return ShadowFleetUserIDMin + offset
+	}
+	return MainFleetUserIDMin + offset
+}
+
 // MainFleetUserID 给定 globalTableIdx (0-99) 返回对应的主流量 fleet user_id。
+//
+// **Deprecated**: 用 FleetUserID(ctx, FleetChannelDefault, globalTableIdx) 替代，
+// 支持 channel 独立分配。本函数保留兼容 init seed 脚本 + 旧 batchtask。
 //
 //	globalTableIdx=0  → 1_000_000
 //	globalTableIdx=99 → 1_000_099
@@ -93,10 +152,29 @@ func MainFleetUserID(globalTableIdx int) int64 {
 
 // ShadowFleetUserID 给定 globalTableIdx (0-99) 返回对应的 shadow fleet user_id。
 //
+// **Deprecated**: 用 FleetUserID(shadow_ctx, FleetChannelDefault, globalTableIdx) 替代。
+//
 //	globalTableIdx=0  → 9_000_000_000
 //	globalTableIdx=99 → 9_000_000_099
 func ShadowFleetUserID(globalTableIdx int) int64 {
 	return ShadowFleetUserIDMin + int64(globalTableIdx)
+}
+
+// DecodeFleetUserID 反解 FleetUserID 编码出的 user_id。返回 (channelCode, globalTableIdx)。
+// 输入不在 fleet 段时返回 (-1, -1)。
+func DecodeFleetUserID(userID int64) (channelCode, globalTableIdx int) {
+	var offset int64
+	switch {
+	case userID >= MainFleetUserIDMin && userID <= MainFleetUserIDMax:
+		offset = userID - MainFleetUserIDMin
+	case userID >= ShadowFleetUserIDMin && userID <= ShadowFleetUserIDMax:
+		offset = userID - ShadowFleetUserIDMin
+	default:
+		return -1, -1
+	}
+	channelCode = int(offset / int64(FleetChannelStride))
+	globalTableIdx = int(offset % int64(FleetChannelStride))
+	return
 }
 
 // IsFleetUserID 判断 user_id 是否在主或影子的 fleet 段（不依赖 ctx）。

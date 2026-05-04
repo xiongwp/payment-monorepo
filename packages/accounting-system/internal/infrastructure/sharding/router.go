@@ -15,11 +15,42 @@ const (
 	ShardTablePerDB = 10
 	// ShardTableTotal 全局总表数量（= ShardDBCount × ShardTablePerDB）
 	ShardTableTotal = ShardDBCount * ShardTablePerDB
+
+	// MaxSupportedShards 当前 layout 支持的全局表数量上限（硬上限）。
+	//
+	// 限制来源：account_id layout 里 globalTblIdx 占 2 位（accountIDGlobalTblMax=99），
+	// 所以 ID 编码层最多只能表达 100 个 globalTblIdx。要扩到 200 必须先：
+	//   1. 升级 layout（globalTblIdx 占 3 位 → seq 减少 1 位 → 最多 1000 shard）
+	//   2. 全平台双写灰度 + 校验
+	//   3. 详见 docs/RESHARDING.md
+	//
+	// **本常量不要随便改**——任何想超过它的代码都应该走 router version 升级，而不是绕过校验。
+	MaxSupportedShards = 100
 )
+
+// RouterVersion 路由策略版本号。
+//
+// 不同 version 对应不同的"id → (db, globalTbl)"映射函数。允许同时存在多版本，
+// resharding 灰度期 reads 可以并发尝试 v1+v2 直到 cutover；写一律落 latest。
+//
+// 现役版本：
+//   - V1: simple modulo (id % 100)；当前生产实现，dbCount=10 tablePerDB=10
+//
+// 预留扩展：
+//   - V2: jump consistent hash + virtual buckets，支持平滑加 shard
+//   - V3: 引入 group / region 概念
+type RouterVersion int
+
+const (
+	RouterV1 RouterVersion = 1
+)
+
+// CurrentRouterVersion 当前默认版本。resharding 时改这个 + 加新版本逻辑。
+const CurrentRouterVersion = RouterV1
 
 // Router 分库分表路由器
 //
-// 路由规则（10库 × 每库10表 = 100张全局表）：
+// 路由规则（v1：10库 × 每库10表 = 100张全局表）：
 //
 //	n = id % 100
 //	dbIndex        = n / 10      （0–9，对应物理库）
@@ -31,23 +62,40 @@ const (
 //	DB 1 → 表  10– 19
 //	…
 //	DB 9 → 表  90– 99
+//
+// 容量边界与 resharding：
+//   - account_id layout 的 globalTblIdx 字段 2 位 → MaxSupportedShards = 100
+//   - 加 shard 必须先升级 router version 并 layout 调整，参见 docs/RESHARDING.md
 type Router struct {
-	dbCount      int // 库数量
-	tablePerDB   int // 每库表数量
+	dbCount    int // 库数量
+	tablePerDB int // 每库表数量
+	version    RouterVersion
 }
 
-// NewRouter 创建路由器（生产默认：10库 × 10表）
+// NewRouter 创建路由器（生产默认：10库 × 10表，version=v1）
 func NewRouter() *Router {
 	return &Router{
 		dbCount:    ShardDBCount,
 		tablePerDB: ShardTablePerDB,
+		version:    CurrentRouterVersion,
 	}
 }
 
-// NewRouterWithConfig 创建自定义分片路由器（测试/低容量场景使用）
+// NewRouterWithConfig 创建自定义分片路由器（测试/低容量场景使用）。
+// 拒绝 dbCount × tablePerDB > MaxSupportedShards 的配置，防止误用绕过 layout 边界。
 func NewRouterWithConfig(dbCount, tablePerDB int) *Router {
-	return &Router{dbCount: dbCount, tablePerDB: tablePerDB}
+	if dbCount*tablePerDB > MaxSupportedShards {
+		// 测试 / dev 不应触发；生产代码不会调本函数，所以 panic 让问题尽早暴露
+		panic(fmt.Sprintf(
+			"NewRouterWithConfig: %d×%d=%d exceeds MaxSupportedShards=%d; "+
+				"increase RouterVersion + layout in payment-util/shadow/identity.go first",
+			dbCount, tablePerDB, dbCount*tablePerDB, MaxSupportedShards))
+	}
+	return &Router{dbCount: dbCount, tablePerDB: tablePerDB, version: CurrentRouterVersion}
 }
+
+// Version 返回 router 当前版本（监控 / 排查 / dual-read 用）。
+func (r *Router) Version() RouterVersion { return r.version }
 
 // TableCount 返回每库分表数量
 func (r *Router) TableCount() int { return r.tablePerDB }

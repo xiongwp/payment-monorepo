@@ -12,6 +12,7 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -21,21 +22,119 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 
+	"github.com/xiongwp/api-gateway/internal/metrics"
 	"github.com/xiongwp/api-gateway/internal/ratelimit"
 )
 
 // ─── shadow ──────────────────────────────────────────────────────────────────
 
-// ShadowMiddleware 把 X-Shadow HTTP header 翻进 request ctx。
-// 后续 handler 调下游 gRPC 时，shadow.UnaryClientInterceptor 会自动把
-// x-shadow=1 metadata 透传给下游服务。
+// ShadowConfig 控制 X-Shadow header 的可信源策略。
 //
-// 安全：生产网关应只信任 IDC 内网 / 压测平台来源的 X-Shadow header；公网入口
-// 该 middleware 之前要先加一层 IP 白名单（或剥离来自不可信源的 X-Shadow）。
-// 当前 api-gateway 的 APIKey 已经过滤掉非授权调用方，可视为可信源。
-func ShadowMiddleware() func(http.Handler) http.Handler {
+// **资损 / 安全风险**：X-Shadow=1 让请求走 _shadow 表 + redis _shadow namespace +
+// payment-channel adapter 短路（mock 成功不真扣款）。如果外部攻击者能伪造此
+// header，可以用真实商户配置发起免费"成功"交易，制造对账假象 + 把测试数据落
+// 影子库审计；更严重的是某些路径下 risk-manage 短路 ALLOW，盗卡能借此绕风控。
+//
+// 默认严格策略：只有可信源（内网 CIDR / 经过 LB 的 X-Internal-Source: trusted
+// header）才允许 X-Shadow 透传；其余请求该 header 被 strip 掉。
+type ShadowConfig struct {
+	// TrustedCIDRs 可信来源 CIDR 列表（IDC 内网、压测平台 IP 段）。
+	// 例：["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]。
+	// **空列表（默认）= 全部 strip**——最安全。
+	TrustedCIDRs []string
+	// TrustedHeaderName 经过授信反代会注入的 header 名（如 LB 的内部专属 header）。
+	// 若 LB 把外部请求的同名 header 自动剥离再注入自己的版本，这是最强的可信判定。
+	// 空 = 不启用此通道。与 TrustedCIDRs 是 OR 关系（任一通过即信任）。
+	TrustedHeaderName  string
+	TrustedHeaderValue string
+}
+
+// parsedCIDRs 启动期一次性解析；运行期每个请求只比较网段。
+type parsedCIDRs []*net.IPNet
+
+func (p parsedCIDRs) contains(ip net.IP) bool {
+	for _, n := range p {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseCIDRs(cidrs []string, logger *zap.Logger) parsedCIDRs {
+	out := make(parsedCIDRs, 0, len(cidrs))
+	for _, c := range cidrs {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("ShadowMiddleware: invalid CIDR, ignored",
+					zap.String("cidr", c), zap.Error(err))
+			}
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// requestIP 从 RemoteAddr 拿调用方 IP（http.Server 已经把 host:port 形式填进去）。
+// 不信任 X-Forwarded-For / X-Real-IP——它们可被外部任意伪造（除非 LB 已校验后注入）。
+func requestIP(r *http.Request) net.IP {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return net.ParseIP(host)
+}
+
+// sourceTrusted 判断该请求是否可信，可允许携带 X-Shadow。
+func sourceTrusted(r *http.Request, cidrs parsedCIDRs, cfg ShadowConfig) bool {
+	if cfg.TrustedHeaderName != "" && cfg.TrustedHeaderValue != "" {
+		// 1 == subtle.ConstantTimeCompare 时为 1
+		got := r.Header.Get(cfg.TrustedHeaderName)
+		if got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(cfg.TrustedHeaderValue)) == 1 {
+			return true
+		}
+	}
+	if len(cidrs) == 0 {
+		return false
+	}
+	ip := requestIP(r)
+	if ip == nil {
+		return false
+	}
+	return cidrs.contains(ip)
+}
+
+// ShadowMiddleware 把 X-Shadow HTTP header 翻进 request ctx——**只对可信源生效**。
+// 不可信源的 X-Shadow header 在 r.Header 上被显式 Del() 掉，
+// shadow.HTTPHeaderToContext 看不见就不会标 shadow=true。
+//
+// 后续 handler 调下游 gRPC 时，shadow.UnaryClientInterceptor 会自动把
+// x-shadow=1 metadata 透传给下游服务（仅当 ctx 真带 shadow=true）。
+func ShadowMiddleware(cfg ShadowConfig, logger *zap.Logger) func(http.Handler) http.Handler {
+	cidrs := parseCIDRs(cfg.TrustedCIDRs, logger)
+	if len(cidrs) == 0 && cfg.TrustedHeaderName == "" && logger != nil {
+		logger.Warn("ShadowMiddleware: no trusted source configured; all X-Shadow headers will be stripped (safe default)")
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get(shadow.MetadataKey) != "" && !sourceTrusted(r, cidrs, cfg) {
+				if logger != nil {
+					logger.Warn("ShadowMiddleware: rejected X-Shadow from untrusted source",
+						zap.String("remote", r.RemoteAddr),
+						zap.String("path", r.URL.Path),
+						zap.String("method", r.Method))
+				}
+				if metrics.ShadowHeaderRejected != nil {
+					metrics.ShadowHeaderRejected.WithLabelValues(r.URL.Path).Inc()
+				}
+				r.Header.Del(shadow.MetadataKey)
+			}
 			ctx := shadow.HTTPHeaderToContext(r.Context(), r.Header)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
