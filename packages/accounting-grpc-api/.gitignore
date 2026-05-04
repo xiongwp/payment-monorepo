@@ -1,0 +1,45 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+*.test
+*.out
+
+# Generated code — intentionally tracked: downstream services depend on these stubs
+# gen/
+
+# Go workspace
+go.work
+
+# Coverage
+coverage.html
+coverage.out
+
+# Dependencies
+vendor/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+
+# Environment
+.env
+.env.local

@@ -1,0 +1,25 @@
+server:
+  name: accounting-grpc-api
+  host: 0.0.0.0
+  port: 9090
+  env: dev
+
+# 数据库配置（与核心服务保持一致）
+database:
+  shard_count: 10
+  table_count: 100
+  databases:
+    - name: accounting_db_0
+      dsn: "root:password@tcp(127.0.0.1:3306)/accounting_db_0?charset=utf8mb4&parseTime=True&loc=Local"
+      max_open_conns: 100
+      max_idle_conns: 10
+      conn_max_lifetime: 3600
+
+# 日志配置
+log:
+  level: info
+  file: ./logs/grpc-api.log
+  max_size: 100
+  max_backups: 10
+  max_age: 30
+  compress: true
