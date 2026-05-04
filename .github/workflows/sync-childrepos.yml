@@ -66,6 +66,17 @@ jobs:
           git config user.name  "ci-monorepo-sync"
           git config user.email "ci-monorepo-sync@users.noreply.github.com"
 
+      - name: Strip any inherited github.com credential overrides
+        # 防御：即使 persist-credentials: false 在某些情况下没把全局 extraheader 清掉，
+        # 这一步显式把它擦干净。否则后面 `git subtree push` 走 github.com 时会被
+        # github-actions[bot] 的 token 接管，报：
+        #   remote: Permission to xiongwp/<repo>.git denied to github-actions[bot]
+        run: |
+          git config --global --unset-all "http.https://github.com/.extraheader" 2>/dev/null || true
+          git config --local  --unset-all "http.https://github.com/.extraheader" 2>/dev/null || true
+          # 列一下还残留什么 http.* 配置，便于 CI log 排查
+          git config --list --show-scope | grep -E '^[^[:space:]]+\s+http\.' || echo "  (no http.* config remaining)"
+
       - name: Add child-repo remotes (HTTPS + PAT)
         # 镜像 monorepo 本地的 git remote 配置；保持 packages/<name> ↔ remote-name ↔ child-repo 三者同名。
         # token 通过 https://x-access-token:${TOKEN}@github.com/... 形式注入，
