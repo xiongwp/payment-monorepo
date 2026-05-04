@@ -1,0 +1,174 @@
+name: ci
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # 使用 -mod=mod 让 go build 能在缺少 go.sum 条目时自动补 (payment-util 是新加的
+  # 同级 replace，consumer 仓库还没生成对应 go.sum hash)。本地仍可保持
+  # GOFLAGS 默认。
+  GOFLAGS: -mod=mod
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: order-core
+    steps:
+      - name: Checkout order-core
+        uses: actions/checkout@v4
+        with: { path: order-core }
+      - name: Checkout sibling kms-manage (try matching branch)
+        id: kms_manage_match
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/kms-manage
+          path: kms-manage
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Checkout sibling kms-manage (default branch fallback)
+        if: steps.kms_manage_match.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/kms-manage
+          path: kms-manage
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: main
+      - name: Checkout sibling payment-channel (try matching branch)
+        id: payment_channel_match
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/payment-channel
+          path: payment-channel
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Checkout sibling payment-channel (default branch fallback)
+        if: steps.payment_channel_match.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/payment-channel
+          path: payment-channel
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: claude/general-work-i5bx1
+      - name: Checkout sibling payment-core (try matching branch)
+        id: payment_core_match
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/payment-core
+          path: payment-core
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Checkout sibling payment-core (default branch fallback)
+        if: steps.payment_core_match.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/payment-core
+          path: payment-core
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: claude/general-work-i5bx1
+      - name: Checkout sibling payment-util (try matching branch)
+        id: payment_util_match
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/payment-util
+          path: payment-util
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Checkout sibling payment-util (default branch fallback)
+        if: steps.payment_util_match.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/payment-util
+          path: payment-util
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: main
+      - name: Checkout sibling risk-manage (try matching branch)
+        id: risk_manage_match
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/risk-manage
+          path: risk-manage
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Checkout sibling risk-manage (default branch fallback)
+        if: steps.risk_manage_match.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/risk-manage
+          path: risk-manage
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: claude/start-new-session-pVc84
+      - name: Checkout sibling accounting-grpc-api (try matching branch)
+        id: accounting_grpc_api_match
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/accounting-grpc-api
+          path: accounting-grpc-api
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Checkout sibling accounting-grpc-api (default branch fallback)
+        if: steps.accounting_grpc_api_match.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          repository: xiongwp/accounting-grpc-api
+          path: accounting-grpc-api
+          token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          ref: main
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+          cache-dependency-path: order-core/go.sum
+      - name: Tidy sibling payment-util go.sum (no go.sum committed yet)
+        working-directory: payment-util
+        run: go mod tidy
+      - name: Tidy go.sum (auto-add payment-util entries)
+        run: go mod tidy
+      - name: Diagnostics
+        continue-on-error: true
+        run: |
+          set +e
+          echo "=== go env ==="
+          go env GOMODCACHE GOPATH GOFLAGS
+          echo "=== sibling tree ==="
+          ls -la ..
+          for d in kms-manage payment-channel payment-core payment-util risk-manage accounting-grpc-api; do
+            echo "=== ../$d ==="
+            ls -la "../$d" 2>/dev/null | head -5 || echo "MISSING: ../$d"
+            if [ -f "../$d/go.mod" ]; then
+              head -3 "../$d/go.mod"
+            else
+              echo "no go.mod in ../$d"
+            fi
+          done
+      - name: Build
+        run: go build ./cmd/... ./internal/... ./api/...
+      - name: Vet
+        run: go vet ./cmd/... ./internal/... ./api/...
+      - name: Test
+        run: go test -race -count=1 ./cmd/... ./internal/... ./api/...
+      # Lint 仍 non-blocking（cosmetic）；vuln scan 改为硬失败 — CVE 级问题
+      # 不应混进 main。已知 false-positive 可在 govulncheck.yaml 加 ignore 规则。
+      - name: Vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./cmd/... ./internal/... ./api/...
+      - name: Lint
+        continue-on-error: true
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62
+          working-directory: order-core
+          args: --timeout=5m

@@ -1,0 +1,11 @@
+bin/
+*.out
+coverage.out
+coverage.html
+.env
+.idea/
+.vscode/
+
+e2e-accounting
+
+/server

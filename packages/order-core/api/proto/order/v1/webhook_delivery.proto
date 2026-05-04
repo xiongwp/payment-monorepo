@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package order.v1;
+
+option go_package = "github.com/xiongwp/order-core/api/proto/order/v1;orderv1";
+
+message WebhookDelivery {
+  int64  id            = 1;
+  string merchant_id   = 2;
+  string event_id      = 3;
+  string event_type    = 4;
+  string payload       = 5; // JSON string
+  string url           = 6;
+  string status        = 7; // pending / succeeded / failed / exhausted
+  int32  http_status   = 8;
+  int32  attempts      = 9;
+  int32  max_attempts  = 10;
+  string last_error    = 11;
+  int64  next_retry_ms = 12;
+  int64  created_ms    = 13;
+  int64  updated_ms    = 14;
+}
+
+message ListWebhookDeliveriesRequest {
+  string merchant_id = 1;
+  string status      = 2;
+  int32  limit       = 3;
+  int32  offset      = 4;
+}
+
+message ListWebhookDeliveriesResponse {
+  repeated WebhookDelivery items = 1;
+  int64                    total = 2;
+}
+
+message RetryWebhookDeliveryRequest { int64 id = 1; }
+message RetryWebhookDeliveryResponse {
+  WebhookDelivery delivery = 1;
+}
+
+// TestWebhookDeliveryRequest sends a synthetic event to a merchant's
+// configured webhook URL. Useful for the admin "test webhook" button on
+// the merchant detail page.
+message TestWebhookDeliveryRequest {
+  string merchant_id = 1;
+  string event_type  = 2; // default "webhook.test"
+  string payload     = 3; // JSON string; default "{}"
+}
+message TestWebhookDeliveryResponse {
+  WebhookDelivery delivery = 1;
+}
+
+service WebhookDeliveryService {
+  rpc List    (ListWebhookDeliveriesRequest)  returns (ListWebhookDeliveriesResponse);
+  rpc Retry   (RetryWebhookDeliveryRequest)   returns (RetryWebhookDeliveryResponse);
+  rpc TestSend(TestWebhookDeliveryRequest)    returns (TestWebhookDeliveryResponse);
+}
