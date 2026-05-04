@@ -1,0 +1,8 @@
+kafka:
+  brokers: ["localhost:9092"]
+  topic_order: "order"
+  topic_payment: "payment"
+  topic_result: "reconcile_result"
+
+redis:
+  addr: "localhost:6379"
