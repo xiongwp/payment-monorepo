@@ -24,6 +24,20 @@ cd "$(git rev-parse --show-toplevel)"
 BRANCH="${BRANCH:-main}"
 DRY_RUN="${DRY_RUN:-0}"
 
+# REMOTE_URL_TEMPLATE：把 push target 的 URL 直接 inline 到 git subtree push 里，
+# 绕开"先 git remote add 再用 remote 名字推"模式。
+# 占位符 `{pkg}` 会被替换成 package 名字。
+#
+# CI 用法（GitHub Actions）：
+#   REMOTE_URL_TEMPLATE='https://x-access-token:'"${CHILDREPO_PAT}"'@github.com/xiongwp/{pkg}.git'
+# 这样每次 push 直接把 PAT 注入到 push URL，避免 git-subtree 内部把 PAT 弄丢、
+# 走 fallback auth 被 github-actions[bot] token 劫持（实测症状：fetch 阶段
+# PAT 还在，push 阶段被劫持成 bot token，报"denied to github-actions[bot]"）。
+#
+# 本地用法（dev 机）：留空，脚本会回退到"用 git remote 名字"模式（要求本地
+# 已经 git remote add 过对应的 remote）。
+REMOTE_URL_TEMPLATE="${REMOTE_URL_TEMPLATE:-}"
+
 # 17 个 child repo（必须与 packages/ 子目录名 + git remote 名一致）。
 # 新加 package 时同时往这个数组里加 + 在 git remote 里 add。
 ALL_PACKAGES=(
@@ -102,14 +116,23 @@ for pkg in "${TARGETS[@]}"; do
     failures+=("${pkg}: missing dir")
     continue
   fi
-  if ! git remote get-url "${pkg}" > /dev/null 2>&1; then
-    echo "  [SKIP] ${pkg}: git remote not configured (run 'git remote add ${pkg} <url>')"
+  # push target 优先用 REMOTE_URL_TEMPLATE（CI 模式：URL 里 inline PAT），
+  # 否则回落到"git remote 名字"模式（dev 模式：本地 git remote add 过）。
+  if [[ -n "${REMOTE_URL_TEMPLATE}" ]]; then
+    push_target="${REMOTE_URL_TEMPLATE//\{pkg\}/${pkg}}"
+    push_target_label="${pkg} (inline URL)"   # log 安全：不打 URL，避免 token 泄漏
+  elif git remote get-url "${pkg}" > /dev/null 2>&1; then
+    push_target="${pkg}"
+    push_target_label="${pkg}"
+  else
+    echo "  [SKIP] ${pkg}: no REMOTE_URL_TEMPLATE set and git remote not configured"
+    echo "         (CI: set REMOTE_URL_TEMPLATE; dev: 'git remote add ${pkg} <url>')"
     failures+=("${pkg}: missing remote")
     continue
   fi
 
-  echo "==> pushing ${prefix} -> ${pkg}/${BRANCH}"
-  cmd=(git subtree push --prefix="${prefix}" "${pkg}" "${BRANCH}")
+  echo "==> pushing ${prefix} -> ${push_target_label}/${BRANCH}"
+  cmd=(git subtree push --prefix="${prefix}" "${push_target}" "${BRANCH}")
   if [[ ${DRY_RUN} -eq 1 ]]; then
     echo "    DRY: ${cmd[*]}"
     continue

@@ -103,46 +103,20 @@ jobs:
           git config --global --get-all url.https://x-access-token:***@github.com/.insteadOf 2>/dev/null \
             || git config --global --list | grep '^url\.' | sed 's/x-access-token:[^@]*@/x-access-token:***@/'
 
-      - name: Add child-repo remotes (HTTPS + PAT)
-        # 镜像 monorepo 本地的 git remote 配置；保持 packages/<name> ↔ remote-name ↔ child-repo 三者同名。
-        # token 通过 https://x-access-token:${TOKEN}@github.com/... 形式注入，
-        # 不会写入 git config 文件（remote URL 写时 token 会被 GitHub Actions 自动 mask）。
-        env:
-          GH_TOKEN: ${{ secrets.CHILDREPO_PAT }}
-        run: |
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::Secret CHILDREPO_PAT is not set. See workflow header for setup steps." >&2
-            exit 1
-          fi
-          declare -A REMOTES=(
-            [accounting-admin-web]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/accounting-admin-web.git"
-            [accounting-grpc-api]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/accounting-grpc-api.git"
-            [accounting-system]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/accounting-system.git"
-            [api-gateway]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/api-gateway.git"
-            [billing-system]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/billing-system.git"
-            [clearing-settlement]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/clearing-settlement.git"
-            [id-generator]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/id-generator.git"
-            [kms-manage]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/kms-manage.git"
-            [order-core]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/order-core.git"
-            [payment-admin-web]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/payment-admin-web.git"
-            [payment-channel]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/payment-channel.git"
-            [payment-core]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/payment-core.git"
-            [payment-gateway]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/payment-gateway.git"
-            [payment-util]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/payment-util.git"
-            [reconplatform]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/reconplatform.git"
-            [risk-manage]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/risk-manage.git"
-            [user-merchant-core]="https://x-access-token:${GH_TOKEN}@github.com/xiongwp/user-merchant-core.git"
-          )
-          for name in "${!REMOTES[@]}"; do
-            git remote add "$name" "${REMOTES[$name]}" 2>/dev/null || true
-          done
-          # 打印 remote 时 GitHub Actions 会自动把 token 替换成 ***
-          git remote -v
-
       - name: Sync (push)
+        # 不用 git remote add — 改成把 PAT 直接 inline 进 push URL。
+        # 这样 git-subtree push 内部不论走哪条路径，URL 一直带 PAT，
+        # 不会回退到 GitHub Actions runner 注入的 github-actions[bot] token。
         env:
           BRANCH: main
+          # `{pkg}` 是 sync-to-childrepos.sh 里识别的占位符，每个 package 推时
+          # 会被替换成对应的 repo 名（如 payment-util / accounting-system 等）。
+          REMOTE_URL_TEMPLATE: "https://x-access-token:${{ secrets.CHILDREPO_PAT }}@github.com/xiongwp/{pkg}.git"
         run: |
+          if [ -z "${{ secrets.CHILDREPO_PAT }}" ]; then
+            echo "::error::Secret CHILDREPO_PAT is not set." >&2
+            exit 1
+          fi
           if [[ "${{ inputs.force_all }}" == "true" ]]; then
             ./scripts/sync-to-childrepos.sh --all
           elif [[ -n "${{ inputs.packages }}" ]]; then
