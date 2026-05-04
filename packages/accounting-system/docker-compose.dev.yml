@@ -1,0 +1,76 @@
+version: '3.8'
+
+# ─── 开发环境覆盖配置 ──────────────────────────────────────────────────────────
+# 使用3个MySQL分库（减少资源占用），关闭 Kafka/etcd
+# 启动: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+services:
+  # 开发环境只启用 db 0-2
+  mysql-3:
+    profiles: ["full"]
+  mysql-4:
+    profiles: ["full"]
+  mysql-5:
+    profiles: ["full"]
+  mysql-6:
+    profiles: ["full"]
+  mysql-7:
+    profiles: ["full"]
+  mysql-8:
+    profiles: ["full"]
+  mysql-9:
+    profiles: ["full"]
+
+  # 开发环境关闭 Kafka/etcd
+  zookeeper:
+    profiles: ["full"]
+  kafka:
+    profiles: ["full"]
+  etcd:
+    profiles: ["full"]
+
+  # 应用服务：使用开发配置，依赖 mysql-metadata + 3个分库MySQL + Redis
+  accounting-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "50051:50051"   # gRPC
+      - "8888:8888"     # HTTP admin（服务发现 + 热重载）
+    depends_on:
+      mysql-metadata:
+        condition: service_healthy
+      mysql-0:
+        condition: service_healthy
+      mysql-1:
+        condition: service_healthy
+      mysql-2:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./config/config.dev.yaml:/app/config/config.yaml:ro
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Shanghai
+      - APP_ENV=dev
+    restart: "no"
+
+  # 批处理定时任务（开发模式）
+  # 与 accounting-service 共享同一 image，避免独立 build 导致的版本漂移。
+  accounting-batchtask:
+    image: accounting-system:latest
+    user: root
+    entrypoint: ["/app/entrypoint.sh"]
+    command: []
+    depends_on:
+      accounting-service:
+        condition: service_healthy
+    volumes:
+      - ./config/config.dev.yaml:/app/config/config.yaml:ro
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Shanghai
+      - GRPC_ADDR=accounting-service:50051
+      - APP_ENV=dev
+    restart: "no"

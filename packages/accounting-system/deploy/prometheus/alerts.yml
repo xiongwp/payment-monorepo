@@ -1,0 +1,167 @@
+groups:
+  - name: accounting-system.critical
+    interval: 30s
+    rules:
+      # ─── 资金安全相关(critical)───────────────────────────────────────────────
+
+      # Outbox 永久失败 = 资金流水 / 余额 与 Redis 状态可能不一致，必须人工介入
+      - alert: OutboxFailedRecordsIncreasing
+        expr: increase(accounting_outbox_failed_total[5m]) > 0
+        for: 0s
+        labels:
+          severity: critical
+          component: outbox
+        annotations:
+          summary: "outbox 有记录被标记为 FAILED（5m 内新增 {{ $value }} 条）"
+          description: |
+            accounting_outbox_failed_total 在过去 5 分钟内有增量，说明 OutboxWorker 达到
+            maxMySQLWriteRetries 仍失败、或 account-not-found 等非瞬时错误。
+            资金流水可能未持久化到 MySQL，需立即查 outbox 表 WHERE status=FAILED 人工处理。
+
+      # TCC 协调者状态机被违规转换 = Recovery 和 Confirm 撞车，可能重复应用或释放冻结
+      - alert: TccCoordinatorIllegalTransition
+        expr: increase(accounting_tcc_coordinator_transitions_total{outcome="rejected_illegal"}[5m]) > 0
+        for: 0s
+        labels:
+          severity: critical
+          component: tcc
+        annotations:
+          summary: "TCC 协调者状态机出现非法转换（5m 内 {{ $value }} 次）"
+          description: |
+            某个 TCC 在尝试 {{ $labels.from }} → {{ $labels.to }} 转换时被 WHERE phase=expected
+            保护层拒绝。通常意味着 Recovery Worker 和 Confirm goroutine 并发对同一 voucher
+            操作，可能已造成"冻结释放 + 余额应用"的双动作。立即查 tcc_coordinator 表对应
+            phase、按审计流程对账。
+
+      # TCC Recovery 失败 = 冻结资金未能被取消，用户钱被挂住
+      - alert: TccRecoveryFailing
+        expr: increase(accounting_tcc_recovery_failures_total[10m]) > 0
+        for: 0s
+        labels:
+          severity: critical
+          component: tcc
+        annotations:
+          summary: "TCC 自动恢复失败（10m 内 {{ $value }} 次）"
+          description: |
+            TccRecoveryWorker 尝试取消 stuck TRYING 分支但失败；冻结资金未释放，可用余额
+            被减去但 balance 未动。查 tcc_transaction WHERE status=TRYING AND created_at < now-10m。
+
+      # Outbox 积压过高 = MySQL Writer 吃不下或 Kafka push 失效
+      - alert: OutboxPendingBacklog
+        expr: accounting_outbox_pending_records > 5000
+        for: 2m
+        labels:
+          severity: warning
+          component: outbox
+        annotations:
+          summary: "outbox REDIS_DONE 积压 {{ $value }} 条（>5000 持续 2m）"
+          description: |
+            MySQL Writer 跟不上 hot path 产生速度。检查数据库写入延迟、OutboxWorker 是否崩
+            溃、连接池是否被其他任务占满。
+
+      # ─── 可靠性相关(warning)────────────────────────────────────────────────
+
+      # 日切 watchdog 发现 stuck 分片 = 日切卡住，会影响第二天试算平衡
+      - alert: DayCutShardsStuck
+        expr: accounting_watchdog_stuck_shards > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: day_cut
+        annotations:
+          summary: "日切 watchdog 已发现 {{ $value }} 个 stuck 分片持续 10m"
+          description: |
+            日切某些分片处于 PENDING/PROCESSING 超过 stuckThreshold 且被 watchdog 尝试重启
+            但还没完成。可能数据量太大、连接池耗尽或 DB 锁死。
+            查 day_cut_control WHERE status IN (0,1) AND updated_at < now-threshold。
+
+      # hot path 降级到 TCC 比例过高 = Redis 不健康
+      - alert: HotPathFallbackHigh
+        expr: |
+          sum(rate(accounting_hot_path_fallback_total[5m]))
+            / clamp_min(sum(rate(accounting_booking_total{path="hot"}[5m])), 1) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          component: hot_path
+        annotations:
+          summary: "hot path 降级比例 {{ $value | humanizePercentage }}（>10% 持续 5m）"
+          description: |
+            超过 10% 的 hot path 请求降级到 TCC。Redis 可能异常、缓存命中率下降或账户
+            冻结。查 Redis 健康、BalanceCache.Invalidate 调用频率、reason label。
+
+      # MySQL 死锁重试耗尽 = 上层事务失败率上升
+      - alert: MySQLRetryExhausted
+        expr: increase(accounting_deadlock_retry_exhausted_total[5m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+          component: mysql
+        annotations:
+          summary: "TCC 事务死锁重试 3 次仍失败（5m {{ $value }} 次）"
+          description: |
+            这类失败会被 transaction_order.retry_count 兜底，但高频率说明某热点账户上
+            竞争过重。考虑进一步拆分该账户、或降低并发。
+
+      # ─── 吞吐观察(info)──────────────────────────────────────────────────────
+
+      # Redis 幂等哨兵命中 = 说明有进程崩溃/重试发生
+      - alert: TransferIdempotencyHitsSpike
+        expr: increase(accounting_transfer_idempotency_hits_total[10m]) > 50
+        for: 0s
+        labels:
+          severity: info
+          component: hot_path
+        annotations:
+          summary: "Redis Transfer 幂等哨兵命中 {{ $value }} 次（10m）"
+          description: |
+            说明 OutboxWorker 对 PENDING 记录做了重试且 Redis 侧幂等成功拦下了 double-count。
+            偶发正常；持续大量命中说明 hot path 在 Redis 成功后频繁崩溃，需查 process crash。
+
+      # ─── DB 连接池健康(warning)─────────────────────────────────────────────
+
+      # 池利用率持续 > 80% = 容量将耗尽，下一次 spike 会触发等待 → 超时雪崩
+      - alert: DBPoolUtilizationHigh
+        expr: |
+          accounting_db_pool_in_use_conns
+            / clamp_min(accounting_db_pool_max_open_conns, 1) > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          component: mysql
+        annotations:
+          summary: "DB 连接池利用率 {{ $value | humanizePercentage }} 持续 5m（shard {{ $labels.shard }}）"
+          description: |
+            in_use / max_open 超过 80% 持续 5 分钟。连接池接近耗尽，下一次流量
+            spike 会触发等待 → 累加查询延迟 → 雪崩。考虑扩 max_open_conns 或
+            排查慢查询占用连接（参考 performance.log slow=true 条目）。
+
+      # 连接池等待累计快速增长 = 当前已经在饱和路径上
+      - alert: DBPoolWaitGrowing
+        expr: |
+          rate(accounting_db_pool_wait_seconds[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: mysql
+        annotations:
+          summary: "DB 连接池等待增长率 {{ $value }} s/s（shard {{ $labels.shard }}）"
+          description: |
+            过去 5 分钟内每秒累计等待时间 > 0.1s，说明请求正在排队等连接。
+            热点分片可能需要拆库或扩容；如各 shard 均匀，是全局容量问题。
+
+      # ─── Load Shedding(warning)─────────────────────────────────────────────
+
+      # 入口被拒持续触发 = 系统过载或限流阈值过严
+      - alert: LoadShedDroppingRequests
+        expr: increase(accounting_load_shed_dropped_total[5m]) > 100
+        for: 2m
+        labels:
+          severity: warning
+          component: load_shed
+        annotations:
+          summary: "load shedder 拒绝 {{ $value }} 个请求（5m, reason={{ $labels.reason }}）"
+          description: |
+            入口拦截器持续 fast-fail。reason=max_inflight 说明并发处理能力被打满；
+            reason=rate_limit 说明 QPS 超阈值。若是真过载需扩容 / 拆服务；若是误拒
+            需调高 server.load_shed.* 配置。

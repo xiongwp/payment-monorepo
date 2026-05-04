@@ -1,0 +1,86 @@
+server:
+  name: accounting-system
+  host: 0.0.0.0
+  port: 8888
+  env: dev
+
+# 开发环境 - 只有3个分库
+database:
+  shard_count: 3
+  table_count: 30   # 3库 × 每库10表 = 30张全局表（tablePerDB = 30/3 = 10）
+  # account_meta 全局元数据库（account_type_info / transaction_rule，不分片）
+  meta_database:
+    name: account_meta
+    dsn: "root:password@tcp(accounting_meta:3306)/account_meta?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+    max_open_conns: 20   # 开发环境3分库，适量连接即可
+    max_idle_conns: 5
+    conn_max_lifetime: 3600
+  databases:
+    - name: accounting_db_0
+      dsn: "root:password@tcp(accounting-mysql-0:3306)/accounting_db_0?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 20
+      max_idle_conns: 5
+      conn_max_lifetime: 3600
+    - name: accounting_db_1
+      dsn: "root:password@tcp(accounting-mysql-1:3306)/accounting_db_1?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 20
+      max_idle_conns: 5
+      conn_max_lifetime: 3600
+    - name: accounting_db_2
+      dsn: "root:password@tcp(accounting-mysql-2:3306)/accounting_db_2?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 20
+      max_idle_conns: 5
+      conn_max_lifetime: 3600
+
+redis:
+  addr: "accounting-redis:6379"
+  password: ""
+  db: 0
+  pool_size: 20
+  min_idle_conns: 5
+
+# 开发环境无 Kafka（同步处理）
+kafka:
+  brokers: []
+
+day_cut:
+  enabled: false
+  cron: "0 0 0 * * ?"
+  timeout: 3600
+
+async_task:
+  retry_interval: 30
+  max_retry_count: 3
+  scan_interval: 5
+
+log:
+  level: debug
+  file: ./logs/accounting.log
+  max_size: 100
+  max_backups: 3
+  max_age: 7
+  compress: false
+
+logging:
+  dir: "./logs"
+  level: "debug"
+  slow_query_ms: 100     # 开发环境更严格的慢查询阈值（100ms）
+  enable_stdout: true
+
+# 批处理定时任务（开发模式：缩短间隔便于调试）
+batchtask:
+  grpc_addr: "accounting-service:50051"
+  dial_timeout_seconds: 15
+  tasks:
+    - type: "process_async_tasks"
+      interval_seconds: 30
+      batch_size: 50
+    - type: "day_cut_watchdog"
+      interval_seconds: 60
+      stuck_threshold_seconds: 120
+    - type: "list_manual_tasks"
+      interval_seconds: 120
+      limit: 20
+    - type: "recover_stuck_tasks"
+      interval_seconds: 60
+      stuck_threshold_seconds: 120

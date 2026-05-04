@@ -1,0 +1,244 @@
+server:
+  name: accounting-system
+  host: 0.0.0.0
+  port: 8888
+  grpc_port: 50051
+  metrics_port: "9090"  # Prometheus /metrics HTTP 接口端口
+  env: dev
+
+  # 入口过载保护（load shedding）
+  # 饱和时 gRPC fast-fail 返回 ResourceExhausted，打 LoadShedDroppedTotal{reason} 计数。
+  # 保护 DB 连接池、goroutine、锁。全为 0 表示不启用（开发默认）。
+  # 生产建议（10 库 × 50 conn = 500 pool）：max_inflight = 400、rate_per_second = 5000、burst = 10000。
+  load_shed:
+    max_inflight: 0
+    rate_per_second: 0
+    burst: 0
+
+  # 单条 gRPC RPC 最长执行时间（秒）。0 = 不限。
+  # 防御：客户端忘记设 deadline + 大日期范围 ListTransactions 等查询独占
+  # goroutine + DB 连接的资源耗尽攻击。生产建议 30。
+  max_rpc_duration_seconds: 0
+
+  # HTTP admin 共享 secret token。设置后所有 admin 请求必须带
+  #   X-Admin-Token: <token>
+  # 头才能通过；缺失或错误返回 401。空字符串 = 关闭鉴权（开发默认；
+  # 生产强制配置，否则任何能访问 admin 端口的人都能改 registry / 触发归档）。
+  # 也支持 ADMIN_HTTP_TOKEN 环境变量覆盖（部署时不必嵌进 yaml）。
+  admin_http_token: ""
+
+# ─── Outbox backpressure ─────────────────────────────────────────────────────
+# 当 OutboxPendingGauge 超过 high_threshold 时，把 load_shed.max_inflight 降到
+# 原值的 shrink_ratio，给 OutboxWorker 留时间追上 MySQL 写入；落到
+# low_threshold 以下时恢复。两阈值用 hysteresis 防抖。
+# 仅当 load_shed.max_inflight > 0 时生效。
+outbox_backpressure:
+  high_threshold: 5000
+  low_threshold:  1000
+  shrink_ratio:   0.5
+
+# 数据库配置 - 10个库
+database:
+  shard_count: 10
+  table_count: 100
+  # 启动时预热各分库 + meta 库的连接池：每个 DB 开少量 (≤8) ping 连接然后归还，
+  # 让 idle slot 有内容，避免首批请求每条都付 TCP+鉴权延迟。
+  # 注意：曾经的实现一次性 ping 50 conns × 11 dbs = 550 个并发连接 → 撞穿 MySQL
+  # 默认 max_connections=151；现已改为单 DB ≤ MaxOpen/4 (cap 8)，串行遍历分库。
+  # 本地 / 小型 MySQL 仍建议 false 节约启动时连接消耗。
+  warm_pool_on_start: false
+  # account_meta 全局元数据库（account_type_info / transaction_rule，不分片）
+  meta_database:
+    name: account_meta
+    dsn: "root:password@tcp(127.0.0.1:3306)/account_meta?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+    max_open_conns: 50   # 规则缓存命中后极少触及，缓存未命中时10个分库可能同时查询
+    max_idle_conns: 20
+    conn_max_lifetime: 3600
+  databases:
+    - name: accounting_db_0
+      dsn: "root:password@tcp(127.0.0.1:3306)/accounting_db_0?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: accounting_db_1
+      dsn: "root:password@tcp(127.0.0.1:3306)/accounting_db_1?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: accounting_db_2
+      dsn: "root:password@tcp(127.0.0.1:3306)/accounting_db_2?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: accounting_db_3
+      dsn: "root:password@tcp(127.0.0.1:3306)/accounting_db_3?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: accounting_db_4
+      dsn: "root:password@tcp(127.0.0.1:3306)/accounting_db_4?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: accounting_db_5
+      dsn: "root:password@tcp(127.0.0.1:3306)/accounting_db_5?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: accounting_db_6
+      dsn: "root:password@tcp(127.0.0.1:3306)/accounting_db_6?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: accounting_db_7
+      dsn: "root:password@tcp(127.0.0.1:3306)/accounting_db_7?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: accounting_db_8
+      dsn: "root:password@tcp(127.0.0.1:3306)/accounting_db_8?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+    - name: accounting_db_9
+      dsn: "root:password@tcp(127.0.0.1:3306)/accounting_db_9?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
+      max_open_conns: 50
+      max_idle_conns: 20
+      conn_max_lifetime: 3600
+
+# ─── Redis 配置 ───────────────────────────────────────────────────────────────
+# 余额热缓存（热路径核心组件）
+# mode: standalone（开发）| sentinel（生产）
+redis:
+  # 开发环境：单节点
+  mode: "standalone"
+  addrs:
+    - "127.0.0.1:6379"
+  password: ""
+  db: 0
+  pool_size: 500           # 建议 = gRPC 并发 worker 数
+  min_idle_conns: 500      # 保持满池，消除连接建立延迟
+  dial_timeout_ms: 3000
+  read_timeout_ms: 500
+  write_timeout_ms: 500
+
+  # 生产环境（哨兵模式）示例（注释掉 standalone 后取消此块注释）:
+  # mode: "sentinel"
+  # master_name: "accounting-master"
+  # addrs:
+  #   - "sentinel1:26379"
+  #   - "sentinel2:26379"
+  #   - "sentinel3:26379"
+
+# 热路径功能开关
+# false（默认）：并行 TCC 模式，无需 Redis / Kafka，适合开发 / 中低负载环境
+# true         ：Redis 余额缓存 + Kafka 异步结算，支持 ~30万 TPS 高吞吐场景
+hot_path:
+  enabled: false
+
+  # account_allowlist：允许走 Redis 热路径的账户号白名单
+  # - 只有此列表中的账户才使用 Redis；列表外的账户始终走 TCC（MySQL 为权威来源）
+  # - 白名单为空时热路径对所有账户关闭（即使 enabled: true）
+  # - 一笔记账的所有分录账户必须全部在白名单中，否则整笔走 TCC
+  # - 灰度策略：先加入系统账户（充值中间账户、手续费账户），稳定后逐步加入高频用户/商户账户
+  # - 账户号格式：{dbIdx:02d}{tableIdx:02d}{userId}-{businessType}，例：0000100001-1
+  account_allowlist: []
+  # account_allowlist:
+  #   - "0000100001-1"   # 充值中间账户
+  #   - "0000200001-1"   # 服务手续费账户
+  #   - "0000300001-1"   # 平台手续费账户
+
+# ─── Kafka 配置 ───────────────────────────────────────────────────────────────
+kafka:
+  brokers:
+    - "127.0.0.1:9092"
+  topics:
+    accounting:  "accounting-topic"
+    snapshot:    "snapshot-topic"
+    day_cut:     "day-cut-topic"
+    settlement:  "accounting-settlement"   # 热路径结算事件（Redis → MySQL 落库）
+  consumer_group: "accounting-consumer-group"
+  settlement_consumer_group: "accounting-settlement-group"
+  producer:
+    batch_size: 1000          # 高吞吐批量
+    batch_timeout: 5ms        # 5ms 批量窗口（延迟与吞吐平衡）
+    max_attempts: 5
+  consumer:
+    max_wait: 500ms
+    min_bytes: 1
+    max_bytes: 10485760
+
+# 日切配置
+day_cut:
+  enabled: true
+  cron: "0 0 0 * * ?" # 每天凌晨0点执行
+  timeout: 3600 # 超时时间（秒）
+
+# TCC 归档 Worker 配置
+# 定期清理 tcc_transaction 表中 CONFIRMED / CANCELLED 状态且超过保留期的分支记录，
+# 防止表无限增长。分批删除，对生产负载友好。
+tcc_archive:
+  enabled: true
+  interval_seconds: 21600    # 多久扫一次所有分片（默认 6h = 21600s）
+  retention_days: 7          # 保留天数（updated_at 早于 now - retention_days 的终态分支会被删）
+  batch_size: 1000           # 每分片每次 tick 最多删多少行（分批防锁表过久）
+
+# Outbox push 通知（依赖 Kafka）
+# 热路径写入 outbox 后，额外投一条轻量事件到 Kafka，OutboxWorker 消费后立即处理
+# 对应 voucher；polling 作为兜底保留（适配消费 group 重置 / 消息丢失等极端场景）。
+# 关掉时 OutboxWorker 仅靠 polling，行为与之前一致。
+outbox_push:
+  enabled: false
+  topic: "accounting-outbox-notify"
+  consumer_group: "accounting-outbox-worker"
+
+# 异步任务配置
+async_task:
+  retry_interval: 60 # 重试间隔（秒）
+  max_retry_count: 3
+  scan_interval: 10 # 扫描间隔（秒）
+
+# ─── 分层日志配置 ─────────────────────────────────────────────────────────────
+#
+# 日志分层写入独立文件，同时输出到标准输出（stdout）便于 Docker / K8s 日志采集。
+#
+# 文件布局（dir 目录下）：
+#   app.log         — 全局兜底日志（顶层 Worker、启动/关闭事件）
+#   api.log         — gRPC API 层：每条 RPC 请求体、响应体、错误信息
+#   service.log     — 业务逻辑层：TCC 决策、日切处理、批量任务核心流程
+#   repository.log  — 数据访问层：SQL 语句、分片路由、行数
+#   performance.log — 性能追踪：API 耗时、DB 查询耗时（含慢查询标记）、异步任务处理耗时
+logging:
+  dir: "./logs"               # 日志文件目录（相对于启动目录）
+  level: "info"               # 全局日志级别（debug/info/warn/error）
+  slow_query_ms: 200          # GORM 慢查询阈值（ms），超过时在 performance.log 额外标记 slow=true
+  enable_stdout: true         # 是否同时输出到标准输出（关闭可降低高并发 I/O 压力）
+
+# ─── 批处理定时任务配置（cmd/batchtask 使用）────────────────────────────────────
+# 每个 task 独立配置调度间隔和处理参数，支持多实例以不同参数启动实现更细粒度控制。
+#
+# type 可选值：
+#   process_async_tasks   — 扫描并处理 pending/failed 的异步任务
+#   day_cut_watchdog      — 检测并恢复卡住的日切分片
+#   list_manual_tasks     — 巡检需要人工处理的任务（超过最大重试次数）
+#   recover_stuck_tasks   — 将卡在 PROCESSING 的任务重置为 FAILED（服务器重启恢复）
+batchtask:
+  grpc_addr: "localhost:50051"
+  dial_timeout_seconds: 10
+  tasks:
+    # 异步任务补偿：每 60 秒执行一次，每次每个分片最多处理 100 条
+    - type: "process_async_tasks"
+      interval_seconds: 60
+      batch_size: 100
+    # 日切看门狗：每 5 分钟检查一次，超过 5 分钟无更新的分片视为卡住
+    - type: "day_cut_watchdog"
+      interval_seconds: 300
+      stuck_threshold_seconds: 300
+    # 人工处理队列巡检：每 10 分钟打印一次需人工介入的任务
+    - type: "list_manual_tasks"
+      interval_seconds: 600
+      limit: 50
+    # 卡单恢复：每 5 分钟检查一次，超过 5 分钟仍在 PROCESSING 的任务重置为 FAILED（服务器重启场景）
+    - type: "recover_stuck_tasks"
+      interval_seconds: 300
+      stuck_threshold_seconds: 300

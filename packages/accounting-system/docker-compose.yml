@@ -1,0 +1,362 @@
+version: '3.8'
+
+# ─── 复式记账系统 - 完整生产部署 ──────────────────────────────────────────────
+# 架构: 10库100表分库分表 + Redis + Kafka + etcd
+# 启动: docker-compose up -d
+# 停止: docker-compose down -v
+#
+# 镜像构建是自包含的：Dockerfile 会自己 git-clone payment-util 和
+# accounting-grpc-api。需要对私仓有访问权：通过环境变量传入 GITHUB_TOKEN 即可：
+#   GITHUB_TOKEN=ghp_xxx docker compose build
+# 公仓或本机 git 已配置时可不设 token。
+
+x-mysql-common: &mysql-common
+  image: mysql:8.0
+  command: >
+    --default-authentication-plugin=mysql_native_password
+    --character-set-server=utf8mb4
+    --collation-server=utf8mb4_unicode_ci
+    --max_connections=500
+    --innodb_buffer_pool_size=256M
+  environment:
+    MYSQL_ROOT_PASSWORD: password
+  healthcheck:
+    test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ppassword"]
+    interval: 15s
+    timeout: 5s
+    retries: 40
+    start_period: 600s
+
+services:
+  mysql-metadata:
+    <<: *mysql-common
+    container_name: accounting_meta
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: account_meta
+    ports:
+      - "3316:3306"
+    volumes:
+      - mysql-metadata-data:/var/lib/mysql
+      - ./database/metadb/init/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  mysql-0:
+    <<: *mysql-common
+    container_name: accounting-mysql-0
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: accounting_db_0
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-0-data:/var/lib/mysql
+      - ./database/accountingdb/init/0_init.sql:/docker-entrypoint-initdb.d/0_init.sql:ro
+      - ./database/accountingdb/init/0_init_tmp.sql:/docker-entrypoint-initdb.d/0_init_tmp.sql:ro
+
+  mysql-1:
+    <<: *mysql-common
+    container_name: accounting-mysql-1
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: accounting_db_1
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-1-data:/var/lib/mysql
+      - ./database/accountingdb/init/1_init.sql:/docker-entrypoint-initdb.d/1_init.sql:ro
+      - ./database/accountingdb/init/1_init_tmp.sql:/docker-entrypoint-initdb.d/1_init_tmp.sql:ro
+
+  mysql-2:
+    <<: *mysql-common
+    container_name: accounting-mysql-2
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: accounting_db_2
+    ports:
+      - "3308:3306"
+    volumes:
+      - mysql-2-data:/var/lib/mysql
+      - ./database/accountingdb/init/2_init.sql:/docker-entrypoint-initdb.d/2_init.sql:ro
+      - ./database/accountingdb/init/2_init_tmp.sql:/docker-entrypoint-initdb.d/2_init_tmp.sql:ro
+
+  mysql-3:
+    <<: *mysql-common
+    container_name: accounting-mysql-3
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: accounting_db_3
+    ports:
+      - "3309:3306"
+    volumes:
+      - mysql-3-data:/var/lib/mysql
+      - ./database/accountingdb/init/3_init.sql:/docker-entrypoint-initdb.d/3_init.sql:ro
+      - ./database/accountingdb/init/3_init_tmp.sql:/docker-entrypoint-initdb.d/3_init_tmp.sql:ro
+
+  mysql-4:
+    <<: *mysql-common
+    container_name: accounting-mysql-4
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: accounting_db_4
+    ports:
+      - "3310:3306"
+    volumes:
+      - mysql-4-data:/var/lib/mysql
+      - ./database/accountingdb/init/4_init.sql:/docker-entrypoint-initdb.d/4_init.sql:ro
+      - ./database/accountingdb/init/4_init_tmp.sql:/docker-entrypoint-initdb.d/4_init_tmp.sql:ro
+
+  mysql-5:
+    <<: *mysql-common
+    container_name: accounting-mysql-5
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: accounting_db_5
+    ports:
+      - "3311:3306"
+    volumes:
+      - mysql-5-data:/var/lib/mysql
+      - ./database/accountingdb/init/5_init.sql:/docker-entrypoint-initdb.d/5_init.sql:ro
+      - ./database/accountingdb/init/5_init_tmp.sql:/docker-entrypoint-initdb.d/5_init_tmp.sql:ro
+
+  mysql-6:
+    <<: *mysql-common
+    container_name: accounting-mysql-6
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: accounting_db_6
+    ports:
+      - "3312:3306"
+    volumes:
+      - mysql-6-data:/var/lib/mysql
+      - ./database/accountingdb/init/6_init.sql:/docker-entrypoint-initdb.d/6_init.sql:ro
+      - ./database/accountingdb/init/6_init_tmp.sql:/docker-entrypoint-initdb.d/6_init_tmp.sql:ro
+
+  mysql-7:
+    <<: *mysql-common
+    container_name: accounting-mysql-7
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: accounting_db_7
+    ports:
+      - "3313:3306"
+    volumes:
+      - mysql-7-data:/var/lib/mysql
+      - ./database/accountingdb/init/7_init.sql:/docker-entrypoint-initdb.d/7_init.sql:ro
+      - ./database/accountingdb/init/7_init_tmp.sql:/docker-entrypoint-initdb.d/7_init_tmp.sql:ro
+
+  mysql-8:
+    <<: *mysql-common
+    container_name: accounting-mysql-8
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: accounting_db_8
+    ports:
+      - "3314:3306"
+    volumes:
+      - mysql-8-data:/var/lib/mysql
+      - ./database/accountingdb/init/8_init.sql:/docker-entrypoint-initdb.d/8_init.sql:ro
+      - ./database/accountingdb/init/8_init_tmp.sql:/docker-entrypoint-initdb.d/8_init_tmp.sql:ro
+
+  mysql-9:
+    <<: *mysql-common
+    container_name: accounting-mysql-9
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: accounting_db_9
+    ports:
+      - "3315:3306"
+    volumes:
+      - mysql-9-data:/var/lib/mysql
+      - ./database/accountingdb/init/9_init.sql:/docker-entrypoint-initdb.d/9_init.sql:ro
+      - ./database/accountingdb/init/9_init_tmp.sql:/docker-entrypoint-initdb.d/9_init_tmp.sql:ro
+
+  redis:
+    image: redis:7-alpine
+    container_name: accounting-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: accounting-zookeeper
+    environment:
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr,stat"
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_MAX_CLIENT_CNXNS: 60
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo 'ruok' | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: accounting-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.10
+    container_name: accounting-etcd
+    environment:
+      ETCD_NAME: etcd0
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd:2379
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd:2380
+      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+      ETCD_INITIAL_CLUSTER: etcd0=http://etcd:2380
+      ETCD_DATA_DIR: /etcd-data
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    volumes:
+      - etcd-data:/etcd-data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ETCDCTL_API=3 etcdctl --endpoints=http://localhost:2379 endpoint health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  accounting-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      secrets:
+        - GITHUB_TOKEN
+    image: accounting-system:latest
+    depends_on:
+      mysql-0:
+        condition: service_healthy
+      mysql-1:
+        condition: service_healthy
+      mysql-2:
+        condition: service_healthy
+      mysql-3:
+        condition: service_healthy
+      mysql-4:
+        condition: service_healthy
+      mysql-5:
+        condition: service_healthy
+      mysql-6:
+        condition: service_healthy
+      mysql-7:
+        condition: service_healthy
+      mysql-8:
+        condition: service_healthy
+      mysql-9:
+        condition: service_healthy
+      mysql-metadata:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      # 用 range 让 docker compose --scale 时多副本各自拿固定可推算的端口；
+      # gRPC: 50051-50060 → host 50051..50060；admin HTTP: 8888-8898 → host 8888..8898。
+      # **e2e tooling 默认 -admin http://127.0.0.1:8888 命中 service-1，不再随机漂移。**
+      # 历史问题：之前只映射 50051:50051（admin :8888 完全没暴露），用户重启
+      # stack 时 Docker 给 EXPOSE 的端口随机分配 host port → 每次端口都变
+      # （8890 / 8892 / 8893 ...）。
+      - "50051-50060:50051"   # gRPC
+      - "8888-8898:8888"      # admin HTTP（admin-web BFF / e2e-accounting / curl 调）
+    volumes:
+      - ./config/config.docker.yaml:/app/config/config.yaml:ro
+      - app-logs:/app/logs
+    environment:
+      - TZ=Asia/Shanghai
+      # ── 服务发现：自注册到 etcd（同 compose 内的 etcd container）──
+      - ETCD_ENDPOINTS=etcd:2379
+    restart: unless-stopped
+
+  accounting-batchtask:
+    # **关键**：与 accounting-service 共用同一 image，避免发版时只 build 其中一边
+    # 导致 service / batchtask 代码版本不一致（典型 bug：service 已修复 cut_date
+    # 计算逻辑，batchtask 跑 recovery 时仍用旧代码 → 同 voucher 不同 entry 拿不
+    # 同 cut_date → 试算不平衡）。修服务代码后只需 `docker compose build
+    # accounting-service`，batchtask 自动同步。
+    image: accounting-system:latest
+    container_name: accounting-batchtask
+    depends_on:
+      accounting-service:
+        condition: service_healthy
+    # batchtask 跑 busybox crond（需 root 启动 daemon），覆盖 Dockerfile 默认的
+    # USER appuser；CMD 切到 entrypoint.sh 启动 crond。
+    user: root
+    entrypoint: ["/app/entrypoint.sh"]
+    command: []
+    volumes:
+      - ./config/config.docker.yaml:/app/config/config.yaml:ro
+      - app-logs:/app/logs
+    environment:
+      - TZ=Asia/Shanghai
+      - GRPC_ADDR=accounting-service:50051
+    restart: unless-stopped
+
+networks:
+  default:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true
+
+# BuildKit secret：从环境变量读取 GITHUB_TOKEN 传给 Dockerfile 的 git clone。
+# 用法：GITHUB_TOKEN=ghp_xxx docker compose build
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN
+
+volumes:
+  mysql-0-data:
+  mysql-1-data:
+  mysql-2-data:
+  mysql-3-data:
+  mysql-4-data:
+  mysql-5-data:
+  mysql-6-data:
+  mysql-7-data:
+  mysql-8-data:
+  mysql-9-data:
+  mysql-metadata-data:
+  redis-data:
+  kafka-data:
+  zookeeper-data:
+  zookeeper-log:
+  etcd-data:
+  app-logs:
