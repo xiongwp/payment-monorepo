@@ -1,0 +1,61 @@
+# card-center 在联栈 dev 模式下的部署。
+#
+# 关键改动 vs card-center/docker-compose.yml：
+#   - 不起 card-meta + card-shard-0..9 独立 MySQL（生产 SAQ-D 必须独立 DC，
+#     dev 简化复用 shared-db）。card_center_db_N / card_center_meta 由
+#     generate-shared-init.sh 拼进 shared init SQL 里。
+#   - env=dev 让 assertProdSafety 跳过 TLS / KMS / Kafka 强制；mTLS gRPC 自动
+#     降明文（card-center main.go 已支持）。
+#   - 加入 payment-stack network，供 user-merchant-core / api-gateway 调用。
+#
+# 生产部署不能走这条；必须用 ../../../card-center/docker-compose.yml 自带
+# 11 MySQL + kms-card + audit-kafka + TLS_DIR 那套。
+services:
+  card-center:
+    build:
+      context: ../../../card-center
+      dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:       ../../../payment-util
+        kms-manage:         ../../../kms-manage
+        user-merchant-core: ../../../user-merchant-core
+      secrets:
+        - GITHUB_TOKEN
+    image: card-center:local
+    container_name: card-center
+    restart: unless-stopped
+    ports:
+      - "9443:9443"   # mTLS gRPC（dev 实际明文）
+      - "9543:9543"   # /metrics
+    environment:
+      CARDCENTER_LOG_DEV: "true"
+      CARDCENTER_ENV: "dev"
+      CARDCENTER_SERVER_GRPC_PORT: "9443"
+      # KMS：联栈复用 main DC 的 kms-manage（生产严格独立 DC kms-card）
+      CARDCENTER_KMS_ENDPOINT: "kms-manage:9290"
+      CARDCENTER_KMS_INSECURE: "true"
+      # 审计 Kafka：dev 留空，emitter 退化为只写 DB
+      # HTTPS 入口默认关；要全链路绑卡放开 + 配 cert
+      CARDCENTER_HTTPS_ENABLED: "false"
+      # DB 连 shared-* 实例
+      CARDCENTER_DATABASE_META_DSN: "root:password@tcp(shared-meta:3306)/card_center_meta?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_0_DSN: "root:password@tcp(shared-shard-0:3306)/card_center_db_0?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_1_DSN: "root:password@tcp(shared-shard-1:3306)/card_center_db_1?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_2_DSN: "root:password@tcp(shared-shard-2:3306)/card_center_db_2?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_3_DSN: "root:password@tcp(shared-shard-3:3306)/card_center_db_3?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_4_DSN: "root:password@tcp(shared-shard-4:3306)/card_center_db_4?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_5_DSN: "root:password@tcp(shared-shard-5:3306)/card_center_db_5?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_6_DSN: "root:password@tcp(shared-shard-6:3306)/card_center_db_6?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_7_DSN: "root:password@tcp(shared-shard-7:3306)/card_center_db_7?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_8_DSN: "root:password@tcp(shared-shard-8:3306)/card_center_db_8?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_9_DSN: "root:password@tcp(shared-shard-9:3306)/card_center_db_9?charset=utf8mb4&parseTime=True&loc=Local"
+    networks:
+      - payment-stack
+
+networks:
+  payment-stack:
+    external: true
+
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN
