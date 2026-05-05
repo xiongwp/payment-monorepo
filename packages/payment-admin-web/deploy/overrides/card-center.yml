@@ -40,7 +40,7 @@ services:
       CARDCENTER_REGISTRY_TTL: "10s"
       # KMS：联栈复用 main DC 的 kms-manage（生产严格独立 DC kms-card）
       CARDCENTER_KMS_REGISTRY_ENDPOINTS: "etcd:2379"
-      CARDCENTER_KMS_ENDPOINT: "kms-manage:9290"
+      CARDCENTER_KMS_ENDPOINT: "172.18.0.13:9290"
       CARDCENTER_KMS_INSECURE: "true"
       # 临时旁路：跳过 hardenedOptions（service config + keepalive）排查 RPC 不下发
       CARDCENTER_KMS_BYPASS_HARDENED: "true"
