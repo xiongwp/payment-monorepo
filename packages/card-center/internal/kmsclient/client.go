@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
+	"github.com/xiongwp/payment-util/serviceregistry"
 )
 
 // Client kms-manage gRPC 客户端（mTLS）
@@ -56,7 +57,11 @@ func New(cfg Config) (*Client, error) {
 		}
 		creds = credentials.NewTLS(tc)
 	}
-	conn, err := grpc.NewClient(cfg.Endpoint,
+	// 走 serviceregistry.DialDirect：自动获得 round_robin LB + 10s/3s keepalive
+	// + UNAVAILABLE/DEADLINE_EXCEEDED retry。这是修"kms-manage 副本被 scale/
+	// restart 后 kmsclient 长期粘 stale subconn 导致 RST_STREAM CANCEL hang"
+	// 的根因——裸 grpc.NewClient 的 pick_first + 30min DNS TTL 不会主动探死。
+	conn, err := serviceregistry.DialDirect(cfg.Endpoint,
 		grpc.WithTransportCredentials(creds),
 	)
 	if err != nil {

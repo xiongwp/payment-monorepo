@@ -2,37 +2,84 @@ package serviceregistry
 
 import (
 	"fmt"
+	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
-// roundRobinServiceConfig 让 grpc-go 给 resolver 返回的每个端点都建一条子连接，
-// RPC 在子连接间轮询；resolver 推送变更（上线/下线）后自动 rebalance。
-const roundRobinServiceConfig = `{"loadBalancingConfig":[{"round_robin":{}}]}`
+// hardenedServiceConfig 让 grpc-go：
+//  1. 对 resolver 返回的每个端点都建一条子连接，RPC 在子连接间轮询
+//     （resolver 推送变更——上线/下线——后自动 rebalance）。
+//  2. 对幂等 RPC 自动重试瞬态 Unavailable / DeadlineExceeded —— 副本切换
+//     窗口期单条 RPC 不会立即失败给 caller，而是 grpc-go 内部退让重试。
+//
+// 注意：retryPolicy 默认是 server-streaming/unary 都会重试。如果某接口非幂等
+// 且不能重试（如 Encrypt 反复执行会浪费 nonce 但不破数据，OK；但如果接口
+// 实际有副作用比如 CreateCharge，就要在 caller 层用 grpc-go 的 method-level
+// service config 关掉 retry）——目前 monorepo 内没这种 case，统一开 retry。
+const hardenedServiceConfig = `{
+  "loadBalancingConfig":[{"round_robin":{}}],
+  "methodConfig":[{
+    "name":[{}],
+    "retryPolicy":{
+      "maxAttempts":3,
+      "initialBackoff":"0.1s",
+      "maxBackoff":"1s",
+      "backoffMultiplier":2,
+      "retryableStatusCodes":["UNAVAILABLE","DEADLINE_EXCEEDED"]
+    }
+  }]
+}`
+
+// hardenedKeepalive 让客户端 10s 没流量就发一个 HTTP/2 ping，3s 收不到回包
+// 直接关掉 subconn 触发 reconnect。这是修 "副本被 scale/restart 后 client
+// 长期粘 stale IP" 的关键（grpc-go 默认 DNS TTL 30 分钟、pick_first 不主动
+// 探活，stale 连接能挂半小时）。
+//
+// PermitWithoutStream=true 让空闲连接也发 ping —— card-center 这种"绑卡才
+// 调一次 KMS"的低频调用必须开，否则 keepalive 完全不生效。
+//
+// Time/Timeout 比 grpc-go 默认（无穷 / 20s）激进很多但服务端默认 minTime=5min
+// 不会拒；如果某些 server 显式配了 EnforcementPolicy.MinTime>10s，这里
+// 会被以 GOAWAY 踢；目前 monorepo 内没这种配置。
+var hardenedKeepalive = keepalive.ClientParameters{
+	Time:                10 * time.Second,
+	Timeout:             3 * time.Second,
+	PermitWithoutStream: true,
+}
+
+// hardenedOptions 返回 monorepo 内所有 grpc client 推荐的固定 dial options。
+// 调用方传入的 opts 排在它之后，可以个别覆盖（grpc-go 同类 option 取最后一个）。
+func hardenedOptions() []grpc.DialOption {
+	return []grpc.DialOption{
+		grpc.WithDefaultServiceConfig(hardenedServiceConfig),
+		grpc.WithKeepaliveParams(hardenedKeepalive),
+	}
+}
 
 // Dial creates a gRPC ClientConn for the named service via the etcd resolver
 // (RegisterResolver must have run first). It always sets round_robin LB so
-// traffic spreads across all live replicas.
+// traffic spreads across all live replicas, plus tight keepalive so subconn
+// staleness is detected within ~13s.
 //
-// 用户传入的 opts 可以覆盖默认 service config（如想自定义 retry / timeout policy）。
-// Caller-provided WithDefaultServiceConfig wins because 它出现在 fixed 之后。
+// 用户传入的 opts 可以覆盖默认 service config / keepalive（如想自定义 retry
+// 或更宽松的 ping 周期）。Caller-provided option wins because 它出现在 fixed 之后。
 func Dial(service string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	if service == "" {
 		return nil, fmt.Errorf("serviceregistry: empty service name")
 	}
 	target := fmt.Sprintf("%s:///%s", resolverScheme, service)
 
-	fixed := []grpc.DialOption{
-		grpc.WithDefaultServiceConfig(roundRobinServiceConfig),
-	}
+	fixed := hardenedOptions()
 	fixed = append(fixed, opts...)
 	return grpc.NewClient(target, fixed...)
 }
 
 // DialWithFallback 是面向"既要支持 etcd resolver 又要支持单仓 dev 直连"的统一入口。
 //
-//	endpoints 非空 → 走 DialFromEndpoints(etcd resolver + round_robin)
-//	endpoints 为空 → 退回 grpc.NewClient(fallbackAddr) + 默认 round_robin
+//	endpoints 非空 → 走 DialFromEndpoints(etcd resolver + round_robin + keepalive)
+//	endpoints 为空 → 退回 grpc.NewClient(fallbackAddr) + 同样的 round_robin + keepalive
 //
 // 所有 daemon 调用方应该用本 helper 代替裸 grpc.NewClient(addr)，这样 docker
 // 联栈模式下（容器删了 container_name 改用 --scale）能通过 etcd 而不是 DNS
@@ -49,11 +96,24 @@ func DialWithFallback(endpoints []string, service, fallbackAddr string, opts ...
 	if fallbackAddr == "" {
 		return nil, fmt.Errorf("serviceregistry: empty endpoints and empty fallbackAddr for service %q", service)
 	}
-	// 直连模式也加 round_robin：DNS 解析返回多 A 记录时（k8s headless svc /
-	// docker network 多副本同 alias）才会均摊。
-	fixed := []grpc.DialOption{
-		grpc.WithDefaultServiceConfig(roundRobinServiceConfig),
-	}
+	// 直连模式也加 round_robin + keepalive：DNS 解析返回多 A 记录时（k8s
+	// headless svc / docker network 多副本同 alias）会均摊；副本被 kill 后
+	// 10s 内被 keepalive ping 探测出来踢掉，避免 stale 连接 hang。
+	fixed := hardenedOptions()
 	fixed = append(fixed, opts...)
 	return grpc.NewClient(fallbackAddr, fixed...)
+}
+
+// DialDirect 是一条只走"静态 endpoint + hardened opts"的捷径，不需要走 etcd。
+// 适用于：endpoint 已经是 docker DNS / k8s headless svc 名字，调用方只想要
+// 自动 keepalive + round_robin + retry 这一套防 stale 的兜底配置。
+//
+// 等价于 DialWithFallback(nil, "", endpoint, opts...)。
+func DialDirect(endpoint string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
+	if endpoint == "" {
+		return nil, fmt.Errorf("serviceregistry: empty endpoint")
+	}
+	fixed := hardenedOptions()
+	fixed = append(fixed, opts...)
+	return grpc.NewClient(endpoint, fixed...)
 }

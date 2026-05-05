@@ -36,6 +36,7 @@ import (
 	"github.com/xiongwp/card-center/internal/service"
 	"github.com/xiongwp/card-center/internal/sharding"
 	"github.com/xiongwp/card-center/internal/vault"
+	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/payment-util/trace"
 )
@@ -71,11 +72,14 @@ func loadConfig() (*viper.Viper, error) {
 	v.SetEnvPrefix("CARDCENTER")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
-	for _, k := range []string{"env", "kms.endpoint", "tls.cert", "tls.key", "tls.client_ca",
+	for _, k := range []string{"env", "kms.endpoint", "kms.insecure", "kms.bearer_token",
+		"kms.rpc_timeout", "kms.client_cert", "kms.client_key", "kms.server_ca",
+		"tls.cert", "tls.key", "tls.client_ca",
 		"audit.kafka_brokers", "database.meta.dsn",
 		// HTTPS 入口 + 用户登录态校验上游（mTLS gRPC 直连 user-merchant-core）
 		"https.enabled", "https.port", "https.cert", "https.key",
-		"auth.user_merchant.endpoint",
+		"https.dev_no_tls", "https.cors.allowed_origin",
+		"auth.user_merchant.endpoint", "auth.user_merchant.insecure",
 		"auth.user_merchant.client_cert",
 		"auth.user_merchant.client_key",
 		"auth.user_merchant.server_ca",
@@ -331,10 +335,10 @@ func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*
 		}
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	}
-	dialOpts = append(dialOpts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
-		Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
-	}))
-	conn, err := grpc.NewClient(endpoint, dialOpts...)
+	// 不再自己挂 KeepaliveParams——serviceregistry.DialDirect 内部已经按
+	// 10s ping / 3s timeout / PermitWithoutStream=true 标准化好了，副本被
+	// scale/kill 后 ~13s 内被探出来，避免 stale subconn hang RST_STREAM CANCEL。
+	conn, err := serviceregistry.DialDirect(endpoint, dialOpts...)
 	if err != nil {
 		return nil, err
 	}
