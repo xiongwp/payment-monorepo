@@ -69,7 +69,8 @@ RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     promote payment-util        "$PAYMENT_UTIL_REF"; \
     promote kms-manage          "$KMS_MANAGE_REF"; \
     promote user-merchant-core  "$USER_MERCHANT_CORE_REF"; \
-    promote risk-manage         "$RISK_MANAGE_REF"
+    promote risk-manage         "$RISK_MANAGE_REF"; \
+    promote order-core          "$ORDER_CORE_REF"
 
 COPY . /src/api-gateway
 WORKDIR /src/api-gateway

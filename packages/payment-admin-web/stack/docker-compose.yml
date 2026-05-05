@@ -812,6 +812,7 @@ services:
         kms-manage:          ../../kms-manage
         user-merchant-core:  ../../user-merchant-core
         risk-manage:         ../../risk-manage
+        order-core:          ../../order-core
       secrets: [GITHUB_TOKEN]
     image: api-gateway:local
     container_name: api-gateway
