@@ -133,13 +133,33 @@ func newLogger() (*zap.Logger, error) {
 func newRouter() *sharding.Router { return sharding.NewRouter() }
 
 func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (*repo.Manager, error) {
-	var meta repo.DBConfig
-	_ = v.UnmarshalKey("database.meta", &meta)
+	// 注意：用 v.GetString 而不是 v.UnmarshalKey。
+	// viper 的 UnmarshalKey 不会触发 AutomaticEnv 查表 → CARDPAYMENT_DATABASE_*_DSN 被忽略。
+	meta := repo.DBConfig{
+		Name:            v.GetString("database.meta.name"),
+		DSN:             v.GetString("database.meta.dsn"),
+		MaxOpenConns:    v.GetInt("database.meta.max_open_conns"),
+		MaxIdleConns:    v.GetInt("database.meta.max_idle_conns"),
+		ConnMaxLifetime: v.GetInt("database.meta.conn_max_lifetime"),
+	}
+	if meta.Name == "" {
+		meta.Name = "card_payment_meta"
+	}
 	shards := make([]repo.DBConfig, sharding.ShardDBCount)
 	for i := 0; i < sharding.ShardDBCount; i++ {
-		var s repo.DBConfig
-		_ = v.UnmarshalKey(fmt.Sprintf("database.shard_%d", i), &s)
-		shards[i] = s
+		prefix := fmt.Sprintf("database.shard_%d", i)
+		_ = v.BindEnv(prefix + ".dsn")
+		_ = v.BindEnv(prefix + ".name")
+		shards[i] = repo.DBConfig{
+			Name:            v.GetString(prefix + ".name"),
+			DSN:             v.GetString(prefix + ".dsn"),
+			MaxOpenConns:    v.GetInt(prefix + ".max_open_conns"),
+			MaxIdleConns:    v.GetInt(prefix + ".max_idle_conns"),
+			ConnMaxLifetime: v.GetInt(prefix + ".conn_max_lifetime"),
+		}
+		if shards[i].Name == "" {
+			shards[i].Name = fmt.Sprintf("card_payment_db_%d", i)
+		}
 	}
 	return repo.NewManager(meta, shards, router, logger)
 }

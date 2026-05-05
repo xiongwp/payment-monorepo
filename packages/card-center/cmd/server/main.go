@@ -149,14 +149,36 @@ func newLogger() (*zap.Logger, error) {
 func newRouter() *sharding.Router { return sharding.NewRouter() }
 
 func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (*repo.Manager, error) {
-	var meta repo.DBConfig
-	_ = v.UnmarshalKey("database.meta", &meta)
+	// 注意：用 v.GetString 而不是 v.UnmarshalKey。
+	// viper 的 UnmarshalKey 不会触发 AutomaticEnv 的查表，导致
+	// CARDCENTER_DATABASE_META_DSN 等 env 变量被忽略，构造函数报 meta.dsn required。
+	// 显式 GetString 能命中 BindEnv 注册的键。
+	meta := repo.DBConfig{
+		Name:            v.GetString("database.meta.name"),
+		DSN:             v.GetString("database.meta.dsn"),
+		MaxOpenConns:    v.GetInt("database.meta.max_open_conns"),
+		MaxIdleConns:    v.GetInt("database.meta.max_idle_conns"),
+		ConnMaxLifetime: v.GetInt("database.meta.conn_max_lifetime"),
+	}
+	if meta.Name == "" {
+		meta.Name = "card_center_meta"
+	}
 	shards := make([]repo.DBConfig, sharding.ShardDBCount)
 	for i := 0; i < sharding.ShardDBCount; i++ {
-		key := fmt.Sprintf("database.shard_%d", i)
-		var s repo.DBConfig
-		_ = v.UnmarshalKey(key, &s)
-		shards[i] = s
+		prefix := fmt.Sprintf("database.shard_%d", i)
+		// 每个 shard DSN 显式 BindEnv（loadConfig 没枚举 0..9，这里补）
+		_ = v.BindEnv(prefix + ".dsn")
+		_ = v.BindEnv(prefix + ".name")
+		shards[i] = repo.DBConfig{
+			Name:            v.GetString(prefix + ".name"),
+			DSN:             v.GetString(prefix + ".dsn"),
+			MaxOpenConns:    v.GetInt(prefix + ".max_open_conns"),
+			MaxIdleConns:    v.GetInt(prefix + ".max_idle_conns"),
+			ConnMaxLifetime: v.GetInt(prefix + ".conn_max_lifetime"),
+		}
+		if shards[i].Name == "" {
+			shards[i].Name = fmt.Sprintf("card_center_db_%d", i)
+		}
 	}
 	return repo.NewManager(meta, shards, router, logger)
 }
