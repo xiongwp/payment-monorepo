@@ -422,11 +422,23 @@ func startHTTPS(lc fx.Lifecycle, v *viper.Viper, rest *httpsauth.RESTServer, log
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	devNoTLS := v.GetBool("https.dev_no_tls")
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
-			logger.Info("card-center HTTPS REST listening", zap.Int("port", port))
+			mode := "TLS"
+			if devNoTLS {
+				mode = "DEV-PLAINTEXT"
+			}
+			logger.Info("card-center HTTPS REST listening", zap.Int("port", port), zap.String("mode", mode))
 			go func() {
-				if err := srv.ListenAndServeTLS(certPath, keyPath); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				var err error
+				if devNoTLS {
+					// dev：明文 HTTP 让本地 docker 不需要 cert（assertProdSafety 在 prod 拦这条）
+					err = srv.ListenAndServe()
+				} else {
+					err = srv.ListenAndServeTLS(certPath, keyPath)
+				}
+				if err != nil && !errors.Is(err, http.ErrServerClosed) {
 					logger.Error("https serve", zap.Error(err))
 				}
 			}()
