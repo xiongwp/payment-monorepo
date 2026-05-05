@@ -62,7 +62,7 @@ func main() {
 			newHTTPSVerifier,
 			newRESTServer,
 		),
-		fx.Invoke(startGRPC, startHTTPS),
+		fx.Invoke(startGRPC, startHTTPS, startServiceRegistrar),
 	)
 	app.Run()
 }
@@ -81,9 +81,13 @@ func loadConfig() (*viper.Viper, error) {
 		"https.enabled", "https.port", "https.cert", "https.key",
 		"https.dev_no_tls", "https.cors.allowed_origin",
 		"auth.user_merchant.endpoint", "auth.user_merchant.insecure",
+		"auth.user_merchant.registry_endpoints",
 		"auth.user_merchant.client_cert",
 		"auth.user_merchant.client_key",
 		"auth.user_merchant.server_ca",
+		// 服务自注册到 etcd（被 card-payment / api-gateway / BFF 调用）
+		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl",
+		"server.grpc_port",
 	} {
 		_ = v.BindEnv(k)
 	}
@@ -344,8 +348,20 @@ func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*
 		return nil, nil
 	}
 	endpoint := v.GetString("auth.user_merchant.endpoint")
-	if endpoint == "" {
-		return nil, errors.New("https.enabled=true but auth.user_merchant.endpoint not set")
+	registry := splitCSV(v.GetString("auth.user_merchant.registry_endpoints"))
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("auth.user_merchant.registry_endpoints")
+	}
+	// 跟全局 registry.endpoints 共用同一套 etcd cluster：上面单独配置是为了
+	// 个别服务（card-center 隔离 DC 内）允许跨 DC 走专用 registry，配置兼容。
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("registry.endpoints")
+		if len(registry) == 0 {
+			registry = splitCSV(v.GetString("registry.endpoints"))
+		}
+	}
+	if endpoint == "" && len(registry) == 0 {
+		return nil, errors.New("https.enabled=true but auth.user_merchant.endpoint / registry_endpoints both empty")
 	}
 	// dev：auth.user_merchant.insecure=true → 明文 gRPC，跳过 mTLS。
 	insecureMode := v.GetBool("auth.user_merchant.insecure")
