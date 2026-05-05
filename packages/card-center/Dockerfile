@@ -1,7 +1,13 @@
 # card-center Dockerfile —— 跟 user-merchant-core 同模板。
 # 优先用本地兄弟仓 additional_contexts 注入；找不到 fallback git clone。
+#
+# 兄弟仓：
+#   payment-util        给 trace / shadow / serviceregistry helpers 用
+#   user-merchant-core  给 internal/httpsauth Verifier 引 IntrospectToken proto stub 用
 
 FROM alpine:3.19 AS payment-util
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS user-merchant-core-src
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS build
@@ -12,8 +18,14 @@ ENV GOFLAGS=-mod=mod
 ENV GOTOOLCHAIN=auto
 
 ARG PAYMENT_UTIL_REF=main
+ARG USER_MERCHANT_CORE_REF=main
 
-COPY --from=payment-util / /tmp/payment-util-staged/
+# cache-buster：兄弟仓内容变更但 BuildKit 还缓存了旧 staged 时改 v=N
+ARG SIBLING_CONTEXT_VER=1
+RUN echo "sibling-ctx ver=${SIBLING_CONTEXT_VER}"
+
+COPY --from=payment-util            / /tmp/payment-util-staged/
+COPY --from=user-merchant-core-src  / /tmp/user-merchant-core-staged/
 
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
@@ -37,7 +49,8 @@ RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
       fi; \
       rm -rf "${staged}"; \
     }; \
-    promote payment-util "$PAYMENT_UTIL_REF"
+    promote payment-util        "$PAYMENT_UTIL_REF"; \
+    promote user-merchant-core  "$USER_MERCHANT_CORE_REF"
 
 COPY . /src/card-center
 

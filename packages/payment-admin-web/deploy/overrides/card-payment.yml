@@ -10,14 +10,18 @@ services:
       context: ../../../card-payment
       dockerfile: Dockerfile
       additional_contexts:
-        payment-util: ../../../payment-util
+        payment-util:    ../../../payment-util
+        # alias 不能直接叫 card-center —— 会跟 payment-stack 里 card-center:local
+        # image 撞名，buildx 会把它解析成 docker-image 而不是本地路径。
+        card-center-src: ../../../card-center
       secrets:
         - GITHUB_TOKEN
     image: card-payment:local
     container_name: card-payment
     restart: unless-stopped
-    depends_on:
-      card-center: { condition: service_started }
+    # depends_on: card-center 不能写在这里 —— 它在另一个 compose project (-p card-center)，
+    # compose 看不见。启动顺序由 deploy.sh ALL_SERVICES 保证：
+    #   card-center 先于 card-payment。
     ports:
       - "9444:9444"   # mTLS gRPC（dev 实际明文）
       - "9544:9544"   # /metrics

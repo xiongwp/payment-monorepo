@@ -1,7 +1,9 @@
 # card-payment Dockerfile —— 跟 card-center / user-merchant-core 同模板
 FROM alpine:3.19 AS payment-util
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
-FROM alpine:3.19 AS card-center
+# alias `card-center-src`：避免跟 payment-stack 网络里的 card-center:local image 撞名
+# （撞名会让 buildx 把 additional_context 解析为 docker-image:// 而不是本地路径）。
+FROM alpine:3.19 AS card-center-src
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS build
@@ -13,8 +15,12 @@ ENV GOTOOLCHAIN=auto
 ARG PAYMENT_UTIL_REF=main
 ARG CARD_CENTER_REF=main
 
-COPY --from=payment-util / /tmp/payment-util-staged/
-COPY --from=card-center / /tmp/card-center-staged/
+# cache-buster
+ARG SIBLING_CONTEXT_VER=1
+RUN echo "sibling-ctx ver=${SIBLING_CONTEXT_VER}"
+
+COPY --from=payment-util    / /tmp/payment-util-staged/
+COPY --from=card-center-src / /tmp/card-center-staged/
 
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
