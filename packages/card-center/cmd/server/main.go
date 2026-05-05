@@ -414,9 +414,10 @@ func startHTTPS(lc fx.Lifecycle, v *viper.Viper, rest *httpsauth.RESTServer, log
 	}
 	certPath := v.GetString("https.cert")
 	keyPath := v.GetString("https.key")
+	corsOrigin := v.GetString("https.cors.allowed_origin")
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
-		Handler:           rest.Handler(),
+		Handler:           corsMiddleware(rest.Handler(), corsOrigin, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -449,6 +450,36 @@ func startHTTPS(lc fx.Lifecycle, v *viper.Viper, rest *httpsauth.RESTServer, log
 			defer cancel()
 			return srv.Shutdown(ctx)
 		},
+	})
+}
+
+
+
+// corsMiddleware 给 HTTPS REST 加最小可用的 CORS 头，让 api-gateway 上的
+// 前端 JS 跨域 fetch 到 card-center 8443。
+//
+//   - allowedOrigin == "" → 完全不出 CORS 头（同源调用 / 服务间调用场景）
+//   - allowedOrigin == "*" → 任意来源（dev only）
+//   - 其它 → 严格匹配 Origin
+//
+// OPTIONS preflight 直接返 204，不进 auth middleware 链 —— 不然 401 会让
+// 浏览器拿不到 Access-Control-Allow-Origin，整个 fetch 失败。
+func corsMiddleware(next http.Handler, allowedOrigin string, logger *zap.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && (allowedOrigin == "*" || origin == allowedOrigin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+			w.Header().Set("Access-Control-Max-Age", "600")
+			w.Header().Set("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
