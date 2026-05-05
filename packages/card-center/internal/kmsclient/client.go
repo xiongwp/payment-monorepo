@@ -16,6 +16,9 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+
+	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
+	"github.com/xiongwp/payment-util/serviceregistry"
 )
 
 // Client kms-manage gRPC 客户端（mTLS）
