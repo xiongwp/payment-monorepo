@@ -307,6 +307,7 @@ func newUserwebHandler(uc UserMerchantConn, v *viper.Viper, logger *zap.Logger) 
 	}
 	h.CookieDomain = v.GetString("auth.cookie_domain")
 	h.CookieSecure = v.GetBool("auth.cookie_secure")
+	h.CookieSameSiteNone = v.GetBool("auth.cookie_samesite_none")
 	return h, nil
 }
 

@@ -35,6 +35,10 @@ type Handler struct {
 	// CookieDomain / CookieSecure 由 main.go 按部署环境配置。
 	CookieDomain string
 	CookieSecure bool
+	// CookieSameSiteNone 跨 origin（不同 port）想让浏览器在 fetch credentials:include
+	// 时仍发 cookie 时开。开了之后 SameSite=None；浏览器会要求 Secure，因此通常需要 HTTPS。
+	// dev localhost 不同 port 默认 same-site，Lax 就够；只在跨 origin 真出问题时才开。
+	CookieSameSiteNone bool
 }
 
 // NewHandler 装配模板 + gRPC client。
@@ -277,6 +281,10 @@ func (h *Handler) flash(w http.ResponseWriter, r *http.Request, name, title, msg
 }
 
 func (h *Handler) setJWTCookie(w http.ResponseWriter, jwt string) {
+	ss := http.SameSiteLaxMode
+	if h.CookieSameSiteNone {
+		ss = http.SameSiteNoneMode
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    jwt,
@@ -284,7 +292,7 @@ func (h *Handler) setJWTCookie(w http.ResponseWriter, jwt string) {
 		Domain:   h.CookieDomain,
 		HttpOnly: true,
 		Secure:   h.CookieSecure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: ss,
 		MaxAge:   24 * 60 * 60,
 	})
 }

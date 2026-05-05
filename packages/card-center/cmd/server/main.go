@@ -23,6 +23,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	insecuregrpc "google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
 	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
@@ -124,6 +125,10 @@ func assertProdSafety(v *viper.Viper) error {
 	}
 	// HTTPS 入口 + 登录态校验（mTLS gRPC 直连 user-merchant-core）
 	if v.GetBool("https.enabled") {
+		// 生产严禁明文 HTTP
+		if v.GetBool("https.dev_no_tls") {
+			return fmt.Errorf("PROD-SAFETY: https.dev_no_tls=true is forbidden in env=prod")
+		}
 		for _, k := range []string{
 			"https.cert", "https.key",
 			"auth.user_merchant.endpoint",
@@ -302,32 +307,39 @@ func startGRPC(lc fx.Lifecycle, srv *grpc.Server, _ *server.Server, v *viper.Vip
 // 也会因为 verifier 为 nil 而跳过 HTTPS 启动。这样开发模式不需要任何 mTLS 配置就能跑。
 func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*grpc.ClientConn, error) {
 	if !v.GetBool("https.enabled") {
-		logger.Info("https.enabled=false; skipping user-merchant-core mTLS dial")
+		logger.Info("https.enabled=false; skipping user-merchant-core dial")
 		return nil, nil
 	}
 	endpoint := v.GetString("auth.user_merchant.endpoint")
 	if endpoint == "" {
 		return nil, errors.New("https.enabled=true but auth.user_merchant.endpoint not set")
 	}
-	tlsCfg, err := buildClientMTLS(
-		v.GetString("auth.user_merchant.client_cert"),
-		v.GetString("auth.user_merchant.client_key"),
-		v.GetString("auth.user_merchant.server_ca"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("user-merchant client tls: %w", err)
+	// dev：auth.user_merchant.insecure=true → 明文 gRPC，跳过 mTLS。
+	insecureMode := v.GetBool("auth.user_merchant.insecure")
+	var dialOpts []grpc.DialOption
+	if insecureMode {
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecuregrpc.NewCredentials()))
+		logger.Info("card-center → user-merchant-core: INSECURE mode (dev)")
+	} else {
+		tlsCfg, err := buildClientMTLS(
+			v.GetString("auth.user_merchant.client_cert"),
+			v.GetString("auth.user_merchant.client_key"),
+			v.GetString("auth.user_merchant.server_ca"),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("user-merchant client tls: %w", err)
+		}
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	}
-	conn, err := grpc.NewClient(endpoint,
-		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
-		}),
-	)
+	dialOpts = append(dialOpts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
+		Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
+	}))
+	conn, err := grpc.NewClient(endpoint, dialOpts...)
 	if err != nil {
 		return nil, err
 	}
 	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
-	logger.Info("card-center → user-merchant-core mTLS dialed (for HTTPS auth)",
+	logger.Info("card-center → user-merchant-core dialed (for HTTPS auth)",
 		zap.String("endpoint", endpoint))
 	return conn, nil
 }
@@ -381,9 +393,25 @@ func startHTTPS(lc fx.Lifecycle, v *viper.Viper, rest *httpsauth.RESTServer, log
 	}
 	certPath := v.GetString("https.cert")
 	keyPath := v.GetString("https.key")
+
+	// dev_no_tls：true 时跑明文 HTTP（不需要证书，浏览器无 self-signed warning）。
+	// env=prod 由 assertProdSafety 拦截 dev_no_tls=true，绝不允许生产明文。
+	devNoTLS := v.GetBool("https.dev_no_tls")
+	mode := "TLS"
+	if devNoTLS {
+		mode = "DEV-PLAINTEXT"
+	}
+
+	// CORS：dev 时浏览器从 api-gateway origin (http://localhost:18080) 跨域 fetch
+	// card-center (http://localhost:8443)，必须放开 Origin + Credentials。
+	allowedOrigin := v.GetString("https.cors.allowed_origin")
+	if allowedOrigin == "" {
+		allowedOrigin = "http://localhost:18080" // dev 默认
+	}
+
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
-		Handler:           rest.Handler(),
+		Handler:           corsMiddleware(rest.Handler(), allowedOrigin, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -391,9 +419,17 @@ func startHTTPS(lc fx.Lifecycle, v *viper.Viper, rest *httpsauth.RESTServer, log
 	}
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
-			logger.Info("card-center HTTPS REST listening", zap.Int("port", port))
+			logger.Info("card-center HTTPS REST listening",
+				zap.Int("port", port), zap.String("mode", mode),
+				zap.String("cors_allowed_origin", allowedOrigin))
 			go func() {
-				if err := srv.ListenAndServeTLS(certPath, keyPath); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				var err error
+				if devNoTLS {
+					err = srv.ListenAndServe()
+				} else {
+					err = srv.ListenAndServeTLS(certPath, keyPath)
+				}
+				if err != nil && !errors.Is(err, http.ErrServerClosed) {
 					logger.Error("https serve", zap.Error(err))
 				}
 			}()
@@ -404,6 +440,27 @@ func startHTTPS(lc fx.Lifecycle, v *viper.Viper, rest *httpsauth.RESTServer, log
 			defer cancel()
 			return srv.Shutdown(ctx)
 		},
+	})
+}
+
+// corsMiddleware 给 dev 跨域 fetch 用。生产路径（同域 SDK 或 reverse proxy）
+// 不该依赖这个；CORS allowed_origin 必须显式配，不接受 "*" + credentials（浏览器禁止）。
+func corsMiddleware(next http.Handler, allowedOrigin string, logger *zap.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && (origin == allowedOrigin || allowedOrigin == "*") {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Max-Age", "300")
+		}
+		// 预检直接 204
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

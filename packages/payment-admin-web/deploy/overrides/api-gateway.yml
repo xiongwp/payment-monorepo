@@ -26,7 +26,8 @@ services:
       APIGW_AUTH_COOKIE_SECURE: "false"
       # 卡支付：cards.enabled=true 让 /cards 走真实 user-merchant-core + order-core gRPC
       APIGW_CARDS_ENABLED: "true"
-      APIGW_CARDS_CARD_CENTER_URL: ""
+      # 浏览器 JS 从 cards_new.html 直发的目标。dev 明文 + CORS 已开。
+      APIGW_CARDS_CARD_CENTER_URL: "http://localhost:8443"
 
 networks:
   payment-stack:
