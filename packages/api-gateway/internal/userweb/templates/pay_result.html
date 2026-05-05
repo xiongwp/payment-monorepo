@@ -1,0 +1,29 @@
+{{define "pay_result.html"}}{{template "layout" .}}{{end}}
+
+{{define "content"}}
+<h1>支付结果</h1>
+<p class="sub"><a href="/pay">再支付一笔</a> · <a href="/me">返回账户</a></p>
+{{if .Flash}}<div class="flash">{{.Flash}}</div>{{end}}
+
+{{if .PI}}
+<div class="kv"><span>PI ID</span><span style="font-family:monospace">{{.PI.ID}}</span></div>
+<div class="kv"><span>状态</span>
+  <span style="font-weight:600;color:{{if eq .PI.Status "succeeded"}}var(--ok){{else if eq .PI.Status "failed"}}var(--err){{else}}var(--accent){{end}}">
+    {{.PI.Status}}
+  </span>
+</div>
+<div class="kv"><span>金额</span><span>{{.PI.Amount}} {{.PI.Currency}}</span></div>
+{{if .PI.MaskedPAN}}<div class="kv"><span>使用卡</span><span style="font-family:monospace">{{.PI.MaskedPAN}} · {{.PI.Network}}</span></div>{{end}}
+{{if .PI.DeclineReason}}<div class="kv"><span>拒付原因</span><span style="color:var(--err)">{{.PI.DeclineReason}}</span></div>{{end}}
+
+<div style="margin-top:24px">
+  {{if eq .PI.Status "succeeded"}}
+    <div class="flash ok">支付成功</div>
+  {{else if eq .PI.Status "failed"}}
+    <div class="flash">支付失败，可重试或换卡</div>
+  {{else}}
+    <p class="sub">状态 <code>{{.PI.Status}}</code> 处理中，刷新或稍后回看。</p>
+  {{end}}
+</div>
+{{end}}
+{{end}}

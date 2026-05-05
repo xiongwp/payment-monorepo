@@ -1,0 +1,103 @@
+// 用户卡服务（UserCard）：绑卡 / 列卡 / 删卡 / 默认卡 / 内部 stored_token 查询。
+//
+// PCI 边界：
+//   - AddCard 是**唯一**接受 PAN 的 RPC；上层（api-gateway / SDK）调用后立刻把
+//     PAN 转给 user-merchant-core，user-merchant-core 内部立即 forward 给
+//     card-center.Tokenize 换 stored_token，PAN 在本服务进程驻留 < 1ms。
+//   - ListCards / GetCard 返回的字段已脱敏，只含 masked_pan / network / 有效期
+//     等元数据，不含 stored_token / PAN。
+//   - GetStoredTokenForPayment 是**内部 RPC**：listen 在内部端口（mTLS + clientCN
+//     白名单：order-core），公网入口（api-gateway）不可调。
+//
+// 部署：service user-merchant-core 同时 listen :8080（公网/UserService 等）和 :8090
+//      （内部/UserCardInternalService）。internal listener 仅由 order-core / 受信
+//      模块通过 mTLS 调，CN 白名单在 server interceptor 强校验。
+syntax = "proto3";
+
+package usermerchant.v1;
+
+option go_package = "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1;usermerchantv1";
+
+// ─── public-facing：api-gateway / SDK 走这条 ────────────────────────────────
+//
+// 注意：AddCard 仍走 mTLS gRPC（不是 HTTPS REST）；api-gateway 端 cards.go 内部
+// 拨同一 user-merchant-core 连接调本 RPC。生产路径推荐前端 SDK 直连 card-center
+// HTTPS endpoint 完全绕过 api-gateway / user-merchant-core，scope 缩到 SAQ-A。
+service UserCardService {
+  rpc AddCard       (AddCardRequest)       returns (AddCardResponse);
+  rpc ListCards     (ListCardsRequest)     returns (ListCardsResponse);
+  rpc DeleteCard    (DeleteCardRequest)    returns (DeleteCardResponse);
+  rpc SetDefaultCard(SetDefaultCardRequest) returns (SetDefaultCardResponse);
+}
+
+// ─── internal-only：order-core 走这条 ────────────────────────────────────────
+//
+// mTLS clientCN 白名单："order-core"。其它任何调用方一律拒绝。
+service UserCardInternalService {
+  // 给 order-core PI Confirm 路径用：凭 (user_id, user_card_id) 取 stored_token。
+  // stored_token 在 order-core 进程内驻留 < 100ms（用于调 card-center.CreatePaymentToken），
+  // 用完即丢，绝不外发 / 不存。
+  rpc GetStoredTokenForPayment(GetStoredTokenRequest) returns (GetStoredTokenResponse);
+}
+
+// ─── messages ────────────────────────────────────────────────────────────────
+
+// CardInfo 卡元数据（已脱敏，不含 stored_token / PAN）。
+message CardInfo {
+  int64  id          = 1;  // user_card_id
+  string masked_pan  = 2;  // 411111******1111
+  string network     = 3;  // VISA / MASTERCARD / JCB / AMEX / UNIONPAY
+  int32  exp_month   = 4;  // 1..12
+  int32  exp_year    = 5;  // 4-digit
+  string holder_name = 6;
+  bool   is_default  = 7;
+  string status      = 8;  // active / deleted / expired
+}
+
+message AddCardRequest {
+  // user_id 必填；客户端拿不到 user_id，由 api-gateway 从 jwt 解析后塞进来。
+  int64  user_id     = 1;
+  // PAN：13-19 位卡号。**仅在请求 wire 上出现一次**，server 收到立即调
+  // card-center.Tokenize，换成 stored_token 后存表，PAN 不持久化、不打日志。
+  string pan         = 2;
+  int32  exp_month   = 3;
+  int32  exp_year    = 4;
+  // CVV 仅用于 Tokenize 试探（card-center 内部 BIN 校验 + 网络校验），
+  // **不存表**，不会出现在 stored_token 里。
+  string cvv         = 5;
+  string holder_name = 6;
+  bool   set_default = 7;
+  string trace_id    = 8;
+}
+message AddCardResponse {
+  int64  user_card_id = 1;
+  string masked_pan   = 2;
+  string network      = 3;
+}
+
+message ListCardsRequest  { int64 user_id = 1; }
+message ListCardsResponse { repeated CardInfo cards = 1; }
+
+message DeleteCardRequest {
+  int64  user_id      = 1;
+  int64  user_card_id = 2;
+  string trace_id     = 3;
+}
+message DeleteCardResponse { bool ok = 1; }
+
+message SetDefaultCardRequest {
+  int64 user_id      = 1;
+  int64 user_card_id = 2;
+}
+message SetDefaultCardResponse { bool ok = 1; }
+
+message GetStoredTokenRequest {
+  int64 user_id      = 1;
+  int64 user_card_id = 2;
+}
+message GetStoredTokenResponse {
+  // stored_token：仅 order-core 拿到，立刻给 card-center.CreatePaymentToken。
+  string stored_token = 1;
+  string masked_pan   = 2;
+  string network      = 3;
+}

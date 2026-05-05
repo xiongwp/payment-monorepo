@@ -1,0 +1,50 @@
+{{define "cards.html"}}{{template "layout" .}}{{end}}
+
+{{define "content"}}
+<h1>我的卡</h1>
+<p class="sub">绑卡后即可用于支付。卡号在本系统永远以脱敏形式存在。<a href="/me">返回账户</a></p>
+{{if .Flash}}<div class="flash">{{.Flash}}</div>{{end}}
+
+{{if .Cards}}
+<table style="width:100%;border-collapse:collapse;font-size:13px">
+  <thead>
+    <tr style="color:var(--muted)">
+      <th align="left" style="padding:6px 0">卡号</th>
+      <th align="left">网络</th>
+      <th align="left">有效期</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Cards}}
+    <tr style="border-top:1px solid #2a2a35">
+      <td style="padding:10px 0;font-family:monospace">
+        {{.MaskedPAN}}
+        {{if .IsDefault}}<small style="color:var(--ok)">默认</small>{{end}}
+      </td>
+      <td>{{.Network}}</td>
+      <td>{{printf "%02d" .ExpMonth}}/{{.ExpYear}}</td>
+      <td align="right">
+        {{if not .IsDefault}}
+        <form method="POST" action="/cards/{{.ID}}/default" style="display:inline">
+          <button type="submit" style="width:auto;padding:4px 10px;margin:0;background:#333;font-size:12px">设为默认</button>
+        </form>
+        {{end}}
+        <form method="POST" action="/cards/{{.ID}}/delete" style="display:inline"
+              onsubmit="return confirm('确认解绑卡 {{.MaskedPAN}}？');">
+          <button type="submit" style="width:auto;padding:4px 10px;margin:0;background:#552222;font-size:12px">解绑</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="sub" style="text-align:center;padding:24px 0">尚未绑卡</p>
+{{end}}
+
+<div class="row" style="margin-top:20px">
+  <div><a href="/cards/new"><button type="button">绑定新卡</button></a></div>
+  {{if .Cards}}<div><a href="/pay"><button type="button" style="background:#333">去支付</button></a></div>{{end}}
+</div>
+{{end}}

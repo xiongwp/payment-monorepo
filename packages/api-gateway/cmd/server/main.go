@@ -49,6 +49,7 @@ func main() {
 			newServerConfig,
 			newUserMerchantConn,
 			newUserwebHandler,
+			newCardHandler,
 			newServer,
 		),
 		fx.Invoke(startServer, startMetrics),

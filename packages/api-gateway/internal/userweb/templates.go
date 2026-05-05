@@ -36,7 +36,11 @@ var templatesFS embed.FS
 func loadTemplates() (map[string]*template.Template, error) {
 	// 文件名 → handler render 时用的 key。otp.html 有个 page 就叫 "otp"，
 	// handler 里就传 "otp.html"，对得上。
-	pages := []string{"signup", "login", "otp", "me"}
+	pages := []string{
+		"signup", "login", "otp", "me",
+		// 卡支付前端：cards.go 用
+		"cards", "cards_new", "pay", "pay_result",
+	}
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t, err := template.New(p+".html").ParseFS(templatesFS,

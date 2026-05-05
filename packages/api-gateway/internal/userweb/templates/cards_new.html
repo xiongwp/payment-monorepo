@@ -1,0 +1,78 @@
+{{define "cards_new.html"}}{{template "layout" .}}{{end}}
+
+{{define "content"}}
+<h1>绑定卡</h1>
+<p class="sub">
+  卡号在本页提交后，仅在 user-merchant-core → card-center 之间穿越一次（mTLS gRPC），
+  立刻换成 stored_token；本系统及业务库永不持有 PAN。<a href="/cards">返回</a>
+</p>
+{{if .Flash}}<div class="flash">{{.Flash}}</div>{{end}}
+
+<form method="POST" action="/cards" autocomplete="off"
+      onsubmit="return validateCard(this);">
+  <label>持卡人姓名</label>
+  <input name="holder_name" required maxlength="64" placeholder="ZHANG SAN">
+
+  <label>卡号</label>
+  <input name="pan" required inputmode="numeric" autocomplete="off"
+         pattern="[0-9 ]{13,23}" maxlength="23"
+         placeholder="4111 1111 1111 1111"
+         oninput="this.value=this.value.replace(/[^0-9 ]/g,'').replace(/(\d{4})(?=\d)/g,'$1 ').slice(0,23)">
+
+  <div class="row">
+    <div>
+      <label>有效月</label>
+      <input name="exp_month" required inputmode="numeric" pattern="[0-9]{1,2}" maxlength="2" placeholder="MM">
+    </div>
+    <div>
+      <label>有效年（4 位）</label>
+      <input name="exp_year" required inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="YYYY">
+    </div>
+    <div>
+      <label>CVV</label>
+      <input name="cvv" required inputmode="numeric" pattern="[0-9]{3,4}" maxlength="4" placeholder="123"
+             autocomplete="off">
+    </div>
+  </div>
+
+  <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+    <input type="checkbox" name="set_default" value="1" style="width:auto;margin:0">
+    <span>设为默认卡</span>
+  </label>
+
+  <button type="submit">绑定</button>
+</form>
+
+<p class="sub" style="margin-top:20px;font-size:12px;line-height:1.6">
+  生产环境路径：浏览器端 SDK → HTTPS 直连 card-center.tokenize（绕过 api-gateway），
+  本表单是研发期 / 内部演示路径。PCI scope：本进程函数返回前清局部 PAN/CVV。
+</p>
+
+<script>
+// Luhn 校验（前端兜底，服务端仍会做完整校验）
+function luhn(num){
+  var s=0,d=false;
+  for(var i=num.length-1;i>=0;i--){
+    var n=+num[i];
+    if(d){n*=2;if(n>9)n-=9;}
+    s+=n; d=!d;
+  }
+  return num.length>=12 && s%10===0;
+}
+function validateCard(f){
+  var pan=f.pan.value.replace(/\s+/g,'');
+  if(!luhn(pan)){alert('卡号校验失败 (Luhn)');return false;}
+  var m=+f.exp_month.value, y=+f.exp_year.value;
+  if(m<1||m>12){alert('有效月不合法');return false;}
+  var now=new Date();
+  if(y<now.getFullYear()||(y===now.getFullYear()&&m<now.getMonth()+1)){
+    alert('卡已过期');return false;
+  }
+  // 提交后立即清表单字段，避免 BFCache 残留
+  setTimeout(function(){
+    try{f.pan.value=''; f.cvv.value='';}catch(e){}
+  },50);
+  return true;
+}
+</script>
+{{end}}

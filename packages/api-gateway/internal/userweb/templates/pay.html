@@ -1,0 +1,45 @@
+{{define "pay.html"}}{{template "layout" .}}{{end}}
+
+{{define "content"}}
+<h1>支付</h1>
+<p class="sub">使用已绑定卡支付。<a href="/cards">管理卡</a> · <a href="/me">返回账户</a></p>
+{{if .Flash}}<div class="flash">{{.Flash}}</div>{{end}}
+
+{{if not .Cards}}
+<div class="flash">还未绑定任何卡，请先 <a href="/cards/new" style="color:var(--accent)">绑卡</a>。</div>
+{{else}}
+<form method="POST" action="/pay" autocomplete="off">
+  <label>选择卡</label>
+  <select name="user_card_id" required style="width:100%;padding:10px 12px;background:#22222c;border:1px solid #333;border-radius:6px;color:var(--text);font:inherit">
+    {{range .Cards}}
+      <option value="{{.ID}}" {{if .IsDefault}}selected{{end}}>
+        {{.MaskedPAN}} · {{.Network}} · {{printf "%02d" .ExpMonth}}/{{.ExpYear}}{{if .IsDefault}} (默认){{end}}
+      </option>
+    {{end}}
+  </select>
+
+  <div class="row">
+    <div style="flex:2">
+      <label>金额（最小单位 / cents）</label>
+      <input name="amount" type="number" min="1" step="1" required placeholder="1000" inputmode="numeric">
+    </div>
+    <div>
+      <label>币种</label>
+      <input name="currency" required maxlength="3" pattern="[A-Z]{3}" value="PHP"
+             style="text-transform:uppercase">
+    </div>
+  </div>
+
+  <label>备注（可选）</label>
+  <input name="description" maxlength="120" placeholder="商品 / 订单号">
+
+  <button type="submit">提交支付</button>
+</form>
+
+<p class="sub" style="margin-top:18px;font-size:12px;line-height:1.6">
+  本次支付走 <code style="color:#aac">order-core → payment-channel.adapter[card] → card-payment → card-network</code>，
+  api-gateway 进程不接触 PAN；payment_token 一次性，TTL 30min。
+  幂等键 = user + card + amount + currency + 时间窗(5min)。
+</p>
+{{end}}
+{{end}}
