@@ -210,6 +210,55 @@ cmd_init_kms() {
   ok "KMS keystore 初始化完成: $KEYS_DIR"
 }
 
+ensure_card_dbs() {
+  # 幂等：CREATE * IF NOT EXISTS。
+  #
+  # MySQL 的 /docker-entrypoint-initdb.d/ 只在数据卷**首次创建**时跑一次；
+  # 老 shared-db volume（card-center / card-payment 还没加进来时建的）
+  # 不会自动补 card_* 的库。这里在 shared-db healthy 之后无条件 exec 进每个
+  # MySQL 重灌一遍 card-center / card-payment 的 init SQL，缺失才会建出来，
+  # 已经存在则全部 IF NOT EXISTS 跳过 → 重跑无害。
+  local cc_meta="$ROOT/card-center/database/metadb/init/init.sql"
+  local cp_meta="$ROOT/card-payment/database/metadb/init/init.sql"
+
+  if [[ ! -s "$cc_meta" && ! -s "$cp_meta" ]]; then
+    return 0
+  fi
+
+  info "  ensure card_center / card_payment databases on shared-db"
+
+  if [[ -s "$cc_meta" ]]; then
+    docker exec -i shared-meta mysql -uroot -ppassword < "$cc_meta" 2>/dev/null \
+      || warn "    apply card-center meta failed"
+  fi
+  if [[ -s "$cp_meta" ]]; then
+    docker exec -i shared-meta mysql -uroot -ppassword < "$cp_meta" 2>/dev/null \
+      || warn "    apply card-payment meta failed"
+  fi
+
+  for i in 0 1 2 3 4 5 6 7 8 9; do
+    local cc_shard="$ROOT/card-center/database/userdb/init/${i}_init.sql"
+    local cp_shard="$ROOT/card-payment/database/cardpaymentdb/init/${i}_init.sql"
+    if [[ -s "$cc_shard" ]]; then
+      docker exec -i "shared-shard-$i" mysql -uroot -ppassword < "$cc_shard" 2>/dev/null \
+        || warn "    apply card-center shard $i failed"
+    fi
+    if [[ -s "$cp_shard" ]]; then
+      docker exec -i "shared-shard-$i" mysql -uroot -ppassword < "$cp_shard" 2>/dev/null \
+        || warn "    apply card-payment shard $i failed"
+    fi
+  done
+
+  # 验证
+  local got
+  got=$(docker exec shared-meta mysql -uroot -ppassword -N -e \
+        "SHOW DATABASES LIKE 'card_%'" 2>/dev/null | tr '\n' ' ')
+  ok "  card meta DBs: ${got:-<none>}"
+  got=$(docker exec shared-shard-0 mysql -uroot -ppassword -N -e \
+        "SHOW DATABASES LIKE 'card_%'" 2>/dev/null | tr '\n' ' ')
+  ok "  card shard-0 DBs: ${got:-<none>}"
+}
+
 verify_shared_dbs() {
   # shared-shard-0 应该同时有 paychan_db_0 / order_db_0 / accounting_db_0 /
   # user_merchant_db_0（user-merchant-core 已分库后）。
