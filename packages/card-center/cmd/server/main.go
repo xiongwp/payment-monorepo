@@ -76,6 +76,7 @@ func loadConfig() (*viper.Viper, error) {
 		"kms.endpoint", "kms.registry_endpoints",
 		"kms.insecure", "kms.bearer_token", "kms.rpc_timeout",
 		"kms.client_cert", "kms.client_key", "kms.server_ca",
+		"kms.bypass_hardened",
 		"tls.cert", "tls.key", "tls.client_ca",
 		"audit.kafka_brokers",
 		"database.meta.dsn", "database.meta.name",
@@ -209,11 +210,12 @@ func newKMSClient(v *viper.Viper, logger *zap.Logger) (vault.KMS, error) {
 		Endpoint:          v.GetString("kms.endpoint"),
 		RegistryEndpoints: registry,
 		BearerToken:       v.GetString("kms.bearer_token"),
-		RPCTimeout:  v.GetDuration("kms.rpc_timeout"),
-		ClientCert:  v.GetString("kms.client_cert"),
-		ClientKey:   v.GetString("kms.client_key"),
-		ServerCA:    v.GetString("kms.server_ca"),
-		Insecure:    v.GetBool("kms.insecure"),
+		RPCTimeout:        v.GetDuration("kms.rpc_timeout"),
+		ClientCert:        v.GetString("kms.client_cert"),
+		ClientKey:         v.GetString("kms.client_key"),
+		ServerCA:          v.GetString("kms.server_ca"),
+		Insecure:          v.GetBool("kms.insecure"),
+		BypassHardened:    v.GetBool("kms.bypass_hardened"),
 	}
 	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
 		return nil, errors.New("kms.endpoint or kms.registry_endpoints required")

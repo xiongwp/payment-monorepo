@@ -41,6 +41,9 @@ type Config struct {
 	ServerCA   string
 	// dev 路径允许 insecure；prod assertProdSafety 会拒
 	Insecure bool
+	// BypassHardened：临时旁路，跳过 serviceregistry hardened opts 直接 grpc.NewClient。
+	// 仅用于排查（service config / keepalive 等是否引发卡 RPC）。
+	BypassHardened bool
 }
 
 // New dial kms-manage
@@ -58,10 +61,18 @@ func New(cfg Config) (*Client, error) {
 		}
 		creds = credentials.NewTLS(tc)
 	}
-	conn, err := serviceregistry.DialWithFallback(
-		cfg.RegistryEndpoints, "kms-manage", cfg.Endpoint,
-		grpc.WithTransportCredentials(creds),
-	)
+	var conn *grpc.ClientConn
+	if cfg.BypassHardened {
+		// 旁路模式：直接 grpc.NewClient(endpoint, creds)，不走 etcd resolver、
+		// 不附 service config、不挂 keepalive。绑卡 KMS 调用是低频，stale conn
+		// 的风险换 RPC 必到，先保跑通。
+		conn, err = grpc.NewClient(cfg.Endpoint, grpc.WithTransportCredentials(creds))
+	} else {
+		conn, err = serviceregistry.DialWithFallback(
+			cfg.RegistryEndpoints, "kms-manage", cfg.Endpoint,
+			grpc.WithTransportCredentials(creds),
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("kmsclient dial: %w", err)
 	}

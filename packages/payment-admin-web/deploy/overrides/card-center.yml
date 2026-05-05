@@ -42,6 +42,8 @@ services:
       CARDCENTER_KMS_REGISTRY_ENDPOINTS: "etcd:2379"
       CARDCENTER_KMS_ENDPOINT: "kms-manage:9290"
       CARDCENTER_KMS_INSECURE: "true"
+      # 临时旁路：跳过 hardenedOptions（service config + keepalive）排查 RPC 不下发
+      CARDCENTER_KMS_BYPASS_HARDENED: "true"
       # 审计 Kafka：dev 留空，emitter 退化为只写 DB
       # HTTPS REST 入口（前端 SDK 直发 PAN）：dev 明文 + CORS 允许 api-gateway 跨域
       CARDCENTER_HTTPS_ENABLED: "true"
