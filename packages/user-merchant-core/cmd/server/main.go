@@ -77,7 +77,7 @@ func main() {
 			// server
 			newServer,
 		),
-		fx.Invoke(startGRPC, startMetricsHTTP, warmupMerchantCache, startRetentionSweeper, initOTel, applyShadowTables),
+		fx.Invoke(startGRPC, startMetricsHTTP, warmupMerchantCache, startRetentionSweeper, initOTel, applyShadowTables, startServiceRegistrar),
 	)
 	app.Run()
 }
@@ -95,7 +95,8 @@ func loadConfig() (*viper.Viper, error) {
 	// 在 base config.yaml 没列的 key 也能被 USERMERCHANTCORE_<KEY> env 读到。
 	for _, k := range []string{
 		"risk.endpoint", "accounting.endpoint", "kms.endpoint",
-		"registry.endpoints", "env",
+		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl", "server.grpc_port",
+		"env",
 	} {
 		_ = v.BindEnv(k)
 	}

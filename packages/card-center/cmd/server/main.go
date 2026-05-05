@@ -60,7 +60,7 @@ func main() {
 			newHTTPSVerifier,
 			newRESTServer,
 		),
-		fx.Invoke(startGRPC, startHTTPS),
+		fx.Invoke(startGRPC, startHTTPS, startServiceRegistrar),
 	)
 	app.Run()
 }
@@ -70,14 +70,16 @@ func loadConfig() (*viper.Viper, error) {
 	v.SetEnvPrefix("CARDCENTER")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
-	for _, k := range []string{"env", "kms.endpoint", "tls.cert", "tls.key", "tls.client_ca",
+	for _, k := range []string{"env", "kms.endpoint", "kms.registry_endpoints",
+		"tls.cert", "tls.key", "tls.client_ca",
 		"audit.kafka_brokers", "database.meta.dsn",
 		// HTTPS 入口 + 用户登录态校验上游（mTLS gRPC 直连 user-merchant-core）
 		"https.enabled", "https.port", "https.cert", "https.key",
-		"auth.user_merchant.endpoint",
+		"auth.user_merchant.endpoint", "auth.user_merchant.registry_endpoints",
 		"auth.user_merchant.client_cert",
 		"auth.user_merchant.client_key",
 		"auth.user_merchant.server_ca",
+		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl", "server.grpc_port",
 	} {
 		_ = v.BindEnv(k)
 	}

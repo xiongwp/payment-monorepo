@@ -52,7 +52,7 @@ func main() {
 			newProcessor,
 			newGRPCServer,
 		),
-		fx.Invoke(startGRPC),
+		fx.Invoke(startGRPC, startServiceRegistrar),
 	)
 	app.Run()
 }
@@ -62,10 +62,25 @@ func loadConfig() (*viper.Viper, error) {
 	v.SetEnvPrefix("CARDPAYMENT")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
-	for _, k := range []string{"env", "card_center.endpoint", "tls.cert", "tls.key", "tls.client_ca",
+	for _, k := range []string{"env", "card_center.endpoint", "card_center.registry_endpoints",
+		"tls.cert", "tls.key", "tls.client_ca",
 		"network.visa.endpoint", "network.mastercard.endpoint", "network.jcb.endpoint",
 		"network.amex.endpoint", "network.unionpay.endpoint",
-		"database.meta.dsn"} {
+		"database.meta.dsn", "database.meta.name",
+		"database.meta.max_open_conns", "database.meta.max_idle_conns", "database.meta.conn_max_lifetime",
+		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl", "server.grpc_port",
+	} {
+	_ = v.BindEnv(k)
+	}
+	// 10 个 shard DSN 显式 BindEnv（viper.UnmarshalKey 不读 env nested 子键）
+	for i := 0; i < 10; i++ {
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.dsn", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.name", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.max_open_conns", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.max_idle_conns", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.conn_max_lifetime", i))
+	}
+	for _, k := range []string{
 		_ = v.BindEnv(k)
 	}
 	v.SetConfigName("config")
