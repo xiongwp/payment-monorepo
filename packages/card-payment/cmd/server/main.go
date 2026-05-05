@@ -52,7 +52,7 @@ func main() {
 			newProcessor,
 			newGRPCServer,
 		),
-		fx.Invoke(startGRPC),
+		fx.Invoke(startGRPC, startServiceRegistrar),
 	)
 	app.Run()
 }
@@ -62,10 +62,17 @@ func loadConfig() (*viper.Viper, error) {
 	v.SetEnvPrefix("CARDPAYMENT")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
-	for _, k := range []string{"env", "card_center.endpoint", "tls.cert", "tls.key", "tls.client_ca",
+	for _, k := range []string{"env",
+		"card_center.endpoint", "card_center.registry_endpoints",
+		"card_center.insecure", "card_center.client_cert", "card_center.client_key", "card_center.server_ca",
+		"tls.cert", "tls.key", "tls.client_ca",
 		"network.visa.endpoint", "network.mastercard.endpoint", "network.jcb.endpoint",
 		"network.amex.endpoint", "network.unionpay.endpoint",
-		"database.meta.dsn"} {
+		"database.meta.dsn",
+		// 服务自注册（被 order-core / payment-core / BFF 调用）
+		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl",
+		"server.grpc_port",
+	} {
 		_ = v.BindEnv(k)
 	}
 	v.SetConfigName("config")
