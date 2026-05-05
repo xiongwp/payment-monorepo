@@ -20,6 +20,7 @@ services:
         # alias `user-merchant-core-src`（不直接叫 user-merchant-core）以免和 payment-stack
         # 网络里的 user-merchant-core service 撞名导致 buildx 把它解析成 docker-image。
         user-merchant-core-src: ../../../user-merchant-core
+        kms-manage-src:         ../../../kms-manage
       secrets:
         - GITHUB_TOKEN
     image: card-center:local
