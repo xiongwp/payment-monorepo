@@ -184,5 +184,5 @@ ACCT_META_SHADOW="$ROOT/accounting-system/database/metadb/init/init_shadow.sql"
 } > "$META_OUT"
 
 echo "生成完毕："
-echo "  $OUT/0_init.sql..9_init.sql (每个 ~$(du -b "$OUT/0_init.sql" | awk '{print $1}') bytes)"
+echo "  $OUT/0_init.sql..9_init.sql (每个 ~$(wc -c < "$OUT/0_init.sql" | tr -d ' ') bytes)"
 echo "  $META_OUT"
