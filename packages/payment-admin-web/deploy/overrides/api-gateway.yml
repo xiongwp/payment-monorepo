@@ -19,10 +19,14 @@ services:
       APIGW_LOG_DEV: "true"
       # api-gateway 用户面 BFF 调下游 gRPC 容器 DNS（端口必须跟下游 server.grpc_port 对齐）
       APIGW_USER_MERCHANT_ENDPOINT: "user-merchant-core:9191"
+      APIGW_ORDER_CORE_ENDPOINT:    "order-core:9091"
       APIGW_RISK_ENDPOINT: "risk-manage:9490"
       APIGW_KMS_ENDPOINT: "kms-manage:9290"
       # 用户登录 cookie：开发关 secure 让 http://localhost 也能拿到
       APIGW_AUTH_COOKIE_SECURE: "false"
+      # 卡支付：cards.enabled=true 让 /cards 走真实 user-merchant-core + order-core gRPC
+      APIGW_CARDS_ENABLED: "true"
+      APIGW_CARDS_CARD_CENTER_URL: ""
 
 networks:
   payment-stack:

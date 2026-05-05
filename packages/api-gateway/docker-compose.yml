@@ -22,6 +22,7 @@ services:
         kms-manage:          ../kms-manage
         user-merchant-core:  ../user-merchant-core
         risk-manage:         ../risk-manage
+        order-core-src:      ../order-core
       secrets:
         - GITHUB_TOKEN
     image: api-gateway:local

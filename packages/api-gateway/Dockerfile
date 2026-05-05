@@ -20,7 +20,7 @@ FROM alpine:3.19 AS user-merchant-core
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 FROM alpine:3.19 AS risk-manage
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
-FROM alpine:3.19 AS order-core
+FROM alpine:3.19 AS order-core-src
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS build
@@ -36,11 +36,14 @@ ARG USER_MERCHANT_CORE_REF=main
 ARG RISK_MANAGE_REF=main
 ARG ORDER_CORE_REF=main
 
+# cache-buster：每次想强制重读 additional_contexts 时改 v=N 数字
+ARG SIBLING_CONTEXT_VER=2
+RUN echo "sibling-ctx ver=${SIBLING_CONTEXT_VER}"
 COPY --from=payment-util        / /tmp/payment-util-staged/
 COPY --from=kms-manage          / /tmp/kms-manage-staged/
 COPY --from=user-merchant-core  / /tmp/user-merchant-core-staged/
 COPY --from=risk-manage         / /tmp/risk-manage-staged/
-COPY --from=order-core          / /tmp/order-core-staged/
+COPY --from=order-core-src      / /tmp/order-core-staged/
 
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
