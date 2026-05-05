@@ -80,9 +80,6 @@ func loadConfig() (*viper.Viper, error) {
 		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.max_idle_conns", i))
 		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.conn_max_lifetime", i))
 	}
-	for _, k := range []string{
-		_ = v.BindEnv(k)
-	}
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")
 	v.AddConfigPath("./config")
