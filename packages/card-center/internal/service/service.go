@@ -26,6 +26,9 @@ type AuditEmitter interface {
 }
 
 // AuditEvent 跟 metadb.audit_log 字段对齐
+//
+// 展示纪律：MaskedPAN / Network 是给取证 / 管理面板展示用的脱敏字段。
+// 真实 PAN 永远不进 AuditEvent —— 任何字段都不放 PAN。
 type AuditEvent struct {
 	Op        string
 	Caller    string
@@ -33,6 +36,8 @@ type AuditEvent struct {
 	UserID    int64
 	PIID      string
 	TokenHash string
+	MaskedPAN string // BIN+last4，仅展示用，可空
+	Network   string // visa / mastercard / ...
 	KMSKid    string
 	Result    string // ok / denied / error
 	Reason    string
@@ -119,7 +124,12 @@ func (s *Service) Tokenize(ctx context.Context, in *TokenizeInput) (*TokenizeOut
 		return nil, fmt.Errorf("repo insert: %w", err)
 	}
 
-	s.audit.Emit(ctx, AuditEvent{Op: "tokenize", Caller: in.Caller, CallerIP: in.CallerIP, UserID: in.UserID, TokenHash: tokenHash, KMSKid: kid, Result: "ok", TraceID: in.TraceID, CreatedAt: time.Now()})
+	s.audit.Emit(ctx, AuditEvent{
+		Op: "tokenize", Caller: in.Caller, CallerIP: in.CallerIP,
+		UserID: in.UserID, TokenHash: tokenHash, KMSKid: kid,
+		MaskedPAN: masked, Network: network, // 取证展示用脱敏字段
+		Result: "ok", TraceID: in.TraceID, CreatedAt: time.Now(),
+	})
 	return &TokenizeOutput{StoredToken: stored, MaskedPAN: masked, Network: network, KMSKid: kid}, nil
 }
 
@@ -241,7 +251,110 @@ func (s *Service) Detokenize(ctx context.Context, in *DetokenizeInput) (*Detoken
 	}, nil
 }
 
+// ─── ListUserCards (display only) ──────────────────────────────────────────
+
+// CardDisplay 给 UI / 后端管理面板展示用。**严格 masked-only**：
+//   - 不含 stored_token / payment_token / 任何加密 blob
+//   - 不含 kms_kid（基础设施信息，对前端无价值）
+//   - 不含 PAN（card-center 进程根本就没有持久化 PAN）
+//
+// 调用方（user-merchant-core / api-gateway / 内部管理面板）拿到这个结构后可以
+// 直接 marshal 出去，无需再做敏感字段过滤。
+type CardDisplay struct {
+	UserCardID int64  // 内部 id；不是 PAN，不敏感
+	MaskedPAN  string // BIN+last4，e.g. 411111******1111
+	Network    string // visa / mastercard / ...
+	ExpMonth   int
+	ExpYear    int
+	HolderName string
+	Status     string // active / deleted
+	CreatedAt  time.Time
+}
+
+// ListUserCards 给展示层用：列出用户 active 卡，**只返脱敏字段**。
+//
+// 注意 vs repo.ListActiveByUser：
+//   - repo 层返回 *StoredCardRow（含 KMSKid / TokenHash 等基础设施字段）
+//   - service 层在这里显式做 row → CardDisplay 投影，剔除任何敏感 / 基础设施信息
+//   - 投影是"白名单"模式：新增 row 字段不会自动外漏
+func (s *Service) ListUserCards(ctx context.Context, userID int64, caller, callerIP, traceID string) ([]*CardDisplay, error) {
+	if userID == 0 {
+		return nil, fmt.Errorf("ListUserCards: user_id required")
+	}
+	rows, err := s.stored.ListActiveByUser(ctx, userID)
+	if err != nil {
+		s.audit.Emit(ctx, AuditEvent{
+			Op: "list_cards", Caller: caller, CallerIP: callerIP,
+			UserID: userID, Result: "error", Reason: err.Error(),
+			TraceID: traceID, CreatedAt: time.Now(),
+		})
+		return nil, fmt.Errorf("list cards: %w", err)
+	}
+	out := make([]*CardDisplay, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, &CardDisplay{
+			UserCardID: r.ID,
+			MaskedPAN:  r.MaskedPAN,
+			Network:    r.Network,
+			ExpMonth:   r.ExpMonth,
+			ExpYear:    r.ExpYear,
+			HolderName: r.HolderName,
+			Status:     r.Status,
+			CreatedAt:  r.CreatedAt,
+		})
+	}
+	s.audit.Emit(ctx, AuditEvent{
+		Op: "list_cards", Caller: caller, CallerIP: callerIP,
+		UserID: userID, Result: "ok", TraceID: traceID, CreatedAt: time.Now(),
+	})
+	return out, nil
+}
+
 // ─── DeleteCard / RevokeStoredToken ─────────────────────────────────────────
+
+// DeleteCardByID 按 (user_id, user_card_id) 删卡。
+//
+// HTTPS REST 入口（/v1/cards/{id} DELETE）调本方法。**关键防越权**：
+// repo.SoftDeleteByID 在 SQL Where 里同时匹配 user_id + id，user_id 不一致 → not found，
+// 攻击者拿到别人的 user_card_id 也删不掉别人的卡。
+//
+// 撤销路径：跟 DeleteCard 一致，触发 audit；可选异步 KMS 旧 key revoke 由调用方协调。
+func (s *Service) DeleteCardByID(ctx context.Context, userID, userCardID int64, reason, caller, callerIP, traceID string) (*CardDisplay, error) {
+	if userID == 0 || userCardID == 0 {
+		return nil, fmt.Errorf("DeleteCardByID: user_id / user_card_id required")
+	}
+	row, err := s.stored.SoftDeleteByID(ctx, userID, userCardID, reason)
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	var masked, network, tokenHash string
+	if row != nil {
+		masked = row.MaskedPAN
+		network = row.Network
+		tokenHash = row.TokenHash
+	}
+	s.audit.Emit(ctx, AuditEvent{
+		Op: "delete_card_by_id", Caller: caller, CallerIP: callerIP,
+		UserID: userID, TokenHash: tokenHash,
+		MaskedPAN: masked, Network: network,
+		Result: result, Reason: reason,
+		TraceID: traceID, CreatedAt: time.Now(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &CardDisplay{
+		UserCardID: row.ID,
+		MaskedPAN:  row.MaskedPAN,
+		Network:    row.Network,
+		ExpMonth:   row.ExpMonth,
+		ExpYear:    row.ExpYear,
+		HolderName: row.HolderName,
+		Status:     row.Status,
+		CreatedAt:  row.CreatedAt,
+	}, nil
+}
 
 func (s *Service) DeleteCard(ctx context.Context, userID int64, storedToken, reason, caller, callerIP, traceID string) error {
 	tokenHash := repo.HashToken(storedToken)

@@ -67,6 +67,8 @@ type auditRow struct {
 	PIID      string
 	TokenHash string
 	KMSKid    string
+	MaskedPAN string // 展示 / 取证用，可空
+	Network   string // visa / mastercard / ...
 	Result    string
 	Reason    string
 	TraceID   string
@@ -91,6 +93,8 @@ func (e *Emitter) Emit(ctx context.Context, ev service.AuditEvent) {
 		PIID:      ev.PIID,
 		TokenHash: ev.TokenHash,
 		KMSKid:    ev.KMSKid,
+		MaskedPAN: ev.MaskedPAN,
+		Network:   ev.Network,
 		Result:    ev.Result,
 		Reason:    ev.Reason,
 		TraceID:   ev.TraceID,
@@ -139,6 +143,8 @@ func computeRowHash(r *auditRow) string {
 		PIID     string
 		Token    string
 		KID      string
+		Masked   string
+		Network  string
 		Result   string
 		Reason   string
 		Trace    string
@@ -148,6 +154,7 @@ func computeRowHash(r *auditRow) string {
 	c := canonical{
 		Op: r.Op, Caller: r.Caller, UserID: r.UserID,
 		PIID: r.PIID, Token: r.TokenHash, KID: r.KMSKid,
+		Masked: r.MaskedPAN, Network: r.Network,
 		Result: r.Result, Reason: r.Reason, Trace: r.TraceID,
 		Prev: r.PrevHash, Created: r.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}

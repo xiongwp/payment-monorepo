@@ -332,6 +332,34 @@ func (m *memStoredCardRepo) SoftDelete(_ context.Context, userID int64, tokenHas
 	return nil
 }
 
+func (m *memStoredCardRepo) GetByID(_ context.Context, userID, id int64) (*repo.StoredCardRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.rows {
+		if r.ID == id && r.UserID == userID {
+			return r, nil
+		}
+	}
+	return nil, repo.ErrStoredCardNotFound
+}
+
+func (m *memStoredCardRepo) SoftDeleteByID(_ context.Context, userID, id int64, reason string) (*repo.StoredCardRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.rows {
+		if r.ID == id && r.UserID == userID {
+			if r.Status == "deleted" {
+				return r, nil
+			}
+			r.Status = "deleted"
+			now := time.Now()
+			r.DeletedAt = &now
+			return r, nil
+		}
+	}
+	return nil, repo.ErrStoredCardNotFound
+}
+
 // memPaymentTokenRepo in-memory 实现 repo.PaymentTokenRepo
 type memPaymentTokenRepo struct {
 	mu   sync.Mutex

@@ -38,10 +38,15 @@ type StoredCardRepo interface {
 	Insert(ctx context.Context, row *StoredCardRow) error
 	// GetByTokenHash 按 token_hash 查（user_id 校验由 service 层做）
 	GetByTokenHash(ctx context.Context, userID int64, tokenHash string) (*StoredCardRow, error)
+	// GetByID 按主键 + user_id 查（HTTPS 删卡按 id 删时用，必须带 user_id 防越权）。
+	// 不命中 = ErrStoredCardNotFound。
+	GetByID(ctx context.Context, userID, id int64) (*StoredCardRow, error)
 	// ListActiveByUser 列出该用户所有 active 卡（前端 UI 展示用）
 	ListActiveByUser(ctx context.Context, userID int64) ([]*StoredCardRow, error)
 	// SoftDelete 软删（status=deleted, deleted_at=now）。物理失效靠 KMS rotation。
 	SoftDelete(ctx context.Context, userID int64, tokenHash string, reason string) error
+	// SoftDeleteByID 按 (user_id, id) 软删。仅 user_id 匹配的行能删。
+	SoftDeleteByID(ctx context.Context, userID, id int64, reason string) (*StoredCardRow, error)
 }
 
 const tblStoredCard = "card_stored_token"
@@ -81,6 +86,51 @@ func (r *storedCardRepo) GetByTokenHash(ctx context.Context, userID int64, token
 		return nil, ErrStoredCardNotFound
 	}
 	return &row, err
+}
+
+func (r *storedCardRepo) GetByID(ctx context.Context, userID, id int64) (*StoredCardRow, error) {
+	if userID == 0 || id == 0 {
+		return nil, fmt.Errorf("GetByID: user_id / id required")
+	}
+	db, tbl := r.shard(ctx, userID)
+	var row StoredCardRow
+	// 必须同时按 user_id 过滤 —— 哪怕 attacker 知道别人的 user_card_id，也不能拿到（user_id 不匹配 → not found）
+	err := db.WithContext(ctx).Table(tbl).
+		Where("id = ? AND user_id = ?", id, userID).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrStoredCardNotFound
+	}
+	return &row, err
+}
+
+func (r *storedCardRepo) SoftDeleteByID(ctx context.Context, userID, id int64, reason string) (*StoredCardRow, error) {
+	_ = reason // reason 进 audit_log，不进 row
+	row, err := r.GetByID(ctx, userID, id)
+	if err != nil {
+		return nil, err
+	}
+	if row.Status == "deleted" {
+		return row, nil // 幂等：已删的直接返
+	}
+	now := time.Now()
+	db, tbl := r.shard(ctx, userID)
+	res := db.WithContext(ctx).Table(tbl).
+		Where("id = ? AND user_id = ? AND status = ?", id, userID, "active").
+		Updates(map[string]any{
+			"status":     "deleted",
+			"deleted_at": &now,
+		})
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	if res.RowsAffected == 0 {
+		// 行刚被并发改了状态；重新读一次返回
+		return r.GetByID(ctx, userID, id)
+	}
+	row.Status = "deleted"
+	row.DeletedAt = &now
+	return row, nil
 }
 
 func (r *storedCardRepo) ListActiveByUser(ctx context.Context, userID int64) ([]*StoredCardRow, error) {

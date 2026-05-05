@@ -68,6 +68,11 @@ func loadConfig() (*viper.Viper, error) {
 	for _, k := range []string{
 		"user_merchant.endpoint", "risk.endpoint", "kms.endpoint",
 		"registry.endpoints", "env",
+		// 卡支付相关，env 优先级覆盖 yaml
+		"cards.enabled",
+		"cards.user_card_service_endpoint",
+		"cards.payment_service_endpoint",
+		"cards.mtls.enabled",
 	} {
 		_ = v.BindEnv(k)
 	}
@@ -114,6 +119,19 @@ func assertProdSafety(v *viper.Viper) error {
 	// rate limit：公网入口必须配 per-IP 限流
 	if v.GetFloat64("rate_limit.per_ip.rps") <= 0 {
 		return fmt.Errorf("PROD-SAFETY: rate_limit.per_ip.rps must be > 0 in env=prod (recommend 50, public internet boundary)")
+	}
+	// 卡支付路径：env=prod 下卡服务 endpoint 必须显式开 / 关。开了就不能用 stub。
+	// 没显式开（cards.enabled 缺省 false）→ 跳过，CardHandler 会用 stub 直接报错（不会泄漏 PAN）。
+	if v.GetBool("cards.enabled") {
+		if strings.TrimSpace(v.GetString("cards.user_card_service_endpoint")) == "" {
+			return fmt.Errorf("PROD-SAFETY: cards.enabled=true requires cards.user_card_service_endpoint")
+		}
+		if strings.TrimSpace(v.GetString("cards.payment_service_endpoint")) == "" {
+			return fmt.Errorf("PROD-SAFETY: cards.enabled=true requires cards.payment_service_endpoint")
+		}
+		if !v.GetBool("cards.mtls.enabled") {
+			return fmt.Errorf("PROD-SAFETY: cards.enabled=true requires cards.mtls.enabled (UserCardService / PaymentService 都走 mTLS)")
+		}
 	}
 	return nil
 }
@@ -167,12 +185,52 @@ func newServerConfig(v *viper.Viper) server.Config {
 	}
 }
 
-func newServer(cfg server.Config, uw *userweb.Handler, logger *zap.Logger) *server.Server {
+func newServer(cfg server.Config, uw *userweb.Handler, ch *userweb.CardHandler, logger *zap.Logger) *server.Server {
 	var regs []server.MuxRegister
 	if uw != nil {
 		regs = append(regs, uw.Register)
 	}
+	if ch != nil {
+		regs = append(regs, ch.Register)
+	}
 	return server.NewServer(cfg, logger, regs...)
+}
+
+// newCardHandler 装配卡支付 handler。
+//
+// 真实 mTLS gRPC client 接通后，把这里的 NewStubCardClient / NewStubPaymentClient
+// 换成 user-merchant-core.UserCardService client + order-core.PaymentIntentService client。
+//
+// 当前 stub：
+//   - GET /cards / /cards/new / /pay / /pay/result 都能正常渲染
+//   - POST /cards (绑卡) / /pay (支付) 会返回友好的 "service not wired" Flash
+//   - 已登录用户从 /me 点 "我的卡" / "去支付" 进得来，看到表单
+//
+// PCI nano-discipline：stub 模式下 PAN 走到 stubCardClient.AddCard 立刻被 errCardServiceNotWired
+// 拒绝，cards.go 的 defer 会把局部 pan/cvv 清空；本进程不会持久化任何 PAN。
+func newCardHandler(uw *userweb.Handler, v *viper.Viper, logger *zap.Logger) *userweb.CardHandler {
+	if uw == nil {
+		// userweb.Handler 都没装配，cards 也没法工作（要复用 render / 鉴权）
+		return nil
+	}
+	if v.GetBool("cards.enabled") {
+		// TODO(card-rpc): cards.enabled=true 时这里应当：
+		//   1. dial user-merchant-core.UserCardService（mTLS）
+		//   2. dial order-core.PaymentIntentService（mTLS）
+		//   3. 包装成 CardServiceClient / PaymentServiceClient 接口
+		// 现阶段还是 stub，但 assertProdSafety 已经在 prod 下强制 endpoint + mtls 配置，
+		// 真实接通在下个 PR 完成。
+		logger.Warn("cards.enabled=true but real gRPC client not wired yet; falling back to stub. " +
+			"See cards_client_stub.go header for wiring path.")
+	} else {
+		logger.Info("CardHandler running in stub mode (cards.enabled=false). " +
+			"Pages render, but Add/Delete/Pay return errCardServiceNotWired.")
+	}
+	return userweb.NewCardHandler(
+		uw,
+		userweb.NewStubCardClient(),
+		userweb.NewStubPaymentClient(),
+	)
 }
 
 // newUserMerchantConn 拨号 user-merchant-core gRPC。endpoint 与 registry.endpoints
