@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS `login_logs_${TABLE}` (
 CREATE TABLE IF NOT EXISTS `user_sessions_${TABLE}` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,

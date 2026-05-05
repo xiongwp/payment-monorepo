@@ -79,8 +79,10 @@ CREATE TABLE IF NOT EXISTS `merchant_lookup` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='Merchant 反查二级索引';
 
 -- session_lookup: token → user_id；GetSession 反查走它（user_sessions 已分片）。
+-- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 静默截断 → SELECT 匹配不上。
+-- VARCHAR(512) × 4 byte (utf8mb4) = 2048 bytes < InnoDB 单列 PK 3072-byte 上限。
 CREATE TABLE IF NOT EXISTS `session_lookup` (
-    `token`      VARCHAR(255) NOT NULL,
+    `token`      VARCHAR(512) NOT NULL,
     `user_id`    BIGINT       NOT NULL,
     `expires_at` DATETIME(3)  NOT NULL,
     `created_at` DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

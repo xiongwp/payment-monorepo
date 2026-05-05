@@ -358,6 +358,14 @@ cmd_up() {
 
   for svc in "${targets[@]}"; do
     info "启动 $svc …"
+    # ── pre-up 钩子：先把 DB 准备好，再起依赖 DB 的服务 ──
+    case "$svc" in
+      card-center|card-payment)
+        # shared-db 在 ALL_SERVICES 里更靠前，已经先 up 过；这里幂等补灌一次
+        # card_* 库，确保 card-center / card-payment 容器一启动就连得上 DB。
+        ensure_card_dbs
+        ;;
+    esac
     local app
     app="$(app_service_of "$svc")"
     # 多副本：app_service_of 之外的 service 默认 1 副本，scale_of_app 返回的
@@ -387,6 +395,8 @@ cmd_up() {
           sleep 4
         done
         verify_shared_dbs
+        # 补灌 card_* 库（如果之前 shared-db 已起、init 没含这俩，这里 idempotent 补建）
+        ensure_card_dbs
         ;;
     esac
     ok "$svc 启动完成"

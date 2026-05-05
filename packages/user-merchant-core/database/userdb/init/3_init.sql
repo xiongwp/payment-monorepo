@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS `login_logs_30` (
 CREATE TABLE IF NOT EXISTS `user_sessions_30` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -298,7 +299,8 @@ CREATE TABLE IF NOT EXISTS `login_logs_31` (
 CREATE TABLE IF NOT EXISTS `user_sessions_31` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -517,7 +519,8 @@ CREATE TABLE IF NOT EXISTS `login_logs_32` (
 CREATE TABLE IF NOT EXISTS `user_sessions_32` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -736,7 +739,8 @@ CREATE TABLE IF NOT EXISTS `login_logs_33` (
 CREATE TABLE IF NOT EXISTS `user_sessions_33` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -955,7 +959,8 @@ CREATE TABLE IF NOT EXISTS `login_logs_34` (
 CREATE TABLE IF NOT EXISTS `user_sessions_34` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -1174,7 +1179,8 @@ CREATE TABLE IF NOT EXISTS `login_logs_35` (
 CREATE TABLE IF NOT EXISTS `user_sessions_35` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -1393,7 +1399,8 @@ CREATE TABLE IF NOT EXISTS `login_logs_36` (
 CREATE TABLE IF NOT EXISTS `user_sessions_36` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -1612,7 +1619,8 @@ CREATE TABLE IF NOT EXISTS `login_logs_37` (
 CREATE TABLE IF NOT EXISTS `user_sessions_37` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -1831,7 +1839,8 @@ CREATE TABLE IF NOT EXISTS `login_logs_38` (
 CREATE TABLE IF NOT EXISTS `user_sessions_38` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -2050,7 +2059,8 @@ CREATE TABLE IF NOT EXISTS `login_logs_39` (
 CREATE TABLE IF NOT EXISTS `user_sessions_39` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
