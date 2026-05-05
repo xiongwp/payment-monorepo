@@ -25,6 +25,11 @@ ORDER_GEN="$ROOT/order-core/database/orderdb/scripts/generate.sh"
 USER_MERCHANT_GEN="$ROOT/user-merchant-core/database/userdb/scripts/generate.sh"
 ACCT_INIT_DIR="$ROOT/accounting-system/database/accountingdb/init"
 ACCT_META_INIT="$ROOT/accounting-system/database/metadb/init/init.sql"
+# PCI 卡支付 dev 联栈（生产必须独立 DC，不走这条）
+CARD_CENTER_GEN="$ROOT/card-center/database/userdb/scripts/generate.sh"
+CARD_PAYMENT_GEN="$ROOT/card-payment/database/cardpaymentdb/scripts/generate.sh"
+CARD_CENTER_META_INIT="$ROOT/card-center/database/metadb/init/init.sql"
+CARD_PAYMENT_META_INIT="$ROOT/card-payment/database/metadb/init/init.sql"
 
 [[ -x "$PAYCHAN_GEN"        ]] || { echo "FATAL: $PAYCHAN_GEN 不存在或不可执行"; exit 1; }
 [[ -x "$ORDER_GEN"          ]] || { echo "FATAL: $ORDER_GEN 不存在或不可执行"; exit 1; }
