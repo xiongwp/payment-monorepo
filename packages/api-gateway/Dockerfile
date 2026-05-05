@@ -7,6 +7,7 @@
 #       kms-manage:          ../kms-manage
 #       user-merchant-core:  ../user-merchant-core
 #       risk-manage:         ../risk-manage
+#       order-core:          ../order-core
 #
 # 没设置时 fallback 到 git clone（需 GITHUB_TOKEN secret）。
 
@@ -18,6 +19,8 @@ RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholde
 FROM alpine:3.19 AS user-merchant-core
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 FROM alpine:3.19 AS risk-manage
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS order-core
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS build
@@ -31,11 +34,13 @@ ARG PAYMENT_UTIL_REF=main
 ARG KMS_MANAGE_REF=main
 ARG USER_MERCHANT_CORE_REF=main
 ARG RISK_MANAGE_REF=main
+ARG ORDER_CORE_REF=main
 
 COPY --from=payment-util        / /tmp/payment-util-staged/
 COPY --from=kms-manage          / /tmp/kms-manage-staged/
 COPY --from=user-merchant-core  / /tmp/user-merchant-core-staged/
 COPY --from=risk-manage         / /tmp/risk-manage-staged/
+COPY --from=order-core          / /tmp/order-core-staged/
 
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \

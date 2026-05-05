@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 // Package channel 定义 payment-channel 面向 payment-core 的 Adapter 接口。
 // 每个真实渠道（gcash/maya/grabpay/coinsph/instapay/pesonet）实现此接口。
 package channel

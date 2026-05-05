@@ -205,6 +205,13 @@ message CreatePaymentIntentRequest {
   string              statement_descriptor = 12;
   map<string, string> metadata             = 13;
   bool                livemode             = 14;
+
+  // 卡支付场景：user_id + user_card_id。
+  // Confirm 路径会用这两个字段调 user-merchant-core.UserCardInternalService.GetStoredTokenForPayment
+  // 拿 stored_token，再调 card-center.CreatePaymentToken 派生支付 token。
+  // 非卡支付时留空。
+  int64               user_id              = 17;
+  int64               user_card_id         = 18;
 }
 message CreatePaymentIntentResponse { PaymentIntent payment_intent = 1; }
 

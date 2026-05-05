@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 // Package grabpay 实现 GrabPay OTC（One-Time Charge）adapter。
 //
 // 参考：https://developer.grab.com/

@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 // Package service 编排 adapter 调用与 acquirer_tx 持久化。
 //
 // 核心不变量：**save-first-then-call**。

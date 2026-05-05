@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 // Package domain holds payment-channel 的渠道流水实体。本仓无业务状态机 ——
 // 只记录「向第三方发了什么请求，拿到什么响应，webhook 收到什么」。
 package domain

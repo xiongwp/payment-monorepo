@@ -818,16 +818,24 @@ services:
     restart: unless-stopped
     depends_on:
       user-merchant-core: {condition: service_started}
+      order-core:         {condition: service_started}
       risk-manage:        {condition: service_started}
       kms-manage:         {condition: service_started}
     environment:
       APIGW_LOG_DEV: "true"
       # 下游 gRPC 容器 DNS（端口必须跟下游 server.grpc_port 对齐）
       APIGW_USER_MERCHANT_ENDPOINT: "user-merchant-core:9191"
+      APIGW_ORDER_CORE_ENDPOINT:    "order-core:9091"
       APIGW_RISK_ENDPOINT:          "risk-manage:9490"
       APIGW_KMS_ENDPOINT:           "kms-manage:9290"
       # 用户登录 cookie：dev/local 关 secure 让 http://localhost 也能拿到
       APIGW_AUTH_COOKIE_SECURE: "false"
+      # 卡支付：开 cards.enabled 让 /cards 走真实 gRPC（user-merchant-core + order-core）
+      APIGW_CARDS_ENABLED: "true"
+      # 浏览器 JS 直发 card-center HTTPS 的目标 URL（dev 简化用 http；prod 必须 https）
+      # 容器内 card-center 监听 :9443（gRPC），HTTPS REST 默认 disabled；要全链路绑卡
+      # 需要把 CARDCENTER_HTTPS_ENABLED=true 并暴露 :8443，然后这里填 https://localhost:8443
+      APIGW_CARDS_CARD_CENTER_URL: ""
     # 18080/18081/19092 host 映射避让：accounting-admin-web 8080、
     # payment-admin-frontend 8081、accounting-system metrics 19090
     ports: ["18080:8080", "18081:8081", "19092:9090"]

@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 // Package maya 实现 Maya Checkout v2 adapter。
 //
 // 规格：https://s3-us-west-2.amazonaws.com/developers.paymaya.com.pg/checkout/v2/Checkout+API.html

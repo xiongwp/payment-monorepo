@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 // Package pesonet 实现 PESONet 批量转账 adapter（以 UnionBank Partner API 为接入点）。
 //
 // 参考：https://developer.unionbankph.com/product/docs/pesonet-transfers-via-partners

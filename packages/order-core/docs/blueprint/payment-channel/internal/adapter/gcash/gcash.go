@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 // Package gcash 实现 GCash Partner API adapter（走 Alipay+ mPaaS 骨干）。
 //
 // 参考：https://miniprogram.gcash.com/docs/miniprogram_gcash/mpdev/v1_pay

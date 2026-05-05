@@ -48,6 +48,7 @@ func main() {
 			newLogger,
 			newServerConfig,
 			newUserMerchantConn,
+			newOrderCoreConn,
 			newUserwebHandler,
 			newCardHandler,
 			newServer,
@@ -66,7 +67,7 @@ func loadConfig() (*viper.Viper, error) {
 	// AutomaticEnv 仅自动绑定已在 yaml 出现的 key；BindEnv 兜底保证 endpoint /
 	// registry.endpoints 能被 APIGW_<KEY> env 读到。
 	for _, k := range []string{
-		"user_merchant.endpoint", "risk.endpoint", "kms.endpoint",
+		"user_merchant.endpoint", "order_core.endpoint", "risk.endpoint", "kms.endpoint",
 		"registry.endpoints", "env",
 		// 卡支付相关，env 优先级覆盖 yaml
 		"cards.enabled",
@@ -200,43 +201,51 @@ func newServer(cfg server.Config, uw *userweb.Handler, ch *userweb.CardHandler, 
 
 // newCardHandler 装配卡支付 handler。
 //
-// 真实 mTLS gRPC client 接通后，把这里的 NewStubCardClient / NewStubPaymentClient
-// 换成 user-merchant-core.UserCardService client + order-core.PaymentIntentService client。
+// 接通逻辑：
+//   - cards.enabled=true + user_merchant.endpoint 已配 → 真 gRPC client
+//     (NewGRPCCardClient → user-merchant-core.UserCardService.Attach/List/Delete/SetDefault)
+//   - 其它情况 → stub client（页面正常渲染，操作返 not-wired）
 //
-// 当前 stub：
-//   - GET /cards / /cards/new / /pay / /pay/result 都能正常渲染
-//   - POST /cards (绑卡) / /pay (支付) 会返回友好的 "service not wired" Flash
-//   - 已登录用户从 /me 点 "我的卡" / "去支付" 进得来，看到表单
+// PaymentServiceClient 现仍是 stub（task: order-core PaymentIntentService 加 user_card_id
+// 字段后接通真实 client）。
 //
-// PCI nano-discipline：stub 模式下 PAN 走到 stubCardClient.AddCard 立刻被 errCardServiceNotWired
-// 拒绝，cards.go 的 defer 会把局部 pan/cvv 清空；本进程不会持久化任何 PAN。
-func newCardHandler(uw *userweb.Handler, v *viper.Viper, logger *zap.Logger) *userweb.CardHandler {
+// PCI nano-discipline：cards_new.html 是 JS-only 直发 card-center HTTPS，
+// PAN 永远不经过 api-gateway。本 handler 的 /cards/attach 只接 stored_token + masked。
+func newCardHandler(uw *userweb.Handler, umc UserMerchantConn, oc OrderCoreConn, v *viper.Viper, logger *zap.Logger) *userweb.CardHandler {
 	if uw == nil {
-		// userweb.Handler 都没装配，cards 也没法工作（要复用 render / 鉴权）
 		return nil
 	}
-	if v.GetBool("cards.enabled") {
-		// TODO(card-rpc): cards.enabled=true 时这里应当：
-		//   1. dial user-merchant-core.UserCardService（mTLS）
-		//   2. dial order-core.PaymentIntentService（mTLS）
-		//   3. 包装成 CardServiceClient / PaymentServiceClient 接口
-		// 现阶段还是 stub，但 assertProdSafety 已经在 prod 下强制 endpoint + mtls 配置，
-		// 真实接通在下个 PR 完成。
-		logger.Warn("cards.enabled=true but real gRPC client not wired yet; falling back to stub. " +
-			"See cards_client_stub.go header for wiring path.")
+	enabled := v.GetBool("cards.enabled")
+
+	// CardServiceClient: 真 gRPC vs stub
+	var cardClient userweb.CardServiceClient
+	if enabled && umc.ClientConn != nil {
+		cardClient = userweb.NewGRPCCardClient(umc.ClientConn)
+		logger.Info("CardHandler.cards: real gRPC → user-merchant-core.UserCardService")
 	} else {
-		logger.Info("CardHandler running in stub mode (cards.enabled=false). " +
-			"Pages render, but Add/Delete/Pay return errCardServiceNotWired.")
+		cardClient = userweb.NewStubCardClient()
+		logger.Info("CardHandler.cards: stub mode")
 	}
-	ch := userweb.NewCardHandler(
-		uw,
-		userweb.NewStubCardClient(),
-		userweb.NewStubPaymentClient(),
-	)
-	// 浏览器 JS 直发 card-center HTTPS（PAN 单跳）的目标 URL
+
+	// PaymentServiceClient: 真 gRPC vs stub
+	var payClient userweb.PaymentServiceClient
+	if enabled && oc.ClientConn != nil {
+		payClient = userweb.NewGRPCPaymentClient(oc.ClientConn)
+		logger.Info("CardHandler.payments: real gRPC → order-core.PaymentIntentService")
+	} else {
+		payClient = userweb.NewStubPaymentClient()
+		logger.Info("CardHandler.payments: stub mode")
+	}
+
+	ch := userweb.NewCardHandler(uw, cardClient, payClient)
 	ch.CardCenterURL = v.GetString("cards.card_center_url")
 	return ch
 }
+
+// UserMerchantConn / OrderCoreConn distinct types so fx can inject them by type.
+// 没有这两个 wrapper，两个 newXxxConn 都返 *grpc.ClientConn，fx 会报 ambiguous。
+type UserMerchantConn struct{ *grpc.ClientConn }
+type OrderCoreConn struct{ *grpc.ClientConn }
 
 // newUserMerchantConn 拨号 user-merchant-core gRPC。endpoint 与 registry.endpoints
 // 都空 → nil（启动不阻塞，但 /signup /login 会 503）。
@@ -244,12 +253,12 @@ func newCardHandler(uw *userweb.Handler, v *viper.Viper, logger *zap.Logger) *us
 // registry 非空 → etcd resolver（联栈多 pod 必走，因为容器去掉 container_name 后
 // "user-merchant-core" 跨 compose 项目 DNS 不可解析）；空 → 直连 endpoint。
 // 两条路都自动 round_robin LB 在多副本间均摊。
-func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*grpc.ClientConn, error) {
+func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (UserMerchantConn, error) {
 	endpoint := v.GetString("user_merchant.endpoint")
 	registry := v.GetStringSlice("registry.endpoints")
 	if endpoint == "" && len(registry) == 0 {
 		logger.Warn("user_merchant.endpoint and registry.endpoints both unset; signup/login pages will fail")
-		return nil, nil
+		return UserMerchantConn{}, nil
 	}
 	conn, err := serviceregistry.DialWithFallback(registry, "user-merchant-core", endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -258,20 +267,41 @@ func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*
 		}),
 	)
 	if err != nil {
-		return nil, err
+		return UserMerchantConn{}, err
 	}
 	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
 	logger.Info("user-merchant-core dialed",
 		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
-	return conn, nil
+	return UserMerchantConn{ClientConn: conn}, nil
 }
 
-func newUserwebHandler(conn *grpc.ClientConn, v *viper.Viper, logger *zap.Logger) (*userweb.Handler, error) {
-	if conn == nil {
+// newOrderCoreConn 拨号 order-core gRPC（用于卡支付 PI Create+Confirm）。空 → 跳过。
+func newOrderCoreConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (OrderCoreConn, error) {
+	endpoint := v.GetString("order_core.endpoint")
+	registry := v.GetStringSlice("registry.endpoints")
+	if endpoint == "" && len(registry) == 0 {
+		logger.Info("order_core.endpoint not set; card 支付提交会走 stub")
+		return OrderCoreConn{}, nil
+	}
+	conn, err := serviceregistry.DialWithFallback(registry, "order-core", endpoint,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
+		}),
+	)
+	if err != nil {
+		return OrderCoreConn{}, err
+	}
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
+	logger.Info("order-core dialed", zap.String("endpoint", endpoint))
+	return OrderCoreConn{ClientConn: conn}, nil
+}
+
+func newUserwebHandler(uc UserMerchantConn, v *viper.Viper, logger *zap.Logger) (*userweb.Handler, error) {
+	if uc.ClientConn == nil {
 		return nil, nil
 	}
-	uc := usermerchantv1.NewUserServiceClient(conn)
-	h, err := userweb.NewHandler(uc, logger)
+	h, err := userweb.NewHandler(usermerchantv1.NewUserServiceClient(uc.ClientConn), logger)
 	if err != nil {
 		return nil, err
 	}

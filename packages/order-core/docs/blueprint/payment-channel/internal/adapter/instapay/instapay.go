@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 // Package instapay 实现 InstaPay 实时转账 adapter（以 UnionBank Partner API 为接入点）。
 //
 // 参考：https://developer.unionbankph.com/product/docs/instapay-transfers-via-partners

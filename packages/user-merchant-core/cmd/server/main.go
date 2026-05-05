@@ -22,6 +22,7 @@ import (
 	"github.com/xiongwp/user-merchant-core/internal/authpkg"
 	"github.com/xiongwp/user-merchant-core/internal/cache"
 	"github.com/xiongwp/user-merchant-core/internal/healthz"
+	"github.com/xiongwp/user-merchant-core/internal/cardcenterclient"
 	"github.com/xiongwp/user-merchant-core/internal/idgen"
 	"github.com/xiongwp/user-merchant-core/internal/kmsclient"
 	"github.com/xiongwp/user-merchant-core/internal/metrics"
@@ -58,8 +59,10 @@ func main() {
 			repoIdempotency,
 			repoAudit,
 			repoUser,
+			repoUserCard,
 			// services
 			newKMSClient,
+			newCardCenterClient, // 给 user_card service revoke / 异步 best-effort 调用 (PAN 单跳后仅 DeleteCard 用)
 			svcMerchant,
 			svcMerchantSecret,
 			newAuthIssuer,
@@ -67,6 +70,7 @@ func main() {
 			newRiskClient,
 			newAccountingClient,
 			svcUser,
+			svcUserCard,
 			// store adapters (repo → grpcutil 接口)
 			newIdempotencyStore,
 			newAuditStore,
@@ -299,6 +303,47 @@ func repoUser(mgr *repo.Manager, router *sharding.Router) repo.UserRepository {
 	return repo.NewUserRepository(mgr, router)
 }
 
+func repoUserCard(mgr *repo.Manager, router *sharding.Router) repo.UserCardRepository {
+	return repo.NewUserCardRepository(mgr, router)
+}
+
+// newCardCenterClient 构造 card-center mTLS gRPC client；endpoint 为空 → 返 nil。
+//
+// 注意：PAN 单跳后，user-merchant-core.UserCardService.AttachCard **不再调** Tokenize。
+// cardCenter 仅在 DeleteCard 路径用作"通知 card-center 把 stored_token 标 revoked"
+// 的 best-effort 异步调用。endpoint 为空 / dev 不配也能跑（DeleteCard 仍会软删 user_card 表，
+// 只是 card-center 那边不知道 token 已撤销）。
+func newCardCenterClient(v *viper.Viper, logger *zap.Logger) *cardcenterclient.Client {
+	endpoint := v.GetString("card_center.endpoint")
+	if endpoint == "" {
+		logger.Info("card_center.endpoint not set; UserCardService DeleteCard 不会通知 card-center revoke (dev OK)")
+		return nil
+	}
+	cli, err := cardcenterclient.New(cardcenterclient.Config{
+		Endpoint:   endpoint,
+		ClientCert: v.GetString("card_center.client_cert"),
+		ClientKey:  v.GetString("card_center.client_key"),
+		ServerCA:   v.GetString("card_center.server_ca"),
+		Insecure:   v.GetBool("card_center.insecure"),
+		RPCTimeout: v.GetDuration("card_center.rpc_timeout"),
+	})
+	if err != nil {
+		logger.Warn("card-center client init failed; degrading to nil", zap.Error(err))
+		return nil
+	}
+	logger.Info("card-center client connected", zap.String("endpoint", endpoint))
+	return cli
+}
+
+// svcUserCard 装配 *service.UserCardService。
+func svcUserCard(
+	r repo.UserCardRepository,
+	cc *cardcenterclient.Client,
+	logger *zap.Logger,
+) *service.UserCardService {
+	return service.NewUserCardService(r, cc, logger)
+}
+
 func newIdempotencyStore(r repo.IdempotencyRepository) grpcutil.IdempotencyStore {
 	return server.NewIdempotencyStore(r)
 }
@@ -367,6 +412,7 @@ func newServer(
 	mch service.MerchantService,
 	mchSecret service.MerchantSecretService,
 	user *service.UserService,
+	userCard *service.UserCardService,
 	mchCache *cache.MerchantCache,
 	idemStore grpcutil.IdempotencyStore,
 	auditStore grpcutil.AuditStore,
@@ -427,6 +473,7 @@ func newServer(
 		MerchantSvc:        mch,
 		MerchantSecretSvc:  mchSecret,
 		UserSvc:            user,
+		UserCardSvc:        userCard,
 		AuditRepo:          auditRepo,
 		MerchantCache:      mchCache,
 		MerchantDefaultRPS: v.GetFloat64("rate_limit.per_merchant.default_rps"),

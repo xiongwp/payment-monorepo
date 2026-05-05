@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 // Package coinsph 实现 Coins.ph Merchant Checkout adapter。
 //
 // 参考：https://docs.coins.ph/rest-api/
