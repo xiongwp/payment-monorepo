@@ -102,8 +102,12 @@ func assertProdSafety(v *viper.Viper) error {
 			return fmt.Errorf("PROD-SAFETY: %s required (mTLS-only)", k)
 		}
 	}
-	if strings.TrimSpace(v.GetString("card_center.endpoint")) == "" {
-		return fmt.Errorf("PROD-SAFETY: card_center.endpoint required")
+	if strings.TrimSpace(v.GetString("card_center.endpoint")) == "" &&
+		len(splitCSV(v.GetString("card_center.registry_endpoints"))) == 0 &&
+		len(v.GetStringSlice("card_center.registry_endpoints")) == 0 &&
+		len(splitCSV(v.GetString("registry.endpoints"))) == 0 &&
+		len(v.GetStringSlice("registry.endpoints")) == 0 {
+		return fmt.Errorf("PROD-SAFETY: card_center.endpoint or card_center.registry_endpoints required")
 	}
 	atLeastOne := false
 	for _, n := range []string{"visa", "mastercard", "jcb", "amex", "unionpay"} {
@@ -176,16 +180,28 @@ func newCardTransactionRepo(mgr *repo.Manager) processor.CardTransactionRepo {
 }
 
 func newCardCenterClient(v *viper.Viper) (processor.CardCenter, error) {
-	cfg := cardcenterclient.Config{
-		Endpoint:   v.GetString("card_center.endpoint"),
-		RPCTimeout: v.GetDuration("card_center.rpc_timeout"),
-		ClientCert: v.GetString("card_center.client_cert"),
-		ClientKey:  v.GetString("card_center.client_key"),
-		ServerCA:   v.GetString("card_center.server_ca"),
-		Insecure:   v.GetBool("card_center.insecure"),
+	registry := splitCSV(v.GetString("card_center.registry_endpoints"))
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("card_center.registry_endpoints")
 	}
-	if cfg.Endpoint == "" {
-		return nil, errors.New("card_center.endpoint required")
+	if len(registry) == 0 {
+		// 全局 registry.endpoints 共用 fallback
+		registry = v.GetStringSlice("registry.endpoints")
+		if len(registry) == 0 {
+			registry = splitCSV(v.GetString("registry.endpoints"))
+		}
+	}
+	cfg := cardcenterclient.Config{
+		Endpoint:          v.GetString("card_center.endpoint"),
+		RegistryEndpoints: registry,
+		RPCTimeout:        v.GetDuration("card_center.rpc_timeout"),
+		ClientCert:        v.GetString("card_center.client_cert"),
+		ClientKey:         v.GetString("card_center.client_key"),
+		ServerCA:          v.GetString("card_center.server_ca"),
+		Insecure:          v.GetBool("card_center.insecure"),
+	}
+	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
+		return nil, errors.New("card_center.endpoint or card_center.registry_endpoints required")
 	}
 	return cardcenterclient.New(cfg)
 }

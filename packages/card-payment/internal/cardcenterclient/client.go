@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/xiongwp/card-payment/internal/processor"
+	"github.com/xiongwp/payment-util/serviceregistry"
 )
 
 type Client struct {
@@ -25,18 +26,26 @@ type Client struct {
 }
 
 type Config struct {
-	Endpoint   string
-	RPCTimeout time.Duration
-	ClientCert string
-	ClientKey  string
-	ServerCA   string
-	Insecure   bool
+	// Endpoint：静态地址，仅在 RegistryEndpoints 为空时用作 fallback 直连。
+	Endpoint string
+	// RegistryEndpoints：etcd cluster 地址（如 ["etcd:2379"]）。非空 → 走
+	// etcd:///card-center 服务发现（card-center 自注册到 etcd），绕开 docker
+	// embedded DNS 把 alias 错绑到不相关容器 IP 的状态机问题。
+	RegistryEndpoints []string
+	RPCTimeout        time.Duration
+	ClientCert        string
+	ClientKey         string
+	ServerCA          string
+	Insecure          bool
 }
 
-// New dial card-center over mTLS
+// New dial card-center over mTLS（或 dev insecure）
+//
+// 优先 RegistryEndpoints → etcd 服务发现；空时退回 cfg.Endpoint 静态 DNS。
+// 至少给一个非空。
 func New(cfg Config) (*Client, error) {
-	if cfg.Endpoint == "" {
-		return nil, errors.New("cardcenterclient: endpoint required")
+	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
+		return nil, errors.New("cardcenterclient: endpoint or registry_endpoints required")
 	}
 	var creds credentials.TransportCredentials
 	if cfg.Insecure {
@@ -48,7 +57,13 @@ func New(cfg Config) (*Client, error) {
 		}
 		creds = credentials.NewTLS(tc)
 	}
-	conn, err := grpc.NewClient(cfg.Endpoint, grpc.WithTransportCredentials(creds))
+	// DialWithFallback：endpoints 非空 → etcd resolver，空 → 退回 endpoint
+	// 静态 DNS。两条路径都自动获得 round_robin LB + 10s/3s keepalive +
+	// UNAVAILABLE/DEADLINE_EXCEEDED retry。
+	conn, err := serviceregistry.DialWithFallback(
+		cfg.RegistryEndpoints, "card-center", cfg.Endpoint,
+		grpc.WithTransportCredentials(creds),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}

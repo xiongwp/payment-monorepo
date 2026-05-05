@@ -29,7 +29,13 @@ services:
       CARDPAYMENT_LOG_DEV: "true"
       CARDPAYMENT_ENV: "dev"
       CARDPAYMENT_SERVER_GRPC_PORT: "9444"
-      # 内部调 card-center
+      # ── 服务自注册（被 order-core / payment-core / BFF 调用）+ 出站发现 ──
+      CARDPAYMENT_REGISTRY_ENDPOINTS: "etcd:2379"
+      CARDPAYMENT_REGISTRY_SERVICE_NAME: "card-payment"
+      CARDPAYMENT_REGISTRY_TTL: "10s"
+      # 内部调 card-center —— 优先 etcd:///card-center 服务发现，绕开 docker DNS
+      # 把 alias 错绑到不相关容器 IP；ENDPOINT 留作 fallback。
+      CARDPAYMENT_CARD_CENTER_REGISTRY_ENDPOINTS: "etcd:2379"
       CARDPAYMENT_CARD_CENTER_ENDPOINT: "card-center:9443"
       CARDPAYMENT_CARD_CENTER_INSECURE: "true"
       # 卡组织：dev 全 mock（endpoint 空 → adapter 自动 mock 模式）
