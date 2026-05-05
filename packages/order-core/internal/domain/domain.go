@@ -235,6 +235,11 @@ type PaymentIntent struct {
 	ClientSecret        string              `gorm:"column:client_secret;type:varchar(128)"          json:"client_secret,omitempty"`
 	PaymentMethodTypes  StringList          `gorm:"column:payment_method_types;type:json"           json:"payment_method_types,omitempty"`
 	PaymentMethod       string              `gorm:"column:payment_method;type:varchar(32)"          json:"payment_method,omitempty"`
+	// UserID 付款用户 id（可空，匿名 PI / 商户后台代下单时为 0）。卡支付路径必填。
+	UserID              int64               `gorm:"column:user_id"                                  json:"user_id,omitempty"`
+	// UserCardID 卡支付时关联 user-merchant.user_card.id；其它支付方式为 0。
+	// 不为 0 时 Confirm 路径会调 card-center.CreatePaymentToken 派生支付 token。
+	UserCardID          int64               `gorm:"column:user_card_id"                             json:"user_card_id,omitempty"`
 	// ActiveChargeIDs / ActiveRefundIDs 只存"正在进行中"的支付/退款单 id。
 	// Charge / Refund 到达终态（succeeded/failed/canceled）后由服务层从列表中移除，
 	// 历史明细以 charge_XX / refund_XX 表为准。

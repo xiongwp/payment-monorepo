@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS `payment_intent_${TABLE}` (
     `client_secret`              VARCHAR(128)  DEFAULT NULL,
     `payment_method_types`       JSON          DEFAULT NULL,
     `payment_method`             VARCHAR(32)   DEFAULT NULL,
+    `user_id`                    BIGINT        DEFAULT NULL COMMENT '付款用户（可空，匿名 PI 不绑用户）',
+    `user_card_id`               BIGINT        DEFAULT NULL COMMENT '卡支付时关联 user_merchant.user_card.id；其它支付方式为空',
     `active_charge_ids`          JSON          DEFAULT NULL COMMENT '进行中的 charge_id 列表（终态后移除）',
     `active_refund_ids`          JSON          DEFAULT NULL COMMENT '进行中的 refund_id 列表（终态后移除）',
     `amount_capturable`          BIGINT        NOT NULL DEFAULT 0,
