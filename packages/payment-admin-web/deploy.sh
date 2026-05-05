@@ -300,36 +300,6 @@ SQL_SHARD
   done
 }
 
-# ensure_session_token_512 幂等扩 session token 列宽到 512 ——
-# 老 init SQL 用 VARCHAR(255)，新 JWT（带 kid claim）264 字符会被静默截，
-# 导致登录后 IntrospectToken 找不到 session 行 → 跳回 /login 死循环。
-# init SQL 已改 512，但 shared-meta / shared-shard 容器首次启动后 schema 不会重 source。
-# 这个函数是给"老栈升级到新代码"的迁移钩子。idempotent。
-ensure_session_token_512() {
-  if ! docker ps --format '{{.Names}}' | grep -qx 'shared-meta'; then
-    return 0
-  fi
-  local sl_type
-  sl_type=$(docker exec shared-meta mysql -uroot -ppassword user_merchant_meta \
-    -e "SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='user_merchant_meta' AND TABLE_NAME='session_lookup' AND COLUMN_NAME='token'" -BN 2>/dev/null || true)
-  if [[ "$sl_type" == "varchar(512)" ]]; then
-    return 0  # 已经是新 schema
-  fi
-  info "ensure_session_token_512: 迁移 session_lookup + user_sessions_NN token VARCHAR(255)→VARCHAR(512)"
-  docker exec -i shared-meta mysql -uroot -ppassword user_merchant_meta <<'SQL_META' >/dev/null 2>&1 || true
-ALTER TABLE session_lookup MODIFY COLUMN token VARCHAR(512) NOT NULL;
-TRUNCATE TABLE session_lookup;
-SQL_META
-  for i in 0 1 2 3 4 5 6 7 8 9; do
-    local stmts=""
-    for n in 00 01 02 03 04 05 06 07 08 09; do
-      stmts+="ALTER TABLE user_sessions_$n MODIFY COLUMN token VARCHAR(512) NOT NULL;"$'\n'
-      stmts+="TRUNCATE TABLE user_sessions_$n;"$'\n'
-    done
-    echo "$stmts" | docker exec -i "shared-shard-$i" mysql -uroot -ppassword "user_merchant_db_$i" >/dev/null 2>&1 || true
-  done
-}
-
 cmd_up() {
   ensure_network
   ensure_kms_keys
@@ -343,7 +313,6 @@ cmd_up() {
   # 且 shared-meta 已经在跑（即 shared-db 是先于 card-* 起来的，或本次 up 顺序
   # 就把 shared-db 排前）时才执行；早调一次没坏处。
   ensure_card_dbs "${targets[@]}"
-  ensure_session_token_512
 
   # 不论用户传啥 service，shared-db + risk-stack 是所有 app 的基础设施，
   # 没起来 app 会连不上 MySQL / Redis / Kafka / etcd。这里自动前置。
