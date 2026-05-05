@@ -1,21 +1,40 @@
 // Package authpkg JWT issue / verify + bcrypt + TOTP helpers。
 //
-// 设计：
-//   - JWT 用 HS256 (secret-shared)。生产应换 RS256 + KMS-backed key
-//   - SecretKey 来自 viper config: auth.jwt_secret（dev 默认值）
+// JWT 设计：
+//   - 算法：dev=HS256（共享 secret 配置），prod=RS256（私钥签 + 公钥验，KMS-backed
+//     私钥更佳）；通过 IssuerConfig.Algorithm 选
+//   - Issuer.Verify 严格校验 token.alg == 当前配置 algorithm，拒绝 alg=none 等降级攻击
+//   - kid（key id）写入 token header，给未来 key rotation 留 hook（多 key 同时存活）
 //   - Token TTL 默认 24h；refresh-token 路径暂不实现
+//
+// 生产纪律：
+//   - assertProdSafety 强制 env=prod 必须 algorithm=RS256（HS256 共享密钥泄漏 = 全站伪造）
+//   - 公钥可以散到 verify-only 服务（card-center、order-core、payment-* 都可独立验签
+//     而不持私钥）
 package authpkg
 
 import (
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base32"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
+)
+
+// Algorithm JWT 签名算法
+type Algorithm string
+
+const (
+	AlgHS256 Algorithm = "HS256" // dev 共享密钥
+	AlgRS256 Algorithm = "RS256" // prod 私钥签 + 公钥验
 )
 
 // Claims 写到 JWT 的 claims。
@@ -26,51 +45,210 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// Issuer 配 secret + 默认 ttl 后给所有用户签 token。
-type Issuer struct {
-	Secret []byte
-	TTL    time.Duration
-	Issuer string // "user-merchant-core"
+// IssuerConfig Issuer 装配参数。
+//
+// HS256 模式：填 Secret；RS256 模式：填 PrivateKeyPEMPath / PublicKeyPEMPath。
+// KID 写入 token header，便于将来 rotation。
+type IssuerConfig struct {
+	Algorithm         Algorithm
+	TTL               time.Duration
+	IssuerName        string // 默认 "user-merchant-core"
+	KID               string // key id（rotation hook）
+
+	// HS256 only
+	Secret string
+
+	// RS256 only
+	PrivateKeyPEMPath string
+	PublicKeyPEMPath  string
 }
 
+// Issuer 配 secret/key + 默认 ttl 后给所有用户签 token。
+type Issuer struct {
+	alg        Algorithm
+	ttl        time.Duration
+	issuer     string
+	kid        string
+
+	hsSecret []byte // HS256
+
+	rsaPriv *rsa.PrivateKey // RS256 sign
+	rsaPub  *rsa.PublicKey  // RS256 verify
+}
+
+// NewIssuer 旧 API 兼容（HS256 + secret）；保留给已有调用方。
+// 新代码用 NewIssuerFromConfig。
 func NewIssuer(secret string, ttl time.Duration) *Issuer {
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
-	return &Issuer{Secret: []byte(secret), TTL: ttl, Issuer: "user-merchant-core"}
+	return &Issuer{
+		alg:      AlgHS256,
+		ttl:      ttl,
+		issuer:   "user-merchant-core",
+		kid:      "hs256-default",
+		hsSecret: []byte(secret),
+	}
 }
+
+// NewIssuerFromConfig 完整构造；推荐 prod 用。
+func NewIssuerFromConfig(cfg IssuerConfig) (*Issuer, error) {
+	if cfg.TTL <= 0 {
+		cfg.TTL = 24 * time.Hour
+	}
+	if cfg.IssuerName == "" {
+		cfg.IssuerName = "user-merchant-core"
+	}
+	switch cfg.Algorithm {
+	case AlgHS256, "":
+		if cfg.Secret == "" {
+			return nil, errors.New("authpkg: HS256 requires non-empty Secret")
+		}
+		return &Issuer{
+			alg:      AlgHS256,
+			ttl:      cfg.TTL,
+			issuer:   cfg.IssuerName,
+			kid:      orDefault(cfg.KID, "hs256-default"),
+			hsSecret: []byte(cfg.Secret),
+		}, nil
+	case AlgRS256:
+		priv, err := loadRSAPrivate(cfg.PrivateKeyPEMPath)
+		if err != nil {
+			return nil, fmt.Errorf("authpkg: load private key: %w", err)
+		}
+		pub, err := loadRSAPublic(cfg.PublicKeyPEMPath)
+		if err != nil {
+			return nil, fmt.Errorf("authpkg: load public key: %w", err)
+		}
+		return &Issuer{
+			alg:     AlgRS256,
+			ttl:     cfg.TTL,
+			issuer:  cfg.IssuerName,
+			kid:     orDefault(cfg.KID, "rs256-default"),
+			rsaPriv: priv,
+			rsaPub:  pub,
+		}, nil
+	default:
+		return nil, fmt.Errorf("authpkg: unsupported algorithm %q", cfg.Algorithm)
+	}
+}
+
+// Algorithm 返回当前 Issuer 用的算法（main.go startup-safety 校验用）
+func (i *Issuer) Algorithm() Algorithm { return i.alg }
 
 // Issue 给 user 签一个 JWT。emailVerified / scopes 写到 claims。
 func (i *Issuer) Issue(userID string, emailVerified bool, scopes ...string) (string, time.Time, error) {
 	now := time.Now()
-	exp := now.Add(i.TTL)
+	exp := now.Add(i.ttl)
 	c := Claims{
 		UserID: userID, EmailVerified: emailVerified, Scopes: scopes,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    i.Issuer,
+			Issuer:    i.issuer,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(exp),
 			Subject:   userID,
 		},
 	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
-	s, err := tok.SignedString(i.Secret)
-	return s, exp, err
+	var (
+		tok    *jwt.Token
+		signed string
+		err    error
+	)
+	switch i.alg {
+	case AlgHS256:
+		tok = jwt.NewWithClaims(jwt.SigningMethodHS256, c)
+		tok.Header["kid"] = i.kid
+		signed, err = tok.SignedString(i.hsSecret)
+	case AlgRS256:
+		tok = jwt.NewWithClaims(jwt.SigningMethodRS256, c)
+		tok.Header["kid"] = i.kid
+		signed, err = tok.SignedString(i.rsaPriv)
+	default:
+		return "", time.Time{}, fmt.Errorf("authpkg: unsupported alg %q", i.alg)
+	}
+	return signed, exp, err
 }
 
-// Verify 解析 + 校验 JWT；返回 claims。token 过期 / 签名错都返 error。
+// Verify 解析 + 校验 JWT；返回 claims。
+//
+// 严格：token.alg 必须 == 本 Issuer 配置的 alg。拒 alg=none / HS256↔RS256 切换。
 func (i *Issuer) Verify(s string) (*Claims, error) {
 	c := &Claims{}
+	expectedAlg := string(i.alg)
 	_, err := jwt.ParseWithClaims(s, c, func(t *jwt.Token) (any, error) {
-		if t.Method.Alg() != "HS256" {
-			return nil, fmt.Errorf("unexpected signing method: %s", t.Method.Alg())
+		if t.Method.Alg() != expectedAlg {
+			return nil, fmt.Errorf("unexpected signing method: got %s want %s", t.Method.Alg(), expectedAlg)
 		}
-		return i.Secret, nil
+		switch i.alg {
+		case AlgHS256:
+			return i.hsSecret, nil
+		case AlgRS256:
+			return i.rsaPub, nil
+		}
+		return nil, fmt.Errorf("authpkg: no key for alg %s", i.alg)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return c, nil
+}
+
+// loadRSAPrivate PEM file → *rsa.PrivateKey
+func loadRSAPrivate(path string) (*rsa.PrivateKey, error) {
+	if path == "" {
+		return nil, errors.New("RS256 private key path empty")
+	}
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, errors.New("invalid PEM (private key)")
+	}
+	// 兼容 PKCS1 和 PKCS8 两种格式
+	if k, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return k, nil
+	}
+	if k, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		if rsaKey, ok := k.(*rsa.PrivateKey); ok {
+			return rsaKey, nil
+		}
+		return nil, errors.New("PKCS8 key is not RSA")
+	}
+	return nil, errors.New("private key parse failed (tried PKCS1 + PKCS8)")
+}
+
+// loadRSAPublic PEM file → *rsa.PublicKey
+func loadRSAPublic(path string) (*rsa.PublicKey, error) {
+	if path == "" {
+		return nil, errors.New("RS256 public key path empty")
+	}
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, errors.New("invalid PEM (public key)")
+	}
+	if k, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
+		if rsaKey, ok := k.(*rsa.PublicKey); ok {
+			return rsaKey, nil
+		}
+		return nil, errors.New("PKIX key is not RSA")
+	}
+	if k, err := x509.ParsePKCS1PublicKey(block.Bytes); err == nil {
+		return k, nil
+	}
+	return nil, errors.New("public key parse failed (tried PKIX + PKCS1)")
+}
+
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
 }
 
 // HashPassword bcrypt cost 12 (~250ms@2024 hw)；登录路径只 verify 一次，不影响主路径。

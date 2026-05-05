@@ -62,6 +62,45 @@ type BalanceUpdateResponse struct {
 	ErrorMessage  string `json:"error_message,omitempty"`
 }
 
+// validateLedgerEntriesBalance 校验一组分录 debit==credit、行数 >= 2、每行
+// debit/credit 非负且互斥（一行只能要么 debit 要么 credit，不能同时给）。
+//
+// 这是 GL 入账的最后一道防线 —— 上游 order-core PostingRequest.Validate 已经验过，
+// 但为了防止异常 / 恶意客户端绕过 / 直接调内部 API，收侧再做一次。
+func validateLedgerEntriesBalance(entries []AccountingEntry) error {
+	if len(entries) < 2 {
+		return fmt.Errorf("ledger: at least 2 entries required, got %d", len(entries))
+	}
+	var debit, credit int64
+	for i, e := range entries {
+		if e.AccountNo == "" {
+			return fmt.Errorf("ledger[%d]: account_no required", i)
+		}
+		if e.DebitAmount < 0 || e.CreditAmount < 0 {
+			return fmt.Errorf("ledger[%d]: amounts must be non-negative (debit=%d credit=%d)", i, e.DebitAmount, e.CreditAmount)
+		}
+		if e.DebitAmount > 0 && e.CreditAmount > 0 {
+			return fmt.Errorf("ledger[%d]: a single entry must be either debit or credit, not both", i)
+		}
+		if e.DebitAmount == 0 && e.CreditAmount == 0 {
+			return fmt.Errorf("ledger[%d]: amount must be > 0 on one side", i)
+		}
+		// 检测 int64 溢出兜底
+		if e.DebitAmount > 0 && debit > (1<<62-e.DebitAmount) {
+			return fmt.Errorf("ledger[%d]: debit sum overflow", i)
+		}
+		if e.CreditAmount > 0 && credit > (1<<62-e.CreditAmount) {
+			return fmt.Errorf("ledger[%d]: credit sum overflow", i)
+		}
+		debit += e.DebitAmount
+		credit += e.CreditAmount
+	}
+	if debit != credit {
+		return fmt.Errorf("ledger: unbalanced (debit=%d credit=%d, diff=%d)", debit, credit, debit-credit)
+	}
+	return nil
+}
+
 // EntryRecordRequest 分录记录请求。
 //
 // RequestID 必填：作为 AsyncRecordEntry 的幂等键，下游 async_task 表通过
@@ -439,6 +478,16 @@ func (s *hybridAccountingService) HybridDoubleEntryBooking(ctx context.Context, 
 	// 4. 异步记录会计分录
 	var ledgerTaskID string
 	if len(req.LedgerEntries) > 0 {
+		// P0-1: 收侧 debit==credit 校验。order-core PostingRequest.Validate 已在
+		// 上游做过；这里收侧再做一遍兜底，防止异常 / 恶意客户端绕过上游校验
+		// 把不平衡分录推到 Kafka → GL 长期偏差。
+		if err := validateLedgerEntriesBalance(req.LedgerEntries); err != nil {
+			s.logger.Error("ledger entries unbalanced; refusing async record",
+				zap.String("businessNo", req.BusinessNo),
+				zap.Error(err))
+			return nil, fmt.Errorf("hybrid: %w", err)
+		}
+
 		taskID, idErr := s.idGen.NextIDStr(ctx, idgen.BizTagAsyncTask)
 		if idErr == nil {
 			ledgerTaskID = taskID
@@ -446,7 +495,14 @@ func (s *hybridAccountingService) HybridDoubleEntryBooking(ctx context.Context, 
 			s.logger.Warn("hybrid: generate ledger task id failed", zap.Error(idErr))
 		}
 
+		// P0-1: RequestID 必填做幂等。Kafka 重投 + Ledger consumer 重复消费时
+		// 同一 (request_id, type) 在 async_task 表 uniq_request_id_type 兜底，
+		// 第二次进来直接撞 dup → 不再写一遍 GL。
+		// RequestID 用 voucherNo 派生（确定性）：同一笔业务的 ledger 任务永远
+		// 是同一 RequestID。
+		entryRequestID := fmt.Sprintf("%s:ledger_entries", voucherNo)
 		if err := s.AsyncRecordEntry(ctx, &EntryRecordRequest{
+			RequestID:    entryRequestID,
 			VoucherNo:    voucherNo,
 			BusinessNo:   req.BusinessNo,
 			BusinessType: req.BusinessType,

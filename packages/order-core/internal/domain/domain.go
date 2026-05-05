@@ -342,6 +342,10 @@ type Refund struct {
 	ID              string       `gorm:"column:id;primaryKey;type:varchar(64)"                json:"id"`
 	ChargeID        string       `gorm:"column:charge_id;type:varchar(64);index:idx_charge"   json:"charge_id"`
 	PaymentIntentID string       `gorm:"column:payment_intent_id;type:varchar(64);index:idx_pi" json:"payment_intent_id"`
+	// IdempotencyKey 调用方防重键：(payment_intent_id, idempotency_key) 唯一。
+	// 重复 Create 同一 (pi_id, key) → 直接返回首次创建的 Refund，不再 INSERT 新行。
+	// 避免客户端 retry 创建出多笔 refund（CAS 防双扣，但商户看见重复行）。
+	IdempotencyKey  string       `gorm:"column:idempotency_key;type:varchar(128);uniqueIndex:uk_pi_idem,priority:2" json:"idempotency_key,omitempty"`
 	Amount          int64        `gorm:"column:amount"                                        json:"amount"`
 	Currency        string       `gorm:"column:currency;type:char(3)"                         json:"currency"`
 	Status          RefundStatus `gorm:"column:status;type:varchar(16);index:idx_status"      json:"status"`

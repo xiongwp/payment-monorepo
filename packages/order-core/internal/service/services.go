@@ -946,6 +946,10 @@ type CreateRefundInput struct {
 	Metadata        map[string]string
 	// AllowCombinedSplit 显式允许组合支付自动按比例拆（默认 true）；false 时必须传 charge_id
 	AllowCombinedSplit bool
+	// IdempotencyKey 调用方防重键：同 (PaymentIntentID, IdempotencyKey) 重复调
+	// Create 时不会建第二条 Refund，而是返回首次创建的那条。
+	// 强烈建议商户传；不传时退化到原 race-prone 路径。
+	IdempotencyKey string
 }
 
 // CreateRefundsInput 批量退款结果（组合支付会返回多条）
@@ -991,6 +995,21 @@ func NewRefundService(
 func (s *refundService) Create(ctx context.Context, in *CreateRefundInput) (*domain.Refund, error) {
 	if in == nil || (in.PaymentIntentID == "" && in.ChargeID == "") {
 		return nil, fmt.Errorf("%w: payment_intent_id or charge_id required", domain.ErrValidation)
+	}
+
+	// P0 #3 幂等：同 (pi_id, idempotency_key) 重复 → 直接返已建的 Refund，不再 INSERT。
+	// 客户端 retry 创建退款（网络超时）不会出多笔记录。
+	if in.IdempotencyKey != "" && in.PaymentIntentID != "" {
+		if existing, err := s.refundRepo.GetByIdempotencyKey(ctx, in.PaymentIntentID, in.IdempotencyKey); err == nil {
+			s.logger.Info("refund idempotent: returning existing",
+				zap.String("pi_id", in.PaymentIntentID),
+				zap.String("idem_key", in.IdempotencyKey),
+				zap.String("refund_id", existing.ID))
+			return existing, nil
+		} else if !errors.Is(err, domain.ErrRefundNotFound) {
+			return nil, err
+		}
+		// fall through: 没找到 → 新建
 	}
 
 	piID := in.PaymentIntentID
@@ -1094,6 +1113,7 @@ func (s *refundService) Create(ctx context.Context, in *CreateRefundInput) (*dom
 		ID:              id,
 		ChargeID:        chargeID,
 		PaymentIntentID: piID,
+		IdempotencyKey:  in.IdempotencyKey, // 写入幂等键；DB 唯一索引兜底并发同 key
 		Amount:          amount,
 		Currency:        pi.Currency,
 		Status:          domain.RefundStatusPending,
@@ -1103,6 +1123,13 @@ func (s *refundService) Create(ctx context.Context, in *CreateRefundInput) (*dom
 		Updated:         now,
 	}
 	if err := s.refundRepo.Create(ctx, rf); err != nil {
+		// 并发冲突：另一个 goroutine 在我们检查→插入之间用相同 idempotency_key 写入了。
+		// DB uk_pi_idem 唯一索引兜底；此时再读一次返已存在的 refund。
+		if in.IdempotencyKey != "" && repo.IsDupKey(err) {
+			if existing, geterr := s.refundRepo.GetByIdempotencyKey(ctx, piID, in.IdempotencyKey); geterr == nil {
+				return existing, nil
+			}
+		}
 		return nil, err
 	}
 	// P1-1: 更新 PI.RefundPhase → REFUNDING

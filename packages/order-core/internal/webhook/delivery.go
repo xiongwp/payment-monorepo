@@ -16,15 +16,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
+	mathrand "math/rand"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xiongwp/order-core/internal/metrics"
@@ -100,8 +103,12 @@ type Dispatcher struct {
 	// merchant 同时 in-flight 投递数（默认 5）。一个慢 endpoint 不会把全局
 	// 50 个 slot 全占住、拖累其他 merchant 的投递。lazy init via sync.Map。
 	merchantSems    sync.Map // map[merchantID]chan struct{}
-	merchantConcur  int      // 单 merchant 并发上限（默认 5）
-	logger          *zap.Logger
+	merchantConcur  int      // 单 merchant 并发上限（默认 5)
+	// workerID 实例唯一标识：hostname (k8s 下 = pod 名) + 随机后缀。
+	// claim_token 用 workerID + 进程内单调计数器，避免多 worker 极端 race 撞 token。
+	workerID    string
+	claimSeq    atomic.Uint64
+	logger      *zap.Logger
 }
 
 func NewDispatcher(db *gorm.DB, cfg DispatcherConfig, logger *zap.Logger) *Dispatcher {
@@ -120,8 +127,27 @@ func NewDispatcher(db *gorm.DB, cfg DispatcherConfig, logger *zap.Logger) *Dispa
 		batchSize:      batch,
 		sem:            make(chan struct{}, 50), // 最多 50 个并发投递 goroutine
 		merchantConcur: 5,                       // 默认单 merchant 最多 5 路并发投递
+		workerID:       generateWorkerID(),
 		logger:         logger,
 	}
+}
+
+// generateWorkerID 实例启动时一次性生成。
+//
+// 格式：<hostname>:<8byte hex random>
+// 多个 pod 同 hostname 概率为零（k8s 一 pod 一 hostname）；
+// 同 hostname 多进程靠 random 后缀分。
+func generateWorkerID() string {
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "unknown"
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand 失败极罕见；退化用纳秒
+		return fmt.Sprintf("%s:%d", host, time.Now().UnixNano())
+	}
+	return host + ":" + hex.EncodeToString(b[:])
 }
 
 // acquireMerchantSlot 给指定 merchant 占一个 in-flight 投递槽位。
@@ -234,7 +260,10 @@ func (d *Dispatcher) processRetries(ctx context.Context) {
 	//
 	// claim_token 是独立列（idx_claim 索引），与业务字段 last_error 解耦：
 	// 历史 last_error 不再被 claim 操作覆盖，便于排查投递失败原因。
-	claimToken := fmt.Sprintf("claim:%d:%d", time.Now().UnixNano(), rand.Int63())
+	// claim_token 必须实例间唯一：workerID（启动时一次性生成）+ 进程内单调计数器。
+	// 同一 worker 不会重复，跨 worker hostname+random 分开，碰撞概率为零。
+	seq := d.claimSeq.Add(1)
+	claimToken := fmt.Sprintf("claim:%s:%d", d.workerID, seq)
 	farFuture := now.Add(24 * time.Hour)
 	tbl := dispatcherTable(ctx) // 主表 / 影子表（按 ctx）
 	// 表名是受信常量（webhook_deliveries / _shadow），用 fmt.Sprintf 拼入 SQL 安全。
@@ -461,7 +490,7 @@ func jitter(base time.Duration) time.Duration {
 		return base
 	}
 	// math/rand 全局 source 在 Go 1.20+ 是 racy-safe 且每次进程随机种子，对 jitter 用例足够。
-	spread := float64(base) * 0.5 * (rand.Float64() - 0.5) // [-25%, +25%]
+	spread := float64(base) * 0.5 * (mathrand.Float64() - 0.5) // [-25%, +25%]
 	out := base + time.Duration(spread)
 	if out <= 0 {
 		return base

@@ -103,7 +103,9 @@ func (h *Handler) handleSignup(w http.ResponseWriter, r *http.Request) {
 		if resp.GetNeedsOtp() {
 			http.SetCookie(w, &http.Cookie{
 				Name:   "otp_challenge", Value: resp.GetOtpChallenge(),
-				Path:   "/", HttpOnly: true,
+				// Path 收窄到 /verify-otp：只有该 endpoint 能读，
+				// 防止 challenge 在其它路径被恶意脚本访问。
+				Path:   "/verify-otp", HttpOnly: true,
 				Secure: h.CookieSecure, SameSite: http.SameSiteLaxMode,
 				MaxAge: 300, // 5min
 			})
@@ -146,7 +148,8 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			http.SetCookie(w, &http.Cookie{
 				Name:     "otp_challenge",
 				Value:    resp.GetOtpChallenge(),
-				Path:     "/", HttpOnly: true,
+				// Path 收窄到 /verify-otp（同 signup 路径处理理由）
+				Path:     "/verify-otp", HttpOnly: true,
 				Secure: h.CookieSecure, SameSite: http.SameSiteLaxMode,
 				MaxAge: 300, // 5min
 			})
@@ -163,10 +166,11 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 // ── /verify-otp ─────────────────────────────────────────────────────
 
 func (h *Handler) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
+	// 安全：只接受 cookie 里的 otp_challenge。
+	// 历史代码里曾用 ?challenge=xxx fallback，会被钓鱼链接利用做 session 固定攻击 ——
+	// 攻击者构造 https://我们的域/verify-otp?challenge=他先发起的会话 让受害者点，
+	// 验证通过后受害者的 jwt 落到攻击者会话上。已删除 query 兜底。
 	challenge := cookieValue(r, "otp_challenge")
-	if challenge == "" {
-		challenge = r.URL.Query().Get("challenge")
-	}
 	if challenge == "" {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
@@ -193,7 +197,7 @@ func (h *Handler) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		h.clearCookie(w, "otp_challenge")
+		h.clearCookieWithPath(w, "otp_challenge", "/verify-otp")
 		h.setJWTCookie(w, resp.GetJwt())
 		http.Redirect(w, r, "/me", http.StatusFound)
 	default:
@@ -286,8 +290,16 @@ func (h *Handler) setJWTCookie(w http.ResponseWriter, jwt string) {
 }
 
 func (h *Handler) clearCookie(w http.ResponseWriter, name string) {
+	h.clearCookieWithPath(w, name, "/")
+}
+
+// clearCookieWithPath 带显式 Path 的 clear。
+//
+// 浏览器认 (name, domain, path) 三元组识别 cookie；如果 setCookie 时 path 是
+// /verify-otp，clear 时 path 必须也是 /verify-otp 才能真删，不然浏览器会保留旧 cookie。
+func (h *Handler) clearCookieWithPath(w http.ResponseWriter, name, path string) {
 	http.SetCookie(w, &http.Cookie{
-		Name: name, Value: "", Path: "/", Domain: h.CookieDomain,
+		Name: name, Value: "", Path: path, Domain: h.CookieDomain,
 		MaxAge: -1, HttpOnly: true, Secure: h.CookieSecure,
 	})
 }

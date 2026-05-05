@@ -174,6 +174,9 @@ CREATE TABLE IF NOT EXISTS `refund_${TABLE}` (
     `id`                VARCHAR(64)  NOT NULL,
     `charge_id`         VARCHAR(64)  NOT NULL,
     `payment_intent_id` VARCHAR(64)  NOT NULL,
+    -- P0 #3 幂等键：(payment_intent_id, idempotency_key) 唯一。
+    -- 客户端 retry Create 同一退款请求 → DB 兜底防止双行；service 层先查 GetByIdempotencyKey 返已有。
+    `idempotency_key`   VARCHAR(128) DEFAULT NULL,
     `amount`            BIGINT       NOT NULL,
     `currency`          CHAR(3)      NOT NULL,
     `status`            VARCHAR(16)  NOT NULL COMMENT 'pending/succeeded/failed/canceled',
@@ -188,6 +191,7 @@ CREATE TABLE IF NOT EXISTS `refund_${TABLE}` (
     `created`           DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated`           DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_pi_idem`       (`payment_intent_id`, `idempotency_key`),
     KEY `idx_charge`          (`charge_id`),
     KEY `idx_pi`              (`payment_intent_id`),
     KEY `idx_status`          (`status`),

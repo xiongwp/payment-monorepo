@@ -16,6 +16,9 @@ import (
 type RefundRepository interface {
 	Create(ctx context.Context, rf *domain.Refund) error
 	Get(ctx context.Context, piID, refundID string) (*domain.Refund, error)
+	// GetByIdempotencyKey 按 (pi_id, idempotency_key) 查；命中即返已有 refund，不命中返 ErrRefundNotFound。
+	// 给 Create 路径做幂等：同 (pi, key) 重复请求直接返首次结果，不建第二条。
+	GetByIdempotencyKey(ctx context.Context, piID, idempotencyKey string) (*domain.Refund, error)
 	// GetByRefundID 通过 re_ 前缀直接路由
 	GetByRefundID(ctx context.Context, refundID string) (*domain.Refund, error)
 	ListByPI(ctx context.Context, piID string) ([]*domain.Refund, error)
@@ -78,6 +81,27 @@ func (r *refundRepo) Get(ctx context.Context, piID, refundID string) (*domain.Re
 	var rf domain.Refund
 	err = db.WithContext(ctx).Table(tbl).
 		Where("payment_intent_id = ? AND id = ?", piID, refundID).First(&rf).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, domain.ErrRefundNotFound
+		}
+		return nil, err
+	}
+	return &rf, nil
+}
+
+func (r *refundRepo) GetByIdempotencyKey(ctx context.Context, piID, idempotencyKey string) (*domain.Refund, error) {
+	if piID == "" || idempotencyKey == "" {
+		return nil, domain.ErrRefundNotFound
+	}
+	db, tbl, err := r.shardOf(ctx, piID)
+	if err != nil {
+		return nil, err
+	}
+	var rf domain.Refund
+	err = db.WithContext(ctx).Table(tbl).
+		Where("payment_intent_id = ? AND idempotency_key = ?", piID, idempotencyKey).
+		First(&rf).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, domain.ErrRefundNotFound

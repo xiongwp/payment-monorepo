@@ -135,6 +135,15 @@ func assertProdSafety(v *viper.Viper) error {
 	if v.GetBool("auth.allow_unauthenticated") {
 		return fmt.Errorf("PROD-SAFETY: auth.allow_unauthenticated=true is forbidden in env=prod")
 	}
+	// JWT 算法：prod 强制 RS256（私钥签 + 公钥验）。HS256 共享密钥泄漏 = 全站伪造。
+	if alg := strings.ToUpper(strings.TrimSpace(v.GetString("auth.jwt_alg"))); alg != "RS256" {
+		return fmt.Errorf("PROD-SAFETY: auth.jwt_alg must be RS256 in env=prod (got %q)", alg)
+	}
+	for _, k := range []string{"auth.jwt_private_key_path", "auth.jwt_public_key_path"} {
+		if strings.TrimSpace(v.GetString(k)) == "" {
+			return fmt.Errorf("PROD-SAFETY: %s must be configured (RS256 keys required)", k)
+		}
+	}
 	if strings.TrimSpace(v.GetString("kms.endpoint")) == "" {
 		return fmt.Errorf("PROD-SAFETY: kms.endpoint must be configured in env=prod")
 	}
@@ -552,16 +561,40 @@ func startGRPC(lc fx.Lifecycle, s *server.Server, v *viper.Viper, logger *zap.Lo
 
 // ─── User-side services ─────────────────────────────────────────────────────
 
-func newAuthIssuer(v *viper.Viper) *authpkg.Issuer {
-	secret := v.GetString("auth.jwt_secret")
-	if secret == "" {
-		secret = "dev-jwt-secret-change-me-in-prod" // dev 默认；生产必须配
+// newAuthIssuer 装配 JWT issuer。
+//
+// 算法选择：
+//   - auth.jwt_alg = "RS256" → 用 auth.jwt_private_key_path / auth.jwt_public_key_path（生产）
+//   - auth.jwt_alg = "HS256" 或缺省 → 用 auth.jwt_secret（dev / staging）
+//
+// assertProdSafety 在 env=prod 已经强制 jwt_alg == RS256；这里 fail-soft 不做二次校验。
+func newAuthIssuer(v *viper.Viper) (*authpkg.Issuer, error) {
+	alg := authpkg.Algorithm(v.GetString("auth.jwt_alg"))
+	if alg == "" {
+		alg = authpkg.AlgHS256
 	}
 	ttl := v.GetDuration("auth.jwt_ttl")
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
-	return authpkg.NewIssuer(secret, ttl)
+	cfg := authpkg.IssuerConfig{
+		Algorithm:  alg,
+		TTL:        ttl,
+		IssuerName: "user-merchant-core",
+		KID:        v.GetString("auth.jwt_kid"),
+	}
+	switch alg {
+	case authpkg.AlgRS256:
+		cfg.PrivateKeyPEMPath = v.GetString("auth.jwt_private_key_path")
+		cfg.PublicKeyPEMPath = v.GetString("auth.jwt_public_key_path")
+	default:
+		secret := v.GetString("auth.jwt_secret")
+		if secret == "" {
+			secret = "dev-jwt-secret-change-me-in-prod"
+		}
+		cfg.Secret = secret
+	}
+	return authpkg.NewIssuerFromConfig(cfg)
 }
 
 func newMailer(logger *zap.Logger) service.Mailer {
