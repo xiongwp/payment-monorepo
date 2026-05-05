@@ -77,7 +77,7 @@ func main() {
 			// server
 			newServer,
 		),
-		fx.Invoke(startGRPC, startMetricsHTTP, warmupMerchantCache, startRetentionSweeper, initOTel, applyShadowTables),
+		fx.Invoke(startGRPC, startMetricsHTTP, warmupMerchantCache, startRetentionSweeper, initOTel, applyShadowTables, startServiceRegistrar),
 	)
 	app.Run()
 }
@@ -96,6 +96,9 @@ func loadConfig() (*viper.Viper, error) {
 	for _, k := range []string{
 		"risk.endpoint", "accounting.endpoint", "kms.endpoint",
 		"registry.endpoints", "env",
+		// 服务自注册（被 card-center / api-gateway / order-core / BFF 调用）
+		"registry.service_name", "registry.advertise_host", "registry.ttl",
+		"server.grpc_port",
 	} {
 		_ = v.BindEnv(k)
 	}
