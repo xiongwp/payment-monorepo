@@ -380,10 +380,11 @@ func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*
 		}
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	}
-	// 不再自己挂 KeepaliveParams——serviceregistry.DialDirect 内部已经按
-	// 10s ping / 3s timeout / PermitWithoutStream=true 标准化好了，副本被
-	// scale/kill 后 ~13s 内被探出来，避免 stale subconn hang RST_STREAM CANCEL。
-	conn, err := serviceregistry.DialDirect(endpoint, dialOpts...)
+	// DialWithFallback：registry 非空时走 etcd:///user-merchant-core（拿真实存活
+	// 副本，绕开 docker DNS alias 错绑），空时退回静态 endpoint DNS 直连。
+	// 两条路径都自动获得 round_robin LB + 10s/3s keepalive + 配套 server 端
+	// HardenedServerOptions 的 EnforcementPolicy。
+	conn, err := serviceregistry.DialWithFallback(registry, "user-merchant-core", endpoint, dialOpts...)
 	if err != nil {
 		return nil, err
 	}

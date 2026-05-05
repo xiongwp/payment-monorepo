@@ -34,6 +34,10 @@ services:
       CARDCENTER_LOG_DEV: "true"
       CARDCENTER_ENV: "dev"
       CARDCENTER_SERVER_GRPC_PORT: "9443"
+      # ── 服务自注册（被 card-payment / api-gateway / BFF 调用）+ 出站发现 ──
+      CARDCENTER_REGISTRY_ENDPOINTS: "etcd:2379"
+      CARDCENTER_REGISTRY_SERVICE_NAME: "card-center"
+      CARDCENTER_REGISTRY_TTL: "10s"
       # KMS：联栈复用 main DC 的 kms-manage（生产严格独立 DC kms-card）
       # 优先走 etcd 服务发现（kms-manage 启动期自注册到 etcd），绕开 docker
       # embedded DNS 把 kms-manage alias 错绑到不相关容器 IP 的状态机问题。
