@@ -113,16 +113,14 @@ type CardHandler struct {
 	*Handler
 	Cards    CardServiceClient
 	Payments PaymentServiceClient
-	// Merchants 暴露 user-merchant-core MerchantService.List —— 支付页 select 渲染用。
-	Merchants usermerchantv1.MerchantServiceClient
 	// CardCenterURL 浏览器端 SDK / form JS 直连 card-center 用的公网 URL，
 	// 注入到 cards_new.html 模板。空 = 前端会显示"未配置"错误。
 	CardCenterURL string
 }
 
 // NewCardHandler 构造
-func NewCardHandler(base *Handler, cards CardServiceClient, pay PaymentServiceClient, merchants usermerchantv1.MerchantServiceClient) *CardHandler {
-	return &CardHandler{Handler: base, Cards: cards, Payments: pay, Merchants: merchants}
+func NewCardHandler(base *Handler, cards CardServiceClient, pay PaymentServiceClient) *CardHandler {
+	return &CardHandler{Handler: base, Cards: cards, Payments: pay}
 }
 
 // Register 把卡支付路由挂到 mux。
@@ -340,21 +338,7 @@ func (h *CardHandler) handlePay(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 		cards, _ := h.Cards.ListCards(ctx, uid)
-		// 拉商户列表给 select；失败不阻塞渲染（用户可降级手填，但通常应该有商户）
-		type merchantOpt struct{ ID, Name, KYCStatus string }
-		var merchants []merchantOpt
-		if h.Merchants != nil {
-			listResp, lerr := h.Merchants.List(ctx, &usermerchantv1.ListMerchantsRequest{Limit: 200})
-			if lerr == nil && listResp != nil {
-				for _, m := range listResp.GetMerchants() {
-					merchants = append(merchants, merchantOpt{
-						ID: m.GetId(), Name: m.GetName(),
-						KYCStatus: m.GetKycStatus().String(),
-					})
-				}
-			}
-		}
-		h.render(w, "pay.html", map[string]any{"Title": "支付", "Cards": cards, "Merchants": merchants})
+		h.render(w, "pay.html", map[string]any{"Title": "支付", "Cards": cards})
 	case http.MethodPost:
 		_ = r.ParseForm()
 		amount, _ := strconv.ParseInt(r.FormValue("amount"), 10, 64)

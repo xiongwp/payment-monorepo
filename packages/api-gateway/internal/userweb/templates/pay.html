@@ -30,18 +30,9 @@
     </div>
   </div>
 
-  <label>商户 (mch_id)</label>
-  {{if .Merchants}}
-  <select name="mch_id" required style="width:100%;padding:10px 12px;background:#22222c;border:1px solid #333;border-radius:6px;color:var(--text);font:inherit">
-    {{range .Merchants}}
-      <option value="{{.ID}}">{{.Name}} · {{.ID}}{{if eq .KYCStatus "KYC_STATUS_APPROVED"}} ✓{{else}} ({{.KYCStatus}}){{end}}</option>
-    {{end}}
-  </select>
-  {{else}}
-  <input name="mch_id" required maxlength="64" placeholder="例如 300000000000101000"
+  <label>商户 ID (mch_id)</label>
+  <input name="mch_id" required maxlength="64" placeholder="例如 mch_demo_001"
          pattern="[a-zA-Z0-9_\-]{1,64}" title="字母数字下划线短横，最长 64">
-  <p class="sub" style="font-size:12px;margin-top:6px">还没有商户？先去 <a href="http://localhost:8080/merchants" target="_blank" style="color:var(--accent)">商户管理</a> 创建一个。</p>
-  {{end}}
 
   <label>备注（可选）</label>
   <input name="description" maxlength="120" placeholder="商品 / 订单号">

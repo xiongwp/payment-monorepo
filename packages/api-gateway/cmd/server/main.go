@@ -237,7 +237,7 @@ func newCardHandler(uw *userweb.Handler, umc UserMerchantConn, oc OrderCoreConn,
 		logger.Info("CardHandler.payments: stub mode")
 	}
 
-	ch := userweb.NewCardHandler(uw, cardClient, payClient, usermerchantv1.NewMerchantServiceClient(uc.ClientConn))
+	ch := userweb.NewCardHandler(uw, cardClient, payClient)
 	ch.CardCenterURL = v.GetString("cards.card_center_url")
 	return ch
 }
