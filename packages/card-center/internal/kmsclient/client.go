@@ -61,7 +61,10 @@ func New(cfg Config) (*Client, error) {
 		}
 		creds = credentials.NewTLS(tc)
 	}
-	var conn *grpc.ClientConn
+	var (
+		conn *grpc.ClientConn
+		err  error
+	)
 	if cfg.BypassHardened {
 		// 旁路模式：直接 grpc.NewClient(endpoint, creds)，不走 etcd resolver、
 		// 不附 service config、不挂 keepalive。绑卡 KMS 调用是低频，stale conn
