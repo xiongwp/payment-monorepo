@@ -72,7 +72,8 @@ func loadConfig() (*viper.Viper, error) {
 	v.SetEnvPrefix("CARDCENTER")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
-	for _, k := range []string{"env", "kms.endpoint", "kms.insecure", "kms.bearer_token",
+	for _, k := range []string{"env", "kms.endpoint", "kms.registry_endpoints",
+		"kms.insecure", "kms.bearer_token",
 		"kms.rpc_timeout", "kms.client_cert", "kms.client_key", "kms.server_ca",
 		"tls.cert", "tls.key", "tls.client_ca",
 		"audit.kafka_brokers", "database.meta.dsn",
@@ -113,8 +114,10 @@ func assertProdSafety(v *viper.Viper) error {
 			return fmt.Errorf("PROD-SAFETY: %s must be configured (mTLS-only)", k)
 		}
 	}
-	if strings.TrimSpace(v.GetString("kms.endpoint")) == "" {
-		return fmt.Errorf("PROD-SAFETY: kms.endpoint must be configured")
+	if strings.TrimSpace(v.GetString("kms.endpoint")) == "" &&
+		len(splitCSV(v.GetString("kms.registry_endpoints"))) == 0 &&
+		len(v.GetStringSlice("kms.registry_endpoints")) == 0 {
+		return fmt.Errorf("PROD-SAFETY: kms.endpoint or kms.registry_endpoints must be configured")
 	}
 	if len(v.GetStringSlice("audit.kafka_brokers")) == 0 {
 		return fmt.Errorf("PROD-SAFETY: audit.kafka_brokers must be configured (audit cannot be lost)")
@@ -193,19 +196,45 @@ func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (
 }
 
 func newKMSClient(v *viper.Viper) (vault.KMS, error) {
-	cfg := kmsclient.Config{
-		Endpoint:    v.GetString("kms.endpoint"),
-		BearerToken: v.GetString("kms.bearer_token"),
-		RPCTimeout:  v.GetDuration("kms.rpc_timeout"),
-		ClientCert:  v.GetString("kms.client_cert"),
-		ClientKey:   v.GetString("kms.client_key"),
-		ServerCA:    v.GetString("kms.server_ca"),
-		Insecure:    v.GetBool("kms.insecure"),
+	// kms.registry_endpoints 是优先项（走 etcd:///kms-manage 服务发现，绕开
+	// docker DNS 那种 alias 错绑问题）；空时退回 kms.endpoint 静态 DNS。
+	// 接受逗号分隔的字符串（CARDCENTER_KMS_REGISTRY_ENDPOINTS=etcd:2379 之类）
+	// 或 yaml 列表，用 viper.GetStringSlice 兼容（字符串里有逗号会被 viper 自动拆）。
+	registry := splitCSV(v.GetString("kms.registry_endpoints"))
+	if len(registry) == 0 {
+		// 兜底：yaml 写成 list 的情况
+		registry = v.GetStringSlice("kms.registry_endpoints")
 	}
-	if cfg.Endpoint == "" {
-		return nil, errors.New("kms.endpoint required")
+	cfg := kmsclient.Config{
+		Endpoint:          v.GetString("kms.endpoint"),
+		RegistryEndpoints: registry,
+		BearerToken:       v.GetString("kms.bearer_token"),
+		RPCTimeout:        v.GetDuration("kms.rpc_timeout"),
+		ClientCert:        v.GetString("kms.client_cert"),
+		ClientKey:         v.GetString("kms.client_key"),
+		ServerCA:          v.GetString("kms.server_ca"),
+		Insecure:          v.GetBool("kms.insecure"),
+	}
+	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
+		return nil, errors.New("kms.endpoint or kms.registry_endpoints required")
 	}
 	return kmsclient.New(cfg)
+}
+
+// splitCSV 把 "a,b,c" / "a, b , c" / "" 拆成 []string；空 token 自动丢。
+// 给"环境变量是逗号分隔字符串、想当 list 用"的场景用。
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func newVault(kms vault.KMS) *vault.Vault { return vault.NewVault(kms, time.Now) }

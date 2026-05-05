@@ -31,9 +31,17 @@ type Client struct {
 
 // Config 客户端配置
 type Config struct {
-	Endpoint    string
-	BearerToken string
-	RPCTimeout  time.Duration
+	// Endpoint：静态地址（DNS 名:port），仅在 RegistryEndpoints 为空时用作 fallback
+	// 直连。通常 dev 单仓 docker run 没 etcd 时用。
+	Endpoint string
+	// RegistryEndpoints：etcd cluster 地址列表（如 ["etcd:2379"]），非空时优先走
+	// etcd:///kms-manage 服务发现——直接拿 kms-manage 自注册的真实存活副本，
+	// 绕开 docker embedded DNS 的 alias 状态机问题（kms-manage 副本被 scale 后
+	// docker DNS 可能把 kms-manage 错绑到不相关容器的 IP，导致流量打到 kafka
+	// 这种地方握手 hang）。
+	RegistryEndpoints []string
+	BearerToken       string
+	RPCTimeout        time.Duration
 	// mTLS 客户端证书（card DC 内 service-to-service mutual auth）
 	ClientCert string
 	ClientKey  string
@@ -43,9 +51,14 @@ type Config struct {
 }
 
 // New dial kms-manage
+//
+// 优先级：RegistryEndpoints 非空 → 走 etcd:///kms-manage 服务发现（推荐生产路径）；
+//        RegistryEndpoints 为空 → 退回静态 cfg.Endpoint 直连（dev fallback）。
+//
+// 至少给一个非空，否则起不来。
 func New(cfg Config) (*Client, error) {
-	if cfg.Endpoint == "" {
-		return nil, errors.New("kmsclient: endpoint required")
+	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
+		return nil, errors.New("kmsclient: endpoint or registry_endpoints required")
 	}
 	var creds credentials.TransportCredentials
 	if cfg.Insecure {
@@ -57,11 +70,15 @@ func New(cfg Config) (*Client, error) {
 		}
 		creds = credentials.NewTLS(tc)
 	}
-	// 走 serviceregistry.DialDirect：自动获得 round_robin LB + 10s/3s keepalive
-	// + UNAVAILABLE/DEADLINE_EXCEEDED retry。这是修"kms-manage 副本被 scale/
-	// restart 后 kmsclient 长期粘 stale subconn 导致 RST_STREAM CANCEL hang"
-	// 的根因——裸 grpc.NewClient 的 pick_first + 30min DNS TTL 不会主动探死。
-	conn, err := serviceregistry.DialDirect(cfg.Endpoint,
+	// 走 serviceregistry.DialWithFallback：endpoints 非空时自动用 etcd resolver
+	// 解析 kms-manage 真实存活副本；空时退回 cfg.Endpoint DNS 直连。
+	// 两条路径都自动获得 round_robin LB + 10s/3s keepalive + UNAVAILABLE/
+	// DEADLINE_EXCEEDED retry，并配套服务端的 HardenedServerOptions。
+	//
+	// 走 etcd 是修 "docker embedded DNS 把 kms-manage alias 错绑到 kafka IP"
+	// 那个根因的根治方案——etcd 里只有真实自注册的 kms-manage 副本。
+	conn, err := serviceregistry.DialWithFallback(
+		cfg.RegistryEndpoints, "kms-manage", cfg.Endpoint,
 		grpc.WithTransportCredentials(creds),
 	)
 	if err != nil {

@@ -35,6 +35,10 @@ services:
       CARDCENTER_ENV: "dev"
       CARDCENTER_SERVER_GRPC_PORT: "9443"
       # KMS：联栈复用 main DC 的 kms-manage（生产严格独立 DC kms-card）
+      # 优先走 etcd 服务发现（kms-manage 启动期自注册到 etcd），绕开 docker
+      # embedded DNS 把 kms-manage alias 错绑到不相关容器 IP 的状态机问题。
+      # ENDPOINT 留作 fallback：etcd 不可用时回退静态 DNS。
+      CARDCENTER_KMS_REGISTRY_ENDPOINTS: "etcd:2379"
       CARDCENTER_KMS_ENDPOINT: "kms-manage:9290"
       CARDCENTER_KMS_INSECURE: "true"
       # 审计 Kafka：dev 留空，emitter 退化为只写 DB
