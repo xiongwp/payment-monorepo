@@ -16,11 +16,14 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+
+	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
 )
 
 // Client kms-manage gRPC 客户端（mTLS）
 type Client struct {
 	conn    *grpc.ClientConn
+	api     kmsv1.KMSServiceClient
 	timeout time.Duration
 	bearer  string
 }
@@ -63,7 +66,12 @@ func New(cfg Config) (*Client, error) {
 	if t <= 0 {
 		t = 3 * time.Second
 	}
-	return &Client{conn: conn, timeout: t, bearer: cfg.BearerToken}, nil
+	return &Client{
+		conn:    conn,
+		api:     kmsv1.NewKMSServiceClient(conn),
+		timeout: t,
+		bearer:  cfg.BearerToken,
+	}, nil
 }
 
 func (c *Client) Close() error { return c.conn.Close() }
