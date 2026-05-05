@@ -2,43 +2,66 @@ package serviceregistry
 
 import (
 	"fmt"
+	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
-// roundRobinServiceConfig 让 grpc-go 给 resolver 返回的每个端点都建一条子连接，
-// RPC 在子连接间轮询；resolver 推送变更（上线/下线）后自动 rebalance。
-const roundRobinServiceConfig = `{"loadBalancingConfig":[{"round_robin":{}}]}`
+// hardenedServiceConfig：round_robin LB + 幂等 RPC 自动重试瞬态错误。
+const hardenedServiceConfig = `{
+  "loadBalancingConfig":[{"round_robin":{}}],
+  "methodConfig":[{
+    "name":[{}],
+    "retryPolicy":{
+      "maxAttempts":3,
+      "initialBackoff":"0.1s",
+      "maxBackoff":"1s",
+      "backoffMultiplier":2,
+      "retryableStatusCodes":["UNAVAILABLE","DEADLINE_EXCEEDED"]
+    }
+  }]
+}`
 
-// Dial creates a gRPC ClientConn for the named service via the etcd resolver
-// (RegisterResolver must have run first). It always sets round_robin LB so
-// traffic spreads across all live replicas.
-//
-// 用户传入的 opts 可以覆盖默认 service config（如想自定义 retry / timeout policy）。
-// Caller-provided WithDefaultServiceConfig wins because 它出现在 fixed 之后。
+// hardenedKeepalive：10s ping / 3s timeout / PermitWithoutStream
+// 配套 hardenedServerKeepalive，少一边就被 GOAWAY ENHANCE_YOUR_CALM 踢。
+var hardenedKeepalive = keepalive.ClientParameters{
+	Time:                10 * time.Second,
+	Timeout:             3 * time.Second,
+	PermitWithoutStream: true,
+}
+
+var hardenedServerKeepalive = keepalive.EnforcementPolicy{
+	MinTime:             5 * time.Second,
+	PermitWithoutStream: true,
+}
+
+func hardenedOptions() []grpc.DialOption {
+	return []grpc.DialOption{
+		grpc.WithDefaultServiceConfig(hardenedServiceConfig),
+		grpc.WithKeepaliveParams(hardenedKeepalive),
+	}
+}
+
+// HardenedServerOptions 必须挂在 grpc.NewServer(...) 上，跟 hardenedKeepalive 配套。
+func HardenedServerOptions() []grpc.ServerOption {
+	return []grpc.ServerOption{
+		grpc.KeepaliveEnforcementPolicy(hardenedServerKeepalive),
+	}
+}
+
+// Dial 通过 etcd resolver "etcd:///<service>" 拨号，含 round_robin + keepalive + retry。
 func Dial(service string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	if service == "" {
 		return nil, fmt.Errorf("serviceregistry: empty service name")
 	}
 	target := fmt.Sprintf("%s:///%s", resolverScheme, service)
-
-	fixed := []grpc.DialOption{
-		grpc.WithDefaultServiceConfig(roundRobinServiceConfig),
-	}
+	fixed := hardenedOptions()
 	fixed = append(fixed, opts...)
 	return grpc.NewClient(target, fixed...)
 }
 
-// DialWithFallback 是面向"既要支持 etcd resolver 又要支持单仓 dev 直连"的统一入口。
-//
-//	endpoints 非空 → 走 DialFromEndpoints(etcd resolver + round_robin)
-//	endpoints 为空 → 退回 grpc.NewClient(fallbackAddr) + 默认 round_robin
-//
-// 所有 daemon 调用方应该用本 helper 代替裸 grpc.NewClient(addr)，这样 docker
-// 联栈模式下（容器删了 container_name 改用 --scale）能通过 etcd 而不是 DNS
-// 跨项目寻址；本地 dev / 单仓 docker run 模式（无 etcd）退回直连仍然 work。
-//
-// fallbackAddr 在 endpoints 非空时被忽略；调用方仍要传以便降级 + 日志可读。
+// DialWithFallback：endpoints 非空 → etcd resolver；空 → 退回 fallbackAddr 静态 DNS。
 func DialWithFallback(endpoints []string, service, fallbackAddr string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	if len(endpoints) > 0 {
 		if service == "" {
@@ -49,11 +72,18 @@ func DialWithFallback(endpoints []string, service, fallbackAddr string, opts ...
 	if fallbackAddr == "" {
 		return nil, fmt.Errorf("serviceregistry: empty endpoints and empty fallbackAddr for service %q", service)
 	}
-	// 直连模式也加 round_robin：DNS 解析返回多 A 记录时（k8s headless svc /
-	// docker network 多副本同 alias）才会均摊。
-	fixed := []grpc.DialOption{
-		grpc.WithDefaultServiceConfig(roundRobinServiceConfig),
-	}
+	fixed := hardenedOptions()
 	fixed = append(fixed, opts...)
 	return grpc.NewClient(fallbackAddr, fixed...)
+}
+
+// DialDirect：只走静态 endpoint + hardened opts，不需要走 etcd。
+// 等价于 DialWithFallback(nil, "", endpoint, opts...)
+func DialDirect(endpoint string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
+	if endpoint == "" {
+		return nil, fmt.Errorf("serviceregistry: empty endpoint")
+	}
+	fixed := hardenedOptions()
+	fixed = append(fixed, opts...)
+	return grpc.NewClient(endpoint, fixed...)
 }
