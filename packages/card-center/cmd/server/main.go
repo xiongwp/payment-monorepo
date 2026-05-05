@@ -189,11 +189,22 @@ func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (
 	return repo.NewManager(meta, shards, router, logger)
 }
 
-func newKMSClient(v *viper.Viper) (vault.KMS, error) {
+func newKMSClient(v *viper.Viper, logger *zap.Logger) (vault.KMS, error) {
 	registry := splitCSV(v.GetString("kms.registry_endpoints"))
 	if len(registry) == 0 {
 		registry = v.GetStringSlice("kms.registry_endpoints")
 	}
+	// fallback 到全局 registry.endpoints，跟 newUserMerchantConn 行为对齐
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("registry.endpoints")
+		if len(registry) == 0 {
+			registry = splitCSV(v.GetString("registry.endpoints"))
+		}
+	}
+	logger.Info("card-center → kms-manage dial config",
+		zap.String("endpoint_fallback", v.GetString("kms.endpoint")),
+		zap.Strings("registry_endpoints", registry),
+		zap.Bool("insecure", v.GetBool("kms.insecure")))
 	cfg := kmsclient.Config{
 		Endpoint:          v.GetString("kms.endpoint"),
 		RegistryEndpoints: registry,
