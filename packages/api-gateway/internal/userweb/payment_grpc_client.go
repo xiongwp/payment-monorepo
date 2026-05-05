@@ -53,11 +53,15 @@ func (g *grpcPaymentClient) CreateAndConfirmCardPayment(ctx context.Context, in 
 	if in == nil || in.UserID == 0 || in.UserCardID == 0 {
 		return nil, fmt.Errorf("create_pi: user_id / user_card_id required")
 	}
+	if in.MchID == "" {
+		return nil, fmt.Errorf("create_pi: mch_id required (form 'mch_id' field)")
+	}
 	createResp, err := g.pi.Create(ctx, &orderv1.CreatePaymentIntentRequest{
 		Amount:              in.Amount,
 		Currency:            in.Currency,
 		Description:         in.Description,
 		IdempotencyKey:      in.IdempotencyKey,
+		MchId:               in.MchID,
 		UserId:              in.UserID,
 		UserCardId:          in.UserCardID,
 		PaymentMethodTypes:  []string{"card"},

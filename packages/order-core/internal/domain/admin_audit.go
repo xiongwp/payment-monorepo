@@ -21,7 +21,7 @@ type AdminAuditLog struct {
 	ResponseCode string    `gorm:"column:response_code;type:varchar(32)"       json:"response_code,omitempty"`
 	ResponseMsg  string    `gorm:"column:response_msg;type:varchar(512)"       json:"response_msg,omitempty"`
 	DurationMs   int       `gorm:"column:duration_ms"                          json:"duration_ms,omitempty"`
-	Created      time.Time `gorm:"column:created"                              json:"created"`
+	Created      time.Time `gorm:"column:created;autoCreateTime"               json:"created"`
 }
 
 // TableName GORM

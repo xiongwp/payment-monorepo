@@ -86,6 +86,9 @@ type CreatePIReq struct {
 	Currency       string
 	Description    string
 	IdempotencyKey string
+	// MchID 商户标识；卡支付链路里用户是付款方，但 order-core 强制 mch_id 非空，
+	// 留空 → grpcPaymentClient 用 dev-merchant-001 兜底
+	MchID          string
 }
 
 type CreatePIResp struct {
@@ -359,10 +362,15 @@ func (h *CardHandler) handlePay(w http.ResponseWriter, r *http.Request) {
 		}, ":")
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
+		mchID := strings.TrimSpace(r.FormValue("mch_id"))
+		if mchID == "" {
+			h.render(w, "pay.html", map[string]any{"Title": "支付", "Cards": h.listCardsSafe(r, uid), "Flash": "商户 ID 必填"})
+			return
+		}
 		resp, err := h.Payments.CreateAndConfirmCardPayment(ctx, &CreatePIReq{
 			UserID: uid, UserCardID: userCardID,
 			Amount: amount, Currency: currency,
-			Description: desc, IdempotencyKey: idem,
+			Description: desc, IdempotencyKey: idem, MchID: mchID,
 		})
 		if err != nil {
 			h.render(w, "pay.html", map[string]any{"Title": "支付", "Flash": "支付失败：" + grpcMsg(err)})
@@ -391,4 +399,13 @@ func (h *CardHandler) handlePayResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.render(w, "pay_result.html", map[string]any{"Title": "支付结果", "PI": pi})
+}
+
+// listCardsSafe 给 handlePay 出错重渲染时复用，吞掉 ListCards 错误（已经在出错路径，
+// 不要再上报第二次错），返回值可能 nil。
+func (h *CardHandler) listCardsSafe(r *http.Request, uid int64) []*service.CardDisplay {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	cards, _ := h.Cards.ListCards(ctx, uid)
+	return cards
 }
