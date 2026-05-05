@@ -76,7 +76,9 @@ func loadConfig() (*viper.Viper, error) {
 		"kms.insecure", "kms.bearer_token", "kms.rpc_timeout",
 		"kms.client_cert", "kms.client_key", "kms.server_ca",
 		"tls.cert", "tls.key", "tls.client_ca",
-		"audit.kafka_brokers", "database.meta.dsn",
+		"audit.kafka_brokers",
+		"database.meta.dsn", "database.meta.name",
+		"database.meta.max_open_conns", "database.meta.max_idle_conns", "database.meta.conn_max_lifetime",
 		// HTTPS 入口 + 用户登录态校验上游（mTLS gRPC 直连 user-merchant-core）
 		"https.enabled", "https.port", "https.cert", "https.key",
 		"https.dev_no_tls", "https.cors.allowed_origin",
@@ -88,6 +90,14 @@ func loadConfig() (*viper.Viper, error) {
 		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl", "server.grpc_port",
 	} {
 		_ = v.BindEnv(k)
+	}
+	// 10 个 shard DSN 显式 BindEnv（viper.UnmarshalKey 不读 env 嵌套子键）
+	for i := 0; i < 10; i++ {
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.dsn", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.name", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.max_open_conns", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.max_idle_conns", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.conn_max_lifetime", i))
 	}
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")
@@ -157,14 +167,23 @@ func newLogger() (*zap.Logger, error) {
 func newRouter() *sharding.Router { return sharding.NewRouter() }
 
 func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (*repo.Manager, error) {
-	var meta repo.DBConfig
-	_ = v.UnmarshalKey("database.meta", &meta)
+	// 显式 GetString —— viper.UnmarshalKey 在纯 env 来源时不递归读子键，会拿空 struct
+	meta := repo.DBConfig{
+		Name:            v.GetString("database.meta.name"),
+		DSN:             v.GetString("database.meta.dsn"),
+		MaxOpenConns:    v.GetInt("database.meta.max_open_conns"),
+		MaxIdleConns:    v.GetInt("database.meta.max_idle_conns"),
+		ConnMaxLifetime: v.GetInt("database.meta.conn_max_lifetime"),
+	}
 	shards := make([]repo.DBConfig, sharding.ShardDBCount)
 	for i := 0; i < sharding.ShardDBCount; i++ {
-		key := fmt.Sprintf("database.shard_%d", i)
-		var s repo.DBConfig
-		_ = v.UnmarshalKey(key, &s)
-		shards[i] = s
+		shards[i] = repo.DBConfig{
+			Name:            v.GetString(fmt.Sprintf("database.shard_%d.name", i)),
+			DSN:             v.GetString(fmt.Sprintf("database.shard_%d.dsn", i)),
+			MaxOpenConns:    v.GetInt(fmt.Sprintf("database.shard_%d.max_open_conns", i)),
+			MaxIdleConns:    v.GetInt(fmt.Sprintf("database.shard_%d.max_idle_conns", i)),
+			ConnMaxLifetime: v.GetInt(fmt.Sprintf("database.shard_%d.conn_max_lifetime", i)),
+		}
 	}
 	return repo.NewManager(meta, shards, router, logger)
 }
