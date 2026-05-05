@@ -381,6 +381,20 @@ func (m *memPaymentTokenRepo) MarkUsed(_ context.Context, row *repo.PaymentToken
 	return nil
 }
 
+func (m *memPaymentTokenRepo) UpdateForensic(_ context.Context, piID, tokenHash, masked, network string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.used[tokenHash]; ok && r.PIID == piID {
+		if r.MaskedPAN == "" {
+			r.MaskedPAN = masked
+		}
+		if r.Network == "" {
+			r.Network = network
+		}
+	}
+	return nil
+}
+
 func (m *memPaymentTokenRepo) PurgeExpired(_ context.Context, cutoff time.Time, _ int) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

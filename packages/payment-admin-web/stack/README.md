@@ -72,8 +72,18 @@ cd payment-admin-web
 | payment-core | 9090 / 9190 | gRPC / metrics |
 | order-core | 9091 | gRPC |
 | user-merchant-core | 9191 / 9291 | gRPC / metrics |
+| **card-center** | 9443 | mTLS gRPC（dev 自动降明文）— PCI SAQ-D |
+| **card-payment** | 9444 | mTLS gRPC（dev 自动降明文）— PCI SAQ-D |
 | accounting-admin-web | 8080 | UI（http://localhost:8080）|
 | payment-admin-frontend | 8081 | UI（http://localhost:8081）|
+
+### PCI 卡支付服务说明
+
+- `card-center`：用户存卡 token 化（KMS 加密）+ 一次性支付 token 派生 + Detokenize → PAN
+- `card-payment`：调卡组织（Visa/MC/JCB/AMEX/银联）授权扣款，PAN 仅在内存停留 < 1ms
+
+**dev 简化**：两服务跟其他服务**共用** `shared-meta` + `shared-shard-0..9`，分库名独立（`card_center_db_N` / `card_payment_db_N`）。  
+**生产 SAQ-D**：必须独立 DC + 独立 MySQL fleet + 独立 KMS（`kms-card`）+ 独立 Kafka 审计（`kafka-card`），由 `env=prod` 启动期 `assertProdSafety` 强制拦截。
 
 ## 已知简化
 

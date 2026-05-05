@@ -3,13 +3,13 @@
 {{define "content"}}
 <h1>绑定卡</h1>
 <p class="sub">
-  卡号在本页提交后，仅在 user-merchant-core → card-center 之间穿越一次（mTLS gRPC），
-  立刻换成 stored_token；本系统及业务库永不持有 PAN。<a href="/cards">返回</a>
+  PAN 严格只在 浏览器 ↔ card-center 之间传输（HTTPS）。
+  api-gateway / user-merchant-core 进程**永远不见** PAN。<a href="/cards">返回</a>
 </p>
 {{if .Flash}}<div class="flash">{{.Flash}}</div>{{end}}
+<div id="flash" class="flash" style="display:none"></div>
 
-<form method="POST" action="/cards" autocomplete="off"
-      onsubmit="return validateCard(this);">
+<form id="bind-form" autocomplete="off">
   <label>持卡人姓名</label>
   <input name="holder_name" required maxlength="64" placeholder="ZHANG SAN">
 
@@ -40,39 +40,112 @@
     <span>设为默认卡</span>
   </label>
 
-  <button type="submit">绑定</button>
+  <button type="submit" id="submit-btn">绑定</button>
 </form>
 
 <p class="sub" style="margin-top:20px;font-size:12px;line-height:1.6">
-  生产环境路径：浏览器端 SDK → HTTPS 直连 card-center.tokenize（绕过 api-gateway），
-  本表单是研发期 / 内部演示路径。PCI scope：本进程函数返回前清局部 PAN/CVV。
+  绑卡流程（PAN 单跳化）：
+  <br>1. 浏览器 fetch POST 到 <code style="color:#aac">{{.CardCenterURL}}/v1/cards</code>（HTTPS，cookie 带 jwt）
+  <br>2. card-center 调 user-merchant-core IntrospectToken 验登录态 → 取 user_id
+  <br>3. card-center KMS 加密 PAN → 返 stored_token + masked_pan + network
+  <br>4. 浏览器再 POST <code style="color:#aac">/cards/attach</code> 到 api-gateway，**只**带 stored_token + masked
+  <br>5. api-gateway 把这条记录交给 user-merchant-core 持久化（不见 PAN）
 </p>
 
 <script>
-// Luhn 校验（前端兜底，服务端仍会做完整校验）
-function luhn(num){
-  var s=0,d=false;
-  for(var i=num.length-1;i>=0;i--){
-    var n=+num[i];
-    if(d){n*=2;if(n>9)n-=9;}
-    s+=n; d=!d;
+(function(){
+  // 绑卡 endpoint：服务端模板渲染时注入 card-center 的公网 HTTPS 地址。
+  // dev 时如果 CardCenterURL 为空，fallback 走 same-origin（不推荐，仅本地起步）。
+  var CARD_CENTER_URL = {{ .CardCenterURL | printf "%q" }};
+
+  function showFlash(msg, isOK) {
+    var el = document.getElementById('flash');
+    el.textContent = msg;
+    el.className = 'flash' + (isOK ? ' ok' : '');
+    el.style.display = 'block';
   }
-  return num.length>=12 && s%10===0;
-}
-function validateCard(f){
-  var pan=f.pan.value.replace(/\s+/g,'');
-  if(!luhn(pan)){alert('卡号校验失败 (Luhn)');return false;}
-  var m=+f.exp_month.value, y=+f.exp_year.value;
-  if(m<1||m>12){alert('有效月不合法');return false;}
-  var now=new Date();
-  if(y<now.getFullYear()||(y===now.getFullYear()&&m<now.getMonth()+1)){
-    alert('卡已过期');return false;
+  function luhn(num){
+    var s=0,d=false;
+    for(var i=num.length-1;i>=0;i--){
+      var n=+num[i];
+      if(d){n*=2;if(n>9)n-=9;}
+      s+=n; d=!d;
+    }
+    return num.length>=12 && s%10===0;
   }
-  // 提交后立即清表单字段，避免 BFCache 残留
-  setTimeout(function(){
-    try{f.pan.value=''; f.cvv.value='';}catch(e){}
-  },50);
-  return true;
-}
+
+  document.getElementById('bind-form').addEventListener('submit', async function(ev){
+    ev.preventDefault();
+    var f = ev.target;
+    var btn = document.getElementById('submit-btn');
+    btn.disabled = true;
+    btn.textContent = '绑定中…';
+
+    var pan = f.pan.value.replace(/\s+/g,'');
+    var cvv = f.cvv.value;
+    var expMonth = +f.exp_month.value;
+    var expYear = +f.exp_year.value;
+    var holder = f.holder_name.value.trim();
+    var setDefault = f.set_default.checked;
+
+    if (!luhn(pan)) { showFlash('卡号校验失败 (Luhn)'); btn.disabled=false; btn.textContent='绑定'; return; }
+    var now = new Date();
+    if (expYear < now.getFullYear() || (expYear === now.getFullYear() && expMonth < now.getMonth()+1)) {
+      showFlash('卡已过期'); btn.disabled=false; btn.textContent='绑定'; return;
+    }
+
+    try {
+      // ─── 第 1 跳：浏览器 → card-center HTTPS（PAN 在此跳；其它服务永不见）
+      if (!CARD_CENTER_URL) {
+        showFlash('CardCenterURL 未配置；前端 SDK 必须用独立的 card-center 域');
+        btn.disabled=false; btn.textContent='绑定'; return;
+      }
+      var ccResp = await fetch(CARD_CENTER_URL + '/v1/cards', {
+        method: 'POST',
+        credentials: 'include', // 把 uauth=jwt cookie 带过去（需 CORS + SameSite=None on prod）
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pan: pan, cvv: cvv,
+          exp_month: expMonth, exp_year: expYear,
+          holder_name: holder
+        })
+      });
+      // 立即清栈：PAN/CVV 在浏览器内存里只活到 fetch 完成
+      pan = ''; cvv = '';
+      try { f.pan.value=''; f.cvv.value=''; } catch(e){}
+
+      if (!ccResp.ok) {
+        var err = await ccResp.json().catch(()=>({error:'card-center HTTP '+ccResp.status}));
+        throw new Error(err.error || 'card-center failed');
+      }
+      var tokData = await ccResp.json();
+      // tokData = { stored_token, masked_pan, network }
+
+      // ─── 第 2 跳：浏览器 → api-gateway /cards/attach（只带 stored_token，无 PAN）
+      var agResp = await fetch('/cards/attach', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          stored_token: tokData.stored_token,
+          masked_pan: tokData.masked_pan,
+          network: tokData.network,
+          exp_month: expMonth, exp_year: expYear,
+          holder_name: holder, set_default: setDefault
+        })
+      });
+      if (!agResp.ok) {
+        var err2 = await agResp.json().catch(()=>({error:'api-gateway HTTP '+agResp.status}));
+        throw new Error(err2.error || 'api-gateway attach failed');
+      }
+      // 成功 → 跳列表
+      window.location.href = '/cards';
+    } catch (e) {
+      showFlash('绑卡失败：' + (e.message || e));
+      btn.disabled = false;
+      btn.textContent = '绑定';
+    }
+  });
+})();
 </script>
 {{end}}

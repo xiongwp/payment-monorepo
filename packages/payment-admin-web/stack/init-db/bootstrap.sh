@@ -51,6 +51,10 @@ apply shared-meta "order-core/meta"         /sql/order-core/database/metadb/init
 # leaf_alloc / hot_account / account_business_type_info 等，必须预灌。
 # 不灌的话 accounting-system idgen 启动就报 Table 'account_meta.leaf_alloc' doesn't exist。
 apply shared-meta "accounting-system/meta"  /sql/accounting-system/database/metadb/init/init.sql
+# card-center / card-payment 的 meta（dev 模式下与其它 meta 同居 shared-meta；
+# 生产 SAQ-D 严格要求独立 DC，由 env=prod assertProdSafety 强制不同 DSN）。
+apply shared-meta "card-center/meta"        /sql/card-center/database/metadb/init/init.sql
+apply shared-meta "card-payment/meta"       /sql/card-payment/database/metadb/init/init.sql
 
 # ─── shared-shard-0 .. shared-shard-9 ─────────────────────────────────────
 for i in $(seq 0 9); do
@@ -62,6 +66,10 @@ for i in $(seq 0 9); do
     # _tmp.sql 含预置的平台账户 seed INSERT（000_PLATFORM_PROFIT_REVENUE 等），
     # 不灌就没有 fleet，admin-web 平台账户页会 "已找到 0 个账户"。
     apply "$host" "accounting-system/db_${i}_seed" "/sql/accounting-system/database/accountingdb/init/${i}_init_tmp.sql"
+    # card-center: card_center_db_$i (10 张 sharded 表 / 库)
+    apply "$host" "card-center/db_$i"              "/sql/card-center/database/userdb/init/${i}_init.sql"
+    # card-payment: card_payment_db_$i (10 张 sharded 表 / 库)
+    apply "$host" "card-payment/db_$i"             "/sql/card-payment/database/cardpaymentdb/init/${i}_init.sql"
 done
 
 echo "[done] all schemas applied across 1 meta + 10 shard MySQL instances"

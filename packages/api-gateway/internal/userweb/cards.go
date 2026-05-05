@@ -21,6 +21,7 @@ package userweb
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,25 +35,29 @@ import (
 // CardServiceClient 抽象 user-merchant-core 暴露的 user_card 子服务。
 // 由 main.go 注入具体 mTLS gRPC 实现（user-merchant-core 加了 UserCardService 后接通）。
 type CardServiceClient interface {
-	AddCard(ctx context.Context, in *AddCardReq) (*AddCardResp, error)
+	// AttachCard 把已经在 card-center 拿到的 stored_token + 元数据持久化进 user_card 表。
+	// **不接受 PAN** —— PAN 在浏览器 → card-center 之间就已经换成了 stored_token。
+	AttachCard(ctx context.Context, in *AttachCardReq) (*AttachCardResp, error)
 	ListCards(ctx context.Context, userID int64) ([]CardInfo, error)
 	DeleteCard(ctx context.Context, userID, userCardID int64) error
 	SetDefaultCard(ctx context.Context, userID, userCardID int64) error
 }
 
-// AddCardReq PCI 注意：PAN/CVV 仅在本结构体内、调用栈中存在
-type AddCardReq struct {
-	UserID     int64
-	PAN        string
-	ExpMonth   int
-	ExpYear    int
-	CVV        string
-	HolderName string
-	SetDefault bool
-	TraceID    string
+// AttachCardReq PCI 严格纪律：本结构体内**不存在 PAN/CVV 字段**。
+// PAN 仅活在 浏览器 ↔ card-center 之间的 HTTPS 单跳里；本服务的所有路径都看不见 PAN。
+type AttachCardReq struct {
+	UserID      int64
+	StoredToken string // card-center 返的长期 token（KMS-encrypted blob）
+	MaskedPAN   string // BIN+last4，展示用
+	Network     string // visa / mastercard / ...
+	ExpMonth    int
+	ExpYear     int
+	HolderName  string
+	SetDefault  bool
+	TraceID     string
 }
 
-type AddCardResp struct {
+type AttachCardResp struct {
 	UserCardID int64
 	MaskedPAN  string
 	Network    string
@@ -105,6 +110,9 @@ type CardHandler struct {
 	*Handler
 	Cards    CardServiceClient
 	Payments PaymentServiceClient
+	// CardCenterURL 浏览器端 SDK / form JS 直连 card-center 用的公网 URL，
+	// 注入到 cards_new.html 模板。空 = 前端会显示"未配置"错误。
+	CardCenterURL string
 }
 
 // NewCardHandler 构造
@@ -113,9 +121,18 @@ func NewCardHandler(base *Handler, cards CardServiceClient, pay PaymentServiceCl
 }
 
 // Register 把卡支付路由挂到 mux。
+//
+// 路由：
+//
+//	GET  /cards         列表
+//	POST /cards/attach  绑卡持久化（**只**接收 stored_token，绝不接受 PAN）
+//	GET  /cards/new     绑卡 form（JS 直发 card-center HTTPS）
+//	POST /cards/{id}/{delete,default}
+//	GET/POST /pay  /pay/result
 func (h *CardHandler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/cards", h.handleCardsRoute)       // GET 列表 / POST 绑卡
-	mux.HandleFunc("/cards/new", h.handleCardNew)      // 表单
+	mux.HandleFunc("/cards", h.handleCardsRoute)       // GET 列表（POST 已废弃，移到 /cards/attach）
+	mux.HandleFunc("/cards/attach", h.handleAttach)    // POST stored_token 持久化
+	mux.HandleFunc("/cards/new", h.handleCardNew)      // 表单（JS 直发 card-center）
 	mux.HandleFunc("/cards/", h.handleCardOps)         // /cards/:id/{delete,default}
 	mux.HandleFunc("/pay", h.handlePay)                // GET 支付页 / POST 提交
 	mux.HandleFunc("/pay/result", h.handlePayResult)
@@ -140,7 +157,7 @@ func (h *CardHandler) requireUser(w http.ResponseWriter, r *http.Request) (int64
 	return uid, true
 }
 
-// /cards GET 列表 / POST 绑卡
+// /cards GET 列表（POST 已废弃，PAN 不再走 api-gateway；用 /cards/attach 接收 stored_token）
 func (h *CardHandler) handleCardsRoute(w http.ResponseWriter, r *http.Request) {
 	uid, ok := h.requireUser(w, r)
 	if !ok {
@@ -150,7 +167,9 @@ func (h *CardHandler) handleCardsRoute(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		h.listCards(w, r, uid)
 	case http.MethodPost:
-		h.submitCard(w, r, uid)
+		// 早期 form POST 路径已废弃 —— PAN 不再经过 api-gateway。
+		// 浏览器应该改成 fetch card-center HTTPS 拿 stored_token，再 POST /cards/attach。
+		http.Error(w, "POST /cards 已废弃；改用 fetch card-center HTTPS + POST /cards/attach", http.StatusGone)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -167,42 +186,89 @@ func (h *CardHandler) listCards(w http.ResponseWriter, r *http.Request, uid int6
 	h.render(w, "cards.html", map[string]any{"Title": "我的卡", "Cards": cards})
 }
 
-func (h *CardHandler) submitCard(w http.ResponseWriter, r *http.Request, uid int64) {
-	_ = r.ParseForm()
-	pan := strings.ReplaceAll(r.FormValue("pan"), " ", "")
-	expMonth, _ := strconv.Atoi(r.FormValue("exp_month"))
-	expYear, _ := strconv.Atoi(r.FormValue("exp_year"))
-	cvv := r.FormValue("cvv")
-	holder := strings.TrimSpace(r.FormValue("holder_name"))
-	setDefault := r.FormValue("set_default") == "1"
-	defer func() {
-		// PCI 纪律：本函数返回前清空 PAN/CVV 局部变量
-		pan = ""
-		cvv = ""
-	}()
-	if len(pan) < 12 || expMonth < 1 || expMonth > 12 || expYear < 2024 {
-		h.render(w, "cards_new.html", map[string]any{
-			"Title": "绑卡", "Flash": "卡号 / 有效期不合法",
-		})
+// handleAttach 浏览器拿到 card-center 的 stored_token 后回 POST 这里持久化。
+//
+// PCI 严格：**整个函数体内不允许引用 PAN / CVV 字段**。Go 静态检查 + code review 保证。
+// body 协议（JSON）：
+//
+//	{
+//	  "stored_token": "tok_card_xxx",
+//	  "masked_pan":   "411111******1111",
+//	  "network":      "visa",
+//	  "exp_month":    12,
+//	  "exp_year":     2030,
+//	  "holder_name":  "ZHANG SAN",
+//	  "set_default":  true
+//	}
+func (h *CardHandler) handleAttach(w http.ResponseWriter, r *http.Request) {
+	uid, ok := h.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		StoredToken string `json:"stored_token"`
+		MaskedPAN   string `json:"masked_pan"`
+		Network     string `json:"network"`
+		ExpMonth    int    `json:"exp_month"`
+		ExpYear     int    `json:"exp_year"`
+		HolderName  string `json:"holder_name"`
+		SetDefault  bool   `json:"set_default"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&in); err != nil {
+		http.Error(w, "bad json body", http.StatusBadRequest)
+		return
+	}
+	// 校验：stored_token 必须是 card-center 颁发的格式 tok_card_*；防止前端误传 PAN
+	if !strings.HasPrefix(in.StoredToken, "tok_card_") {
+		http.Error(w, "stored_token format invalid (must start with tok_card_)", http.StatusBadRequest)
+		return
+	}
+	if in.MaskedPAN == "" || in.Network == "" {
+		http.Error(w, "masked_pan / network required", http.StatusBadRequest)
+		return
+	}
+	if in.ExpMonth < 1 || in.ExpMonth > 12 || in.ExpYear < 2024 {
+		http.Error(w, "exp invalid", http.StatusBadRequest)
+		return
+	}
+	// 防止 masked_pan 字段实际写了完整 PAN（异常前端 / 中间人攻击）
+	// 真实 masked 不会超过 20 字符且必须包含 *
+	if len(in.MaskedPAN) > 20 || !strings.Contains(in.MaskedPAN, "*") {
+		http.Error(w, "masked_pan looks unmasked; rejected", http.StatusBadRequest)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	resp, err := h.Cards.AddCard(ctx, &AddCardReq{
-		UserID: uid, PAN: pan, ExpMonth: expMonth, ExpYear: expYear,
-		CVV: cvv, HolderName: holder, SetDefault: setDefault,
+	resp, err := h.Cards.AttachCard(ctx, &AttachCardReq{
+		UserID:      uid,
+		StoredToken: in.StoredToken,
+		MaskedPAN:   in.MaskedPAN,
+		Network:     in.Network,
+		ExpMonth:    in.ExpMonth,
+		ExpYear:     in.ExpYear,
+		HolderName:  in.HolderName,
+		SetDefault:  in.SetDefault,
 	})
 	if err != nil {
-		h.render(w, "cards_new.html", map[string]any{
-			"Title": "绑卡", "Flash": grpcMsg(err),
-		})
+		h.logger.Warn("attach card", zap.Error(err))
+		http.Error(w, "attach failed: "+grpcMsg(err), http.StatusBadGateway)
 		return
 	}
-	h.logger.Info("card added",
+	h.logger.Info("card attached",
 		zap.String("masked_pan", resp.MaskedPAN),
 		zap.String("network", resp.Network),
 		zap.Int64("user_card_id", resp.UserCardID))
-	http.Redirect(w, r, "/cards", http.StatusFound)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"user_card_id": resp.UserCardID,
+		"masked_pan":   resp.MaskedPAN,
+		"network":      resp.Network,
+	})
 }
 
 func (h *CardHandler) handleCardNew(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +279,10 @@ func (h *CardHandler) handleCardNew(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	h.render(w, "cards_new.html", map[string]any{"Title": "绑卡"})
+	h.render(w, "cards_new.html", map[string]any{
+		"Title":         "绑卡",
+		"CardCenterURL": h.CardCenterURL, // 浏览器 JS 直发的目标域
+	})
 }
 
 func (h *CardHandler) handleCardOps(w http.ResponseWriter, r *http.Request) {

@@ -15,6 +15,7 @@
 package httpsauth
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -26,26 +27,65 @@ import (
 	"github.com/xiongwp/card-center/internal/service"
 )
 
+// CardOps 抽 RESTServer 用到的 service 方法，方便单测注假实现。
+//
+// *service.Service 自动满足本接口；NewRESTServer 接口而不是具体类型让 handler
+// 可以单测越权 / 错误传播 / 输入校验，不依赖 vault / repo / KMS 一整套真实栈。
+type CardOps interface {
+	Tokenize(ctx context.Context, in *service.TokenizeInput) (*service.TokenizeOutput, error)
+	ListUserCards(ctx context.Context, userID int64, caller, callerIP, traceID string) ([]*service.CardDisplay, error)
+	DeleteCardByID(ctx context.Context, userID, userCardID int64, reason, caller, callerIP, traceID string) (*service.CardDisplay, error)
+}
+
 // RESTServer 暴露 HTTPS REST endpoints。
 type RESTServer struct {
-	svc      *service.Service
+	svc      CardOps
 	verifier Verifier
+	limiter  RateLimiter // 仅 tokenize 路径用；nil = 不限流
 	logger   *zap.Logger
 }
 
 // NewRESTServer 构造
-func NewRESTServer(svc *service.Service, verifier Verifier, logger *zap.Logger) *RESTServer {
+func NewRESTServer(svc CardOps, verifier Verifier, logger *zap.Logger) *RESTServer {
 	return &RESTServer{svc: svc, verifier: verifier, logger: logger}
 }
 
+// WithRateLimiter 注入 tokenize 限流器。生产推荐配；dev 不配。
+func (s *RESTServer) WithRateLimiter(rl RateLimiter) *RESTServer {
+	s.limiter = rl
+	return s
+}
+
 // Handler 返回总 mux：/healthz 直通，/v1/* 套 auth middleware + 安全头。
+//
+// 路由细节：
+//   - GET  /v1/cards   → auth → listCards
+//   - POST /v1/cards   → auth → 限流 → tokenizeCard （限流仅作用于 POST）
+//   - DELETE /v1/cards/{id} → auth → deleteCard
 func (s *RESTServer) Handler() http.Handler {
 	authed := Middleware(s.verifier, s.logger)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	mux.Handle("/v1/cards", authed(http.HandlerFunc(s.dispatchCards)))
+
+	// /v1/cards：method-aware 装配，POST 单独套限流
+	cardsRoot := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			s.listCards(w, r)
+		case http.MethodPost:
+			// limiter 包一层；nil 时直通
+			h := http.Handler(http.HandlerFunc(s.tokenizeCard))
+			if s.limiter != nil {
+				h = RateLimitMiddleware(s.limiter, s.logger)(h)
+			}
+			h.ServeHTTP(w, r)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+	})
+	mux.Handle("/v1/cards", authed(cardsRoot))
 	mux.Handle("/v1/cards/", authed(http.HandlerFunc(s.dispatchCardOps)))
 	return securityHeaders(mux)
 }
@@ -100,18 +140,6 @@ func luhnValid(pan string) bool {
 		dbl = !dbl
 	}
 	return sum%10 == 0
-}
-
-// /v1/cards GET 列卡 / POST 绑卡
-func (s *RESTServer) dispatchCards(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.listCards(w, r)
-	case http.MethodPost:
-		s.tokenizeCard(w, r)
-	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-	}
 }
 
 // /v1/cards/{id} DELETE 删卡
@@ -197,9 +225,17 @@ func (s *RESTServer) tokenizeCard(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad body"})
 		return
 	}
-	// 防越权：客户端如果显式带了 user_id 且跟 ctx 不一致，硬拒。
-	if in.ClaimedUserID != 0 && in.ClaimedUserID != uid {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-user denied"})
+	// 防越权（严格模式）：客户端**根本不允许**发 user_id 字段。
+	// 即便发的跟 ctx 一致，也是不规范客户端，403 让前端修协议。
+	// 这条 audit 进 log，方便发现误用 / 攻击行为。
+	if err := RejectClaimedUserID(in.ClaimedUserID); err != nil {
+		s.logger.Warn("rejected: client supplied user_id",
+			zap.Int64("ctx_uid", uid),
+			zap.Int64("claimed_uid", in.ClaimedUserID),
+			zap.String("client_ip", clientIP(r)))
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "cross-user denied: do not include user_id in request body",
+		})
 		return
 	}
 	if in.PAN == "" || in.ExpMonth < 1 || in.ExpMonth > 12 || in.ExpYear < 2024 {

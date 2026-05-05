@@ -12,14 +12,21 @@ import (
 )
 
 // PaymentTokenUsedRow card_payment_token_used 表行（按 pi_id 分片）
+//
+// MaskedPAN / Network 是**异步反写**字段：MarkUsed 时只写 token_hash + pi_id +
+// caller（保证一次性 enforcement 的关键路径快），Detokenize 成功后再用 UpdateForensic
+// 把 masked_pan / network 补上。失败也无所谓 —— 一次性约束已经实现，masked 仅
+// 用于客服 / 风控查这个 PI 用的哪张卡。
 type PaymentTokenUsedRow struct {
-	ID         int64     `gorm:"column:id;primaryKey;autoIncrement"`
-	TokenHash  string    `gorm:"column:token_hash"`
-	PIID       string    `gorm:"column:pi_id"`
-	Caller     string    `gorm:"column:caller"`
-	UsedAt     time.Time `gorm:"column:used_at"`
-	ExpiresAt  time.Time `gorm:"column:expires_at"`
-	CreatedAt  time.Time `gorm:"column:created_at"`
+	ID        int64     `gorm:"column:id;primaryKey;autoIncrement"`
+	TokenHash string    `gorm:"column:token_hash"`
+	PIID      string    `gorm:"column:pi_id"`
+	Caller    string    `gorm:"column:caller"`
+	MaskedPAN string    `gorm:"column:masked_pan"` // 反写字段
+	Network   string    `gorm:"column:network"`    // 反写字段
+	UsedAt    time.Time `gorm:"column:used_at"`
+	ExpiresAt time.Time `gorm:"column:expires_at"`
+	CreatedAt time.Time `gorm:"column:created_at"`
 }
 
 // ErrPaymentTokenAlreadyUsed 一次性 token 已被使用过 → 拒
@@ -32,6 +39,9 @@ var ErrPaymentTokenAlreadyUsed = errors.New("repo: payment token already used")
 type PaymentTokenRepo interface {
 	// MarkUsed 标记 token 已使用。dup key (uk_token_hash) 返 ErrPaymentTokenAlreadyUsed。
 	MarkUsed(ctx context.Context, row *PaymentTokenUsedRow) error
+	// UpdateForensic 反写 masked_pan + network（Detokenize 成功后调；best-effort）。
+	// 不存在的行 silent no-op；不返错误中断主流程。
+	UpdateForensic(ctx context.Context, piID, tokenHash, maskedPAN, network string) error
 	// PurgeExpired 清理 expires_at < cutoff 的行（cron 调，每片最多 limit）
 	PurgeExpired(ctx context.Context, cutoff time.Time, limitPerShard int) (int64, error)
 }
@@ -68,6 +78,28 @@ func (r *paymentTokenRepo) MarkUsed(ctx context.Context, row *PaymentTokenUsedRo
 		return ErrPaymentTokenAlreadyUsed
 	}
 	return err
+}
+
+func (r *paymentTokenRepo) UpdateForensic(ctx context.Context, piID, tokenHash, maskedPAN, network string) error {
+	if piID == "" || tokenHash == "" {
+		return nil
+	}
+	db, tbl := r.shard(ctx, piID)
+	updates := map[string]any{}
+	if maskedPAN != "" {
+		updates["masked_pan"] = maskedPAN
+	}
+	if network != "" {
+		updates["network"] = network
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	// 只更新空字段，避免覆盖已有取证记录
+	res := db.WithContext(ctx).Table(tbl).
+		Where("token_hash = ? AND pi_id = ? AND (masked_pan IS NULL OR masked_pan = '')", tokenHash, piID).
+		Updates(updates)
+	return res.Error
 }
 
 func (r *paymentTokenRepo) PurgeExpired(ctx context.Context, cutoff time.Time, limitPerShard int) (int64, error) {

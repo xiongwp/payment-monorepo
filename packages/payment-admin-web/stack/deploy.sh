@@ -66,6 +66,9 @@ cmd_check() {
         "order-core:9091"
         "user-merchant-core:9191"
         "api-gateway:8080"
+        # PCI SAQ-D 服务（dev 与其它服务共网；prod 必须独立 DC）
+        "card-center:9443"
+        "card-payment:9444"
     )
     for p in "${probes[@]}"; do
         host="${p%%:*}"; port="${p##*:}"

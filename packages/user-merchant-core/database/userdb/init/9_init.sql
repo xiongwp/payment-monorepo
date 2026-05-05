@@ -114,6 +114,33 @@ CREATE TABLE IF NOT EXISTS `user_settings_90` (
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 90)';
 
+-- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
+-- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
+-- 加业务展示字段（masked_pan / network / 过期月年 / 持卡人姓名）。
+-- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
+-- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
+-- 那边的 KMS key rotation。
+CREATE TABLE IF NOT EXISTS `user_card_90` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `user_id`        BIGINT       NOT NULL,
+    `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
+    `token_hash`     CHAR(64)     NOT NULL COMMENT 'sha256(stored_token)',
+    `masked_pan`     VARCHAR(20)  NOT NULL COMMENT 'BIN+last4',
+    `network`        VARCHAR(16)  NOT NULL COMMENT 'visa / mastercard / jcb / amex / unionpay',
+    `exp_month`      TINYINT      NOT NULL,
+    `exp_year`       SMALLINT     NOT NULL,
+    `holder_name`    VARCHAR(64)  NOT NULL DEFAULT '',
+    `is_default`     BOOLEAN      NOT NULL DEFAULT FALSE,
+    `status`         VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active / deleted / expired',
+    `created_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at`     DATETIME(3)  DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_token_hash` (`token_hash`),
+    KEY `idx_user_status` (`user_id`, `status`),
+    KEY `idx_deleted_at`  (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 90)';
+
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
 CREATE TABLE IF NOT EXISTS `merchants_90` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
@@ -305,6 +332,33 @@ CREATE TABLE IF NOT EXISTS `user_settings_91` (
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 91)';
+
+-- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
+-- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
+-- 加业务展示字段（masked_pan / network / 过期月年 / 持卡人姓名）。
+-- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
+-- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
+-- 那边的 KMS key rotation。
+CREATE TABLE IF NOT EXISTS `user_card_91` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `user_id`        BIGINT       NOT NULL,
+    `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
+    `token_hash`     CHAR(64)     NOT NULL COMMENT 'sha256(stored_token)',
+    `masked_pan`     VARCHAR(20)  NOT NULL COMMENT 'BIN+last4',
+    `network`        VARCHAR(16)  NOT NULL COMMENT 'visa / mastercard / jcb / amex / unionpay',
+    `exp_month`      TINYINT      NOT NULL,
+    `exp_year`       SMALLINT     NOT NULL,
+    `holder_name`    VARCHAR(64)  NOT NULL DEFAULT '',
+    `is_default`     BOOLEAN      NOT NULL DEFAULT FALSE,
+    `status`         VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active / deleted / expired',
+    `created_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at`     DATETIME(3)  DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_token_hash` (`token_hash`),
+    KEY `idx_user_status` (`user_id`, `status`),
+    KEY `idx_deleted_at`  (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 91)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
 CREATE TABLE IF NOT EXISTS `merchants_91` (
@@ -498,6 +552,33 @@ CREATE TABLE IF NOT EXISTS `user_settings_92` (
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 92)';
 
+-- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
+-- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
+-- 加业务展示字段（masked_pan / network / 过期月年 / 持卡人姓名）。
+-- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
+-- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
+-- 那边的 KMS key rotation。
+CREATE TABLE IF NOT EXISTS `user_card_92` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `user_id`        BIGINT       NOT NULL,
+    `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
+    `token_hash`     CHAR(64)     NOT NULL COMMENT 'sha256(stored_token)',
+    `masked_pan`     VARCHAR(20)  NOT NULL COMMENT 'BIN+last4',
+    `network`        VARCHAR(16)  NOT NULL COMMENT 'visa / mastercard / jcb / amex / unionpay',
+    `exp_month`      TINYINT      NOT NULL,
+    `exp_year`       SMALLINT     NOT NULL,
+    `holder_name`    VARCHAR(64)  NOT NULL DEFAULT '',
+    `is_default`     BOOLEAN      NOT NULL DEFAULT FALSE,
+    `status`         VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active / deleted / expired',
+    `created_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at`     DATETIME(3)  DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_token_hash` (`token_hash`),
+    KEY `idx_user_status` (`user_id`, `status`),
+    KEY `idx_deleted_at`  (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 92)';
+
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
 CREATE TABLE IF NOT EXISTS `merchants_92` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
@@ -689,6 +770,33 @@ CREATE TABLE IF NOT EXISTS `user_settings_93` (
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 93)';
+
+-- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
+-- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
+-- 加业务展示字段（masked_pan / network / 过期月年 / 持卡人姓名）。
+-- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
+-- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
+-- 那边的 KMS key rotation。
+CREATE TABLE IF NOT EXISTS `user_card_93` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `user_id`        BIGINT       NOT NULL,
+    `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
+    `token_hash`     CHAR(64)     NOT NULL COMMENT 'sha256(stored_token)',
+    `masked_pan`     VARCHAR(20)  NOT NULL COMMENT 'BIN+last4',
+    `network`        VARCHAR(16)  NOT NULL COMMENT 'visa / mastercard / jcb / amex / unionpay',
+    `exp_month`      TINYINT      NOT NULL,
+    `exp_year`       SMALLINT     NOT NULL,
+    `holder_name`    VARCHAR(64)  NOT NULL DEFAULT '',
+    `is_default`     BOOLEAN      NOT NULL DEFAULT FALSE,
+    `status`         VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active / deleted / expired',
+    `created_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at`     DATETIME(3)  DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_token_hash` (`token_hash`),
+    KEY `idx_user_status` (`user_id`, `status`),
+    KEY `idx_deleted_at`  (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 93)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
 CREATE TABLE IF NOT EXISTS `merchants_93` (
@@ -882,6 +990,33 @@ CREATE TABLE IF NOT EXISTS `user_settings_94` (
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 94)';
 
+-- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
+-- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
+-- 加业务展示字段（masked_pan / network / 过期月年 / 持卡人姓名）。
+-- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
+-- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
+-- 那边的 KMS key rotation。
+CREATE TABLE IF NOT EXISTS `user_card_94` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `user_id`        BIGINT       NOT NULL,
+    `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
+    `token_hash`     CHAR(64)     NOT NULL COMMENT 'sha256(stored_token)',
+    `masked_pan`     VARCHAR(20)  NOT NULL COMMENT 'BIN+last4',
+    `network`        VARCHAR(16)  NOT NULL COMMENT 'visa / mastercard / jcb / amex / unionpay',
+    `exp_month`      TINYINT      NOT NULL,
+    `exp_year`       SMALLINT     NOT NULL,
+    `holder_name`    VARCHAR(64)  NOT NULL DEFAULT '',
+    `is_default`     BOOLEAN      NOT NULL DEFAULT FALSE,
+    `status`         VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active / deleted / expired',
+    `created_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at`     DATETIME(3)  DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_token_hash` (`token_hash`),
+    KEY `idx_user_status` (`user_id`, `status`),
+    KEY `idx_deleted_at`  (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 94)';
+
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
 CREATE TABLE IF NOT EXISTS `merchants_94` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
@@ -1073,6 +1208,33 @@ CREATE TABLE IF NOT EXISTS `user_settings_95` (
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 95)';
+
+-- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
+-- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
+-- 加业务展示字段（masked_pan / network / 过期月年 / 持卡人姓名）。
+-- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
+-- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
+-- 那边的 KMS key rotation。
+CREATE TABLE IF NOT EXISTS `user_card_95` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `user_id`        BIGINT       NOT NULL,
+    `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
+    `token_hash`     CHAR(64)     NOT NULL COMMENT 'sha256(stored_token)',
+    `masked_pan`     VARCHAR(20)  NOT NULL COMMENT 'BIN+last4',
+    `network`        VARCHAR(16)  NOT NULL COMMENT 'visa / mastercard / jcb / amex / unionpay',
+    `exp_month`      TINYINT      NOT NULL,
+    `exp_year`       SMALLINT     NOT NULL,
+    `holder_name`    VARCHAR(64)  NOT NULL DEFAULT '',
+    `is_default`     BOOLEAN      NOT NULL DEFAULT FALSE,
+    `status`         VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active / deleted / expired',
+    `created_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at`     DATETIME(3)  DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_token_hash` (`token_hash`),
+    KEY `idx_user_status` (`user_id`, `status`),
+    KEY `idx_deleted_at`  (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 95)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
 CREATE TABLE IF NOT EXISTS `merchants_95` (
@@ -1266,6 +1428,33 @@ CREATE TABLE IF NOT EXISTS `user_settings_96` (
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 96)';
 
+-- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
+-- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
+-- 加业务展示字段（masked_pan / network / 过期月年 / 持卡人姓名）。
+-- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
+-- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
+-- 那边的 KMS key rotation。
+CREATE TABLE IF NOT EXISTS `user_card_96` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `user_id`        BIGINT       NOT NULL,
+    `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
+    `token_hash`     CHAR(64)     NOT NULL COMMENT 'sha256(stored_token)',
+    `masked_pan`     VARCHAR(20)  NOT NULL COMMENT 'BIN+last4',
+    `network`        VARCHAR(16)  NOT NULL COMMENT 'visa / mastercard / jcb / amex / unionpay',
+    `exp_month`      TINYINT      NOT NULL,
+    `exp_year`       SMALLINT     NOT NULL,
+    `holder_name`    VARCHAR(64)  NOT NULL DEFAULT '',
+    `is_default`     BOOLEAN      NOT NULL DEFAULT FALSE,
+    `status`         VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active / deleted / expired',
+    `created_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at`     DATETIME(3)  DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_token_hash` (`token_hash`),
+    KEY `idx_user_status` (`user_id`, `status`),
+    KEY `idx_deleted_at`  (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 96)';
+
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
 CREATE TABLE IF NOT EXISTS `merchants_96` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
@@ -1457,6 +1646,33 @@ CREATE TABLE IF NOT EXISTS `user_settings_97` (
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 97)';
+
+-- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
+-- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
+-- 加业务展示字段（masked_pan / network / 过期月年 / 持卡人姓名）。
+-- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
+-- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
+-- 那边的 KMS key rotation。
+CREATE TABLE IF NOT EXISTS `user_card_97` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `user_id`        BIGINT       NOT NULL,
+    `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
+    `token_hash`     CHAR(64)     NOT NULL COMMENT 'sha256(stored_token)',
+    `masked_pan`     VARCHAR(20)  NOT NULL COMMENT 'BIN+last4',
+    `network`        VARCHAR(16)  NOT NULL COMMENT 'visa / mastercard / jcb / amex / unionpay',
+    `exp_month`      TINYINT      NOT NULL,
+    `exp_year`       SMALLINT     NOT NULL,
+    `holder_name`    VARCHAR(64)  NOT NULL DEFAULT '',
+    `is_default`     BOOLEAN      NOT NULL DEFAULT FALSE,
+    `status`         VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active / deleted / expired',
+    `created_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at`     DATETIME(3)  DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_token_hash` (`token_hash`),
+    KEY `idx_user_status` (`user_id`, `status`),
+    KEY `idx_deleted_at`  (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 97)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
 CREATE TABLE IF NOT EXISTS `merchants_97` (
@@ -1650,6 +1866,33 @@ CREATE TABLE IF NOT EXISTS `user_settings_98` (
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 98)';
 
+-- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
+-- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
+-- 加业务展示字段（masked_pan / network / 过期月年 / 持卡人姓名）。
+-- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
+-- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
+-- 那边的 KMS key rotation。
+CREATE TABLE IF NOT EXISTS `user_card_98` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `user_id`        BIGINT       NOT NULL,
+    `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
+    `token_hash`     CHAR(64)     NOT NULL COMMENT 'sha256(stored_token)',
+    `masked_pan`     VARCHAR(20)  NOT NULL COMMENT 'BIN+last4',
+    `network`        VARCHAR(16)  NOT NULL COMMENT 'visa / mastercard / jcb / amex / unionpay',
+    `exp_month`      TINYINT      NOT NULL,
+    `exp_year`       SMALLINT     NOT NULL,
+    `holder_name`    VARCHAR(64)  NOT NULL DEFAULT '',
+    `is_default`     BOOLEAN      NOT NULL DEFAULT FALSE,
+    `status`         VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active / deleted / expired',
+    `created_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at`     DATETIME(3)  DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_token_hash` (`token_hash`),
+    KEY `idx_user_status` (`user_id`, `status`),
+    KEY `idx_deleted_at`  (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 98)';
+
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
 CREATE TABLE IF NOT EXISTS `merchants_98` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
@@ -1841,6 +2084,33 @@ CREATE TABLE IF NOT EXISTS `user_settings_99` (
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 99)';
+
+-- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
+-- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
+-- 加业务展示字段（masked_pan / network / 过期月年 / 持卡人姓名）。
+-- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
+-- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
+-- 那边的 KMS key rotation。
+CREATE TABLE IF NOT EXISTS `user_card_99` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `user_id`        BIGINT       NOT NULL,
+    `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
+    `token_hash`     CHAR(64)     NOT NULL COMMENT 'sha256(stored_token)',
+    `masked_pan`     VARCHAR(20)  NOT NULL COMMENT 'BIN+last4',
+    `network`        VARCHAR(16)  NOT NULL COMMENT 'visa / mastercard / jcb / amex / unionpay',
+    `exp_month`      TINYINT      NOT NULL,
+    `exp_year`       SMALLINT     NOT NULL,
+    `holder_name`    VARCHAR(64)  NOT NULL DEFAULT '',
+    `is_default`     BOOLEAN      NOT NULL DEFAULT FALSE,
+    `status`         VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active / deleted / expired',
+    `created_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at`     DATETIME(3)  DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_token_hash` (`token_hash`),
+    KEY `idx_user_status` (`user_id`, `status`),
+    KEY `idx_deleted_at`  (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 99)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
 CREATE TABLE IF NOT EXISTS `merchants_99` (

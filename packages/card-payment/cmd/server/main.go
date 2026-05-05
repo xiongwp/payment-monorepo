@@ -214,19 +214,28 @@ func newProcessor(cc processor.CardCenter, networks map[string]processor.Network
 }
 
 func newGRPCServer(v *viper.Viper, p *processor.Processor, logger *zap.Logger) (*grpc.Server, error) {
-	tlsCfg, err := buildTLSConfig(v)
-	if err != nil {
-		return nil, fmt.Errorf("tls: %w", err)
-	}
 	allow := server.NewClientCNAllowList(v.GetStringSlice("auth.client_cn.allowed"))
-	srv := grpc.NewServer(
-		grpc.Creds(credentials.NewTLS(tlsCfg)),
+	opts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(
 			trace.UnaryServerInterceptor(logger),
 			shadow.UnaryServerInterceptor(),
 			server.UnaryClientCNInterceptor(allow),
 		),
-	)
+	}
+	// dev：tls 字段空 → 明文 listener。env=prod 已被 assertProdSafety 强制 cert/key。
+	certPath := v.GetString("tls.cert")
+	keyPath := v.GetString("tls.key")
+	if certPath != "" && keyPath != "" {
+		tlsCfg, err := buildTLSConfig(v)
+		if err != nil {
+			return nil, fmt.Errorf("tls: %w", err)
+		}
+		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+		logger.Info("card-payment gRPC: mTLS enabled")
+	} else {
+		logger.Warn("card-payment gRPC: NO TLS (dev mode); env=prod will fail at assertProdSafety")
+	}
+	srv := grpc.NewServer(opts...)
 	bs := server.NewServer(p, logger)
 	bs.Register(srv)
 	return srv, nil

@@ -73,6 +73,8 @@ func loadConfig() (*viper.Viper, error) {
 		"cards.user_card_service_endpoint",
 		"cards.payment_service_endpoint",
 		"cards.mtls.enabled",
+		// 浏览器端 SDK / form JS 直发 card-center 的公网 URL（PAN 单跳）
+		"cards.card_center_url",
 	} {
 		_ = v.BindEnv(k)
 	}
@@ -226,11 +228,14 @@ func newCardHandler(uw *userweb.Handler, v *viper.Viper, logger *zap.Logger) *us
 		logger.Info("CardHandler running in stub mode (cards.enabled=false). " +
 			"Pages render, but Add/Delete/Pay return errCardServiceNotWired.")
 	}
-	return userweb.NewCardHandler(
+	ch := userweb.NewCardHandler(
 		uw,
 		userweb.NewStubCardClient(),
 		userweb.NewStubPaymentClient(),
 	)
+	// 浏览器 JS 直发 card-center HTTPS（PAN 单跳）的目标 URL
+	ch.CardCenterURL = v.GetString("cards.card_center_url")
+	return ch
 }
 
 // newUserMerchantConn 拨号 user-merchant-core gRPC。endpoint 与 registry.endpoints

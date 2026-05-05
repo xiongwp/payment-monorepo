@@ -96,11 +96,15 @@ func (s *CardPaymentService) PreparePaymentToken(ctx context.Context, pi *domain
 	return resp.PaymentToken, mp, nw, nil
 }
 
-// AttachChannelToken 把 payment_token 写到 ChargeRequest.ChannelToken 字段。
-// payment-channel.adapter[card] 在 Charge 入口读这个字段。
-func AttachChannelToken(req *channel.ChargeRequest, paymentToken string) {
+// AttachChannelToken 把 payment_token 写到 PaymentRequest.PaymentMethodRef 字段。
+// payment-channel.adapter[card] 在 Charge 入口读 PaymentMethodRef，调 card-payment 时
+// 当作 channel_token / payment_token 透传。
+//
+// 历史：之前误写成 channel.ChargeRequest.ChannelToken，类型 / 字段名都不存在。
+// 当前命名跟 channel.PaymentRequest 一致；下游 adapter 已有 PaymentMethodRef 解析。
+func AttachChannelToken(req *channel.PaymentRequest, paymentToken string) {
 	if req == nil {
 		return
 	}
-	req.ChannelToken = paymentToken
+	req.PaymentMethodRef = paymentToken
 }

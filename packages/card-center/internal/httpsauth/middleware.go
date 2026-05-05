@@ -1,7 +1,22 @@
-// middleware.go: HTTP middleware - 抽 jwt → Verifier 校验 → 注入 user_id 到 ctx。
+// middleware.go: HTTP middleware - card-center HTTPS 入口的 3 道身份防线。
 //
-// 任何 card-center HTTPS handler 都应该走这个 middleware；handler 内部通过
-// UserIDFromCtx(ctx) 拿 user_id，**不接受**请求 body / query 里的 user_id 参数。
+//   ┌─────────────────────────────────────────────────────────────────────┐
+//   │ 防线 1: Session 认证                                                  │
+//   │   抽 jwt（Authorization: Bearer 或 Cookie uauth）；空 → 401          │
+//   ├─────────────────────────────────────────────────────────────────────┤
+//   │ 防线 2: 用户登录态校验                                                │
+//   │   Verifier.Verify(jwt) → 走 mTLS gRPC 调 user-merchant-core           │
+//   │   IntrospectToken；返回 valid=false 或 RPC 失败 → 401                │
+//   ├─────────────────────────────────────────────────────────────────────┤
+//   │ 防线 3: 是否是登录本人 (self-only)                                    │
+//   │   user_id **只**从 jwt 解出，注入 ctx；任何 handler 必须用 ctx 取，   │
+//   │   不允许 body / query / form 提供 user_id（即便提供也立即拒，不仅   │
+//   │   是 "校验匹配后放行"）。任何针对卡的写操作（删卡/设默认）在 SQL    │
+//   │   层 WHERE user_id=ctx.user_id 二次过滤。                             │
+//   └─────────────────────────────────────────────────────────────────────┘
+//
+// handler 内部通过 UserIDFromCtx(ctx) 拿 user_id；body / query / form 里的
+// user_id 参数被 RejectClaimedUserID 直接拒绝，而不是 "如果匹配就放行"。
 package httpsauth
 
 import (
@@ -97,6 +112,23 @@ func AssertSelfUserID(ctx context.Context, claimed int64) error {
 		return ErrInvalidJWT
 	}
 	if claimed != 0 && claimed != authed {
+		return ErrCrossUserAccess
+	}
+	return nil
+}
+
+// RejectClaimedUserID 比 AssertSelfUserID 更严：**任何**非零 user_id 都拒，
+// 不管是否跟 ctx 匹配。
+//
+// 用法：handler 从 body decode 出 input 后立即调本函数。
+//
+//	if err := RejectClaimedUserID(input.UserID); err != nil { ... 403 ... }
+//
+// 理由：让"客户端永远不要发 user_id"成为协议约束。即便发了匹配的，也是错的客户端
+// 实现，应该明确报 403 让前端开发者修。这避免了诸如"前端缓存了上次的 user_id 误发"
+// 之类的边角问题，也让 audit_log 一眼看出客户端有没有按规约写。
+func RejectClaimedUserID(claimed int64) error {
+	if claimed != 0 {
 		return ErrCrossUserAccess
 	}
 	return nil

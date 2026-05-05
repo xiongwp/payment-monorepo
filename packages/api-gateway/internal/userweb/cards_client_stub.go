@@ -42,7 +42,7 @@ type stubCardClient struct{}
 // NewStubCardClient 给 main.go 用：cards.go CardServiceClient 占位
 func NewStubCardClient() CardServiceClient { return &stubCardClient{} }
 
-func (stubCardClient) AddCard(ctx context.Context, in *AddCardReq) (*AddCardResp, error) {
+func (stubCardClient) AttachCard(ctx context.Context, in *AttachCardReq) (*AttachCardResp, error) {
 	_ = ctx
 	_ = in
 	return nil, errCardServiceNotWired

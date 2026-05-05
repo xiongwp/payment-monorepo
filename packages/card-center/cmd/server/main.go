@@ -320,11 +320,26 @@ func newHTTPSVerifier(v *viper.Viper, conn *grpc.ClientConn, logger *zap.Logger)
 }
 
 // newRESTServer 装配 HTTPS REST handler。
+//
+// rate limit 默认 5 tokenize / 分钟 per user_id。yaml: ratelimit.tokenize.burst /
+// ratelimit.tokenize.refill_seconds 可调。
 func newRESTServer(v *viper.Viper, svc *service.Service, vfy httpsauth.Verifier, logger *zap.Logger) *httpsauth.RESTServer {
 	if !v.GetBool("https.enabled") || vfy == nil {
 		return nil
 	}
-	return httpsauth.NewRESTServer(svc, vfy, logger)
+	burst := v.GetInt("ratelimit.tokenize.burst")
+	if burst <= 0 {
+		burst = 5
+	}
+	refill := v.GetDuration("ratelimit.tokenize.refill")
+	if refill <= 0 {
+		refill = 12 * time.Second // 5 / 分钟
+	}
+	rl := httpsauth.NewMemoryBucket(burst, refill)
+	rl.Cleanup(10*time.Minute, time.Hour)
+	logger.Info("card-center HTTPS tokenize rate limit",
+		zap.Int("burst", burst), zap.Duration("refill_every", refill))
+	return httpsauth.NewRESTServer(svc, vfy, logger).WithRateLimiter(rl)
 }
 
 // startHTTPS 起 HTTPS REST listener（独立端口），监听 https.port，绑 cert/key。

@@ -1,5 +1,12 @@
 // verifier_user_merchant.go: 唯一生产 Verifier 实现 — mTLS gRPC 直连 user-merchant-core.IntrospectToken。
 //
+// 在 card-center HTTPS 入口的 3 道防线里，本组件**实现防线 2**（用户登录态校验）：
+//
+//	防线 1 (middleware.extractJWT): 浏览器必须带合法 Authorization 或 Cookie
+//	防线 2 (本文件 Verifier.Verify): jwt 必须能在 user-merchant-core 通过 IntrospectToken
+//	                                  → 同时拿到权威 user_id
+//	防线 3 (handler RejectClaimedUserID): user_id 只从 jwt，body 不许带
+//
 // 调用路径：
 //
 //	浏览器 cookie/Bearer jwt → card-center HTTPS → user-merchant-core

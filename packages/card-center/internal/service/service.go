@@ -237,10 +237,27 @@ func (s *Service) Detokenize(ctx context.Context, in *DetokenizeInput) (*Detoken
 		return nil, err
 	}
 
-	s.audit.Emit(ctx, AuditEvent{Op: "detokenize", Caller: in.Caller, CallerIP: in.CallerIP, PIID: in.PIID, TokenHash: tokenHash, Result: "ok", TraceID: in.TraceID, CreatedAt: time.Now()})
-
 	masked := vault.MaskPAN(detok.PAN)
 	network := vault.DetectNetwork(detok.PAN)
+
+	s.audit.Emit(ctx, AuditEvent{
+		Op: "detokenize", Caller: in.Caller, CallerIP: in.CallerIP,
+		PIID: in.PIID, TokenHash: tokenHash,
+		MaskedPAN: masked, Network: network, // 取证字段
+		Result: "ok", TraceID: in.TraceID, CreatedAt: time.Now(),
+	})
+
+	// 异步反写 card_payment_token_used 行的 masked_pan / network（取证用）。
+	// best-effort：失败不影响主流程；ctx 用 Background 防止主 ctx 取消把它带走。
+	go func(tokenHash, piID, masked, network string) {
+		bg, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := s.payToken.UpdateForensic(bg, piID, tokenHash, masked, network); err != nil {
+			s.logger.Debug("forensic update failed (best-effort)",
+				zap.String("pi_id", piID), zap.Error(err))
+		}
+	}(tokenHash, in.PIID, masked, network)
+
 	return &DetokenizeOutput{
 		PAN:        detok.PAN,
 		ExpMonth:   detok.ExpMonth,

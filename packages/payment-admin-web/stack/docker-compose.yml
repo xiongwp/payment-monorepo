@@ -484,6 +484,8 @@ services:
       - ../../payment-channel:/sql/payment-channel:ro
       - ../../order-core:/sql/order-core:ro
       - ../../accounting-system:/sql/accounting-system:ro
+      - ../../card-center:/sql/card-center:ro
+      - ../../card-payment:/sql/card-payment:ro
     entrypoint: ["/bin/bash", "/bootstrap.sh"]
 
   # ─── Go 应用层（按依赖顺序往后） ──────────────────────────────────────────
@@ -677,6 +679,99 @@ services:
     volumes:
       - ../../order-core/config/config.docker.yaml:/app/config/config.yaml:ro
     ports: ["9091:9091"]
+
+  # ─── card-center / card-payment：PCI SAQ-D 范围 ───────────────────────────
+  #
+  # 严格 PCI 纪律：
+  #   - 卡信息（PAN/CVV）只在 浏览器 ↔ card-center HTTPS 之间传输
+  #   - 支付时 PAN 由 card-center 内部交给 card-payment（mTLS gRPC，本 compose 网络）
+  #   - 其它服务（api-gateway / user-merchant-core / order-core / payment-channel）
+  #     都不持有 PAN
+  #
+  # dev 模式（本 compose）：env=dev 跳过 prod-safety；TLS / KMS / Kafka 都可省略；
+  # DB 复用 shared-meta + shared-shard-0..9（card_center_db_N / card_payment_db_N
+  # 数据库名跟其它服务的 DB 同居一个 MySQL 实例，由 db-init 灌入）。
+  # 生产部署：必须独立 DC + 独立 MySQL fleet + 独立 KMS + 独立 Kafka，
+  # env=prod 启动期由 assertProdSafety 强制拦截。
+  card-center:
+    build:
+      context: ../../card-center
+      dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:       ../../payment-util
+        kms-manage:         ../../kms-manage
+        user-merchant-core: ../../user-merchant-core
+      secrets: [GITHUB_TOKEN]
+    image: card-center:local
+    container_name: card-center
+    restart: unless-stopped
+    depends_on:
+      db-init:           {condition: service_completed_successfully}
+      kms-manage:        {condition: service_started}
+      user-merchant-core: {condition: service_started}
+    environment:
+      CARDCENTER_LOG_DEV: "true"
+      CARDCENTER_ENV: "dev"
+      # gRPC 监听端口（mTLS 在 dev 自动降明文；prod 必须 cert/key）
+      CARDCENTER_SERVER_GRPC_PORT: "9443"
+      # KMS：复用 main DC 的 kms-manage（dev 简化；prod 严格独立 DC kms-card）
+      CARDCENTER_KMS_ENDPOINT: "kms-manage:9290"
+      CARDCENTER_KMS_INSECURE: "true"
+      # 审计：dev 模式 Kafka 可空，audit emitter 退化为只写 DB
+      # HTTPS 入口：dev 关掉简化（生产前端 SDK 直连必须开）
+      CARDCENTER_HTTPS_ENABLED: "false"
+      # DB DSN 复用 shared-* 实例
+      CARDCENTER_DATABASE_META_DSN: "root:password@tcp(shared-meta:3306)/card_center_meta?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_0_DSN: "root:password@tcp(shared-shard-0:3306)/card_center_db_0?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_1_DSN: "root:password@tcp(shared-shard-1:3306)/card_center_db_1?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_2_DSN: "root:password@tcp(shared-shard-2:3306)/card_center_db_2?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_3_DSN: "root:password@tcp(shared-shard-3:3306)/card_center_db_3?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_4_DSN: "root:password@tcp(shared-shard-4:3306)/card_center_db_4?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_5_DSN: "root:password@tcp(shared-shard-5:3306)/card_center_db_5?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_6_DSN: "root:password@tcp(shared-shard-6:3306)/card_center_db_6?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_7_DSN: "root:password@tcp(shared-shard-7:3306)/card_center_db_7?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_8_DSN: "root:password@tcp(shared-shard-8:3306)/card_center_db_8?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDCENTER_DATABASE_SHARD_9_DSN: "root:password@tcp(shared-shard-9:3306)/card_center_db_9?charset=utf8mb4&parseTime=True&loc=Local"
+    ports: ["9443:9443"]
+
+  card-payment:
+    build:
+      context: ../../card-payment
+      dockerfile: Dockerfile
+      additional_contexts:
+        payment-util: ../../payment-util
+      secrets: [GITHUB_TOKEN]
+    image: card-payment:local
+    container_name: card-payment
+    restart: unless-stopped
+    depends_on:
+      db-init:     {condition: service_completed_successfully}
+      card-center: {condition: service_started}
+    environment:
+      CARDPAYMENT_LOG_DEV: "true"
+      CARDPAYMENT_ENV: "dev"
+      CARDPAYMENT_SERVER_GRPC_PORT: "9444"
+      # 调 card-center 走容器内网络，dev 模式 mTLS 不启用（auto-degrade）
+      CARDPAYMENT_CARD_CENTER_ENDPOINT: "card-center:9443"
+      # 网络（卡组织）：dev 全部走 mock 模式，按 BIN 模拟 decline
+      CARDPAYMENT_NETWORK_VISA_ENDPOINT: ""        # 空 → mock
+      CARDPAYMENT_NETWORK_MASTERCARD_ENDPOINT: ""
+      CARDPAYMENT_NETWORK_JCB_ENDPOINT: ""
+      CARDPAYMENT_NETWORK_AMEX_ENDPOINT: ""
+      CARDPAYMENT_NETWORK_UNIONPAY_ENDPOINT: ""
+      # DB DSN 复用 shared-*
+      CARDPAYMENT_DATABASE_META_DSN: "root:password@tcp(shared-meta:3306)/card_payment_meta?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_0_DSN: "root:password@tcp(shared-shard-0:3306)/card_payment_db_0?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_1_DSN: "root:password@tcp(shared-shard-1:3306)/card_payment_db_1?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_2_DSN: "root:password@tcp(shared-shard-2:3306)/card_payment_db_2?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_3_DSN: "root:password@tcp(shared-shard-3:3306)/card_payment_db_3?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_4_DSN: "root:password@tcp(shared-shard-4:3306)/card_payment_db_4?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_5_DSN: "root:password@tcp(shared-shard-5:3306)/card_payment_db_5?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_6_DSN: "root:password@tcp(shared-shard-6:3306)/card_payment_db_6?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_7_DSN: "root:password@tcp(shared-shard-7:3306)/card_payment_db_7?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_8_DSN: "root:password@tcp(shared-shard-8:3306)/card_payment_db_8?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_9_DSN: "root:password@tcp(shared-shard-9:3306)/card_payment_db_9?charset=utf8mb4&parseTime=True&loc=Local"
+    ports: ["9444:9444"]
 
   user-merchant-core:
     # 优先用本地兄弟仓覆盖 Dockerfile 里的 placeholder stage；找不到才 git clone。

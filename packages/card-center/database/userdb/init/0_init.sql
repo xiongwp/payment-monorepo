@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_00` (
     `token_hash`   CHAR(64)     NOT NULL,
     `pi_id`        VARCHAR(64)  NOT NULL,
     `caller`       VARCHAR(64)  NOT NULL,             -- 调 Detokenize 的服务名（白名单 = "card-payment"）
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,         -- Detokenize 成功后异步反写；取证 / 客服查 PI 用
+    `network`      VARCHAR(16)  DEFAULT NULL,
     `used_at`      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `expires_at`   DATETIME(3)  NOT NULL,             -- = token 内嵌 exp_ts
     `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -93,6 +95,8 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_01` (
     `token_hash`   CHAR(64)     NOT NULL,
     `pi_id`        VARCHAR(64)  NOT NULL,
     `caller`       VARCHAR(64)  NOT NULL,             -- 调 Detokenize 的服务名（白名单 = "card-payment"）
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,         -- Detokenize 成功后异步反写；取证 / 客服查 PI 用
+    `network`      VARCHAR(16)  DEFAULT NULL,
     `used_at`      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `expires_at`   DATETIME(3)  NOT NULL,             -- = token 内嵌 exp_ts
     `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -143,6 +147,8 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_02` (
     `token_hash`   CHAR(64)     NOT NULL,
     `pi_id`        VARCHAR(64)  NOT NULL,
     `caller`       VARCHAR(64)  NOT NULL,             -- 调 Detokenize 的服务名（白名单 = "card-payment"）
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,         -- Detokenize 成功后异步反写；取证 / 客服查 PI 用
+    `network`      VARCHAR(16)  DEFAULT NULL,
     `used_at`      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `expires_at`   DATETIME(3)  NOT NULL,             -- = token 内嵌 exp_ts
     `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -193,6 +199,8 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_03` (
     `token_hash`   CHAR(64)     NOT NULL,
     `pi_id`        VARCHAR(64)  NOT NULL,
     `caller`       VARCHAR(64)  NOT NULL,             -- 调 Detokenize 的服务名（白名单 = "card-payment"）
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,         -- Detokenize 成功后异步反写；取证 / 客服查 PI 用
+    `network`      VARCHAR(16)  DEFAULT NULL,
     `used_at`      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `expires_at`   DATETIME(3)  NOT NULL,             -- = token 内嵌 exp_ts
     `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -243,6 +251,8 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_04` (
     `token_hash`   CHAR(64)     NOT NULL,
     `pi_id`        VARCHAR(64)  NOT NULL,
     `caller`       VARCHAR(64)  NOT NULL,             -- 调 Detokenize 的服务名（白名单 = "card-payment"）
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,         -- Detokenize 成功后异步反写；取证 / 客服查 PI 用
+    `network`      VARCHAR(16)  DEFAULT NULL,
     `used_at`      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `expires_at`   DATETIME(3)  NOT NULL,             -- = token 内嵌 exp_ts
     `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -293,6 +303,8 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_05` (
     `token_hash`   CHAR(64)     NOT NULL,
     `pi_id`        VARCHAR(64)  NOT NULL,
     `caller`       VARCHAR(64)  NOT NULL,             -- 调 Detokenize 的服务名（白名单 = "card-payment"）
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,         -- Detokenize 成功后异步反写；取证 / 客服查 PI 用
+    `network`      VARCHAR(16)  DEFAULT NULL,
     `used_at`      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `expires_at`   DATETIME(3)  NOT NULL,             -- = token 内嵌 exp_ts
     `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -343,6 +355,8 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_06` (
     `token_hash`   CHAR(64)     NOT NULL,
     `pi_id`        VARCHAR(64)  NOT NULL,
     `caller`       VARCHAR(64)  NOT NULL,             -- 调 Detokenize 的服务名（白名单 = "card-payment"）
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,         -- Detokenize 成功后异步反写；取证 / 客服查 PI 用
+    `network`      VARCHAR(16)  DEFAULT NULL,
     `used_at`      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `expires_at`   DATETIME(3)  NOT NULL,             -- = token 内嵌 exp_ts
     `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -393,6 +407,8 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_07` (
     `token_hash`   CHAR(64)     NOT NULL,
     `pi_id`        VARCHAR(64)  NOT NULL,
     `caller`       VARCHAR(64)  NOT NULL,             -- 调 Detokenize 的服务名（白名单 = "card-payment"）
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,         -- Detokenize 成功后异步反写；取证 / 客服查 PI 用
+    `network`      VARCHAR(16)  DEFAULT NULL,
     `used_at`      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `expires_at`   DATETIME(3)  NOT NULL,             -- = token 内嵌 exp_ts
     `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -443,6 +459,8 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_08` (
     `token_hash`   CHAR(64)     NOT NULL,
     `pi_id`        VARCHAR(64)  NOT NULL,
     `caller`       VARCHAR(64)  NOT NULL,             -- 调 Detokenize 的服务名（白名单 = "card-payment"）
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,         -- Detokenize 成功后异步反写；取证 / 客服查 PI 用
+    `network`      VARCHAR(16)  DEFAULT NULL,
     `used_at`      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `expires_at`   DATETIME(3)  NOT NULL,             -- = token 内嵌 exp_ts
     `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -493,6 +511,8 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_09` (
     `token_hash`   CHAR(64)     NOT NULL,
     `pi_id`        VARCHAR(64)  NOT NULL,
     `caller`       VARCHAR(64)  NOT NULL,             -- 调 Detokenize 的服务名（白名单 = "card-payment"）
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,         -- Detokenize 成功后异步反写；取证 / 客服查 PI 用
+    `network`      VARCHAR(16)  DEFAULT NULL,
     `used_at`      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `expires_at`   DATETIME(3)  NOT NULL,             -- = token 内嵌 exp_ts
     `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

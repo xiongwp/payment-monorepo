@@ -18,13 +18,17 @@ package usermerchant.v1;
 
 option go_package = "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1;usermerchantv1";
 
-// ─── public-facing：api-gateway / SDK 走这条 ────────────────────────────────
+// ─── public-facing：api-gateway 走这条 ──────────────────────────────────────
 //
-// 注意：AddCard 仍走 mTLS gRPC（不是 HTTPS REST）；api-gateway 端 cards.go 内部
-// 拨同一 user-merchant-core 连接调本 RPC。生产路径推荐前端 SDK 直连 card-center
-// HTTPS endpoint 完全绕过 api-gateway / user-merchant-core，scope 缩到 SAQ-A。
+// PCI 严格纪律：本服务**永远不接受 PAN**。前端流程是：
+//   1. 浏览器 fetch HTTPS POST 到 card-center.tokenize（PAN 在此跳）
+//   2. 浏览器拿到 stored_token + masked_pan + network 后，再 POST 到 api-gateway
+//   3. api-gateway 调本 service.AttachCard（**只有 stored_token**，没有 PAN）
+//   4. 本 service 把 stored_token + 元数据持久化到 user_card 表
+//
+// 这样 api-gateway / user-merchant-core 进程内永远不见 PAN，PCI scope = SAQ-A。
 service UserCardService {
-  rpc AddCard       (AddCardRequest)       returns (AddCardResponse);
+  rpc AttachCard    (AttachCardRequest)    returns (AttachCardResponse);
   rpc ListCards     (ListCardsRequest)     returns (ListCardsResponse);
   rpc DeleteCard    (DeleteCardRequest)    returns (DeleteCardResponse);
   rpc SetDefaultCard(SetDefaultCardRequest) returns (SetDefaultCardResponse);
@@ -54,22 +58,26 @@ message CardInfo {
   string status      = 8;  // active / deleted / expired
 }
 
-message AddCardRequest {
-  // user_id 必填；客户端拿不到 user_id，由 api-gateway 从 jwt 解析后塞进来。
-  int64  user_id     = 1;
-  // PAN：13-19 位卡号。**仅在请求 wire 上出现一次**，server 收到立即调
-  // card-center.Tokenize，换成 stored_token 后存表，PAN 不持久化、不打日志。
-  string pan         = 2;
-  int32  exp_month   = 3;
-  int32  exp_year    = 4;
-  // CVV 仅用于 Tokenize 试探（card-center 内部 BIN 校验 + 网络校验），
-  // **不存表**，不会出现在 stored_token 里。
-  string cvv         = 5;
-  string holder_name = 6;
-  bool   set_default = 7;
-  string trace_id    = 8;
+// AttachCardRequest **永远不含 PAN/CVV**。
+//
+// 浏览器先 HTTPS 调 card-center.tokenize 拿 stored_token，再走 api-gateway 把
+// 这条记录持久化进 user_card 表。本 RPC 只接 stored_token 这种已经脱敏的 ref。
+message AttachCardRequest {
+  // user_id 必填；api-gateway 从 jwt 解析后塞进来，client 不可伪造。
+  int64  user_id      = 1;
+  // stored_token：card-center 颁发的长期 token（KMS-encrypted blob，tok_card_*）。
+  // 用户后续支付时 order-core 会拿 user_id + user_card_id 反查这个 token。
+  string stored_token = 2;
+  // masked_pan：BIN+last4，仅展示用，不能反推 PAN
+  string masked_pan   = 3;
+  string network      = 4;  // visa / mastercard / ...
+  int32  exp_month    = 5;
+  int32  exp_year     = 6;
+  string holder_name  = 7;
+  bool   set_default  = 8;
+  string trace_id     = 9;
 }
-message AddCardResponse {
+message AttachCardResponse {
   int64  user_card_id = 1;
   string masked_pan   = 2;
   string network      = 3;
