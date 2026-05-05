@@ -114,6 +114,7 @@ func loadConfig() (*viper.Viper, error) {
 	// AutomaticEnv 仅自动绑定已在 yaml 出现的 key；BindEnv 兜底保证
 	// RISK_REGISTRY_ENDPOINTS 能被 GetStringSlice("registry.endpoints") 读到。
 	_ = v.BindEnv("registry.endpoints")
+	_ = v.BindEnv("env")
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")
 	v.AddConfigPath("./config")
@@ -124,6 +125,9 @@ func loadConfig() (*viper.Viper, error) {
 		if !errors.As(err, &notFound) {
 			return nil, err
 		}
+	}
+	if err := assertProdSafety(v); err != nil {
+		return nil, err
 	}
 	// rules-recipes.yaml 是预置规则配方包（注册反爆破 / 拆单 / 设备指纹 / DSL 等
 	// 30+ 条）。MergeInConfig 会把它的 `rules:` 列表合并到 v 里；冲突时 viper 用
@@ -156,6 +160,32 @@ func loadConfig() (*viper.Viper, error) {
 				"only base rules from config.yaml will be loaded")
 	}
 	return v, nil
+}
+
+// assertProdSafety risk-manage prod 校验：
+//   - auth.allow_unauthenticated 必须 false（决策服务无鉴权 = 任何人能拉黑）
+//   - 不允许全部规则 enabled=false（等于风控空跑）
+func assertProdSafety(v *viper.Viper) error {
+	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+	if env != "prod" && env != "production" {
+		return nil
+	}
+	if v.GetBool("auth.allow_unauthenticated") {
+		return fmt.Errorf("PROD-SAFETY: risk-manage auth.allow_unauthenticated=true is forbidden in env=prod")
+	}
+	rules, _ := v.Get("rules").([]any)
+	enabledCount := 0
+	for _, r := range rules {
+		if rm, ok := r.(map[string]any); ok {
+			if e, ok := rm["enabled"].(bool); !ok || e {
+				enabledCount++
+			}
+		}
+	}
+	if enabledCount == 0 {
+		return fmt.Errorf("PROD-SAFETY: risk-manage 0 rules enabled in env=prod (risk control would be a no-op)")
+	}
+	return nil
 }
 
 // mergeRulesByID 按 id 合并两组规则，base 同 id 优先；recipe 里没在 base 出现的

@@ -147,6 +147,20 @@ var AcctOutboxTickInterval = prometheus.NewGauge(prometheus.GaugeOpts{
 	Help: "Current adaptive poll interval of accounting outbox worker",
 })
 
+// AcctOutboxPendingGauge 当前 pending 状态的 outbox 行数（积压量）。
+// 每个 Tick 后由 worker 更新；持续上涨说明下游 accounting-system 处理不过来。
+var AcctOutboxPendingGauge = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "order_acct_outbox_pending_count",
+	Help: "Current pending accounting outbox rows (lag indicator)",
+})
+
+// AcctOutboxOldestPendingAgeSeconds 当前 pending 队列里最老的那条的年龄（秒）。
+// 比 pending_count 更直接反映 lag。SLO：P99 < 30s；P0 告警：> 5min。
+var AcctOutboxOldestPendingAgeSeconds = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "order_acct_outbox_oldest_pending_age_seconds",
+	Help: "Age (seconds) of the oldest pending accounting outbox row",
+})
+
 // ─── DB 连接池 ────────────────────────────────────────────────────────────────
 //
 // 由 repo.Manager 在启动期 spawn 一个 goroutine 周期采样 sql.DB.Stats() 写入。
@@ -225,6 +239,8 @@ func Register() {
 		AcctOutboxProcessTotal,
 		AcctOutboxBatchSize,
 		AcctOutboxTickInterval,
+		AcctOutboxPendingGauge,
+		AcctOutboxOldestPendingAgeSeconds,
 		DBPoolMaxOpen,
 		DBPoolOpen,
 		DBPoolInUse,

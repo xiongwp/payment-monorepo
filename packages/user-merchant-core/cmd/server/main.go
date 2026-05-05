@@ -91,7 +91,7 @@ func loadConfig() (*viper.Viper, error) {
 	// 在 base config.yaml 没列的 key 也能被 USERMERCHANTCORE_<KEY> env 读到。
 	for _, k := range []string{
 		"risk.endpoint", "accounting.endpoint", "kms.endpoint",
-		"registry.endpoints",
+		"registry.endpoints", "env",
 	} {
 		_ = v.BindEnv(k)
 	}
@@ -118,7 +118,34 @@ func loadConfig() (*viper.Viper, error) {
 	); err != nil {
 		return nil, err
 	}
+	if err := assertProdSafety(v); err != nil {
+		return nil, err
+	}
 	return v, nil
+}
+
+// assertProdSafety env=prod 下的 fail-fast 安全校验。
+//
+// 必须满足：auth.allow_unauthenticated=false + kms.endpoint 配置 + accounting.endpoint 配置。
+func assertProdSafety(v *viper.Viper) error {
+	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+	if env != "prod" && env != "production" {
+		return nil
+	}
+	if v.GetBool("auth.allow_unauthenticated") {
+		return fmt.Errorf("PROD-SAFETY: auth.allow_unauthenticated=true is forbidden in env=prod")
+	}
+	if strings.TrimSpace(v.GetString("kms.endpoint")) == "" {
+		return fmt.Errorf("PROD-SAFETY: kms.endpoint must be configured in env=prod")
+	}
+	if strings.TrimSpace(v.GetString("accounting.endpoint")) == "" && len(v.GetStringSlice("registry.endpoints")) == 0 {
+		return fmt.Errorf("PROD-SAFETY: accounting.endpoint must be configured in env=prod")
+	}
+	// rate limit：per-merchant default rps 必须配
+	if v.GetFloat64("rate_limit.per_merchant.default_rps") <= 0 {
+		return fmt.Errorf("PROD-SAFETY: rate_limit.per_merchant.default_rps must be > 0 in env=prod (recommend 100)")
+	}
+	return nil
 }
 
 func newLogger() (*zap.Logger, error) {

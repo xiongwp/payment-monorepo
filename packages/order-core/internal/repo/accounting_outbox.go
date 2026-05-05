@@ -51,6 +51,10 @@ type AccountingOutboxRepository interface {
 	PurgeSentBefore(ctx context.Context, before time.Time, limit int) (int64, error)
 	// CountDeadLetters 统计 status=failed 的行数（跨分片）。供 metric 告警。
 	CountDeadLetters(ctx context.Context) (int64, error)
+	// StatsPending 跨分片统计 pending 行数 + 最老一条的 created 时间。
+	// 用于 lag 监控指标：pending count 反映积压量，oldest age 反映滞留时长。
+	// pending=0 时返回 (0, time.Time{}, nil)。
+	StatsPending(ctx context.Context) (count int64, oldest time.Time, err error)
 	// MarkRetry 失败但可重试：attempts++ + next_attempt_at + last_error + 清 claim_token。
 	// 仅在 row.ClaimToken 仍持有时生效。
 	MarkRetry(ctx context.Context, row *domain.AccountingOutbox, nextAt time.Time, errMsg string) error
@@ -373,4 +377,48 @@ func (r *accountingOutboxRepo) CountDeadLetters(ctx context.Context) (int64, err
 		}
 	}
 	return total, nil
+}
+
+// StatsPending 跨所有分片统计 pending 行数 + 最老一条的 created。
+//
+// 实现：每张分片表跑两条 SQL（COUNT + MIN(created)），跨 100 表合计。
+// 对每张表 due rows（next_attempt_at <= now or NULL）才算 lag —— 未到时间的
+// 行不算积压。pending 总数 = 所有 due 行的总和。
+//
+// 跨 100 张表的 COUNT 比较贵，但每个 worker tick（500ms-2s）只跑一次，
+// 跟 sweeper / cleanup 同量级，不影响 hot path。
+func (r *accountingOutboxRepo) StatsPending(ctx context.Context) (int64, time.Time, error) {
+	var total int64
+	var oldest time.Time
+	now := time.Now()
+	for i := 0; i < r.router.DBCount(); i++ {
+		db, err := r.mgr.GetShard(i)
+		if err != nil {
+			return total, oldest, err
+		}
+		for j := 0; j < r.router.TablePerDB(); j++ {
+			tbl := r.router.TableName(ctx, accountingOutboxTable, i*r.router.TablePerDB()+j)
+			var cnt int64
+			q := db.WithContext(ctx).Table(tbl).
+				Where("status = ?", domain.AccountingOutboxPending).
+				Where("next_attempt_at IS NULL OR next_attempt_at <= ?", now)
+			if err := q.Count(&cnt).Error; err != nil {
+				return total, oldest, fmt.Errorf("stats pending count on %s: %w", tbl, err)
+			}
+			if cnt == 0 {
+				continue
+			}
+			total += cnt
+			var ts time.Time
+			if err := db.WithContext(ctx).Table(tbl).
+				Where("status = ?", domain.AccountingOutboxPending).
+				Where("next_attempt_at IS NULL OR next_attempt_at <= ?", now).
+				Select("MIN(created)").Row().Scan(&ts); err == nil && !ts.IsZero() {
+				if oldest.IsZero() || ts.Before(oldest) {
+					oldest = ts
+				}
+			}
+		}
+	}
+	return total, oldest, nil
 }

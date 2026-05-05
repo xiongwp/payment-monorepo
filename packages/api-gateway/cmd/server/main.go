@@ -66,7 +66,7 @@ func loadConfig() (*viper.Viper, error) {
 	// registry.endpoints 能被 APIGW_<KEY> env 读到。
 	for _, k := range []string{
 		"user_merchant.endpoint", "risk.endpoint", "kms.endpoint",
-		"registry.endpoints",
+		"registry.endpoints", "env",
 	} {
 		_ = v.BindEnv(k)
 	}
@@ -81,7 +81,40 @@ func loadConfig() (*viper.Viper, error) {
 			return nil, err
 		}
 	}
+	if err := assertProdSafety(v); err != nil {
+		return nil, err
+	}
 	return v, nil
+}
+
+// assertProdSafety env=prod 下的 fail-fast 安全校验。
+//
+// api-gateway 是公网边界，要求最严：
+//  1. admin.token 必须配（管理面接口必须鉴权）
+//  2. 不允许 X-Shadow header 不限来源（trusted_cidrs 必填）
+//  3. user_merchant.endpoint 必须配
+//  4. tls 必须开（外部入口走 HTTPS）
+func assertProdSafety(v *viper.Viper) error {
+	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+	if env != "prod" && env != "production" {
+		return nil
+	}
+	if strings.TrimSpace(v.GetString("admin.token")) == "" && os.Getenv("ADMIN_HTTP_TOKEN") == "" {
+		return fmt.Errorf("PROD-SAFETY: admin.token (or ADMIN_HTTP_TOKEN env) must be set in env=prod")
+	}
+	if strings.TrimSpace(v.GetString("user_merchant.endpoint")) == "" && len(v.GetStringSlice("registry.endpoints")) == 0 {
+		return fmt.Errorf("PROD-SAFETY: user_merchant.endpoint must be configured in env=prod")
+	}
+	// shadow header 安全：必须配 trusted_cidrs 或 trusted_header，否则任何外部
+	// IP 都能伪造压测流量进生产。
+	if len(v.GetStringSlice("shadow.trusted_cidrs")) == 0 && strings.TrimSpace(v.GetString("shadow.trusted_header")) == "" {
+		return fmt.Errorf("PROD-SAFETY: shadow.trusted_cidrs or shadow.trusted_header must be configured in env=prod (otherwise any client can inject X-Shadow)")
+	}
+	// rate limit：公网入口必须配 per-IP 限流
+	if v.GetFloat64("rate_limit.per_ip.rps") <= 0 {
+		return fmt.Errorf("PROD-SAFETY: rate_limit.per_ip.rps must be > 0 in env=prod (recommend 50, public internet boundary)")
+	}
+	return nil
 }
 
 func newLogger() (*zap.Logger, error) {

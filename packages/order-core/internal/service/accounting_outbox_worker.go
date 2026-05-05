@@ -193,6 +193,21 @@ func (w *AccountingOutboxWorker) perTableClaimLimit() int {
 // 多副本安全：通过 ClaimBatch 的原子 UPDATE，同一行只能被一个 worker claim；
 // 即使两个 pod 同时进入 Tick 也不会重复处理。
 func (w *AccountingOutboxWorker) Tick(ctx context.Context) int {
+	// 先采集 pending stats 喂 lag metric（COUNT + MIN(created) 跨 100 张表）。
+	// 失败不阻断正常 claim 流程；监控可以接受偶尔丢点。
+	if cnt, oldest, err := w.outboxRepo.StatsPending(ctx); err == nil {
+		metrics.AcctOutboxPendingGauge.Set(float64(cnt))
+		if oldest.IsZero() {
+			metrics.AcctOutboxOldestPendingAgeSeconds.Set(0)
+		} else {
+			age := time.Since(oldest).Seconds()
+			if age < 0 {
+				age = 0
+			}
+			metrics.AcctOutboxOldestPendingAgeSeconds.Set(age)
+		}
+	}
+
 	claimToken, claimed, err := w.outboxRepo.ClaimBatch(ctx, time.Now(), w.perTableClaimLimit(), outboxClaimLease)
 	if err != nil {
 		w.logger.Error("claim batch accounting outbox", zap.Error(err))

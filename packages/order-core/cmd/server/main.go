@@ -109,6 +109,7 @@ func loadConfig() (*viper.Viper, error) {
 		"risk.endpoint",
 		"kms.endpoint",
 		"registry.endpoints",
+		"env",
 	} {
 		_ = v.BindEnv(k)
 	}
@@ -123,7 +124,30 @@ func loadConfig() (*viper.Viper, error) {
 			return nil, err
 		}
 	}
+	if err := assertProdSafety(v); err != nil {
+		return nil, err
+	}
 	return v, nil
+}
+
+// assertProdSafety env=prod 下的 fail-fast 安全校验。
+//
+// 必须满足：auth.allow_unauthenticated=false + payment_core / accounting endpoint 配置。
+func assertProdSafety(v *viper.Viper) error {
+	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+	if env != "prod" && env != "production" {
+		return nil
+	}
+	if v.GetBool("auth.allow_unauthenticated") {
+		return fmt.Errorf("PROD-SAFETY: auth.allow_unauthenticated=true is forbidden in env=prod")
+	}
+	if strings.TrimSpace(v.GetString("payment_core.endpoint")) == "" && len(v.GetStringSlice("registry.endpoints")) == 0 {
+		return fmt.Errorf("PROD-SAFETY: payment_core.endpoint must be configured in env=prod")
+	}
+	if strings.TrimSpace(v.GetString("accounting.endpoint")) == "" && len(v.GetStringSlice("registry.endpoints")) == 0 {
+		return fmt.Errorf("PROD-SAFETY: accounting.endpoint must be configured in env=prod")
+	}
+	return nil
 }
 
 func newLogger() (*zap.Logger, error) {

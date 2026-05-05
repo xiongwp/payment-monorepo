@@ -178,9 +178,17 @@ func (w *OutboxWorker) processBatchReturning(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("find redis_done: %w", err)
 	}
 	metrics.OutboxPendingGauge.Set(float64(len(records)))
+	// 更新 oldest pending age：拿队列中 created_at 最早的算 lag，没积压时归零。
+	// FindByStatus 默认按 created_at ASC，第一条就是最老的。
 	if len(records) == 0 {
+		metrics.OutboxOldestPendingAgeSeconds.Set(0)
 		return 0, nil
 	}
+	oldestAge := time.Since(records[0].CreatedAt).Seconds()
+	if oldestAge < 0 {
+		oldestAge = 0
+	}
+	metrics.OutboxOldestPendingAgeSeconds.Set(oldestAge)
 	if err := w.processRecords(ctx, records); err != nil {
 		return len(records), err
 	}

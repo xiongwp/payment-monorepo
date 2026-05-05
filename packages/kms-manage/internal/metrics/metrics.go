@@ -30,6 +30,22 @@ var GRPCRequestDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 	Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
 }, []string{"method"})
 
+// ActiveKeyAgeSeconds 当前 ACTIVE key 创建至今的秒数。
+//
+// 监控用途：超过 90 天未 rotate（>= 7,776,000s）触发 P1 告警。
+// 90 天阈值参考 PCI-DSS 3.6.4（密钥轮换周期不超过 cryptoperiod）。
+var ActiveKeyAgeSeconds = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "kms_active_key_age_seconds",
+	Help: "Age of the currently ACTIVE master key (seconds since CreatedAt)",
+})
+
+// LoadedKeyCount keystore 中加载的 master key 数量。
+// = 1 表示从未轮换过；> 1 表示有历史 key 在线（仍可解密旧密文）。
+var LoadedKeyCount = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "kms_loaded_key_count",
+	Help: "Number of master keys currently loaded in keystore",
+})
+
 var once sync.Once
 
 // Register 注册所有指标；幂等，多次调用没副作用（测试里需要）。
@@ -39,6 +55,8 @@ func Register() {
 			KMSOpTotal,
 			GRPCRequestTotal,
 			GRPCRequestDuration,
+			ActiveKeyAgeSeconds,
+			LoadedKeyCount,
 		)
 	})
 }

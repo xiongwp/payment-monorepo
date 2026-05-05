@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 	"github.com/xiongwp/payment-util/trace"
@@ -52,6 +53,7 @@ func loadConfig() (*viper.Viper, error) {
 	v.SetEnvPrefix("KMS")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+	_ = v.BindEnv("env")
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")
 	v.AddConfigPath("./config")
@@ -63,7 +65,31 @@ func loadConfig() (*viper.Viper, error) {
 			return nil, err
 		}
 	}
+	if err := assertProdSafety(v); err != nil {
+		return nil, err
+	}
 	return v, nil
+}
+
+// assertProdSafety KMS 是密钥服务，prod 安全要求最严：
+//  1. auth.allow_unauthenticated 必须 false（任何人能解密 = 全平台密钥泄漏）
+//  2. auth.tokens 必须配（mesh 内服务凭 token 调本服务）
+//  3. keystore.dir 必须明确（默认 /var/lib/kms-manage/keys 但生产应显式声明）
+func assertProdSafety(v *viper.Viper) error {
+	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+	if env != "prod" && env != "production" {
+		return nil
+	}
+	if v.GetBool("auth.allow_unauthenticated") {
+		return fmt.Errorf("PROD-SAFETY: KMS auth.allow_unauthenticated=true is forbidden in env=prod (anyone could decrypt all merchant secrets)")
+	}
+	if len(v.GetStringSlice("auth.tokens")) == 0 {
+		return fmt.Errorf("PROD-SAFETY: KMS auth.tokens must be configured in env=prod (mesh services authenticate with tokens)")
+	}
+	if strings.TrimSpace(v.GetString("keystore.dir")) == "" {
+		return fmt.Errorf("PROD-SAFETY: KMS keystore.dir must be explicitly configured in env=prod (don't rely on default path)")
+	}
+	return nil
 }
 
 func newLogger() (*zap.Logger, error) {
@@ -82,11 +108,31 @@ func newKeystore(v *viper.Viper, logger *zap.Logger) (*keystore.Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	logger.Info("keystore loaded",
-		zap.String("dir", dir),
-		zap.String("active_key", s.ActiveKeyID()),
-		zap.Int("total_keys", len(s.List())),
-	)
+	// 暴露给 Prometheus：active key 年龄 + loaded key 总数。
+	// 监控告警阈值参考 PCI-DSS 3.6.4：超过 90 天未轮换报 P1。
+	metrics.LoadedKeyCount.Set(float64(len(s.List())))
+	if meta, ok := s.Meta(s.ActiveKeyID()); ok {
+		age := time.Since(meta.CreatedAt)
+		metrics.ActiveKeyAgeSeconds.Set(age.Seconds())
+		logger.Info("keystore loaded",
+			zap.String("dir", dir),
+			zap.String("active_key", s.ActiveKeyID()),
+			zap.Int("total_keys", len(s.List())),
+			zap.Duration("active_key_age", age),
+			zap.Time("active_key_created_at", meta.CreatedAt),
+		)
+		// PCI-DSS 90 天: 7,776,000 秒。超过给 WARN 提醒运维。
+		if age > 90*24*time.Hour {
+			logger.Warn("active master key is older than 90 days; consider rotating (PCI-DSS 3.6.4)",
+				zap.Duration("age", age))
+		}
+	} else {
+		logger.Info("keystore loaded",
+			zap.String("dir", dir),
+			zap.String("active_key", s.ActiveKeyID()),
+			zap.Int("total_keys", len(s.List())),
+		)
+	}
 	return s, nil
 }
 

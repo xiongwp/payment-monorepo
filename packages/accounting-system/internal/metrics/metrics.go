@@ -89,6 +89,18 @@ var OutboxPendingGauge = prometheus.NewGauge(
 	},
 )
 
+// OutboxOldestPendingAgeSeconds 当前积压队列里最老的 outbox 记录的年龄（秒）。
+// 比 pending_records 更直接反映 lag：积压 1 万但都是 1s 内的没事；积压 10 但
+// 最老的 5 分钟没动 = MySQL 写入卡住，告警。
+//
+// 推荐 SLO：P99 < 30s；P0 告警阈值 > 5min。
+var OutboxOldestPendingAgeSeconds = prometheus.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "accounting_outbox_oldest_pending_age_seconds",
+		Help: "Age (seconds) of the oldest REDIS_DONE outbox record waiting for MySQL write",
+	},
+)
+
 // OutboxMySQLWriteDuration outbox 单条持久化到 MySQL 的耗时直方图
 var OutboxMySQLWriteDuration = prometheus.NewHistogram(
 	prometheus.HistogramOpts{
@@ -350,6 +362,7 @@ func Register() {
 		OutboxProcessedTotal,
 		OutboxFailedTotal,
 		OutboxPendingGauge,
+		OutboxOldestPendingAgeSeconds,
 		OutboxMySQLWriteDuration,
 		RecoveryTotal,
 		RecoveryFailuresTotal,

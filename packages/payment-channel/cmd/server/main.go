@@ -89,6 +89,7 @@ func loadConfig() (*viper.Viper, error) {
 	// AutomaticEnv 仅自动绑定已在 yaml 出现的 key；BindEnv 兜底保证
 	// PAYCHAN_REGISTRY_ENDPOINTS 能被 GetStringSlice("registry.endpoints") 读到。
 	_ = v.BindEnv("registry.endpoints")
+	_ = v.BindEnv("env")
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")
 	v.AddConfigPath("./config")
@@ -100,7 +101,47 @@ func loadConfig() (*viper.Viper, error) {
 			return nil, err
 		}
 	}
+	if err := assertProdSafety(v); err != nil {
+		return nil, err
+	}
 	return v, nil
+}
+
+// assertProdSafety 在 env=prod 下做几条 fail-fast 校验：
+//
+//  1. auth.allow_unauthenticated 必须 false（dev / staging 才允许 true）
+//  2. 任何 channel.*.base_url 不允许指向 mockserver（生产必须接真渠道）
+//  3. mockserver 自身的 image 不允许在 prod 启动（在 deploy override 一层禁掉）
+//
+// 任一不满足直接返回错误，let viper 的调用方上抛 main fatal exit。
+func assertProdSafety(v *viper.Viper) error {
+	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+	if env != "prod" && env != "production" {
+		return nil // 非生产环境跳过这套校验
+	}
+	if v.GetBool("auth.allow_unauthenticated") {
+		return fmt.Errorf("PROD-SAFETY: auth.allow_unauthenticated=true is forbidden in env=prod (set tokens or mTLS instead)")
+	}
+	channels := v.GetStringMap("channel")
+	for name, raw := range channels {
+		cfg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		baseURL, _ := cfg["base_url"].(string)
+		if baseURL == "" {
+			continue
+		}
+		bl := strings.ToLower(baseURL)
+		if strings.Contains(bl, "mockserver") || strings.Contains(bl, "127.0.0.1") || strings.Contains(bl, "localhost") {
+			return fmt.Errorf("PROD-SAFETY: channel.%s.base_url=%q points to mock/local in env=prod (must use real channel endpoint)", name, baseURL)
+		}
+	}
+	// rate limit：prod 必须显式配
+	if v.GetFloat64("rate_limit.rps") <= 0 {
+		return fmt.Errorf("PROD-SAFETY: rate_limit.rps must be > 0 in env=prod (recommend 2000)")
+	}
+	return nil
 }
 
 func newLogger() (*zap.Logger, error) {

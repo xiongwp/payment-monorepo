@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -138,7 +139,39 @@ func NewConfig() (*viper.Viper, error) {
 	v.AddConfigPath("./config")
 	v.AddConfigPath(".")
 	v.AutomaticEnv()
-	return v, v.ReadInConfig()
+	_ = v.BindEnv("env")
+	if err := v.ReadInConfig(); err != nil {
+		return nil, err
+	}
+	if err := assertProdSafety(v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// assertProdSafety accounting-system prod 校验：
+//   - auth.allow_unauthenticated 必须 false（账务服务无鉴权 = 任何人能改余额）
+//   - 必须配 mTLS 或 token（mesh 内服务调本服务必须鉴权）
+//   - 数据库 DSN 不能含弱密码（password / 123456 等明显默认值）
+func assertProdSafety(v *viper.Viper) error {
+	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+	if env != "prod" && env != "production" {
+		return nil
+	}
+	if v.GetBool("auth.allow_unauthenticated") {
+		return fmt.Errorf("PROD-SAFETY: accounting-system auth.allow_unauthenticated=true is forbidden in env=prod (anyone could mutate balances)")
+	}
+	// 弱密码检查：DSN 含 :password@ 或 :123456@ 等明显默认值 → 拒绝
+	weakPatterns := []string{":password@", ":123456@", ":root@", ":admin@", ":test@"}
+	for _, dsnKey := range []string{"database.meta.dsn"} {
+		dsn := strings.ToLower(v.GetString(dsnKey))
+		for _, p := range weakPatterns {
+			if strings.Contains(dsn, p) {
+				return fmt.Errorf("PROD-SAFETY: %s contains weak credential pattern %q in env=prod", dsnKey, p)
+			}
+		}
+	}
+	return nil
 }
 
 func NewDatabaseManager(v *viper.Viper, loggers *logging.Loggers, logger *zap.Logger) (*database.Manager, error) {

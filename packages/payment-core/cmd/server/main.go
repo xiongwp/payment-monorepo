@@ -63,7 +63,7 @@ func loadConfig() (*viper.Viper, error) {
 	// 里可能没列，BindEnv 兜底确保 PAYCORE_<KEY> env 能读到。
 	for _, k := range []string{
 		"channel.endpoint", "risk.endpoint", "kms.endpoint",
-		"registry.endpoints",
+		"registry.endpoints", "env",
 	} {
 		_ = v.BindEnv(k)
 	}
@@ -78,7 +78,49 @@ func loadConfig() (*viper.Viper, error) {
 			return nil, err
 		}
 	}
+	if err := assertProdSafety(v); err != nil {
+		return nil, err
+	}
 	return v, nil
+}
+
+// assertProdSafety 在 env=prod 下做几条 fail-fast 校验：
+//
+//  1. auth.allow_unauthenticated 必须 false（dev / staging 才允许 true）
+//  2. risk.endpoint 必须配（risk-manage 不能 NoopClient 全部放行）
+//  3. risk.fail_close 必须显式 true（rpc 故障时拒绝交易，不放过高风险）
+//  4. channel.endpoint 必须配（路由层不能没下游）
+//  5. kms.endpoint 必须配（解密路径不能 passthrough）
+//
+// 任一不满足直接返错让 main fail-fast 不启动。
+func assertProdSafety(v *viper.Viper) error {
+	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+	if env != "prod" && env != "production" {
+		return nil
+	}
+	if v.GetBool("auth.allow_unauthenticated") {
+		return fmt.Errorf("PROD-SAFETY: auth.allow_unauthenticated=true is forbidden in env=prod")
+	}
+	if strings.TrimSpace(v.GetString("risk.endpoint")) == "" && len(v.GetStringSlice("registry.endpoints")) == 0 {
+		return fmt.Errorf("PROD-SAFETY: risk.endpoint must be configured in env=prod (NoopClient all-allow is fund-risk)")
+	}
+	if !v.GetBool("risk.fail_close") {
+		return fmt.Errorf("PROD-SAFETY: risk.fail_close must be true in env=prod (rpc 故障时不能默许放行)")
+	}
+	if strings.TrimSpace(v.GetString("channel.endpoint")) == "" && len(v.GetStringSlice("registry.endpoints")) == 0 {
+		return fmt.Errorf("PROD-SAFETY: channel.endpoint must be configured in env=prod")
+	}
+	if strings.TrimSpace(v.GetString("kms.endpoint")) == "" {
+		return fmt.Errorf("PROD-SAFETY: kms.endpoint must be configured in env=prod (passthrough decrypt is forbidden)")
+	}
+	// rate limit：rps=0 等于无限流量，prod 必须显式配
+	if v.GetFloat64("rate_limit.rps") <= 0 {
+		return fmt.Errorf("PROD-SAFETY: rate_limit.rps must be > 0 in env=prod (recommend 2000)")
+	}
+	if v.GetInt("rate_limit.burst") <= 0 {
+		return fmt.Errorf("PROD-SAFETY: rate_limit.burst must be > 0 in env=prod (recommend 4000)")
+	}
+	return nil
 }
 
 func newLogger() (*zap.Logger, error) {
