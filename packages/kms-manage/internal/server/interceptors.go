@@ -105,20 +105,28 @@ func redactKMS(method string, v interface{}) string {
 	return s
 }
 
-// redactJSONField 把 "key":"long..value" 截成 "key":"<len:N>"
+// redactJSONField 把 "key":"long..value" 截成 "key":"<len:N>"。
+//
+// 注意：替换后的占位串本身仍然包含 "key":"…"，所以**搜索游标必须从替换段
+// 之后开始**，否则 strings.Index 会再次命中刚生成的 redacted 段，进入无限
+// 循环吃满 CPU + 让所有 unary RPC 卡在拦截器里 → server hang。
 func redactJSONField(s, key string) string {
+	cursor := 0
 	for {
-		i := strings.Index(s, key+`:"`)
-		if i < 0 {
+		rel := strings.Index(s[cursor:], key+`:"`)
+		if rel < 0 {
 			return s
 		}
+		i := cursor + rel
 		start := i + len(key) + 2 // skip key":"
 		end := strings.Index(s[start:], `"`)
 		if end < 0 {
 			return s
 		}
 		end += start
-		s = s[:i] + key + `:"<len:` + intStr(end-start) + `>"` + s[end+1:]
+		replacement := key + `:"<len:` + intStr(end-start) + `>"`
+		s = s[:i] + replacement + s[end+1:]
+		cursor = i + len(replacement) // 下一轮从替换段之后开始
 	}
 }
 
