@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/xiongwp/card-payment/internal/processor"
+	"github.com/xiongwp/payment-util/serviceregistry"
 )
 
 type Client struct {
@@ -25,7 +26,8 @@ type Client struct {
 }
 
 type Config struct {
-	Endpoint   string
+	Endpoint          string
+	RegistryEndpoints []string // 非空走 etcd:///card-center
 	RPCTimeout time.Duration
 	ClientCert string
 	ClientKey  string
@@ -35,8 +37,8 @@ type Config struct {
 
 // New dial card-center over mTLS
 func New(cfg Config) (*Client, error) {
-	if cfg.Endpoint == "" {
-		return nil, errors.New("cardcenterclient: endpoint required")
+	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
+		return nil, errors.New("cardcenterclient: endpoint or registry_endpoints required")
 	}
 	var creds credentials.TransportCredentials
 	if cfg.Insecure {
@@ -48,7 +50,7 @@ func New(cfg Config) (*Client, error) {
 		}
 		creds = credentials.NewTLS(tc)
 	}
-	conn, err := grpc.NewClient(cfg.Endpoint, grpc.WithTransportCredentials(creds))
+	conn, err := serviceregistry.DialWithFallback(cfg.RegistryEndpoints, "card-center", cfg.Endpoint, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}

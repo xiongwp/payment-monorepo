@@ -27,7 +27,8 @@ type Client struct {
 
 // Config 客户端配置
 type Config struct {
-	Endpoint    string
+	Endpoint          string
+	RegistryEndpoints []string // 非空走 etcd:///kms-manage 服务发现
 	BearerToken string
 	RPCTimeout  time.Duration
 	// mTLS 客户端证书（card DC 内 service-to-service mutual auth）
@@ -40,8 +41,8 @@ type Config struct {
 
 // New dial kms-manage
 func New(cfg Config) (*Client, error) {
-	if cfg.Endpoint == "" {
-		return nil, errors.New("kmsclient: endpoint required")
+	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
+		return nil, errors.New("kmsclient: endpoint or registry_endpoints required")
 	}
 	var creds credentials.TransportCredentials
 	if cfg.Insecure {
@@ -53,7 +54,8 @@ func New(cfg Config) (*Client, error) {
 		}
 		creds = credentials.NewTLS(tc)
 	}
-	conn, err := grpc.NewClient(cfg.Endpoint,
+	conn, err := serviceregistry.DialWithFallback(
+		cfg.RegistryEndpoints, "kms-manage", cfg.Endpoint,
 		grpc.WithTransportCredentials(creds),
 	)
 	if err != nil {

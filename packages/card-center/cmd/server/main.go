@@ -35,6 +35,7 @@ import (
 	"github.com/xiongwp/card-center/internal/service"
 	"github.com/xiongwp/card-center/internal/sharding"
 	"github.com/xiongwp/card-center/internal/vault"
+	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/payment-util/trace"
 )
@@ -164,19 +165,40 @@ func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (
 }
 
 func newKMSClient(v *viper.Viper) (vault.KMS, error) {
+	registry := splitCSV(v.GetString("kms.registry_endpoints"))
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("kms.registry_endpoints")
+	}
 	cfg := kmsclient.Config{
-		Endpoint:    v.GetString("kms.endpoint"),
-		BearerToken: v.GetString("kms.bearer_token"),
+		Endpoint:          v.GetString("kms.endpoint"),
+		RegistryEndpoints: registry,
+		BearerToken:       v.GetString("kms.bearer_token"),
 		RPCTimeout:  v.GetDuration("kms.rpc_timeout"),
 		ClientCert:  v.GetString("kms.client_cert"),
 		ClientKey:   v.GetString("kms.client_key"),
 		ServerCA:    v.GetString("kms.server_ca"),
 		Insecure:    v.GetBool("kms.insecure"),
 	}
-	if cfg.Endpoint == "" {
-		return nil, errors.New("kms.endpoint required")
+	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
+		return nil, errors.New("kms.endpoint or kms.registry_endpoints required")
 	}
 	return kmsclient.New(cfg)
+}
+
+
+
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func newVault(kms vault.KMS) *vault.Vault { return vault.NewVault(kms, time.Now) }
@@ -297,11 +319,18 @@ func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*
 	if err != nil {
 		return nil, fmt.Errorf("user-merchant client tls: %w", err)
 	}
-	conn, err := grpc.NewClient(endpoint,
+	registry := splitCSV(v.GetString("auth.user_merchant.registry_endpoints"))
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("auth.user_merchant.registry_endpoints")
+	}
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("registry.endpoints")
+		if len(registry) == 0 {
+			registry = splitCSV(v.GetString("registry.endpoints"))
+		}
+	}
+	conn, err := serviceregistry.DialWithFallback(registry, "user-merchant-core", endpoint,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
-		}),
 	)
 	if err != nil {
 		return nil, err
