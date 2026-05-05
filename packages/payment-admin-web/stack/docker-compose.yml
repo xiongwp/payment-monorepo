@@ -812,7 +812,7 @@ services:
         kms-manage:          ../../kms-manage
         user-merchant-core:  ../../user-merchant-core
         risk-manage:         ../../risk-manage
-        order-core:          ../../order-core
+        order-core:          ./../../order-core
       secrets: [GITHUB_TOKEN]
     image: api-gateway:local
     container_name: api-gateway
@@ -871,7 +871,7 @@ services:
         risk-manage:         ../../risk-manage
         payment-channel:     ../../payment-channel
         payment-core:        ../../payment-core
-        order-core:          ../../order-core
+        order-core:          ./../../order-core
         user-merchant-core:  ../../user-merchant-core
         accounting-grpc-api: ../../accounting-grpc-api
       secrets: [GITHUB_TOKEN]
