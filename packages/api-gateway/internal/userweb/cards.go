@@ -86,6 +86,9 @@ type CreatePIReq struct {
 	Currency       string
 	Description    string
 	IdempotencyKey string
+	// MchID 商户标识；卡支付链路里用户是付款方，但 order-core 强制 mch_id 非空，
+	// 留空 → grpcPaymentClient 用 dev-merchant-001 兜底
+	MchID          string
 }
 
 type CreatePIResp struct {

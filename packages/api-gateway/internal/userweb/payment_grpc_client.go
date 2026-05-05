@@ -53,11 +53,19 @@ func (g *grpcPaymentClient) CreateAndConfirmCardPayment(ctx context.Context, in 
 	if in == nil || in.UserID == 0 || in.UserCardID == 0 {
 		return nil, fmt.Errorf("create_pi: user_id / user_card_id required")
 	}
+	// dev 默认 mch_id：用户卡支付链路里 user 是付款方，没"商户"概念，但 order-core
+	// PI 强制 mch_id 非空（用于 (mch_id, idempotency_key) 唯一约束 + 路由分片）。
+	// 给一个固定 dev 值让流程跑通；生产应该是上游 API 的真实商户身份（OAuth/API key）。
+	mchID := in.MchID
+	if mchID == "" {
+		mchID = "dev-merchant-001"
+	}
 	createResp, err := g.pi.Create(ctx, &orderv1.CreatePaymentIntentRequest{
 		Amount:              in.Amount,
 		Currency:            in.Currency,
 		Description:         in.Description,
 		IdempotencyKey:      in.IdempotencyKey,
+		MchId:               mchID,
 		UserId:              in.UserID,
 		UserCardId:          in.UserCardID,
 		PaymentMethodTypes:  []string{"card"},
