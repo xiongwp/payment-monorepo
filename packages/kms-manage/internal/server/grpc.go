@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -59,14 +60,22 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	if err != nil {
 		return err
 	}
-	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(
-		RecoverInterceptor(s.logger),
-		trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
-		LoggingInterceptor(s.logger),
-		MetricsInterceptor(),
-		RateLimitInterceptor(s.rps, s.burst),
-		AuthInterceptor(s.auth, s.logger),
-	))
+	// HardenedServerOptions 加 KeepaliveEnforcementPolicy{MinTime:5s, PermitWithoutStream:true}
+	// —— 必须挂，否则配套 client（serviceregistry.DialDirect 默认 10s/3s ping）会被
+	// grpc-go 默认 EnforcementPolicy{MinTime:5min, PermitWithoutStream:false} 当 abuse
+	// 用 GOAWAY "ENHANCE_YOUR_CALM / too_many_pings" 踢回去，导致 client 反复重连永远建不稳。
+	srvOpts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(
+			RecoverInterceptor(s.logger),
+			trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
+			LoggingInterceptor(s.logger),
+			MetricsInterceptor(),
+			RateLimitInterceptor(s.rps, s.burst),
+			AuthInterceptor(s.auth, s.logger),
+		),
+	}
+	srvOpts = append(srvOpts, serviceregistry.HardenedServerOptions()...)
+	srv := grpc.NewServer(srvOpts...)
 	kmsv1.RegisterKMSServiceServer(srv, s)
 	s.logger.Info("kms-manage grpc listening", zap.Int("port", port))
 	go func() {

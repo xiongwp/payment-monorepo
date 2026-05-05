@@ -40,13 +40,36 @@ const hardenedServiceConfig = `{
 // PermitWithoutStream=true 让空闲连接也发 ping —— card-center 这种"绑卡才
 // 调一次 KMS"的低频调用必须开，否则 keepalive 完全不生效。
 //
-// Time/Timeout 比 grpc-go 默认（无穷 / 20s）激进很多但服务端默认 minTime=5min
-// 不会拒；如果某些 server 显式配了 EnforcementPolicy.MinTime>10s，这里
-// 会被以 GOAWAY 踢；目前 monorepo 内没这种配置。
+// ⚠ 重要：grpc-go server 默认 EnforcementPolicy.MinTime=5min +
+// PermitWithoutStream=false——会把这里 10s 一次的 ping 当 abuse 用 GOAWAY
+// "ENHANCE_YOUR_CALM / too_many_pings" 踢回来。所以**所有 server 必须挂
+// HardenedServerOptions()**（或等价 EnforcementPolicy{MinTime:5s,
+// PermitWithoutStream:true}）才能配合本 client。
 var hardenedKeepalive = keepalive.ClientParameters{
 	Time:                10 * time.Second,
 	Timeout:             3 * time.Second,
 	PermitWithoutStream: true,
+}
+
+// hardenedServerKeepalive 是与 hardenedKeepalive 配套的服务端 EnforcementPolicy。
+//
+// MinTime=5s：允许客户端最快 5s 发一次 ping（client 实际 10s 一次，留一倍裕度）。
+// PermitWithoutStream=true：允许空闲 ping，否则 client 在两次 RPC 之间的 idle
+// 期发 ping 会被 server 视作 abuse 直接 GOAWAY。
+//
+// 不挂这个的 server，碰到挂了 hardenedKeepalive 的 client 会立即 GOAWAY
+// "ENHANCE_YOUR_CALM / too_many_pings"，client 反复重连永远建不稳。
+var hardenedServerKeepalive = keepalive.EnforcementPolicy{
+	MinTime:             5 * time.Second,
+	PermitWithoutStream: true,
+}
+
+// HardenedServerOptions 返回 monorepo 内所有 gRPC server 推荐的固定 ServerOption。
+// 必须 append 到 grpc.NewServer(...) 的 opts 里，才能接受本包 client 的 keepalive ping。
+func HardenedServerOptions() []grpc.ServerOption {
+	return []grpc.ServerOption{
+		grpc.KeepaliveEnforcementPolicy(hardenedServerKeepalive),
+	}
 }
 
 // hardenedOptions 返回 monorepo 内所有 grpc client 推荐的固定 dial options。
