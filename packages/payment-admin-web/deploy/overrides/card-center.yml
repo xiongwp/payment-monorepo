@@ -32,7 +32,12 @@ services:
       CARDCENTER_LOG_DEV: "true"
       CARDCENTER_ENV: "dev"
       CARDCENTER_SERVER_GRPC_PORT: "9443"
+      # 服务自注册（被 card-payment / api-gateway / BFF 调用）
+      CARDCENTER_REGISTRY_ENDPOINTS: "etcd:2379"
+      CARDCENTER_REGISTRY_SERVICE_NAME: "card-center"
+      CARDCENTER_REGISTRY_TTL: "10s"
       # KMS：联栈复用 main DC 的 kms-manage（生产严格独立 DC kms-card）
+      CARDCENTER_KMS_REGISTRY_ENDPOINTS: "etcd:2379"
       CARDCENTER_KMS_ENDPOINT: "kms-manage:9290"
       CARDCENTER_KMS_INSECURE: "true"
       # 审计 Kafka：dev 留空，emitter 退化为只写 DB
