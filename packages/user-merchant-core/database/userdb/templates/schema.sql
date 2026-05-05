@@ -110,6 +110,33 @@ CREATE TABLE IF NOT EXISTS `user_settings_${TABLE}` (
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard ${TABLE})';
 
+-- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
+-- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
+-- 加业务展示字段（masked_pan / network / 过期月年 / 持卡人姓名）。
+-- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
+-- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
+-- 那边的 KMS key rotation。
+CREATE TABLE IF NOT EXISTS `user_card_${TABLE}` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `user_id`        BIGINT       NOT NULL,
+    `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
+    `token_hash`     CHAR(64)     NOT NULL COMMENT 'sha256(stored_token)',
+    `masked_pan`     VARCHAR(20)  NOT NULL COMMENT 'BIN+last4',
+    `network`        VARCHAR(16)  NOT NULL COMMENT 'visa / mastercard / jcb / amex / unionpay',
+    `exp_month`      TINYINT      NOT NULL,
+    `exp_year`       SMALLINT     NOT NULL,
+    `holder_name`    VARCHAR(64)  NOT NULL DEFAULT '',
+    `is_default`     BOOLEAN      NOT NULL DEFAULT FALSE,
+    `status`         VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active / deleted / expired',
+    `created_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at`     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at`     DATETIME(3)  DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_token_hash` (`token_hash`),
+    KEY `idx_user_status` (`user_id`, `status`),
+    KEY `idx_deleted_at`  (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard ${TABLE})';
+
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
 CREATE TABLE IF NOT EXISTS `merchants_${TABLE}` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',

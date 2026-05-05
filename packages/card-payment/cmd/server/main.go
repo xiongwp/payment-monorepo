@@ -23,6 +23,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/xiongwp/card-payment/internal/adapter/amex"
+	"github.com/xiongwp/card-payment/internal/adapter/jcb"
+	"github.com/xiongwp/card-payment/internal/adapter/mastercard"
+	"github.com/xiongwp/card-payment/internal/adapter/unionpay"
 	"github.com/xiongwp/card-payment/internal/adapter/visa"
 	"github.com/xiongwp/card-payment/internal/cardcenterclient"
 	"github.com/xiongwp/card-payment/internal/processor"
@@ -159,20 +163,49 @@ func newCardCenterClient(v *viper.Viper) (processor.CardCenter, error) {
 	return cardcenterclient.New(cfg)
 }
 
-// newNetworks 构造各 network adapter map
+// newNetworks 构造 5 个 network adapter map（visa / mastercard / jcb / amex / unionpay）。
+//
+// 每个 adapter：endpoint 为空 或 env != prod 时走 mock。生产 endpoint 必须 https://，
+// 由 assertProdSafety 校验。
 func newNetworks(v *viper.Viper, logger *zap.Logger) map[string]processor.Network {
+	mockMode := strings.ToLower(v.GetString("env")) != "prod" && strings.ToLower(v.GetString("env")) != "production"
 	out := make(map[string]processor.Network, 5)
-	// visa
+
 	visaEP := v.GetString("network.visa.endpoint")
 	out["visa"] = visa.New(visa.Config{
-		Endpoint: visaEP,
-		APIKey:   v.GetString("network.visa.api_key"),
-		Cert:     v.GetString("network.visa.cert"),
-		Timeout:  v.GetDuration("network.visa.timeout"),
-		Mock:     visaEP == "" || strings.ToLower(v.GetString("env")) != "prod",
+		Endpoint: visaEP, APIKey: v.GetString("network.visa.api_key"),
+		Cert: v.GetString("network.visa.cert"), Timeout: v.GetDuration("network.visa.timeout"),
+		Mock: mockMode || visaEP == "",
 	}, logger)
-	// 其它 4 个 network adapter 占位（按 visa 模板写）
-	// mastercard / jcb / amex / unionpay 实现略
+
+	mcEP := v.GetString("network.mastercard.endpoint")
+	out["mastercard"] = mastercard.New(mastercard.Config{
+		Endpoint: mcEP, APIKey: v.GetString("network.mastercard.api_key"),
+		Cert: v.GetString("network.mastercard.cert"), Timeout: v.GetDuration("network.mastercard.timeout"),
+		Mock: mockMode || mcEP == "",
+	}, logger)
+
+	jcbEP := v.GetString("network.jcb.endpoint")
+	out["jcb"] = jcb.New(jcb.Config{
+		Endpoint: jcbEP, APIKey: v.GetString("network.jcb.api_key"),
+		Cert: v.GetString("network.jcb.cert"), Timeout: v.GetDuration("network.jcb.timeout"),
+		Mock: mockMode || jcbEP == "",
+	}, logger)
+
+	amexEP := v.GetString("network.amex.endpoint")
+	out["amex"] = amex.New(amex.Config{
+		Endpoint: amexEP, APIKey: v.GetString("network.amex.api_key"),
+		Cert: v.GetString("network.amex.cert"), Timeout: v.GetDuration("network.amex.timeout"),
+		Mock: mockMode || amexEP == "",
+	}, logger)
+
+	upEP := v.GetString("network.unionpay.endpoint")
+	out["unionpay"] = unionpay.New(unionpay.Config{
+		Endpoint: upEP, APIKey: v.GetString("network.unionpay.api_key"),
+		Cert: v.GetString("network.unionpay.cert"), Timeout: v.GetDuration("network.unionpay.timeout"),
+		Mock: mockMode || upEP == "",
+	}, logger)
+
 	return out
 }
 

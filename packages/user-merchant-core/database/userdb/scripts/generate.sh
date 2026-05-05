@@ -18,7 +18,7 @@ OUTPUT_DIR="${HERE}/../init"
 
 mkdir -p "$OUTPUT_DIR"
 
-# 11 张分片业务表 base name；与 templates/schema.sql 里 CREATE TABLE 顺序一致。
+# 12 张分片业务表 base name；与 templates/schema.sql 里 CREATE TABLE 顺序一致。
 SHADOW_BASES=(
   users
   user_profiles
@@ -28,6 +28,7 @@ SHADOW_BASES=(
   user_roles
   user_accounts
   user_settings
+  user_card
   merchants
   merchant_kyc_document
   merchant_channel_secret

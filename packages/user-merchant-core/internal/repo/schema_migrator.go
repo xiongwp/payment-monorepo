@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// shardTableBases 跟 database/userdb/templates/schema.sql 的 11 张分片表对齐。
+// shardTableBases 跟 database/userdb/templates/schema.sql 的 12 张分片表对齐。
 // 新增表时同步加这里，否则 ApplyShadowTables 不会建对应 _shadow。
 var shardTableBases = []string{
 	"users",
@@ -26,6 +26,7 @@ var shardTableBases = []string{
 	"user_roles",
 	"user_accounts",
 	"user_settings",
+	"user_card",
 	"merchants",
 	"merchant_kyc_document",
 	"merchant_channel_secret",
