@@ -1,8 +1,15 @@
 // Package service 加 user_card 业务方法。
 //
-// 关键纪律：本服务**不见** PAN。AddCard 入口接到 PAN 后立即 forward 给
-// card-center.Tokenize；card-center 返 stored_token 后存 user_card 表。
-// PAN 仅在 AddCard 函数 stack 内出现；用 defer 主动清栈。
+// PCI 严格纪律：本服务**永远不接受 PAN**（包括函数参数 / DB / 日志）。
+//
+// 绑卡流程（PAN 单跳化）：
+//
+//	1. 浏览器 HTTPS POST 直发 card-center → card-center 返 stored_token + masked + network
+//	2. 浏览器 POST 到 api-gateway /cards/attach 带 stored_token（无 PAN）
+//	3. api-gateway 调本 service.AttachCard → 写 user_card 行（无 PAN，只有 stored_token + 元数据）
+//
+// 本文件之前有 AddCard(...PAN...) 直接调 card-center.Tokenize 的版本，已废弃 — 那条
+// 路径让 user-merchant-core 进程见到 PAN，不符 SAQ-A 范围。
 package service
 
 import (
@@ -10,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -31,64 +39,55 @@ func NewUserCardService(r repo.UserCardRepository, cc *cardcenterclient.Client, 
 	return &UserCardService{repo: r, cardCenter: cc, logger: logger}
 }
 
-// AddCardInput 入参
-type AddCardInput struct {
-	UserID     int64
-	PAN        string // 仅本函数 stack 出现
-	ExpMonth   int
-	ExpYear    int
-	HolderName string
-	TraceID    string
-	SetDefault bool
+// AttachCardInput 入参 — **永远不含 PAN/CVV**。
+//
+// stored_token 是浏览器先 HTTPS POST 到 card-center 拿到的；本服务只负责把
+// 这条记录持久化到 user_card 表。
+type AttachCardInput struct {
+	UserID      int64
+	StoredToken string // tok_card_xxx，由 card-center 颁发
+	MaskedPAN   string // 411111******1111
+	Network     string // visa / mastercard / ...
+	ExpMonth    int
+	ExpYear     int
+	HolderName  string
+	TraceID     string
+	SetDefault  bool
 }
 
-// AddCardOutput
-type AddCardOutput struct {
+// AttachCardOutput
+type AttachCardOutput struct {
 	UserCardID int64
 	MaskedPAN  string
 	Network    string
 }
 
-// AddCard 用户存卡入口。
+// AttachCard 用户存卡持久化入口。
 //
-// 流程：
-//  1. 调 card-center.Tokenize 拿 stored_token（card-center 内 KMS 加密）
-//  2. 写 user_card 行（**只**存 token + masked + 元数据，不存 PAN）
-//  3. SetDefault 选项：把它设成默认卡（同用户其它 default=false）
-//
-// PAN 生命周期：仅在 input.PAN 字段，函数返回前 defer 清空。
-func (s *UserCardService) AddCard(ctx context.Context, in *AddCardInput) (*AddCardOutput, error) {
-	if in == nil || in.UserID == 0 || in.PAN == "" {
-		return nil, fmt.Errorf("%w: user_id / pan required", domain.ErrValidation)
+// 协议契约：
+//   - 调用方（api-gateway）已经从 jwt 拿到权威 user_id；不接受请求体里的 user_id
+//   - stored_token 必须是 card-center 颁发格式（tok_card_*）；其它格式硬拒
+//   - masked_pan 必须含 *；防止异常前端误传完整 PAN
+//   - 本服务**不调** card-center.Tokenize（PAN 单跳已经在 浏览器 ↔ card-center 之间完成）
+func (s *UserCardService) AttachCard(ctx context.Context, in *AttachCardInput) (*AttachCardOutput, error) {
+	if in == nil || in.UserID == 0 || in.StoredToken == "" {
+		return nil, fmt.Errorf("%w: user_id / stored_token required", domain.ErrValidation)
 	}
-	defer func() {
-		// 主动清 PAN（Go 没强 zero memory，但赋空避免后续误用）
-		in.PAN = ""
-		in.HolderName = ""
-	}()
-	if s.cardCenter == nil {
-		return nil, fmt.Errorf("AddCard: card-center client not configured (cannot tokenize)")
+	if !strings.HasPrefix(in.StoredToken, "tok_card_") {
+		return nil, fmt.Errorf("%w: stored_token format invalid", domain.ErrValidation)
+	}
+	if in.MaskedPAN == "" || !strings.Contains(in.MaskedPAN, "*") {
+		// 防止上游误传 PAN 进 masked_pan 字段
+		return nil, fmt.Errorf("%w: masked_pan must be masked (contain '*')", domain.ErrValidation)
 	}
 
-	tokResp, err := s.cardCenter.Tokenize(ctx, &cardcenterclient.TokenizeRequest{
-		UserID:     in.UserID,
-		PAN:        in.PAN,
-		ExpMonth:   in.ExpMonth,
-		ExpYear:    in.ExpYear,
-		HolderName: in.HolderName,
-		TraceID:    in.TraceID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("tokenize: %w", err)
-	}
-
-	tokenHash := sha256Hex(tokResp.StoredToken)
+	tokenHash := sha256Hex(in.StoredToken)
 	card := &domain.UserCard{
 		UserID:      in.UserID,
-		StoredToken: tokResp.StoredToken,
+		StoredToken: in.StoredToken,
 		TokenHash:   tokenHash,
-		MaskedPAN:   tokResp.MaskedPAN,
-		Network:     tokResp.Network,
+		MaskedPAN:   in.MaskedPAN,
+		Network:     in.Network,
 		ExpMonth:    in.ExpMonth,
 		ExpYear:     in.ExpYear,
 		HolderName:  in.HolderName,
@@ -96,15 +95,17 @@ func (s *UserCardService) AddCard(ctx context.Context, in *AddCardInput) (*AddCa
 		IsDefault:   in.SetDefault,
 	}
 	if err := s.repo.Insert(ctx, card); err != nil {
-		// 入库失败：card-center 已经发了 token；调 DeleteCard 标 stored_token revoked
-		// 让 card-center audit 知道这条 token 实际未被使用。best-effort，不阻塞错误。
-		go func() {
-			if cerr := s.cardCenter.DeleteCard(context.Background(), in.UserID,
-				tokResp.StoredToken, "user_card insert failed", in.TraceID); cerr != nil {
-				s.logger.Warn("rollback card-center DeleteCard failed",
-					zap.Int64("user_id", in.UserID), zap.Error(cerr))
-			}
-		}()
+		// 入库失败：让 card-center audit 知道这条 stored_token 没被业务持有 →
+		// 异步调 card-center.DeleteCard 标 revoked，best-effort
+		if s.cardCenter != nil {
+			go func(tok string) {
+				if cerr := s.cardCenter.DeleteCard(context.Background(), in.UserID,
+					tok, "user_card insert failed", in.TraceID); cerr != nil {
+					s.logger.Warn("rollback card-center DeleteCard failed",
+						zap.Int64("user_id", in.UserID), zap.Error(cerr))
+				}
+			}(in.StoredToken)
+		}
 		return nil, fmt.Errorf("user_card insert: %w", err)
 	}
 
@@ -115,7 +116,7 @@ func (s *UserCardService) AddCard(ctx context.Context, in *AddCardInput) (*AddCa
 		}
 	}
 
-	return &AddCardOutput{
+	return &AttachCardOutput{
 		UserCardID: card.ID,
 		MaskedPAN:  card.MaskedPAN,
 		Network:    card.Network,
