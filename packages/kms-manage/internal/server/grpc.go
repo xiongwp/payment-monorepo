@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -59,14 +60,21 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	if err != nil {
 		return err
 	}
-	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(
-		RecoverInterceptor(s.logger),
-		trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
-		LoggingInterceptor(s.logger),
-		MetricsInterceptor(),
-		RateLimitInterceptor(s.rps, s.burst),
-		AuthInterceptor(s.auth, s.logger),
-	))
+	// HardenedServerOptions 加 KeepaliveEnforcementPolicy{MinTime:5s, PermitWithoutStream:true}
+	// 配套 client 端 hardenedKeepalive 10s ping，否则 grpc-go 默认 MinTime=5min 会
+	// GOAWAY ENHANCE_YOUR_CALM/too_many_pings 把 client 踢飞。
+	srvOpts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(
+			RecoverInterceptor(s.logger),
+			trace.UnaryServerInterceptor(s.logger),
+			LoggingInterceptor(s.logger),
+			MetricsInterceptor(),
+			RateLimitInterceptor(s.rps, s.burst),
+			AuthInterceptor(s.auth, s.logger),
+		),
+	}
+	srvOpts = append(srvOpts, serviceregistry.HardenedServerOptions()...)
+	srv := grpc.NewServer(srvOpts...)
 	kmsv1.RegisterKMSServiceServer(srv, s)
 	s.logger.Info("kms-manage grpc listening", zap.Int("port", port))
 	go func() {

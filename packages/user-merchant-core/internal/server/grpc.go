@@ -209,8 +209,10 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 			Time:    5 * time.Minute,
 			Timeout: 15 * time.Second,
 		}),
+		// MinTime=5s 配 monorepo client 端 10s ping。原 30s 会被 hardenedKeepalive
+		// 踢成 GOAWAY too_many_pings，client 反复重连永远建不稳。
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             30 * time.Second,
+			MinTime:             5 * time.Second,
 			PermitWithoutStream: true,
 		}),
 		// wave N: 请求体上限 4MB。merchant/secret 类请求数 KB 就够了，
