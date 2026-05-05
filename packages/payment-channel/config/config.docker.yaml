@@ -17,8 +17,10 @@ sharding:
   db_count: 10
   table_per_db: 10
 
+# 联栈开发模式：跳过鉴权，方便 grpc-client / e2e / 内部 RPC 直连。生产严禁如此。
 auth:
   tokens: []
+  allow_unauthenticated: true
 
 rate_limit:
   rps: 2000

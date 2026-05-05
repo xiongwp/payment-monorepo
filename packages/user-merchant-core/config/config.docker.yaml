@@ -16,6 +16,20 @@ database:
     max_open_conns: 50
     max_idle_conns: 20
     conn_max_lifetime: 3600
+  # 10 库分片：shared-shard-0..9 节点上的 user_merchant_db_0..9（与
+  # accounting-system / order-core / payment-channel layout 对齐）。
+  # 任一 shard_N.dsn 缺失 → 应用 fallback 单 meta 模式（仅 dev），merchants
+  # 表已挪到分片库，fallback 必报 1146。
+  shard_0: { name: user_merchant_db_0, dsn: "root:password@tcp(shared-shard-0:3306)/user_merchant_db_0?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+  shard_1: { name: user_merchant_db_1, dsn: "root:password@tcp(shared-shard-1:3306)/user_merchant_db_1?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+  shard_2: { name: user_merchant_db_2, dsn: "root:password@tcp(shared-shard-2:3306)/user_merchant_db_2?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+  shard_3: { name: user_merchant_db_3, dsn: "root:password@tcp(shared-shard-3:3306)/user_merchant_db_3?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+  shard_4: { name: user_merchant_db_4, dsn: "root:password@tcp(shared-shard-4:3306)/user_merchant_db_4?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+  shard_5: { name: user_merchant_db_5, dsn: "root:password@tcp(shared-shard-5:3306)/user_merchant_db_5?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+  shard_6: { name: user_merchant_db_6, dsn: "root:password@tcp(shared-shard-6:3306)/user_merchant_db_6?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+  shard_7: { name: user_merchant_db_7, dsn: "root:password@tcp(shared-shard-7:3306)/user_merchant_db_7?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+  shard_8: { name: user_merchant_db_8, dsn: "root:password@tcp(shared-shard-8:3306)/user_merchant_db_8?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
+  shard_9: { name: user_merchant_db_9, dsn: "root:password@tcp(shared-shard-9:3306)/user_merchant_db_9?charset=utf8mb4&parseTime=True&loc=Local", max_open_conns: 20, max_idle_conns: 5 }
 
 # kms-manage gRPC（联栈下用容器 DNS）
 kms:
@@ -72,5 +86,7 @@ otel:
   export_timeout: 10s
   insecure: true
 
+# 联栈开发模式：跳过鉴权，方便 grpc-client / e2e / 内部 RPC 直连。生产严禁如此。
 auth:
   tokens: []
+  allow_unauthenticated: true

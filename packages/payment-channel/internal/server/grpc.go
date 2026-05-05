@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
 	channelv1 "github.com/xiongwp/payment-channel/api/proto/channel/v1"
@@ -61,16 +62,23 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	if err != nil {
 		return err
 	}
-	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(
-		RecoverInterceptor(s.logger),
-		trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
-		// shadow 标识翻进 ctx；AcquirerService 5 个方法入口检查 IsShadow 短路放行 —
-		// 压测流量绝不真打到外部渠道（GCash / Maya 等），返回 mock 结果。
-		shadow.UnaryServerInterceptor(),
-		MetricsInterceptor(),
-		RateLimitInterceptor(s.rateLimitRPS, s.rateBurst),
-		AuthInterceptor(s.authTokens, s.allowUnauthenticated, s.logger),
-	))
+	srv := grpc.NewServer(
+		// 跟 user-merchant-core / accounting-system 对齐；放宽 grpc default
+		// (MinTime=5min, PermitWithoutStream=false) 防 too_many_pings GOAWAY。
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             5 * time.Second,
+			PermitWithoutStream: true,
+		}),
+		grpc.ChainUnaryInterceptor(
+			RecoverInterceptor(s.logger),
+			trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
+			// shadow 标识翻进 ctx；AcquirerService 5 个方法入口检查 IsShadow 短路放行 —
+			// 压测流量绝不真打到外部渠道（GCash / Maya 等），返回 mock 结果。
+			shadow.UnaryServerInterceptor(),
+			MetricsInterceptor(),
+			RateLimitInterceptor(s.rateLimitRPS, s.rateBurst),
+			AuthInterceptor(s.authTokens, s.allowUnauthenticated, s.logger),
+		))
 	channelv1.RegisterAcquirerServiceServer(srv, s)
 	s.logger.Info("payment-channel grpc listening", zap.Int("port", port))
 	go func() {

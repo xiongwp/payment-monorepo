@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
 	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
@@ -66,17 +67,27 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	if err != nil {
 		return err
 	}
-	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(
-		RecoverInterceptor(s.logger),
-		trace.UnaryServerInterceptor(s.logger),
-		// shadow 紧跟 trace：把 metadata x-shadow 翻进 ctx；payment-core 是无状态路由
-		// 层，shadow ctx 仅供日志 + 出站 RPC（channel / kms / risk）透传给下游。
-		shadow.UnaryServerInterceptor(),
-		LoggingInterceptor(s.logger),
-		MetricsInterceptor(),
-		RateLimitInterceptor(s.rps, s.burst),
-		AuthInterceptor(s.auth, s.allowUnauthenticated, s.logger),
-	))
+	srv := grpc.NewServer(
+		// EnforcementPolicy 必须放宽：客户端（order-core / 自身 mesh 内 RPC）按
+		// keepalive.ClientParameters{Time: 30s, PermitWithoutStream: true} 心跳；
+		// gRPC server 默认 MinTime=5min + PermitWithoutStream=false，会以
+		// "too_many_pings" GOAWAY 踢连接。这里跟 user-merchant-core / accounting-system
+		// 对齐，允许 5s 一次心跳 + 无活动流也可 ping。
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             5 * time.Second,
+			PermitWithoutStream: true,
+		}),
+		grpc.ChainUnaryInterceptor(
+			RecoverInterceptor(s.logger),
+			trace.UnaryServerInterceptor(s.logger),
+			// shadow 紧跟 trace：把 metadata x-shadow 翻进 ctx；payment-core 是无状态路由
+			// 层，shadow ctx 仅供日志 + 出站 RPC（channel / kms / risk）透传给下游。
+			shadow.UnaryServerInterceptor(),
+			LoggingInterceptor(s.logger),
+			MetricsInterceptor(),
+			RateLimitInterceptor(s.rps, s.burst),
+			AuthInterceptor(s.auth, s.allowUnauthenticated, s.logger),
+		))
 	paymentcorev1.RegisterPaymentCoreServiceServer(srv, s)
 	s.logger.Info("payment-core grpc listening", zap.Int("port", port))
 	// P1-16 graceful shutdown timeout 兜底：K8s preStop 默认 30s 内必须 drain 完毕，

@@ -174,40 +174,9 @@ func newDBManager(v *viper.Viper, logger *zap.Logger) (*repo.Manager, error) {
 	// 一起优雅关闭，可改成 lc.Append({OnStart, OnStop})）。
 	mgr.StartPoolMetrics(context.Background(), 30*time.Second, logger)
 
-	// Self-healing schema: apply embedded meta-DB migration on startup so
-	// stale volumes don't leave `webhook_deliveries` / `admin_audit_log` /
-	// `gl_*` missing. Every CREATE uses IF NOT EXISTS → no-op on fresh DBs.
-	// Disabled by setting database.skip_auto_migrate=true.
-	if !v.GetBool("database.skip_auto_migrate") && meta.DSN != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := mgr.ApplyMetaMigration(ctx, logger); err != nil {
-			logger.Warn("meta migration had failures (continuing)", zap.Error(err))
-		}
-		// 紧跟着建 meta 影子表（webhook_deliveries_shadow / gl_*_shadow / admin_audit_log_shadow）
-		// init_shadow.sql 早跑过则全 no-op；幂等。
-		if err := mgr.ApplyMetaShadowTables(ctx, logger); err != nil {
-			logger.Warn("meta shadow tables apply had failures (continuing)", zap.Error(err))
-		}
-	}
-
-	// Shard 自愈迁移：给现存 accounting_outbox_NN 表加 claim_token 列 + idx_claim 索引
-	// （新建的库已在 init 模板里带了）。INFORMATION_SCHEMA 检查后 ALTER，幂等可重复跑。
-	// ApplyShadowTables 紧跟其后：每张分片业务表都建一份 _shadow 副本（CREATE … LIKE）。
-	if !v.GetBool("database.skip_auto_migrate") {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		defer cancel()
-		tablePerDB := v.GetInt("sharding.table_per_db")
-		if tablePerDB <= 0 {
-			tablePerDB = 10
-		}
-		if err := mgr.ApplyShardMigrations(ctx, tablePerDB, logger); err != nil {
-			logger.Warn("shard migrations had failures (continuing)", zap.Error(err))
-		}
-		if err := mgr.ApplyShadowTables(ctx, tablePerDB, logger); err != nil {
-			logger.Warn("shadow tables apply had failures (continuing)", zap.Error(err))
-		}
-	}
+	// 启动期自愈 schema 已移除：依赖 deploy/shared-db/init/*.sql 一次性
+	// 把所有主表 + 影子表建好（generate-shared-init.sh 拼好），不再
+	// 在应用启动期跑 ApplyMetaMigration / ApplyShadowTables。
 	return mgr, nil
 }
 
