@@ -30,6 +30,7 @@ type Server struct {
 	merchantSvc        service.MerchantService
 	merchantSecretSvc  service.MerchantSecretService
 	userSvc            *service.UserService
+	userCardSvc        *service.UserCardService // 卡 (UserCardService gRPC) — 接入 PAN 单跳后的 stored_token
 	auditRepo          repo.AuditRepository
 	merchantCache      *cache.MerchantCache
 	merchantDefaultRPS float64
@@ -49,6 +50,7 @@ type Deps struct {
 	MerchantSvc       service.MerchantService
 	MerchantSecretSvc service.MerchantSecretService
 	UserSvc           *service.UserService
+	UserCardSvc       *service.UserCardService
 	AuditRepo         repo.AuditRepository
 	// MerchantCache 用来在限流 resolver 里快速查商户配置；nil 时自动退化
 	// 到全局 DefaultRPS。
@@ -79,6 +81,7 @@ func NewServer(d Deps) *Server {
 		merchantSvc:        d.MerchantSvc,
 		merchantSecretSvc:  d.MerchantSecretSvc,
 		userSvc:            d.UserSvc,
+		userCardSvc:        d.UserCardSvc,
 		auditRepo:          d.AuditRepo,
 		merchantCache:      d.MerchantCache,
 		merchantDefaultRPS: d.MerchantDefaultRPS,
@@ -225,6 +228,15 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	}
 	if s.userSvc != nil {
 		usermerchantv1.RegisterUserServiceServer(gs, NewUserServer(s.userSvc))
+	}
+	// PAN 单跳后：UserCardService gRPC 暴露给 api-gateway / order-core 内部调用
+	if s.userCardSvc != nil {
+		ucServer := NewUserCardServer(s.userCardSvc)
+		usermerchantv1.RegisterUserCardServiceServer(gs, ucServer)
+		// UserCardInternalService（GetStoredTokenForPayment）也注册到同一 listener；
+		// 生产应该通过另一个 internal-only 端口 + 独立 mTLS clientCN 白名单暴露，
+		// 当前 dev 暂复用 public listener，待独立 listener 切分后挪走。
+		usermerchantv1.RegisterUserCardInternalServiceServer(gs, ucServer)
 	}
 
 	h := health.NewServer()
