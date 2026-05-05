@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS `merchant_lookup` (
 
 -- session_lookup: token → user_id；GetSession 反查走它（user_sessions 已分片）。
 CREATE TABLE IF NOT EXISTS `session_lookup` (
-    `token`      VARCHAR(255) NOT NULL,
+    `token`      VARCHAR(512) NOT NULL,
     `user_id`    BIGINT       NOT NULL,
     `expires_at` DATETIME(3)  NOT NULL,
     `created_at` DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

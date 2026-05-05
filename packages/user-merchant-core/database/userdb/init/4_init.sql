@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_40` (
 CREATE TABLE IF NOT EXISTS `user_sessions_40` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -298,7 +298,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_41` (
 CREATE TABLE IF NOT EXISTS `user_sessions_41` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -517,7 +517,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_42` (
 CREATE TABLE IF NOT EXISTS `user_sessions_42` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -736,7 +736,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_43` (
 CREATE TABLE IF NOT EXISTS `user_sessions_43` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -955,7 +955,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_44` (
 CREATE TABLE IF NOT EXISTS `user_sessions_44` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -1174,7 +1174,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_45` (
 CREATE TABLE IF NOT EXISTS `user_sessions_45` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -1393,7 +1393,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_46` (
 CREATE TABLE IF NOT EXISTS `user_sessions_46` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -1612,7 +1612,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_47` (
 CREATE TABLE IF NOT EXISTS `user_sessions_47` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -1831,7 +1831,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_48` (
 CREATE TABLE IF NOT EXISTS `user_sessions_48` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
@@ -2050,7 +2050,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_49` (
 CREATE TABLE IF NOT EXISTS `user_sessions_49` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-    `token`       VARCHAR(255) NOT NULL,
+    `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
     `expires_at`  DATETIME(3)  NOT NULL,
