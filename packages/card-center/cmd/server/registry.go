@@ -13,7 +13,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/viper"
@@ -41,17 +40,18 @@ func startServiceRegistrar(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) 
 	if port == 0 {
 		port = 9443
 	}
-	host := os.Getenv("REGISTRY_ADVERTISE_ADDR")
-	if host == "" {
-		host = v.GetString("registry.advertise_host")
+	// 注册地址三层优先级：
+	//   1. viper registry.advertise_host（dev 想显式钉死时用）
+	//   2. serviceregistry.AdvertiseAddr —— 走 REGISTRY_ADVERTISE_ADDR env
+	//      （K8s downward API status.podIP）或 UDP-dial 探主网卡 IP
+	// 之前回退到 os.Hostname() 是错的——docker 不把容器 hostname 注册成 DNS，
+	// 跨容器解析不到，会让 client 拿到 etcd 端点后无法 dial。
+	var addr string
+	if h := v.GetString("registry.advertise_host"); h != "" {
+		addr = fmt.Sprintf("%s:%d", h, port)
+	} else {
+		addr = serviceregistry.AdvertiseAddr(port)
 	}
-	if host == "" {
-		host, _ = os.Hostname()
-	}
-	if host == "" {
-		host = "unknown"
-	}
-	addr := fmt.Sprintf("%s:%d", host, port)
 
 	ttl := v.GetDuration("registry.ttl")
 	if ttl < time.Second {

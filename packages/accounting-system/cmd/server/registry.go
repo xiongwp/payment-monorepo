@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/viper"
@@ -52,19 +51,14 @@ func StartServiceRegistrar(lc fx.Lifecycle, cli *clientv3.Client, v *viper.Viper
 		port = 50051
 	}
 
-	host := os.Getenv("REGISTRY_ADVERTISE_ADDR")
-	if host == "" {
-		host = v.GetString("registry.advertise_host")
+	// 注册地址：viper override > serviceregistry.AdvertiseAddr (env / 探主网卡 IP / hostname 兜底)
+	// 之前直接 os.Hostname() 会拿到容器 ID，docker DNS 不解析它，client 拿到端点后无法 dial。
+	var addr string
+	if h := v.GetString("registry.advertise_host"); h != "" {
+		addr = fmt.Sprintf("%s:%d", h, port)
+	} else {
+		addr = serviceregistry.AdvertiseAddr(port)
 	}
-	if host == "" {
-		h, err := os.Hostname()
-		if err != nil {
-			logger.Warn("os.Hostname failed; service registration skipped", zap.Error(err))
-			return
-		}
-		host = h
-	}
-	addr := fmt.Sprintf("%s:%d", host, port)
 
 	ttl := v.GetDuration("registry.ttl")
 	if ttl < time.Second {

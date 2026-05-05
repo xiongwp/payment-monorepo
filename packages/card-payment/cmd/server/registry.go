@@ -11,7 +11,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -40,17 +39,13 @@ func startServiceRegistrar(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) 
 	if port == 0 {
 		port = 9444
 	}
-	host := os.Getenv("REGISTRY_ADVERTISE_ADDR")
-	if host == "" {
-		host = v.GetString("registry.advertise_host")
+	// 见 card-center registry.go 同处注释：env (K8s downward API) > 探主网卡 IP > viper
+	var addr string
+	if h := v.GetString("registry.advertise_host"); h != "" {
+		addr = fmt.Sprintf("%s:%d", h, port)
+	} else {
+		addr = serviceregistry.AdvertiseAddr(port)
 	}
-	if host == "" {
-		host, _ = os.Hostname()
-	}
-	if host == "" {
-		host = "unknown"
-	}
-	addr := fmt.Sprintf("%s:%d", host, port)
 
 	ttl := v.GetDuration("registry.ttl")
 	if ttl < time.Second {

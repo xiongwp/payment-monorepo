@@ -25,7 +25,7 @@ ARG USER_MERCHANT_CORE_REF=main
 ARG KMS_MANAGE_REF=main
 
 # cache-buster：兄弟仓内容变更但 BuildKit 还缓存了旧 staged 时改 v=N
-ARG SIBLING_CONTEXT_VER=5
+ARG SIBLING_CONTEXT_VER=6
 RUN echo "sibling-ctx ver=${SIBLING_CONTEXT_VER}"
 
 COPY --from=payment-util            / /tmp/payment-util-staged/

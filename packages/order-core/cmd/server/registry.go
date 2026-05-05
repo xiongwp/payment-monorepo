@@ -84,14 +84,15 @@ func startServiceRegistrar(lc fx.Lifecycle, t *LeaderToolkit, v *viper.Viper, lo
 	if port == 0 {
 		port = 9091
 	}
-	host := os.Getenv("REGISTRY_ADVERTISE_ADDR")
-	if host == "" {
-		host = v.GetString("registry.advertise_host")
+	// 注册地址：viper override > serviceregistry.AdvertiseAddr (env / 探主网卡 IP / hostname 兜底)
+	// 之前直接 os.Hostname() (= t.Identity) 会拿到容器 ID，docker DNS 不解析它，
+	// client 拿到端点后无法 dial。生产 K8s 走 REGISTRY_ADVERTISE_ADDR=POD_IP downward API。
+	var addr string
+	if h := v.GetString("registry.advertise_host"); h != "" {
+		addr = fmt.Sprintf("%s:%d", h, port)
+	} else {
+		addr = serviceregistry.AdvertiseAddr(port)
 	}
-	if host == "" {
-		host = t.Identity
-	}
-	addr := fmt.Sprintf("%s:%d", host, port)
 
 	var reg *serviceregistry.Registrar
 	lc.Append(fx.Hook{
