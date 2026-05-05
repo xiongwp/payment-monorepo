@@ -56,7 +56,7 @@
 (function(){
   // 绑卡 endpoint：服务端模板渲染时注入 card-center 的公网 HTTPS 地址。
   // dev 时如果 CardCenterURL 为空，fallback 走 same-origin（不推荐，仅本地起步）。
-  var CARD_CENTER_URL = {{ .CardCenterURL | printf "%q" }};
+  var CARD_CENTER_URL = "{{ .CardCenterURL }}";
 
   function showFlash(msg, isOK) {
     var el = document.getElementById('flash');
