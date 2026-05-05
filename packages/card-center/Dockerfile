@@ -4,10 +4,13 @@
 # 兄弟仓：
 #   payment-util        给 trace / shadow / serviceregistry helpers 用
 #   user-merchant-core  给 internal/httpsauth Verifier 引 IntrospectToken proto stub 用
+#   kms-manage          给 internal/kmsclient 引 KMSService gRPC stub 用
 
 FROM alpine:3.19 AS payment-util
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 FROM alpine:3.19 AS user-merchant-core-src
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS kms-manage-src
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS build
@@ -19,13 +22,15 @@ ENV GOTOOLCHAIN=auto
 
 ARG PAYMENT_UTIL_REF=main
 ARG USER_MERCHANT_CORE_REF=main
+ARG KMS_MANAGE_REF=main
 
 # cache-buster：兄弟仓内容变更但 BuildKit 还缓存了旧 staged 时改 v=N
-ARG SIBLING_CONTEXT_VER=1
+ARG SIBLING_CONTEXT_VER=2
 RUN echo "sibling-ctx ver=${SIBLING_CONTEXT_VER}"
 
 COPY --from=payment-util            / /tmp/payment-util-staged/
 COPY --from=user-merchant-core-src  / /tmp/user-merchant-core-staged/
+COPY --from=kms-manage-src          / /tmp/kms-manage-staged/
 
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
@@ -50,7 +55,8 @@ RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
       rm -rf "${staged}"; \
     }; \
     promote payment-util        "$PAYMENT_UTIL_REF"; \
-    promote user-merchant-core  "$USER_MERCHANT_CORE_REF"
+    promote user-merchant-core  "$USER_MERCHANT_CORE_REF"; \
+    promote kms-manage          "$KMS_MANAGE_REF"
 
 COPY . /src/card-center
 
