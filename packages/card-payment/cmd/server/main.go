@@ -110,8 +110,12 @@ func assertProdSafety(v *viper.Viper) error {
 			return fmt.Errorf("PROD-SAFETY: %s required (mTLS-only)", k)
 		}
 	}
-	if strings.TrimSpace(v.GetString("card_center.endpoint")) == "" {
-		return fmt.Errorf("PROD-SAFETY: card_center.endpoint required")
+	if strings.TrimSpace(v.GetString("card_center.endpoint")) == "" &&
+		len(splitCSV(v.GetString("card_center.registry_endpoints"))) == 0 &&
+		len(v.GetStringSlice("card_center.registry_endpoints")) == 0 &&
+		len(splitCSV(v.GetString("registry.endpoints"))) == 0 &&
+		len(v.GetStringSlice("registry.endpoints")) == 0 {
+		return fmt.Errorf("PROD-SAFETY: card_center.endpoint or card_center.registry_endpoints required")
 	}
 	atLeastOne := false
 	for _, n := range []string{"visa", "mastercard", "jcb", "amex", "unionpay"} {
@@ -148,13 +152,23 @@ func newLogger() (*zap.Logger, error) {
 func newRouter() *sharding.Router { return sharding.NewRouter() }
 
 func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (*repo.Manager, error) {
-	var meta repo.DBConfig
-	_ = v.UnmarshalKey("database.meta", &meta)
+	// 显式 GetString —— viper.UnmarshalKey 在纯 env 来源时不递归读子键，会拿到空 struct
+	meta := repo.DBConfig{
+		Name:            v.GetString("database.meta.name"),
+		DSN:             v.GetString("database.meta.dsn"),
+		MaxOpenConns:    v.GetInt("database.meta.max_open_conns"),
+		MaxIdleConns:    v.GetInt("database.meta.max_idle_conns"),
+		ConnMaxLifetime: v.GetInt("database.meta.conn_max_lifetime"),
+	}
 	shards := make([]repo.DBConfig, sharding.ShardDBCount)
 	for i := 0; i < sharding.ShardDBCount; i++ {
-		var s repo.DBConfig
-		_ = v.UnmarshalKey(fmt.Sprintf("database.shard_%d", i), &s)
-		shards[i] = s
+		shards[i] = repo.DBConfig{
+			Name:            v.GetString(fmt.Sprintf("database.shard_%d.name", i)),
+			DSN:             v.GetString(fmt.Sprintf("database.shard_%d.dsn", i)),
+			MaxOpenConns:    v.GetInt(fmt.Sprintf("database.shard_%d.max_open_conns", i)),
+			MaxIdleConns:    v.GetInt(fmt.Sprintf("database.shard_%d.max_idle_conns", i)),
+			ConnMaxLifetime: v.GetInt(fmt.Sprintf("database.shard_%d.conn_max_lifetime", i)),
+		}
 	}
 	return repo.NewManager(meta, shards, router, logger)
 }
@@ -164,16 +178,27 @@ func newCardTransactionRepo(mgr *repo.Manager) processor.CardTransactionRepo {
 }
 
 func newCardCenterClient(v *viper.Viper) (processor.CardCenter, error) {
-	cfg := cardcenterclient.Config{
-		Endpoint:   v.GetString("card_center.endpoint"),
-		RPCTimeout: v.GetDuration("card_center.rpc_timeout"),
-		ClientCert: v.GetString("card_center.client_cert"),
-		ClientKey:  v.GetString("card_center.client_key"),
-		ServerCA:   v.GetString("card_center.server_ca"),
-		Insecure:   v.GetBool("card_center.insecure"),
+	registry := splitCSV(v.GetString("card_center.registry_endpoints"))
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("card_center.registry_endpoints")
 	}
-	if cfg.Endpoint == "" {
-		return nil, errors.New("card_center.endpoint required")
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("registry.endpoints")
+		if len(registry) == 0 {
+			registry = splitCSV(v.GetString("registry.endpoints"))
+		}
+	}
+	cfg := cardcenterclient.Config{
+		Endpoint:          v.GetString("card_center.endpoint"),
+		RegistryEndpoints: registry,
+		RPCTimeout:        v.GetDuration("card_center.rpc_timeout"),
+		ClientCert:        v.GetString("card_center.client_cert"),
+		ClientKey:         v.GetString("card_center.client_key"),
+		ServerCA:          v.GetString("card_center.server_ca"),
+		Insecure:          v.GetBool("card_center.insecure"),
+	}
+	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
+		return nil, errors.New("card_center.endpoint or card_center.registry_endpoints required")
 	}
 	return cardcenterclient.New(cfg)
 }
@@ -309,4 +334,18 @@ func buildTLSConfig(v *viper.Viper) (*tls.Config, error) {
 		cfg.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	return cfg, nil
+}
+
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
