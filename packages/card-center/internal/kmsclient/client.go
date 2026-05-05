@@ -24,6 +24,7 @@ import (
 // Client kms-manage gRPC 客户端（mTLS）
 type Client struct {
 	conn    *grpc.ClientConn
+	api     kmsv1.KMSServiceClient
 	timeout time.Duration
 	bearer  string
 }
@@ -68,42 +69,47 @@ func New(cfg Config) (*Client, error) {
 	if t <= 0 {
 		t = 3 * time.Second
 	}
-	return &Client{conn: conn, timeout: t, bearer: cfg.BearerToken}, nil
+	return &Client{conn: conn, api: kmsv1.NewKMSServiceClient(conn), timeout: t, bearer: cfg.BearerToken}, nil
 }
 
 func (c *Client) Close() error { return c.conn.Close() }
 
-// Encrypt 实现 vault.KMS。
-//
-// 注意：本 stub 假设 kms-manage 的 gRPC 客户端代码（kmsv1.KMSServiceClient）
-// 已经由 protoc 生成。card-center 真要 build 时需要 import kms-manage 的
-// generated proto 包，这里先用占位结构体让编译通过；后续补完。
+// Encrypt 调 kms-manage.KMSService.Encrypt。AAD 在 proto 字段名是 `context`
+// （vault 包里我们叫 aad，语义一致）。返回 ciphertext 形如
+// `kms:v1:<key_id>:<base64-payload>`，作为 stored / payment token 内容。
 func (c *Client) Encrypt(ctx context.Context, plaintext []byte, aad string) (string, string, error) {
 	cctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	if c.bearer != "" {
 		cctx = metadata.AppendToOutgoingContext(cctx, "authorization", "Bearer "+c.bearer)
 	}
-	// TODO: 调真实 kmsv1 client：
-	//   resp, err := kmsv1.NewKMSServiceClient(c.conn).Encrypt(cctx,
-	//       &kmsv1.EncryptRequest{Plaintext: plaintext, Aad: aad})
-	//   return resp.Ciphertext, resp.KeyId, err
-	//
-	// 本 stub 等 kms-manage proto import 接通后替换。
-	_ = cctx
-	return "", "", errors.New("kmsclient: TODO wire kmsv1 generated stubs")
+	resp, err := c.api.Encrypt(cctx, &kmsv1.EncryptRequest{
+		Plaintext: plaintext,
+		Context:   aad,
+		// KeyId 留空 → kms-manage 用 keystore.active
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("kmsclient Encrypt rpc: %w", err)
+	}
+	return resp.GetCiphertext(), resp.GetKeyId(), nil
 }
 
-// Decrypt 实现 vault.KMS
+// Decrypt 调 kms-manage.KMSService.Decrypt。AAD 必须跟 Encrypt 时**完全一致**；
+// 不一致会被 kms-manage 拒（防止 token 错绑用户/PI）。
 func (c *Client) Decrypt(ctx context.Context, ciphertext string, aad string) ([]byte, string, error) {
 	cctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	if c.bearer != "" {
 		cctx = metadata.AppendToOutgoingContext(cctx, "authorization", "Bearer "+c.bearer)
 	}
-	// TODO: 同上
-	_ = cctx
-	return nil, "", errors.New("kmsclient: TODO wire kmsv1 generated stubs")
+	resp, err := c.api.Decrypt(cctx, &kmsv1.DecryptRequest{
+		Ciphertext: ciphertext,
+		Context:    aad,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("kmsclient Decrypt rpc: %w", err)
+	}
+	return resp.GetPlaintext(), resp.GetKeyId(), nil
 }
 
 // buildTLS 从 cfg 加载客户端 cert + 信任 server CA
