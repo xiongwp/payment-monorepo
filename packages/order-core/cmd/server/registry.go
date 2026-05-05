@@ -84,14 +84,12 @@ func startServiceRegistrar(lc fx.Lifecycle, t *LeaderToolkit, v *viper.Viper, lo
 	if port == 0 {
 		port = 9091
 	}
-	host := os.Getenv("REGISTRY_ADVERTISE_ADDR")
-	if host == "" {
-		host = v.GetString("registry.advertise_host")
+var addr string
+	if h := v.GetString("registry.advertise_host"); h != "" {
+		addr = fmt.Sprintf("%s:%d", h, port)
+	} else {
+		addr = serviceregistry.AdvertiseAddr(port)
 	}
-	if host == "" {
-		host = t.Identity
-	}
-	addr := fmt.Sprintf("%s:%d", host, port)
 
 	var reg *serviceregistry.Registrar
 	lc.Append(fx.Hook{

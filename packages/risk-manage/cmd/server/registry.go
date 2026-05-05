@@ -41,19 +41,12 @@ func startServiceRegistrar(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) 
 	if port == 0 {
 		port = 9490
 	}
-	host := os.Getenv("REGISTRY_ADVERTISE_ADDR")
-	if host == "" {
-		host = v.GetString("registry.advertise_host")
+var addr string
+	if h := v.GetString("registry.advertise_host"); h != "" {
+		addr = fmt.Sprintf("%s:%d", h, port)
+	} else {
+		addr = serviceregistry.AdvertiseAddr(port)
 	}
-	if host == "" {
-		h, err := os.Hostname()
-		if err != nil {
-			logger.Warn("os.Hostname failed; service registration skipped", zap.Error(err))
-			return
-		}
-		host = h
-	}
-	addr := fmt.Sprintf("%s:%d", host, port)
 
 	ttl := v.GetDuration("registry.ttl")
 	if ttl < time.Second {
