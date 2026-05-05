@@ -37,9 +37,16 @@ CARD_PAYMENT_META_INIT="$ROOT/card-payment/database/metadb/init/init.sql"
 [[ -d "$ACCT_INIT_DIR"      ]] || { echo "FATAL: $ACCT_INIT_DIR 不存在（accounting-system 仓需平级）"; exit 1; }
 [[ -s "$ACCT_META_INIT"     ]] || { echo "FATAL: $ACCT_META_INIT 不存在"; exit 1; }
 
-# ① 确保三仓各自的 per-shard init SQL 已生成
-(cd "$ROOT/payment-channel"   && rm -rf database/paychandb/init && bash database/paychandb/scripts/generate.sh) >/dev/null
-(cd "$ROOT/user-merchant-core" && rm -rf database/userdb/init    && bash database/userdb/scripts/generate.sh)    >/dev/null
+# ① 确保所有仓各自的 per-shard init SQL 已生成
+(cd "$ROOT/payment-channel"    && rm -rf database/paychandb/init    && bash database/paychandb/scripts/generate.sh) >/dev/null
+(cd "$ROOT/user-merchant-core" && rm -rf database/userdb/init       && bash database/userdb/scripts/generate.sh)    >/dev/null
+# card-center / card-payment：dev 联栈也得拼进 shared-db 才能起服务
+if [[ -x "$CARD_CENTER_GEN" ]]; then
+  (cd "$ROOT/card-center"  && rm -rf database/userdb/init        && bash database/userdb/scripts/generate.sh) >/dev/null
+fi
+if [[ -x "$CARD_PAYMENT_GEN" ]]; then
+  (cd "$ROOT/card-payment" && rm -rf database/cardpaymentdb/init && bash database/cardpaymentdb/scripts/generate.sh) >/dev/null
+fi
 # order-core 的 init 已在 git 里；只在没有/是目录时重拉一次
 for i in 0 1 2 3 4 5 6 7 8 9; do
   f="$ROOT/order-core/database/orderdb/init/${i}_init.sql"
@@ -104,6 +111,31 @@ for i in 0 1 2 3 4 5 6 7 8 9; do
       echo "-- ==== user-merchant-core _shadow ===="
       cat "$user_merchant_shadow"
     fi
+    # card-center / card-payment：可选，生成器存在就拼，缺失也不致命（生产 SAQ-D 不走这条）
+    cc_init="$ROOT/card-center/database/userdb/init/${i}_init.sql"
+    cp_init="$ROOT/card-payment/database/cardpaymentdb/init/${i}_init.sql"
+    cc_shadow="$ROOT/card-center/database/userdb/init/${i}_init_shadow.sql"
+    cp_shadow="$ROOT/card-payment/database/cardpaymentdb/init/${i}_init_shadow.sql"
+    if [[ -s "$cc_init" ]]; then
+      echo ""
+      echo "-- ==== card-center ===="
+      cat "$cc_init"
+    fi
+    if [[ -s "$cp_init" ]]; then
+      echo ""
+      echo "-- ==== card-payment ===="
+      cat "$cp_init"
+    fi
+    if [[ -s "$cc_shadow" ]]; then
+      echo ""
+      echo "-- ==== card-center _shadow ===="
+      cat "$cc_shadow"
+    fi
+    if [[ -s "$cp_shadow" ]]; then
+      echo ""
+      echo "-- ==== card-payment _shadow ===="
+      cat "$cp_shadow"
+    fi
   } > "$out"
 done
 
@@ -130,6 +162,17 @@ ACCT_META_SHADOW="$ROOT/accounting-system/database/metadb/init/init_shadow.sql"
   echo ""
   echo "-- ==== accounting-system (account_meta: leaf_alloc / business_type / hot_account ...) ===="
   cat "$ACCT_META_INIT"
+  # card-center / card-payment meta（dev 联栈复用 shared-meta；生产独立 DC）
+  if [[ -s "$CARD_CENTER_META_INIT" ]]; then
+    echo ""
+    echo "-- ==== card-center meta (card_center_meta: leaf_alloc + audit_log) ===="
+    cat "$CARD_CENTER_META_INIT"
+  fi
+  if [[ -s "$CARD_PAYMENT_META_INIT" ]]; then
+    echo ""
+    echo "-- ==== card-payment meta (card_payment_meta) ===="
+    cat "$CARD_PAYMENT_META_INIT"
+  fi
   # ── meta 影子表（按文件存在性可选追加；依赖前面主表已建）──
   for shadow in "$PAYCHAN_META_SHADOW" "$ORDER_META_SHADOW" "$USER_MERCHANT_META_SHADOW" "$ACCT_META_SHADOW"; do
     if [[ -s "$shadow" ]]; then

@@ -423,6 +423,8 @@ cmd_check() {
     "payment-core:9090"
     "order-core:9091"
     "user-merchant-core:9191"
+    "card-center:9443"
+    "card-payment:9444"
     "api-gateway-public:18080"
     "api-gateway-admin:18081"
     "admin-backend:19190"
