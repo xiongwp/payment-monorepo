@@ -1,0 +1,58 @@
+# card-payment 在联栈 dev 模式下的部署。
+#
+# 关键改动 vs card-payment/docker-compose.yml：
+#   - 不起独立 MySQL fleet；card_payment_db_N / card_payment_meta 共居 shared-db。
+#   - 5 个卡组织 adapter (visa/mc/jcb/amex/unionpay) 走 mock 模式（endpoint=空）
+#   - env=dev → mTLS 自动降级，跟 card-center / payment-channel 之间走明文 gRPC
+services:
+  card-payment:
+    build:
+      context: ../../../card-payment
+      dockerfile: Dockerfile
+      additional_contexts:
+        payment-util: ../../../payment-util
+      secrets:
+        - GITHUB_TOKEN
+    image: card-payment:local
+    container_name: card-payment
+    restart: unless-stopped
+    depends_on:
+      card-center: { condition: service_started }
+    ports:
+      - "9444:9444"   # mTLS gRPC（dev 实际明文）
+      - "9544:9544"   # /metrics
+    environment:
+      CARDPAYMENT_LOG_DEV: "true"
+      CARDPAYMENT_ENV: "dev"
+      CARDPAYMENT_SERVER_GRPC_PORT: "9444"
+      # 内部调 card-center
+      CARDPAYMENT_CARD_CENTER_ENDPOINT: "card-center:9443"
+      CARDPAYMENT_CARD_CENTER_INSECURE: "true"
+      # 卡组织：dev 全 mock（endpoint 空 → adapter 自动 mock 模式）
+      CARDPAYMENT_NETWORK_VISA_ENDPOINT: ""
+      CARDPAYMENT_NETWORK_MASTERCARD_ENDPOINT: ""
+      CARDPAYMENT_NETWORK_JCB_ENDPOINT: ""
+      CARDPAYMENT_NETWORK_AMEX_ENDPOINT: ""
+      CARDPAYMENT_NETWORK_UNIONPAY_ENDPOINT: ""
+      # DB
+      CARDPAYMENT_DATABASE_META_DSN: "root:password@tcp(shared-meta:3306)/card_payment_meta?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_0_DSN: "root:password@tcp(shared-shard-0:3306)/card_payment_db_0?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_1_DSN: "root:password@tcp(shared-shard-1:3306)/card_payment_db_1?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_2_DSN: "root:password@tcp(shared-shard-2:3306)/card_payment_db_2?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_3_DSN: "root:password@tcp(shared-shard-3:3306)/card_payment_db_3?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_4_DSN: "root:password@tcp(shared-shard-4:3306)/card_payment_db_4?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_5_DSN: "root:password@tcp(shared-shard-5:3306)/card_payment_db_5?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_6_DSN: "root:password@tcp(shared-shard-6:3306)/card_payment_db_6?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_7_DSN: "root:password@tcp(shared-shard-7:3306)/card_payment_db_7?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_8_DSN: "root:password@tcp(shared-shard-8:3306)/card_payment_db_8?charset=utf8mb4&parseTime=True&loc=Local"
+      CARDPAYMENT_DATABASE_SHARD_9_DSN: "root:password@tcp(shared-shard-9:3306)/card_payment_db_9?charset=utf8mb4&parseTime=True&loc=Local"
+    networks:
+      - payment-stack
+
+networks:
+  payment-stack:
+    external: true
+
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

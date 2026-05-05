@@ -72,6 +72,10 @@ compose_files() {
     user-merchant-core)   echo "-p user-merchant-core -f $ROOT/user-merchant-core/docker-compose.yml  -f $OVR/user-merchant-core.yml" ;;
     payment-core)         echo "-p payment-core       -f $ROOT/payment-core/docker-compose.yml        -f $OVR/payment-core.yml" ;;
     api-gateway)          echo "-p api-gateway        -f $ROOT/api-gateway/docker-compose.yml         -f $OVR/api-gateway.yml" ;;
+    # PCI 卡支付（联栈 dev 自包含 override，不引 base compose 的独立 MySQL fleet）。
+    # 生产 SAQ-D 部署用 ../../<svc>/docker-compose.yml 自带的独立栈。
+    card-center)          echo "-p card-center        -f $OVR/card-center.yml" ;;
+    card-payment)         echo "-p card-payment       -f $OVR/card-payment.yml" ;;
     accounting-admin-web) echo "-p accounting-admin-web -f $ROOT/accounting-admin-web/docker-compose.yml -f $OVR/accounting-admin-web.yml" ;;
     payment-admin-web)    echo "-p payment-admin-web  -f $HERE/docker-compose.yml                     -f $OVR/payment-admin-web.yml" ;;
     *) fatal "unknown service: $1" ;;
@@ -90,7 +94,7 @@ compose_files() {
 #   risk-stack         risk-redis + risk-kafka + clickhouse + nebula + 监控（accounting 复用 risk-redis）
 #   accounting-system  accounting-service + accounting-batchtask（复用 shared-db + risk-redis）
 #   risk-manage / payment-channel / order-core / user-merchant-core / payment-core / api-gateway / *-admin-web
-ALL_SERVICES=(shared-db kms-manage risk-stack accounting-system risk-manage payment-channel order-core user-merchant-core payment-core api-gateway accounting-admin-web payment-admin-web)
+ALL_SERVICES=(shared-db kms-manage risk-stack accounting-system risk-manage payment-channel order-core user-merchant-core payment-core card-center card-payment api-gateway accounting-admin-web payment-admin-web)
 
 # scale_args_of 返回 --scale a=N --scale b=M ... 用来起多副本。前提：override
 # 文件里该 service 没有 container_name，端口用 range，否则会撞名 / 撞端口。
@@ -155,6 +159,8 @@ app_service_of() {
     user-merchant-core) echo "user-merchant-core" ;;
     payment-core)       echo "payment-core" ;;
     api-gateway)        echo "api-gateway" ;;
+    card-center)        echo "card-center" ;;
+    card-payment)       echo "card-payment" ;;
     accounting-admin-web) echo "accounting-admin-web" ;;
     payment-admin-web)  echo "" ;;   # 两个 app 都要起
     *) echo "" ;;
