@@ -62,6 +62,7 @@ func loadConfig() (*viper.Viper, error) {
 	v.SetEnvPrefix("CARDPAYMENT")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+<<<<<<< HEAD
 	for _, k := range []string{"env",
 		"card_center.endpoint", "card_center.registry_endpoints",
 		"card_center.insecure", "card_center.client_cert", "card_center.client_key", "card_center.server_ca",
@@ -74,6 +75,25 @@ func loadConfig() (*viper.Viper, error) {
 		"server.grpc_port",
 	} {
 		_ = v.BindEnv(k)
+=======
+	for _, k := range []string{"env", "card_center.endpoint", "card_center.registry_endpoints",
+		"tls.cert", "tls.key", "tls.client_ca",
+		"network.visa.endpoint", "network.mastercard.endpoint", "network.jcb.endpoint",
+		"network.amex.endpoint", "network.unionpay.endpoint",
+		"database.meta.dsn", "database.meta.name",
+		"database.meta.max_open_conns", "database.meta.max_idle_conns", "database.meta.conn_max_lifetime",
+		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl", "server.grpc_port",
+	} {
+	_ = v.BindEnv(k)
+	}
+	// 10 个 shard DSN 显式 BindEnv（viper.UnmarshalKey 不读 env nested 子键）
+	for i := 0; i < 10; i++ {
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.dsn", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.name", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.max_open_conns", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.max_idle_conns", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.conn_max_lifetime", i))
+>>>>>>> feat/shadow-traffic
 	}
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")
@@ -144,8 +164,12 @@ func newLogger() (*zap.Logger, error) {
 func newRouter() *sharding.Router { return sharding.NewRouter() }
 
 func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (*repo.Manager, error) {
+<<<<<<< HEAD
 	// 注意：用 v.GetString 而不是 v.UnmarshalKey。
 	// viper 的 UnmarshalKey 不会触发 AutomaticEnv 查表 → CARDPAYMENT_DATABASE_*_DSN 被忽略。
+=======
+	// 显式 GetString —— viper.UnmarshalKey 在纯 env 来源时不递归读子键，会拿到空 struct
+>>>>>>> feat/shadow-traffic
 	meta := repo.DBConfig{
 		Name:            v.GetString("database.meta.name"),
 		DSN:             v.GetString("database.meta.dsn"),
@@ -153,6 +177,7 @@ func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (
 		MaxIdleConns:    v.GetInt("database.meta.max_idle_conns"),
 		ConnMaxLifetime: v.GetInt("database.meta.conn_max_lifetime"),
 	}
+<<<<<<< HEAD
 	if meta.Name == "" {
 		meta.Name = "card_payment_meta"
 	}
@@ -170,6 +195,16 @@ func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (
 		}
 		if shards[i].Name == "" {
 			shards[i].Name = fmt.Sprintf("card_payment_db_%d", i)
+=======
+	shards := make([]repo.DBConfig, sharding.ShardDBCount)
+	for i := 0; i < sharding.ShardDBCount; i++ {
+		shards[i] = repo.DBConfig{
+			Name:            v.GetString(fmt.Sprintf("database.shard_%d.name", i)),
+			DSN:             v.GetString(fmt.Sprintf("database.shard_%d.dsn", i)),
+			MaxOpenConns:    v.GetInt(fmt.Sprintf("database.shard_%d.max_open_conns", i)),
+			MaxIdleConns:    v.GetInt(fmt.Sprintf("database.shard_%d.max_idle_conns", i)),
+			ConnMaxLifetime: v.GetInt(fmt.Sprintf("database.shard_%d.conn_max_lifetime", i)),
+>>>>>>> feat/shadow-traffic
 		}
 	}
 	return repo.NewManager(meta, shards, router, logger)
@@ -185,7 +220,10 @@ func newCardCenterClient(v *viper.Viper) (processor.CardCenter, error) {
 		registry = v.GetStringSlice("card_center.registry_endpoints")
 	}
 	if len(registry) == 0 {
+<<<<<<< HEAD
 		// 全局 registry.endpoints 共用 fallback
+=======
+>>>>>>> feat/shadow-traffic
 		registry = v.GetStringSlice("registry.endpoints")
 		if len(registry) == 0 {
 			registry = splitCSV(v.GetString("registry.endpoints"))
@@ -337,4 +375,18 @@ func buildTLSConfig(v *viper.Viper) (*tls.Config, error) {
 		cfg.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	return cfg, nil
+}
+
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }

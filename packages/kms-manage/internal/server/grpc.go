@@ -61,6 +61,7 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 		return err
 	}
 	// HardenedServerOptions 加 KeepaliveEnforcementPolicy{MinTime:5s, PermitWithoutStream:true}
+<<<<<<< HEAD
 	// —— 必须挂，否则配套 client（serviceregistry.DialDirect 默认 10s/3s ping）会被
 	// grpc-go 默认 EnforcementPolicy{MinTime:5min, PermitWithoutStream:false} 当 abuse
 	// 用 GOAWAY "ENHANCE_YOUR_CALM / too_many_pings" 踢回去，导致 client 反复重连永远建不稳。
@@ -68,6 +69,14 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 		grpc.ChainUnaryInterceptor(
 			RecoverInterceptor(s.logger),
 			trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
+=======
+	// 配套 client 端 hardenedKeepalive 10s ping，否则 grpc-go 默认 MinTime=5min 会
+	// GOAWAY ENHANCE_YOUR_CALM/too_many_pings 把 client 踢飞。
+	srvOpts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(
+			RecoverInterceptor(s.logger),
+			trace.UnaryServerInterceptor(s.logger),
+>>>>>>> feat/shadow-traffic
 			LoggingInterceptor(s.logger),
 			MetricsInterceptor(),
 			RateLimitInterceptor(s.rps, s.burst),

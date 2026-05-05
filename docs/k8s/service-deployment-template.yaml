@@ -1,0 +1,140 @@
+# K8s Deployment 模板 —— 给 payment-monorepo 内任意一个走 etcd 服务发现 +
+# hardenedKeepalive 的 Go gRPC 服务用。
+#
+# 关键点：
+#   1. REGISTRY_ADVERTISE_ADDR 通过 downward API 注 status.podIP，让
+#      registry.go 注册的 addr 是 Pod IP（cluster-wide 可路由）而不是
+#      容器 hostname（K8s DNS 不解析它）。
+#   2. <SVC>_REGISTRY_ENDPOINTS 指向 etcd 集群 service DNS。
+#   3. readinessProbe 必备 —— K8s 控制平面只把 ready=true 的 Pod 写进
+#      Endpoints；同样的 Pod 的 etcd 注册靠应用自己的 lease keepalive
+#      （registry.go 的 TTL=10s 心跳），但 readinessProbe 是滚动更新和
+#      Pod 重启时关键的"流量门"，必须配。
+#   4. terminationGracePeriodSeconds: 30s 给 fx 的 OnStop 钩子时间
+#      revoke etcd lease + GracefulStop gRPC server，避免在 Pod 杀掉
+#      之后 client 还路由到死端点。
+#
+# 用法（替换占位符 <SVC> / <SVC_UPPER> / <PORT> / <ETCD_DNS>）：
+#   - <SVC>          服务名 kebab-case，例 kms-manage / card-center
+#   - <SVC_UPPER>    env 前缀 SCREAMING_SNAKE，例 KMS / CARDCENTER / USERMERCHANTCORE
+#   - <PORT>         gRPC 监听端口，见 registry.go 默认值
+#   - <ETCD_DNS>     etcd 服务 DNS，例 etcd.infra.svc.cluster.local:2379
+#                    或多端点 etcd-0.etcd:2379,etcd-1.etcd:2379,etcd-2.etcd:2379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <SVC>
+  labels:
+    app: <SVC>
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: <SVC>
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0   # 至少 1 个老 Pod 在线时才允许滚到下一个 —— 防整段服务下线
+  template:
+    metadata:
+      labels:
+        app: <SVC>
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: <SVC>
+          image: registry.example.com/<SVC>:<TAG>
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: grpc
+              containerPort: <PORT>
+            - name: metrics
+              containerPort: <METRICS_PORT>     # 例 9290 → metrics 9390 / 9443 → 9543
+
+          env:
+            # ── 服务发现核心 3 项 ──
+            - name: REGISTRY_ADVERTISE_ADDR
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP        # K8s 注入 Pod IP；registry.go 第一优先级读它
+            - name: <SVC_UPPER>_REGISTRY_ENDPOINTS
+              value: "<ETCD_DNS>"                 # 例 etcd.infra.svc.cluster.local:2379
+            - name: <SVC_UPPER>_REGISTRY_TTL
+              value: "10s"
+
+            # ── 服务名（默认就是服务的 kebab-case 名字，覆盖时才需要）──
+            # - name: <SVC_UPPER>_REGISTRY_SERVICE_NAME
+            #   value: "<SVC>"
+
+            # ── env 模式标识 ──
+            - name: <SVC_UPPER>_ENV
+              value: "prod"
+
+            # ── 业务 env 按需补 ──
+            # - name: <SVC_UPPER>_DATABASE_META_DSN
+            #   valueFrom: { secretKeyRef: { name: <SVC>-db, key: meta-dsn } }
+
+          # readinessProbe：K8s Endpoints 控制器看这个决定 Pod 是否计入 service
+          # 后端列表。和 etcd 注册并行 —— K8s service IP / Headless service 走这条；
+          # etcd:///<svc> 走 lease。两套都要配。
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 3
+
+          # livenessProbe：进程僵死时 K8s 重启容器。比 readiness 宽松。
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"
+
+---
+# Headless Service —— gRPC client 走 etcd 服务发现，不需要 ClusterIP；
+# 但留一个 Headless service 让 K8s DNS 也能解析（dev / 调试 / fallback 用），
+# 同时把 Pod 加进 EndpointSlice 让 NetworkPolicy 能选中。
+apiVersion: v1
+kind: Service
+metadata:
+  name: <SVC>
+  labels:
+    app: <SVC>
+spec:
+  clusterIP: None                                 # ← Headless：DNS 返回所有 Pod IP
+  selector:
+    app: <SVC>
+  ports:
+    - name: grpc
+      port: <PORT>
+      targetPort: grpc
+    - name: metrics
+      port: <METRICS_PORT>
+      targetPort: metrics
+
+---
+# PodDisruptionBudget —— 节点维护 / 自动扩缩容时强制保留 ≥1 个副本在线。
+# 跟 readinessProbe 配合保证流量永不全断。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: <SVC>
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: <SVC>

@@ -31,6 +31,7 @@ type Client struct {
 
 // Config 客户端配置
 type Config struct {
+<<<<<<< HEAD
 	// Endpoint：静态地址（DNS 名:port），仅在 RegistryEndpoints 为空时用作 fallback
 	// 直连。通常 dev 单仓 docker run 没 etcd 时用。
 	Endpoint string
@@ -42,12 +43,21 @@ type Config struct {
 	RegistryEndpoints []string
 	BearerToken       string
 	RPCTimeout        time.Duration
+=======
+	Endpoint          string
+	RegistryEndpoints []string // 非空走 etcd:///kms-manage 服务发现
+	BearerToken string
+	RPCTimeout  time.Duration
+>>>>>>> feat/shadow-traffic
 	// mTLS 客户端证书（card DC 内 service-to-service mutual auth）
 	ClientCert string
 	ClientKey  string
 	ServerCA   string
 	// dev 路径允许 insecure；prod assertProdSafety 会拒
 	Insecure bool
+	// BypassHardened：临时旁路，跳过 serviceregistry hardened opts 直接 grpc.NewClient。
+	// 仅用于排查（service config / keepalive 等是否引发卡 RPC）。
+	BypassHardened bool
 }
 
 // New dial kms-manage
@@ -70,6 +80,7 @@ func New(cfg Config) (*Client, error) {
 		}
 		creds = credentials.NewTLS(tc)
 	}
+<<<<<<< HEAD
 	// 走 serviceregistry.DialWithFallback：endpoints 非空时自动用 etcd resolver
 	// 解析 kms-manage 真实存活副本；空时退回 cfg.Endpoint DNS 直连。
 	// 两条路径都自动获得 round_robin LB + 10s/3s keepalive + UNAVAILABLE/
@@ -80,7 +91,23 @@ func New(cfg Config) (*Client, error) {
 	conn, err := serviceregistry.DialWithFallback(
 		cfg.RegistryEndpoints, "kms-manage", cfg.Endpoint,
 		grpc.WithTransportCredentials(creds),
+=======
+	var (
+		conn *grpc.ClientConn
+		err  error
+>>>>>>> feat/shadow-traffic
 	)
+	if cfg.BypassHardened {
+		// 旁路模式：直接 grpc.NewClient(endpoint, creds)，不走 etcd resolver、
+		// 不附 service config、不挂 keepalive。绑卡 KMS 调用是低频，stale conn
+		// 的风险换 RPC 必到，先保跑通。
+		conn, err = grpc.NewClient(cfg.Endpoint, grpc.WithTransportCredentials(creds))
+	} else {
+		conn, err = serviceregistry.DialWithFallback(
+			cfg.RegistryEndpoints, "kms-manage", cfg.Endpoint,
+			grpc.WithTransportCredentials(creds),
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("kmsclient dial: %w", err)
 	}
@@ -88,20 +115,30 @@ func New(cfg Config) (*Client, error) {
 	if t <= 0 {
 		t = 3 * time.Second
 	}
+<<<<<<< HEAD
 	return &Client{
 		conn:    conn,
 		api:     kmsv1.NewKMSServiceClient(conn),
 		timeout: t,
 		bearer:  cfg.BearerToken,
 	}, nil
+=======
+	return &Client{conn: conn, api: kmsv1.NewKMSServiceClient(conn), timeout: t, bearer: cfg.BearerToken}, nil
+>>>>>>> feat/shadow-traffic
 }
 
 func (c *Client) Close() error { return c.conn.Close() }
 
+<<<<<<< HEAD
 // Encrypt 实现 vault.KMS。映射到 kms-manage 的 KMSService.Encrypt RPC。
 //
 // AAD 在 proto 字段名是 `context`（vault 包里我们叫 aad，语义一致）。
 // 返回的 ciphertext 形如 `kms:v1:<key_id>:<base64-payload>`，作为 stored / payment token 内容。
+=======
+// Encrypt 调 kms-manage.KMSService.Encrypt。AAD 在 proto 字段名是 `context`
+// （vault 包里我们叫 aad，语义一致）。返回 ciphertext 形如
+// `kms:v1:<key_id>:<base64-payload>`，作为 stored / payment token 内容。
+>>>>>>> feat/shadow-traffic
 func (c *Client) Encrypt(ctx context.Context, plaintext []byte, aad string) (string, string, error) {
 	cctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -119,9 +156,14 @@ func (c *Client) Encrypt(ctx context.Context, plaintext []byte, aad string) (str
 	return resp.GetCiphertext(), resp.GetKeyId(), nil
 }
 
+<<<<<<< HEAD
 // Decrypt 实现 vault.KMS。映射到 kms-manage 的 KMSService.Decrypt RPC。
 //
 // AAD 必须跟 Encrypt 时**完全一致**；不一致会被 kms-manage 拒（防止 token 错绑用户/PI）。
+=======
+// Decrypt 调 kms-manage.KMSService.Decrypt。AAD 必须跟 Encrypt 时**完全一致**；
+// 不一致会被 kms-manage 拒（防止 token 错绑用户/PI）。
+>>>>>>> feat/shadow-traffic
 func (c *Client) Decrypt(ctx context.Context, ciphertext string, aad string) ([]byte, string, error) {
 	cctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()

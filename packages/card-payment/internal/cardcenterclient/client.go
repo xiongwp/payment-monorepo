@@ -26,6 +26,7 @@ type Client struct {
 }
 
 type Config struct {
+<<<<<<< HEAD
 	// Endpoint：静态地址，仅在 RegistryEndpoints 为空时用作 fallback 直连。
 	Endpoint string
 	// RegistryEndpoints：etcd cluster 地址（如 ["etcd:2379"]）。非空 → 走
@@ -37,6 +38,15 @@ type Config struct {
 	ClientKey         string
 	ServerCA          string
 	Insecure          bool
+=======
+	Endpoint          string
+	RegistryEndpoints []string // 非空走 etcd:///card-center
+	RPCTimeout time.Duration
+	ClientCert string
+	ClientKey  string
+	ServerCA   string
+	Insecure   bool
+>>>>>>> feat/shadow-traffic
 }
 
 // New dial card-center over mTLS（或 dev insecure）
@@ -57,6 +67,7 @@ func New(cfg Config) (*Client, error) {
 		}
 		creds = credentials.NewTLS(tc)
 	}
+<<<<<<< HEAD
 	// DialWithFallback：endpoints 非空 → etcd resolver，空 → 退回 endpoint
 	// 静态 DNS。两条路径都自动获得 round_robin LB + 10s/3s keepalive +
 	// UNAVAILABLE/DEADLINE_EXCEEDED retry。
@@ -64,6 +75,9 @@ func New(cfg Config) (*Client, error) {
 		cfg.RegistryEndpoints, "card-center", cfg.Endpoint,
 		grpc.WithTransportCredentials(creds),
 	)
+=======
+	conn, err := serviceregistry.DialWithFallback(cfg.RegistryEndpoints, "card-center", cfg.Endpoint, grpc.WithTransportCredentials(creds))
+>>>>>>> feat/shadow-traffic
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}

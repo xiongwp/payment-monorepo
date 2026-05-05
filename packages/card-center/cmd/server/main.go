@@ -72,6 +72,7 @@ func loadConfig() (*viper.Viper, error) {
 	v.SetEnvPrefix("CARDCENTER")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+<<<<<<< HEAD
 	for _, k := range []string{"env", "kms.endpoint", "kms.registry_endpoints",
 		"kms.insecure", "kms.bearer_token",
 		"kms.rpc_timeout", "kms.client_cert", "kms.client_key", "kms.server_ca",
@@ -88,8 +89,36 @@ func loadConfig() (*viper.Viper, error) {
 		// 服务自注册到 etcd（被 card-payment / api-gateway / BFF 调用）
 		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl",
 		"server.grpc_port",
+=======
+	for _, k := range []string{"env",
+		"kms.endpoint", "kms.registry_endpoints",
+		"kms.insecure", "kms.bearer_token", "kms.rpc_timeout",
+		"kms.client_cert", "kms.client_key", "kms.server_ca",
+		"kms.bypass_hardened",
+		"tls.cert", "tls.key", "tls.client_ca",
+		"audit.kafka_brokers",
+		"database.meta.dsn", "database.meta.name",
+		"database.meta.max_open_conns", "database.meta.max_idle_conns", "database.meta.conn_max_lifetime",
+		// HTTPS 入口 + 用户登录态校验上游（mTLS gRPC 直连 user-merchant-core）
+		"https.enabled", "https.port", "https.cert", "https.key",
+		"https.dev_no_tls", "https.cors.allowed_origin",
+		"auth.user_merchant.endpoint", "auth.user_merchant.registry_endpoints",
+		"auth.user_merchant.insecure",
+		"auth.user_merchant.client_cert",
+		"auth.user_merchant.client_key",
+		"auth.user_merchant.server_ca",
+		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl", "server.grpc_port",
+>>>>>>> feat/shadow-traffic
 	} {
 		_ = v.BindEnv(k)
+	}
+	// 10 个 shard DSN 显式 BindEnv（viper.UnmarshalKey 不读 env 嵌套子键）
+	for i := 0; i < 10; i++ {
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.dsn", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.name", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.max_open_conns", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.max_idle_conns", i))
+		_ = v.BindEnv(fmt.Sprintf("database.shard_%d.conn_max_lifetime", i))
 	}
 	v.SetConfigName("config")
 	v.SetConfigType("yaml")
@@ -165,10 +194,14 @@ func newLogger() (*zap.Logger, error) {
 func newRouter() *sharding.Router { return sharding.NewRouter() }
 
 func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (*repo.Manager, error) {
+<<<<<<< HEAD
 	// 注意：用 v.GetString 而不是 v.UnmarshalKey。
 	// viper 的 UnmarshalKey 不会触发 AutomaticEnv 的查表，导致
 	// CARDCENTER_DATABASE_META_DSN 等 env 变量被忽略，构造函数报 meta.dsn required。
 	// 显式 GetString 能命中 BindEnv 注册的键。
+=======
+	// 显式 GetString —— viper.UnmarshalKey 在纯 env 来源时不递归读子键，会拿空 struct
+>>>>>>> feat/shadow-traffic
 	meta := repo.DBConfig{
 		Name:            v.GetString("database.meta.name"),
 		DSN:             v.GetString("database.meta.dsn"),
@@ -176,6 +209,7 @@ func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (
 		MaxIdleConns:    v.GetInt("database.meta.max_idle_conns"),
 		ConnMaxLifetime: v.GetInt("database.meta.conn_max_lifetime"),
 	}
+<<<<<<< HEAD
 	if meta.Name == "" {
 		meta.Name = "card_center_meta"
 	}
@@ -194,11 +228,22 @@ func newDBManager(v *viper.Viper, router *sharding.Router, logger *zap.Logger) (
 		}
 		if shards[i].Name == "" {
 			shards[i].Name = fmt.Sprintf("card_center_db_%d", i)
+=======
+	shards := make([]repo.DBConfig, sharding.ShardDBCount)
+	for i := 0; i < sharding.ShardDBCount; i++ {
+		shards[i] = repo.DBConfig{
+			Name:            v.GetString(fmt.Sprintf("database.shard_%d.name", i)),
+			DSN:             v.GetString(fmt.Sprintf("database.shard_%d.dsn", i)),
+			MaxOpenConns:    v.GetInt(fmt.Sprintf("database.shard_%d.max_open_conns", i)),
+			MaxIdleConns:    v.GetInt(fmt.Sprintf("database.shard_%d.max_idle_conns", i)),
+			ConnMaxLifetime: v.GetInt(fmt.Sprintf("database.shard_%d.conn_max_lifetime", i)),
+>>>>>>> feat/shadow-traffic
 		}
 	}
 	return repo.NewManager(meta, shards, router, logger)
 }
 
+<<<<<<< HEAD
 func newKMSClient(v *viper.Viper) (vault.KMS, error) {
 	// kms.registry_endpoints 是优先项（走 etcd:///kms-manage 服务发现，绕开
 	// docker DNS 那种 alias 错绑问题）；空时退回 kms.endpoint 静态 DNS。
@@ -209,6 +254,24 @@ func newKMSClient(v *viper.Viper) (vault.KMS, error) {
 		// 兜底：yaml 写成 list 的情况
 		registry = v.GetStringSlice("kms.registry_endpoints")
 	}
+=======
+func newKMSClient(v *viper.Viper, logger *zap.Logger) (vault.KMS, error) {
+	registry := splitCSV(v.GetString("kms.registry_endpoints"))
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("kms.registry_endpoints")
+	}
+	// fallback 到全局 registry.endpoints，跟 newUserMerchantConn 行为对齐
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("registry.endpoints")
+		if len(registry) == 0 {
+			registry = splitCSV(v.GetString("registry.endpoints"))
+		}
+	}
+	logger.Info("card-center → kms-manage dial config",
+		zap.String("endpoint_fallback", v.GetString("kms.endpoint")),
+		zap.Strings("registry_endpoints", registry),
+		zap.Bool("insecure", v.GetBool("kms.insecure")))
+>>>>>>> feat/shadow-traffic
 	cfg := kmsclient.Config{
 		Endpoint:          v.GetString("kms.endpoint"),
 		RegistryEndpoints: registry,
@@ -218,6 +281,10 @@ func newKMSClient(v *viper.Viper) (vault.KMS, error) {
 		ClientKey:         v.GetString("kms.client_key"),
 		ServerCA:          v.GetString("kms.server_ca"),
 		Insecure:          v.GetBool("kms.insecure"),
+<<<<<<< HEAD
+=======
+		BypassHardened:    v.GetBool("kms.bypass_hardened"),
+>>>>>>> feat/shadow-traffic
 	}
 	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
 		return nil, errors.New("kms.endpoint or kms.registry_endpoints required")
@@ -225,8 +292,13 @@ func newKMSClient(v *viper.Viper) (vault.KMS, error) {
 	return kmsclient.New(cfg)
 }
 
+<<<<<<< HEAD
 // splitCSV 把 "a,b,c" / "a, b , c" / "" 拆成 []string；空 token 自动丢。
 // 给"环境变量是逗号分隔字符串、想当 list 用"的场景用。
+=======
+
+
+>>>>>>> feat/shadow-traffic
 func splitCSV(s string) []string {
 	if s == "" {
 		return nil
@@ -352,6 +424,7 @@ func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*
 	if len(registry) == 0 {
 		registry = v.GetStringSlice("auth.user_merchant.registry_endpoints")
 	}
+<<<<<<< HEAD
 	// 跟全局 registry.endpoints 共用同一套 etcd cluster：上面单独配置是为了
 	// 个别服务（card-center 隔离 DC 内）允许跨 DC 走专用 registry，配置兼容。
 	if len(registry) == 0 {
@@ -384,6 +457,35 @@ func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*
 	// 副本，绕开 docker DNS alias 错绑），空时退回静态 endpoint DNS 直连。
 	// 两条路径都自动获得 round_robin LB + 10s/3s keepalive + 配套 server 端
 	// HardenedServerOptions 的 EnforcementPolicy。
+=======
+	// dev：auth.user_merchant.insecure=true → 明文 gRPC 跳过 mTLS（assertProdSafety 拦 prod）
+	insecureMode := v.GetBool("auth.user_merchant.insecure")
+	var dialOpts []grpc.DialOption
+	if insecureMode {
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecuregrpc.NewCredentials()))
+		logger.Info("card-center → user-merchant-core: INSECURE mode (dev)")
+	} else {
+		tlsCfg, err := buildClientMTLS(
+			v.GetString("auth.user_merchant.client_cert"),
+			v.GetString("auth.user_merchant.client_key"),
+			v.GetString("auth.user_merchant.server_ca"),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("user-merchant client tls: %w", err)
+		}
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+	}
+	registry := splitCSV(v.GetString("auth.user_merchant.registry_endpoints"))
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("auth.user_merchant.registry_endpoints")
+	}
+	if len(registry) == 0 {
+		registry = v.GetStringSlice("registry.endpoints")
+		if len(registry) == 0 {
+			registry = splitCSV(v.GetString("registry.endpoints"))
+		}
+	}
+>>>>>>> feat/shadow-traffic
 	conn, err := serviceregistry.DialWithFallback(registry, "user-merchant-core", endpoint, dialOpts...)
 	if err != nil {
 		return nil, err
@@ -443,6 +545,7 @@ func startHTTPS(lc fx.Lifecycle, v *viper.Viper, rest *httpsauth.RESTServer, log
 	}
 	certPath := v.GetString("https.cert")
 	keyPath := v.GetString("https.key")
+<<<<<<< HEAD
 
 	// dev_no_tls：true 时跑明文 HTTP（不需要证书，浏览器无 self-signed warning）。
 	// env=prod 由 assertProdSafety 拦截 dev_no_tls=true，绝不允许生产明文。
@@ -462,19 +565,38 @@ func startHTTPS(lc fx.Lifecycle, v *viper.Viper, rest *httpsauth.RESTServer, log
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           corsMiddleware(rest.Handler(), allowedOrigin, logger),
+=======
+	corsOrigin := v.GetString("https.cors.allowed_origin")
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           corsMiddleware(rest.Handler(), corsOrigin, logger),
+>>>>>>> feat/shadow-traffic
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	devNoTLS := v.GetBool("https.dev_no_tls")
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
+<<<<<<< HEAD
 			logger.Info("card-center HTTPS REST listening",
 				zap.Int("port", port), zap.String("mode", mode),
 				zap.String("cors_allowed_origin", allowedOrigin))
 			go func() {
 				var err error
 				if devNoTLS {
+=======
+			mode := "TLS"
+			if devNoTLS {
+				mode = "DEV-PLAINTEXT"
+			}
+			logger.Info("card-center HTTPS REST listening", zap.Int("port", port), zap.String("mode", mode))
+			go func() {
+				var err error
+				if devNoTLS {
+					// dev：明文 HTTP 让本地 docker 不需要 cert（assertProdSafety 在 prod 拦这条）
+>>>>>>> feat/shadow-traffic
 					err = srv.ListenAndServe()
 				} else {
 					err = srv.ListenAndServeTLS(certPath, keyPath)
@@ -493,6 +615,7 @@ func startHTTPS(lc fx.Lifecycle, v *viper.Viper, rest *httpsauth.RESTServer, log
 	})
 }
 
+<<<<<<< HEAD
 // corsMiddleware 给 dev 跨域 fetch 用。生产路径（同域 SDK 或 reverse proxy）
 // 不该依赖这个；CORS allowed_origin 必须显式配，不接受 "*" + credentials（浏览器禁止）。
 func corsMiddleware(next http.Handler, allowedOrigin string, logger *zap.Logger) http.Handler {
@@ -506,6 +629,30 @@ func corsMiddleware(next http.Handler, allowedOrigin string, logger *zap.Logger)
 			w.Header().Set("Access-Control-Max-Age", "300")
 		}
 		// 预检直接 204
+=======
+
+
+// corsMiddleware 给 HTTPS REST 加最小可用的 CORS 头，让 api-gateway 上的
+// 前端 JS 跨域 fetch 到 card-center 8443。
+//
+//   - allowedOrigin == "" → 完全不出 CORS 头（同源调用 / 服务间调用场景）
+//   - allowedOrigin == "*" → 任意来源（dev only）
+//   - 其它 → 严格匹配 Origin
+//
+// OPTIONS preflight 直接返 204，不进 auth middleware 链 —— 不然 401 会让
+// 浏览器拿不到 Access-Control-Allow-Origin，整个 fetch 失败。
+func corsMiddleware(next http.Handler, allowedOrigin string, logger *zap.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && (allowedOrigin == "*" || origin == allowedOrigin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+			w.Header().Set("Access-Control-Max-Age", "600")
+			w.Header().Set("Vary", "Origin")
+		}
+>>>>>>> feat/shadow-traffic
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

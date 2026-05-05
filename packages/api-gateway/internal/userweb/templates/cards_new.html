@@ -55,10 +55,15 @@
 <script>
 (function(){
   // 绑卡 endpoint：服务端模板渲染时注入 card-center 的公网 HTTPS 地址。
+<<<<<<< HEAD
   // html/template 在 <script> 上下文里会**自动**给字符串加引号 + 转义，
   // 千万别再用 printf "%q" 了 —— 那会被 escape 成 "\"http://...\""，
   // fetch URL 实际跑成 http://localhost/cards/%22http:%2F%2Flocalhost:8443%22/v1/cards。
   var CARD_CENTER_URL = {{ .CardCenterURL }};
+=======
+  // dev 时如果 CardCenterURL 为空，fallback 走 same-origin（不推荐，仅本地起步）。
+  var CARD_CENTER_URL = "{{ .CardCenterURL }}";
+>>>>>>> feat/shadow-traffic
 
   function showFlash(msg, isOK) {
     var el = document.getElementById('flash');

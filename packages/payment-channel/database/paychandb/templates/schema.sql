@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS `channel_token_${TABLE}` (
   `pi_id`            VARCHAR(32) NOT NULL COMMENT '首次创建时的 pi，分片键',
   `customer_ref`     VARCHAR(64) NOT NULL COMMENT 'payment-core 透传的 customer id',
   `adapter`          VARCHAR(32) NOT NULL,
-  `token`            VARCHAR(255) NOT NULL COMMENT '密文存储（AES-GCM）',
+  `token`            VARCHAR(512) NOT NULL COMMENT '密文存储（AES-GCM）',
   `brand`            VARCHAR(32) DEFAULT NULL,
   `last4`            VARCHAR(8)  DEFAULT NULL,
   `status`           VARCHAR(16) NOT NULL DEFAULT 'active',

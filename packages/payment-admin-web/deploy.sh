@@ -320,6 +320,35 @@ ensure_shared_init_sql() {
     || fatal "generate-shared-init.sh 漏拼 user-merchant-core 段"
 }
 
+# ensure_card_dbs 幂等补灌 card_center / card_payment 数据库 ——
+# shared-meta + shared-shard-0..9 容器首次启动时会跑 init SQL，但已经在跑的容器
+# 不会重 source，所以新加 card_* 服务时容器侧 mysql 没这些 db。
+# 调度规则：
+#   - up 包含 card-center 或 card-payment 时调一次（CREATE IF NOT EXISTS 没副作用）
+#   - shared-db 没起的话静默跳过（cmd_up 会先起 shared-db 再回头）
+ensure_card_dbs() {
+  local need_card=false
+  for t in "$@"; do
+    case "$t" in card-center|card-payment) need_card=true ;; esac
+  done
+  [[ "$need_card" == "false" ]] && return 0
+  # shared-meta 没起？跳过 —— cmd_up 流程会先把 shared-db 起来再回头时再调
+  if ! docker ps --format '{{.Names}}' | grep -qx 'shared-meta'; then
+    return 0
+  fi
+  info "ensure_card_dbs: 幂等补灌 card_center_* / card_payment_* DB"
+  docker exec -i shared-meta mysql -uroot -ppassword <<'SQL_META' >/dev/null 2>&1
+CREATE DATABASE IF NOT EXISTS card_center_meta  DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+CREATE DATABASE IF NOT EXISTS card_payment_meta DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+SQL_META
+  for i in 0 1 2 3 4 5 6 7 8 9; do
+    docker exec -i "shared-shard-$i" mysql -uroot -ppassword <<SQL_SHARD >/dev/null 2>&1
+CREATE DATABASE IF NOT EXISTS \`card_center_db_$i\`  DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+CREATE DATABASE IF NOT EXISTS \`card_payment_db_$i\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+SQL_SHARD
+  done
+}
+
 cmd_up() {
   ensure_network
   ensure_kms_keys
@@ -328,6 +357,11 @@ cmd_up() {
 
   local targets=("$@")
   [[ ${#targets[@]} -eq 0 ]] && targets=("${ALL_SERVICES[@]}")
+
+  # 幂等补灌 card_*_db / card_*_meta —— 只在 targets 含 card-center/card-payment
+  # 且 shared-meta 已经在跑（即 shared-db 是先于 card-* 起来的，或本次 up 顺序
+  # 就把 shared-db 排前）时才执行；早调一次没坏处。
+  ensure_card_dbs "${targets[@]}"
 
   # 不论用户传啥 service，shared-db + risk-stack 是所有 app 的基础设施，
   # 没起来 app 会连不上 MySQL / Redis / Kafka / etcd。这里自动前置。
