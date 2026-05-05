@@ -1,0 +1,108 @@
+version: "3.9"
+
+# card-center 联栈：在 *独立 DC* 部署。
+# 包含 1 meta + 10 shard MySQL + card-center 服务自身。
+# kms-card 是隔离 DC 内的独立 KMS 实例（不复用 main DC 的 kms-manage）。
+#
+# 网络：card-internal 网络是 internal=true，不接外网；
+#       入站 / 出站走专门的 ingress（cert-manager 签发的 mTLS endpoint）。
+
+networks:
+  default:
+    name: card-internal
+    driver: bridge
+    internal: true
+
+x-mysql-base: &mysql-base
+  image: mysql:8.0
+  command: ["mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci",
+            "--require_secure_transport=ON"]   # 仅 TLS 入站
+  environment:
+    MYSQL_ROOT_PASSWORD: ${CARD_DB_PASSWORD:?must set}
+  healthcheck:
+    test: ["CMD", "mysqladmin", "ping", "-uroot", "-p${CARD_DB_PASSWORD:?}", "--silent"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+
+services:
+  card-meta:
+    <<: *mysql-base
+    container_name: card-meta
+    volumes:
+      - card-meta-data:/var/lib/mysql
+      - ./database/metadb/init/init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+
+  card-shard-0: { <<: *mysql-base, container_name: card-shard-0, volumes: ["card-shard-0-data:/var/lib/mysql", "./database/userdb/init/0_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  card-shard-1: { <<: *mysql-base, container_name: card-shard-1, volumes: ["card-shard-1-data:/var/lib/mysql", "./database/userdb/init/1_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  card-shard-2: { <<: *mysql-base, container_name: card-shard-2, volumes: ["card-shard-2-data:/var/lib/mysql", "./database/userdb/init/2_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  card-shard-3: { <<: *mysql-base, container_name: card-shard-3, volumes: ["card-shard-3-data:/var/lib/mysql", "./database/userdb/init/3_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  card-shard-4: { <<: *mysql-base, container_name: card-shard-4, volumes: ["card-shard-4-data:/var/lib/mysql", "./database/userdb/init/4_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  card-shard-5: { <<: *mysql-base, container_name: card-shard-5, volumes: ["card-shard-5-data:/var/lib/mysql", "./database/userdb/init/5_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  card-shard-6: { <<: *mysql-base, container_name: card-shard-6, volumes: ["card-shard-6-data:/var/lib/mysql", "./database/userdb/init/6_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  card-shard-7: { <<: *mysql-base, container_name: card-shard-7, volumes: ["card-shard-7-data:/var/lib/mysql", "./database/userdb/init/7_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  card-shard-8: { <<: *mysql-base, container_name: card-shard-8, volumes: ["card-shard-8-data:/var/lib/mysql", "./database/userdb/init/8_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  card-shard-9: { <<: *mysql-base, container_name: card-shard-9, volumes: ["card-shard-9-data:/var/lib/mysql", "./database/userdb/init/9_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+
+  card-center:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        payment-util: ../payment-util
+      secrets:
+        - GITHUB_TOKEN
+    image: card-center:latest
+    container_name: card-center
+    depends_on:
+      card-meta:    { condition: service_healthy }
+      card-shard-0: { condition: service_healthy }
+      card-shard-1: { condition: service_healthy }
+      card-shard-2: { condition: service_healthy }
+      card-shard-3: { condition: service_healthy }
+      card-shard-4: { condition: service_healthy }
+      card-shard-5: { condition: service_healthy }
+      card-shard-6: { condition: service_healthy }
+      card-shard-7: { condition: service_healthy }
+      card-shard-8: { condition: service_healthy }
+      card-shard-9: { condition: service_healthy }
+    ports:
+      - "9443:9443"   # mTLS gRPC
+      - "9543:9543"   # /metrics
+    environment:
+      CARDCENTER_ENV: "prod"
+      CARDCENTER_TLS_CERT: "/etc/tls/server.crt"
+      CARDCENTER_TLS_KEY:  "/etc/tls/server.key"
+      CARDCENTER_TLS_CLIENT_CA: "/etc/tls/client-ca.crt"
+      CARDCENTER_KMS_ENDPOINT: "kms-card:9290"
+      CARDCENTER_AUDIT_KAFKA_BROKERS: "audit-kafka:9093"
+      CARDCENTER_DATABASE_META_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-meta:3306)/card_center_meta?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDCENTER_DATABASE_SHARD_0_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-shard-0:3306)/card_center_db_0?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDCENTER_DATABASE_SHARD_1_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-shard-1:3306)/card_center_db_1?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDCENTER_DATABASE_SHARD_2_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-shard-2:3306)/card_center_db_2?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDCENTER_DATABASE_SHARD_3_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-shard-3:3306)/card_center_db_3?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDCENTER_DATABASE_SHARD_4_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-shard-4:3306)/card_center_db_4?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDCENTER_DATABASE_SHARD_5_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-shard-5:3306)/card_center_db_5?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDCENTER_DATABASE_SHARD_6_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-shard-6:3306)/card_center_db_6?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDCENTER_DATABASE_SHARD_7_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-shard-7:3306)/card_center_db_7?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDCENTER_DATABASE_SHARD_8_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-shard-8:3306)/card_center_db_8?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDCENTER_DATABASE_SHARD_9_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-shard-9:3306)/card_center_db_9?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+    volumes:
+      - ${TLS_DIR:?must set TLS_DIR}:/etc/tls:ro
+
+volumes:
+  card-meta-data:
+  card-shard-0-data:
+  card-shard-1-data:
+  card-shard-2-data:
+  card-shard-3-data:
+  card-shard-4-data:
+  card-shard-5-data:
+  card-shard-6-data:
+  card-shard-7-data:
+  card-shard-8-data:
+  card-shard-9-data:
+
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

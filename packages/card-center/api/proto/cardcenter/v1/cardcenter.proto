@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package cardcenter.v1;
+
+option go_package = "github.com/xiongwp/card-center/api/proto/cardcenter/v1;cardcenterv1";
+
+// CardCenter 卡 token vault。无数据库，token 本身即是 KMS-encrypted PAN。
+//
+// 部署在隔离 DC（SAQ-D scope），仅接受 mTLS over HTTPS。
+service CardCenter {
+  // Tokenize 用户存卡：PAN → 长期存卡 token。
+  //
+  // 调用方必须通过 mTLS 提供 user_id 绑定信息（AAD 校验）。同一 PAN + 同一
+  // user_id 多次 Tokenize 会得到不同 token（含 nonce），都能解出同一 PAN。
+  //
+  // 调用方：前端 SDK 直传到 card-center（不经主 DC，否则主 DC 触碰 PAN 提升
+  // 到 SAQ-D）。前端拿到 stored_token 后存到自己的后端（user-merchant-core
+  // 的 user_card 表）。
+  rpc Tokenize(TokenizeRequest) returns (TokenizeResponse);
+
+  // CreatePaymentToken 把存卡 token 派生成一次性支付 token（TTL 30min）。
+  //
+  // 调用方：order-core 在 PI Confirm 时调（通过 mTLS）。
+  // 把返回的 payment_token 传给 payment-channel；payment-channel 再传给
+  // card-payment；card-payment 调 Detokenize 拿 PAN。
+  rpc CreatePaymentToken(CreatePaymentTokenRequest) returns (CreatePaymentTokenResponse);
+
+  // Detokenize 用支付 token 换 PAN。
+  //
+  // **唯一**应该调本 RPC 的服务是 card-payment。其它任何调用应该被防火墙拦截
+  // （客户端证书 CN 白名单 = ["card-payment"]）。
+  //
+  // 校验：AAD 含 pi_id + 时间戳没过期 + KMS key 没 disable。
+  rpc Detokenize(DetokenizeRequest) returns (DetokenizeResponse);
+
+  // DeleteCard 业务层 soft delete（card-center 无状态，物理失效靠 KMS rotation）。
+  // 实际只发一条 audit event；调用方应在自己的 user_card 表标 deleted_at。
+  rpc DeleteCard(DeleteCardRequest) returns (DeleteCardResponse);
+
+  // RevokeStoredToken 调用方主动作废一个 stored_token。
+  // 跟 DeleteCard 类似，仅记审计；物理失效靠 key rotation。
+  rpc RevokeStoredToken(RevokeStoredTokenRequest) returns (RevokeStoredTokenResponse);
+}
+
+// ─── Tokenize ──────────────────────────────────────────────────────────────
+
+message TokenizeRequest {
+  // user_id 卡的所有者（绑 token AAD，防止跨用户偷接）
+  string user_id = 1;
+  // pan 卡号，13-19 位数字，必填
+  string pan = 2;
+  // exp_month 1-12
+  int32 exp_month = 3;
+  // exp_year 4 位（2026）
+  int32 exp_year = 4;
+  // holder_name 持卡人姓名（可选）
+  string holder_name = 5;
+  // 调用方 trace_id（端到端关联）
+  string trace_id = 10;
+}
+
+message TokenizeResponse {
+  // stored_token 长期 token；调用方持久化到自己业务表
+  string stored_token = 1;
+  // masked_pan BIN(6)+last4，给前端展示
+  string masked_pan = 2;
+  // network "visa" / "mastercard" / "jcb" / "amex" / "unionpay"
+  string network = 3;
+  // kms_kid 当前加密用的 KMS key version（rotate 后老 token 仍可解）
+  string kms_kid = 4;
+}
+
+// ─── CreatePaymentToken ────────────────────────────────────────────────────
+
+message CreatePaymentTokenRequest {
+  string stored_token = 1;
+  string user_id      = 2;  // 跟 stored_token AAD 校验一致
+  string pi_id        = 3;  // 绑到这笔 PI（payment_token AAD）
+  int64  amount       = 4;  // 金额（最小货币单位）
+  string currency     = 5;
+  // ttl_seconds 默认 1800（30min），上限 1800
+  int32  ttl_seconds  = 6;
+  string trace_id     = 10;
+}
+
+message CreatePaymentTokenResponse {
+  // payment_token 一次性，只能给 pi_id 用
+  string payment_token = 1;
+  // expires_at unix 秒
+  int64  expires_at = 2;
+  // masked_pan 给商户/用户展示
+  string masked_pan = 3;
+  string network = 4;
+}
+
+// ─── Detokenize ────────────────────────────────────────────────────────────
+
+message DetokenizeRequest {
+  // payment_token 由 CreatePaymentToken 颁发
+  string payment_token = 1;
+  // pi_id 绑定校验（AAD）
+  string pi_id = 2;
+  // caller 必填，记审计：通常是 "card-payment"，其它会被业务层拒绝
+  string caller = 3;
+  string trace_id = 10;
+}
+
+message DetokenizeResponse {
+  // pan 仅在 RPC 响应内出现，调用方收到后**立即用、立即清栈**，绝不存任何介质
+  string pan = 1;
+  int32  exp_month = 2;
+  int32  exp_year = 3;
+  string holder_name = 4;
+  string masked_pan = 5;
+  string network = 6;
+}
+
+// ─── DeleteCard ────────────────────────────────────────────────────────────
+
+message DeleteCardRequest {
+  string user_id = 1;
+  string stored_token = 2;
+  string reason = 3;
+  string trace_id = 10;
+}
+
+message DeleteCardResponse {
+  // soft delete 永远 ok=true；audit event 已 emit
+  bool ok = 1;
+}
+
+message RevokeStoredTokenRequest {
+  string stored_token = 1;
+  string reason = 2;
+  string trace_id = 10;
+}
+
+message RevokeStoredTokenResponse {
+  bool ok = 1;
+}

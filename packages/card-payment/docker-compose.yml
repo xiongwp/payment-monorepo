@@ -1,0 +1,112 @@
+version: "3.9"
+
+# card-payment 联栈：跟 card-center 部署在同一独立 DC，共享 card-internal 网络。
+# 各自有独立的 MySQL 集群（card-payment 自己的 1 meta + 10 shard）。
+#
+# 出站网络：
+#   - mTLS gRPC → card-center (隔离 DC 内)
+#   - HTTPS → 卡组织 endpoint (Visa Net / Mastercard MIP / 等)，需要专线 / VPN
+#   - 自有 MySQL
+
+networks:
+  default:
+    name: card-internal
+    external: true   # 跟 card-center 共享同名 internal 网络
+
+x-mysql-base: &mysql-base
+  image: mysql:8.0
+  command: ["mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci",
+            "--require_secure_transport=ON"]
+  environment:
+    MYSQL_ROOT_PASSWORD: ${CARDPAY_DB_PASSWORD:?must set}
+  healthcheck:
+    test: ["CMD", "mysqladmin", "ping", "-uroot", "-p${CARDPAY_DB_PASSWORD:?}", "--silent"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+
+services:
+  cardpay-meta:
+    <<: *mysql-base
+    container_name: card-payment-meta
+    volumes:
+      - cardpay-meta-data:/var/lib/mysql
+      - ./database/metadb/init/init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+
+  cardpay-shard-0: { <<: *mysql-base, container_name: cardpay-shard-0, volumes: ["cardpay-s0-data:/var/lib/mysql", "./database/cardpaymentdb/init/0_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  cardpay-shard-1: { <<: *mysql-base, container_name: cardpay-shard-1, volumes: ["cardpay-s1-data:/var/lib/mysql", "./database/cardpaymentdb/init/1_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  cardpay-shard-2: { <<: *mysql-base, container_name: cardpay-shard-2, volumes: ["cardpay-s2-data:/var/lib/mysql", "./database/cardpaymentdb/init/2_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  cardpay-shard-3: { <<: *mysql-base, container_name: cardpay-shard-3, volumes: ["cardpay-s3-data:/var/lib/mysql", "./database/cardpaymentdb/init/3_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  cardpay-shard-4: { <<: *mysql-base, container_name: cardpay-shard-4, volumes: ["cardpay-s4-data:/var/lib/mysql", "./database/cardpaymentdb/init/4_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  cardpay-shard-5: { <<: *mysql-base, container_name: cardpay-shard-5, volumes: ["cardpay-s5-data:/var/lib/mysql", "./database/cardpaymentdb/init/5_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  cardpay-shard-6: { <<: *mysql-base, container_name: cardpay-shard-6, volumes: ["cardpay-s6-data:/var/lib/mysql", "./database/cardpaymentdb/init/6_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  cardpay-shard-7: { <<: *mysql-base, container_name: cardpay-shard-7, volumes: ["cardpay-s7-data:/var/lib/mysql", "./database/cardpaymentdb/init/7_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  cardpay-shard-8: { <<: *mysql-base, container_name: cardpay-shard-8, volumes: ["cardpay-s8-data:/var/lib/mysql", "./database/cardpaymentdb/init/8_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+  cardpay-shard-9: { <<: *mysql-base, container_name: cardpay-shard-9, volumes: ["cardpay-s9-data:/var/lib/mysql", "./database/cardpaymentdb/init/9_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro"] }
+
+  card-payment:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        payment-util: ../payment-util
+        card-center:  ../card-center
+      secrets:
+        - GITHUB_TOKEN
+    image: card-payment:latest
+    container_name: card-payment
+    depends_on:
+      cardpay-meta:    { condition: service_healthy }
+      cardpay-shard-0: { condition: service_healthy }
+      cardpay-shard-1: { condition: service_healthy }
+      cardpay-shard-2: { condition: service_healthy }
+      cardpay-shard-3: { condition: service_healthy }
+      cardpay-shard-4: { condition: service_healthy }
+      cardpay-shard-5: { condition: service_healthy }
+      cardpay-shard-6: { condition: service_healthy }
+      cardpay-shard-7: { condition: service_healthy }
+      cardpay-shard-8: { condition: service_healthy }
+      cardpay-shard-9: { condition: service_healthy }
+    ports:
+      - "9444:9443"
+      - "9544:9543"
+    environment:
+      CARDPAYMENT_ENV: "prod"
+      CARDPAYMENT_TLS_CERT: "/etc/tls/server.crt"
+      CARDPAYMENT_TLS_KEY:  "/etc/tls/server.key"
+      CARDPAYMENT_TLS_CLIENT_CA: "/etc/tls/client-ca.crt"
+      CARDPAYMENT_CARD_CENTER_ENDPOINT: "card-center:9443"
+      CARDPAYMENT_CARD_CENTER_CLIENT_CERT: "/etc/tls/server.crt"
+      CARDPAYMENT_CARD_CENTER_CLIENT_KEY:  "/etc/tls/server.key"
+      CARDPAYMENT_CARD_CENTER_SERVER_CA:   "/etc/tls/client-ca.crt"
+      CARDPAYMENT_NETWORK_VISA_ENDPOINT: "${VISA_ENDPOINT:?}"
+      CARDPAYMENT_DATABASE_META_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(card-payment-meta:3306)/card_payment_meta?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDPAYMENT_DATABASE_SHARD_0_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(cardpay-shard-0:3306)/card_payment_db_0?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDPAYMENT_DATABASE_SHARD_1_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(cardpay-shard-1:3306)/card_payment_db_1?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDPAYMENT_DATABASE_SHARD_2_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(cardpay-shard-2:3306)/card_payment_db_2?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDPAYMENT_DATABASE_SHARD_3_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(cardpay-shard-3:3306)/card_payment_db_3?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDPAYMENT_DATABASE_SHARD_4_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(cardpay-shard-4:3306)/card_payment_db_4?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDPAYMENT_DATABASE_SHARD_5_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(cardpay-shard-5:3306)/card_payment_db_5?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDPAYMENT_DATABASE_SHARD_6_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(cardpay-shard-6:3306)/card_payment_db_6?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDPAYMENT_DATABASE_SHARD_7_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(cardpay-shard-7:3306)/card_payment_db_7?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDPAYMENT_DATABASE_SHARD_8_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(cardpay-shard-8:3306)/card_payment_db_8?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+      CARDPAYMENT_DATABASE_SHARD_9_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(cardpay-shard-9:3306)/card_payment_db_9?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+    volumes:
+      - ${TLS_DIR:?}:/etc/tls:ro
+
+volumes:
+  cardpay-meta-data:
+  cardpay-s0-data:
+  cardpay-s1-data:
+  cardpay-s2-data:
+  cardpay-s3-data:
+  cardpay-s4-data:
+  cardpay-s5-data:
+  cardpay-s6-data:
+  cardpay-s7-data:
+  cardpay-s8-data:
+  cardpay-s9-data:
+
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

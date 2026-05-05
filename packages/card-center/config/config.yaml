@@ -1,0 +1,59 @@
+# card-center base config（dev 默认）。生产用 config.docker.yaml 覆盖。
+env: "dev"
+
+server:
+  grpc_port: 9443
+
+metrics:
+  addr: ":9543"
+
+# mTLS 证书。dev 可选；prod 必填。
+tls:
+  cert: ""
+  key: ""
+  client_ca: ""
+
+# 客户端 CN 白名单（仅 mTLS 客户端 CN 命中下面任一才能调对应 RPC）
+# Detokenize 必须 caller=card-payment；其它 RPC caller 在 [order-core, user-merchant-core, frontend-sdk]
+auth:
+  client_cn:
+    detokenize: ["card-payment"]
+    tokenize:   ["order-core", "user-merchant-core", "frontend-sdk"]
+    create_payment: ["order-core", "payment-core"]
+    delete:     ["user-merchant-core"]
+
+# kms-manage gRPC（mTLS）
+kms:
+  endpoint: "kms-card:9290"
+  bearer_token: ""
+  rpc_timeout: 3s
+
+# 审计 Kafka（异步发，失败兜底落本地 audit_log 表）
+audit:
+  kafka_brokers: []
+  topic: "card-center.audit"
+  emit_timeout: 1s
+
+database:
+  meta:
+    name: card_center_meta
+    dsn:  ""
+    max_open_conns: 30
+    max_idle_conns: 10
+    conn_max_lifetime: 3600
+  shard_0: { name: card_center_db_0, dsn: "", max_open_conns: 20, max_idle_conns: 5 }
+  shard_1: { name: card_center_db_1, dsn: "", max_open_conns: 20, max_idle_conns: 5 }
+  shard_2: { name: card_center_db_2, dsn: "", max_open_conns: 20, max_idle_conns: 5 }
+  shard_3: { name: card_center_db_3, dsn: "", max_open_conns: 20, max_idle_conns: 5 }
+  shard_4: { name: card_center_db_4, dsn: "", max_open_conns: 20, max_idle_conns: 5 }
+  shard_5: { name: card_center_db_5, dsn: "", max_open_conns: 20, max_idle_conns: 5 }
+  shard_6: { name: card_center_db_6, dsn: "", max_open_conns: 20, max_idle_conns: 5 }
+  shard_7: { name: card_center_db_7, dsn: "", max_open_conns: 20, max_idle_conns: 5 }
+  shard_8: { name: card_center_db_8, dsn: "", max_open_conns: 20, max_idle_conns: 5 }
+  shard_9: { name: card_center_db_9, dsn: "", max_open_conns: 20, max_idle_conns: 5 }
+
+retention:
+  # card_payment_token_used 过期清理周期
+  payment_token_purge_interval: 1h
+  # audit_log 保留 7 年（PCI-DSS 10.7）
+  audit_log_retention: 61320h  # = 7y

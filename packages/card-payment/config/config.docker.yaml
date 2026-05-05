@@ -1,0 +1,42 @@
+env: "prod"
+
+server:
+  grpc_port: 9443
+metrics:
+  addr: ":9543"
+
+tls:
+  cert: "/etc/tls/server.crt"
+  key:  "/etc/tls/server.key"
+  client_ca: "/etc/tls/client-ca.crt"
+
+auth:
+  client_cn:
+    allowed: ["payment-channel"]
+
+card_center:
+  endpoint: "card-center:9443"
+  rpc_timeout: 5s
+
+# 生产必须 https：startup-time guard 会校验
+network:
+  visa:        { endpoint: "https://api.visa.com/...", api_key: "", cert: "" }
+  mastercard:  { endpoint: "https://mip.mastercard.com/...", api_key: "" }
+  jcb:         { endpoint: "" }
+  amex:        { endpoint: "" }
+  unionpay:    { endpoint: "" }
+
+database:
+  meta:
+    name: card_payment_meta
+    dsn: "root:CHANGE_ME@tcp(card-payment-meta:3306)/card_payment_meta?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+  shard_0: { name: card_payment_db_0, dsn: "root:CHANGE_ME@tcp(cardpay-shard-0:3306)/card_payment_db_0?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_1: { name: card_payment_db_1, dsn: "root:CHANGE_ME@tcp(cardpay-shard-1:3306)/card_payment_db_1?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_2: { name: card_payment_db_2, dsn: "root:CHANGE_ME@tcp(cardpay-shard-2:3306)/card_payment_db_2?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_3: { name: card_payment_db_3, dsn: "root:CHANGE_ME@tcp(cardpay-shard-3:3306)/card_payment_db_3?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_4: { name: card_payment_db_4, dsn: "root:CHANGE_ME@tcp(cardpay-shard-4:3306)/card_payment_db_4?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_5: { name: card_payment_db_5, dsn: "root:CHANGE_ME@tcp(cardpay-shard-5:3306)/card_payment_db_5?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_6: { name: card_payment_db_6, dsn: "root:CHANGE_ME@tcp(cardpay-shard-6:3306)/card_payment_db_6?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_7: { name: card_payment_db_7, dsn: "root:CHANGE_ME@tcp(cardpay-shard-7:3306)/card_payment_db_7?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_8: { name: card_payment_db_8, dsn: "root:CHANGE_ME@tcp(cardpay-shard-8:3306)/card_payment_db_8?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_9: { name: card_payment_db_9, dsn: "root:CHANGE_ME@tcp(cardpay-shard-9:3306)/card_payment_db_9?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }

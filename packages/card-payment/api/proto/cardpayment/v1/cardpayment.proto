@@ -1,0 +1,121 @@
+syntax = "proto3";
+
+package cardpayment.v1;
+
+option go_package = "github.com/xiongwp/card-payment/api/proto/cardpayment/v1;cardpaymentv1";
+
+// CardPayment 卡支付处理服务，**唯一**会拿到 PAN 的服务。
+//
+// 路径：payment-channel.adapter[card] → CardPayment.Authorize → card-center.Detokenize
+//      → Visa/Mastercard/JCB/AMEX/UnionPay → 返回 → PAN 立即清栈。
+//
+// 部署在独立 datacenter（SAQ-D scope），仅 mTLS over HTTPS，调用方 CN 白名单
+// 仅含 payment-channel。
+service CardPayment {
+  // Authorize 卡授权（资金预扣）
+  rpc Authorize(AuthorizeRequest) returns (AuthorizeResponse);
+
+  // Capture 把已授权的金额扣实（部分捕获也支持）
+  rpc Capture(CaptureRequest) returns (CaptureResponse);
+
+  // Refund 退款（全额或部分）
+  rpc Refund(RefundRequest) returns (RefundResponse);
+
+  // Void 撤销未捕获的授权
+  rpc Void(VoidRequest) returns (VoidResponse);
+
+  // Query 查询某笔交易在卡组织侧的状态
+  rpc Query(QueryRequest) returns (QueryResponse);
+}
+
+message AuthorizeRequest {
+  // payment_token 由 card-center.CreatePaymentToken 颁发的一次性 token
+  string payment_token = 1;
+  // pi_id 必须与 payment_token AAD 绑定一致
+  string pi_id = 2;
+  int64 amount = 3;
+  string currency = 4;
+  // network 期望走的卡组织（"visa" / "mastercard" / ...）；空则按 BIN 自动判断
+  string network = 5;
+  // merchant_descriptor 商户描述（卡单上显示）
+  string merchant_descriptor = 6;
+  // installment 分期（0 = 不分期）
+  int32 installment = 7;
+  // three_ds_data 3DS 验证结果（前端走的 3DS challenge 通过后传过来）
+  ThreeDSData three_ds_data = 8;
+  string trace_id = 10;
+}
+
+message AuthorizeResponse {
+  // network_ref_no 卡组织返的交易 id（用于后续 Capture / Refund 引用）
+  string network_ref_no = 1;
+  string status = 2; // approved / declined / pending
+  string decline_code = 3;
+  string decline_reason = 4;
+  string masked_pan = 5;
+  string network = 6;
+  // arn (Acquirer Reference Number) 对账用
+  string arn = 7;
+}
+
+message CaptureRequest {
+  string network_ref_no = 1;
+  string pi_id = 2;
+  // amount 部分捕获时小于授权金额；0 表示全额
+  int64 amount = 3;
+  string trace_id = 10;
+}
+
+message CaptureResponse {
+  string network_ref_no = 1;
+  string status = 2;
+  int64 captured_amount = 3;
+}
+
+message RefundRequest {
+  string network_ref_no = 1;
+  string pi_id = 2;
+  int64 amount = 3;
+  string reason = 4;
+  string trace_id = 10;
+}
+
+message RefundResponse {
+  string refund_ref_no = 1;
+  string status = 2;
+  int64 refunded_amount = 3;
+}
+
+message VoidRequest {
+  string network_ref_no = 1;
+  string pi_id = 2;
+  string reason = 3;
+  string trace_id = 10;
+}
+
+message VoidResponse {
+  string status = 1;
+}
+
+message QueryRequest {
+  string network_ref_no = 1;
+  string pi_id = 2;
+  string trace_id = 10;
+}
+
+message QueryResponse {
+  string network_ref_no = 1;
+  string status = 2;
+  int64 amount = 3;
+  string currency = 4;
+  string decline_code = 5;
+}
+
+// ThreeDSData 3DS 2.x 验证结果（仅在 frictionless / challenge 通过后存在）
+message ThreeDSData {
+  string version = 1;     // "2.1.0" / "2.2.0"
+  string eci = 2;         // 02/05 = 验证通过；07 = 未验证
+  string cavv = 3;        // 卡持有人验证值（base64）
+  string xid = 4;         // 交易标识
+  string ds_trans_id = 5; // 卡组织 directory server 交易 id
+}

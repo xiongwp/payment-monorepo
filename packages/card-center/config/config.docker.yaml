@@ -1,0 +1,54 @@
+# card-center docker 联栈配置。
+# 关键：env=prod 触发 startup 期一系列硬约束（mTLS / 全部 shard 配齐 / kms / audit 都得在）。
+env: "prod"
+
+server:
+  grpc_port: 9443
+
+metrics:
+  addr: ":9543"
+
+tls:
+  cert: "/etc/tls/server.crt"
+  key:  "/etc/tls/server.key"
+  client_ca: "/etc/tls/client-ca.crt"
+
+auth:
+  client_cn:
+    detokenize: ["card-payment"]
+    tokenize:   ["order-core", "user-merchant-core", "frontend-sdk"]
+    create_payment: ["order-core", "payment-core"]
+    delete:     ["user-merchant-core"]
+
+# kms-manage 在隔离 DC 内独立部署（不复用 main DC 的 kms）
+kms:
+  endpoint: "kms-card:9290"
+  bearer_token: ""
+  rpc_timeout: 3s
+
+audit:
+  kafka_brokers: ["kafka-card:9093"]
+  topic: "card-center.audit"
+  emit_timeout: 1s
+
+database:
+  meta:
+    name: card_center_meta
+    dsn: "root:CHANGE_ME@tcp(card-meta:3306)/card_center_meta?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
+    max_open_conns: 30
+    max_idle_conns: 10
+    conn_max_lifetime: 3600
+  shard_0: { name: card_center_db_0, dsn: "root:CHANGE_ME@tcp(card-shard-0:3306)/card_center_db_0?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_1: { name: card_center_db_1, dsn: "root:CHANGE_ME@tcp(card-shard-1:3306)/card_center_db_1?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_2: { name: card_center_db_2, dsn: "root:CHANGE_ME@tcp(card-shard-2:3306)/card_center_db_2?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_3: { name: card_center_db_3, dsn: "root:CHANGE_ME@tcp(card-shard-3:3306)/card_center_db_3?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_4: { name: card_center_db_4, dsn: "root:CHANGE_ME@tcp(card-shard-4:3306)/card_center_db_4?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_5: { name: card_center_db_5, dsn: "root:CHANGE_ME@tcp(card-shard-5:3306)/card_center_db_5?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_6: { name: card_center_db_6, dsn: "root:CHANGE_ME@tcp(card-shard-6:3306)/card_center_db_6?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_7: { name: card_center_db_7, dsn: "root:CHANGE_ME@tcp(card-shard-7:3306)/card_center_db_7?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_8: { name: card_center_db_8, dsn: "root:CHANGE_ME@tcp(card-shard-8:3306)/card_center_db_8?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+  shard_9: { name: card_center_db_9, dsn: "root:CHANGE_ME@tcp(card-shard-9:3306)/card_center_db_9?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred" }
+
+retention:
+  payment_token_purge_interval: 1h
+  audit_log_retention: 61320h

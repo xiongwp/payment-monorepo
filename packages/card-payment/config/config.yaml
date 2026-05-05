@@ -1,0 +1,45 @@
+env: "dev"
+
+server:
+  grpc_port: 9443
+
+metrics:
+  addr: ":9543"
+
+tls:
+  cert: ""
+  key: ""
+  client_ca: ""
+
+# 仅 payment-channel 允许调本服务
+auth:
+  client_cn:
+    allowed: ["payment-channel"]
+
+# 调 card-center（mTLS）
+card_center:
+  endpoint: "card-center:9443"
+  rpc_timeout: 5s
+
+# 卡组织 endpoint。dev 下都置空（adapter 走 mock）；prod 必须 https://
+network:
+  visa:        { endpoint: "" }
+  mastercard:  { endpoint: "" }
+  jcb:         { endpoint: "" }
+  amex:        { endpoint: "" }
+  unionpay:    { endpoint: "" }
+
+database:
+  meta:
+    name: card_payment_meta
+    dsn:  ""
+  shard_0: { name: card_payment_db_0, dsn: "" }
+  shard_1: { name: card_payment_db_1, dsn: "" }
+  shard_2: { name: card_payment_db_2, dsn: "" }
+  shard_3: { name: card_payment_db_3, dsn: "" }
+  shard_4: { name: card_payment_db_4, dsn: "" }
+  shard_5: { name: card_payment_db_5, dsn: "" }
+  shard_6: { name: card_payment_db_6, dsn: "" }
+  shard_7: { name: card_payment_db_7, dsn: "" }
+  shard_8: { name: card_payment_db_8, dsn: "" }
+  shard_9: { name: card_payment_db_9, dsn: "" }
