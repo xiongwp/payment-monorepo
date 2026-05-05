@@ -403,7 +403,7 @@ func (h *CardHandler) handlePayResult(w http.ResponseWriter, r *http.Request) {
 
 // listCardsSafe 给 handlePay 出错重渲染时复用，吞掉 ListCards 错误（已经在出错路径，
 // 不要再上报第二次错），返回值可能 nil。
-func (h *CardHandler) listCardsSafe(r *http.Request, uid int64) []*service.CardDisplay {
+func (h *CardHandler) listCardsSafe(r *http.Request, uid int64) []CardInfo {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	cards, _ := h.Cards.ListCards(ctx, uid)
