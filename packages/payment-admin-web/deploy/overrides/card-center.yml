@@ -29,6 +29,7 @@ services:
     ports:
       - "9443:9443"   # mTLS gRPC（dev 实际明文）
       - "9543:9543"   # /metrics
+      - "8443:8443"   # HTTPS REST（dev 明文，前端 SDK 直发 PAN 用）
     environment:
       CARDCENTER_LOG_DEV: "true"
       CARDCENTER_ENV: "dev"
@@ -42,8 +43,14 @@ services:
       CARDCENTER_KMS_ENDPOINT: "kms-manage:9290"
       CARDCENTER_KMS_INSECURE: "true"
       # 审计 Kafka：dev 留空，emitter 退化为只写 DB
-      # HTTPS 入口默认关；要全链路绑卡放开 + 配 cert
-      CARDCENTER_HTTPS_ENABLED: "false"
+      # HTTPS REST 入口（前端 SDK 直发 PAN）：dev 明文 + CORS 允许 api-gateway 跨域
+      CARDCENTER_HTTPS_ENABLED: "true"
+      CARDCENTER_HTTPS_PORT: "8443"
+      CARDCENTER_HTTPS_DEV_NO_TLS: "true"
+      CARDCENTER_HTTPS_CORS_ALLOWED_ORIGIN: "http://localhost:18080"
+      # IntrospectToken 走 etcd:///user-merchant-core（dev 明文）
+      CARDCENTER_AUTH_USER_MERCHANT_ENDPOINT: "user-merchant-core:9191"
+      CARDCENTER_AUTH_USER_MERCHANT_INSECURE: "true"
       # DB 连 shared-* 实例
       CARDCENTER_DATABASE_META_DSN: "root:password@tcp(shared-meta:3306)/card_center_meta?charset=utf8mb4&parseTime=True&loc=Local"
       CARDCENTER_DATABASE_SHARD_0_DSN: "root:password@tcp(shared-shard-0:3306)/card_center_db_0?charset=utf8mb4&parseTime=True&loc=Local"
