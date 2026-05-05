@@ -23,6 +23,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	insecuregrpc "google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
 	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
@@ -335,13 +336,22 @@ func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*
 	if endpoint == "" {
 		return nil, errors.New("https.enabled=true but auth.user_merchant.endpoint not set")
 	}
-	tlsCfg, err := buildClientMTLS(
-		v.GetString("auth.user_merchant.client_cert"),
-		v.GetString("auth.user_merchant.client_key"),
-		v.GetString("auth.user_merchant.server_ca"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("user-merchant client tls: %w", err)
+	// dev：auth.user_merchant.insecure=true → 明文 gRPC 跳过 mTLS（assertProdSafety 拦 prod）
+	insecureMode := v.GetBool("auth.user_merchant.insecure")
+	var dialOpts []grpc.DialOption
+	if insecureMode {
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecuregrpc.NewCredentials()))
+		logger.Info("card-center → user-merchant-core: INSECURE mode (dev)")
+	} else {
+		tlsCfg, err := buildClientMTLS(
+			v.GetString("auth.user_merchant.client_cert"),
+			v.GetString("auth.user_merchant.client_key"),
+			v.GetString("auth.user_merchant.server_ca"),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("user-merchant client tls: %w", err)
+		}
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	}
 	registry := splitCSV(v.GetString("auth.user_merchant.registry_endpoints"))
 	if len(registry) == 0 {
@@ -353,9 +363,7 @@ func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*
 			registry = splitCSV(v.GetString("registry.endpoints"))
 		}
 	}
-	conn, err := serviceregistry.DialWithFallback(registry, "user-merchant-core", endpoint,
-		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
-	)
+	conn, err := serviceregistry.DialWithFallback(registry, "user-merchant-core", endpoint, dialOpts...)
 	if err != nil {
 		return nil, err
 	}
