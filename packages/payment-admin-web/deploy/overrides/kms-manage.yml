@@ -4,7 +4,14 @@
 services:
   kms:
     networks:
-      - payment-stack
+      payment-stack:
+        # 兄弟服务的 config 都写 kms.endpoint=kms-manage:9290（历史命名）。
+        # base compose 里 service 名是 `kms`（不是 kms-manage），且 container_name
+        # 故意不写以支持 scale=N，所以只有 `kms` 这个 service 名能 DNS 解析。
+        # 这里加 alias `kms-manage` 让历史 endpoint 配置照常工作（多副本下
+        # Docker DNS 仍然返多个 IP，client gRPC 走 round_robin LB）。
+        aliases:
+          - kms-manage
     environment:
       KMS_LOG_DEV: "true"   # 联栈模式默认人读日志
       # etcd 自注册：让 BFF 通过 etcd resolver 解析到所有 kms-manage 副本。
