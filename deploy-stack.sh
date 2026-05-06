@@ -115,7 +115,19 @@ case "$ACTION" in
       IFS='|' read -r dir _ <<< "${STACKS[$i]}"
       stack_down "$dir"
     done
+    # --remove-orphans 防 scale 残留容器占端口（accounting-service-2 等）
+    info "清理孤立容器..."
+    docker ps -a --filter "label=com.docker.compose.project" -q 2>/dev/null \
+      | xargs -r docker rm -f >/dev/null 2>&1 || true
     ok "全栈已停"
+    ;;
+  prune)
+    warn "强制清理所有 monorepo 容器（不删 volume；删 volume 用 'down' + manual rm）"
+    for ((i=${#STACKS[@]}-1; i>=0; i--)); do
+      IFS='|' read -r dir _ <<< "${STACKS[$i]}"
+      (cd "$ROOT/packages/$dir" && docker compose down --remove-orphans 2>/dev/null) || true
+    done
+    ok "已清理"
     ;;
   status)
     for entry in "${STACKS[@]}"; do
