@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"html/template"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -70,11 +71,41 @@ func NewAdminHandler(svc *service.Service, logger *zap.Logger) (*AdminHandler, e
 //	POST /admin/items/new               提交新建
 //	GET  /admin/audit                   审计 log
 func (h *AdminHandler) Mount(mux *http.ServeMux) {
-	mux.HandleFunc("/admin/", h.index)
-	mux.HandleFunc("/admin/ns/", h.namespaceOrKey)
-	mux.HandleFunc("/admin/items", h.listItems)
-	mux.HandleFunc("/admin/items/new", h.newItem)
-	mux.HandleFunc("/admin/audit", h.audit)
+	wrap := func(handler http.HandlerFunc) http.HandlerFunc {
+		return adminActorMiddleware(handler)
+	}
+	mux.HandleFunc("/admin/", wrap(h.index))
+	mux.HandleFunc("/admin/ns/", wrap(h.namespaceOrKey))
+	mux.HandleFunc("/admin/items", wrap(h.listItems))
+	mux.HandleFunc("/admin/items/new", wrap(h.newItem))
+	mux.HandleFunc("/admin/audit", wrap(h.audit))
+}
+
+// adminActorMiddleware 给所有 admin 请求注入 actor（写操作必填，否则 401）。
+//
+// actor 解析顺序：
+//
+//	1. HTTP header X-Admin-User —— 上游 nginx / api-gateway / SSO proxy 鉴权
+//	   后注入；生产部署用此路径
+//	2. env CONFIG_CENTER_DEV_ACTOR —— dev/staging 容器配置；不需要外部鉴权
+//	   也能跑写操作；prod 必须 unset 这个 env
+//	3. 兜底 "admin@localhost" —— 最低限度让本地 docker compose 起来即用
+//
+// 真正的 admin SSO 鉴权（mTLS gRPC 到 user-merchant-core IntrospectToken）
+// 是 v1.1 路线图项；现在先用 header/env 让 admin UI 能用，audit log 也能
+// 落到操作人字段。生产前必须替换。
+func adminActorMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actor := r.Header.Get("X-Admin-User")
+		if actor == "" {
+			actor = os.Getenv("CONFIG_CENTER_DEV_ACTOR")
+		}
+		if actor == "" {
+			actor = "admin@localhost"
+		}
+		ctx := WithActor(r.Context(), actor)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	}
 }
 
 // listItems 全平台 config_item 检索：
