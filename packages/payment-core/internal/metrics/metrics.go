@@ -52,6 +52,12 @@ var GRPCRequestDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 	Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
 }, []string{"method"})
 
+// MerchantRateLimitThrottled merchant 维度限流触发计数。告警规则：单 merchant 5min 内 > 1000。
+var MerchantRateLimitThrottled = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "paycore_merchant_ratelimit_throttled_total",
+	Help: "Requests throttled by merchant rate limit",
+}, []string{"merchant_id"})
+
 // CircuitState 每个 adapter 当前熔断状态：0=Closed 1=Open 2=HalfOpen。
 // Gauge 让 PromQL 可以直接判断「现在多少个 adapter 处于 Open」（sum by (state)）。
 var CircuitState = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -110,6 +116,7 @@ func Register() {
 		RefundTotal,
 		GRPCRequestTotal,
 		GRPCRequestDuration,
+		MerchantRateLimitThrottled,
 		CircuitState,
 		CircuitTransitions,
 		RiskScreenTotal,

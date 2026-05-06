@@ -17,6 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/xiongwp/order-core/internal/metrics"
+	"github.com/xiongwp/payment-util/ratelimit"
 )
 
 // LoggingInterceptor 每次 RPC 进出都打日志：方法 + 完整 req/resp（protojson）+ 耗时。
@@ -221,6 +222,26 @@ func RateLimitInterceptor(rps float64, burst int) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		if !limiter.Allow() {
 			return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
+		}
+		return handler(ctx, req)
+	}
+}
+
+// MerchantRateLimitInterceptor merchant 维度限流（从 metadata X-Merchant-ID 提取）。
+// 对应 gRPC metadata["x-merchant-id"]；没有 → 不限流（IP 限流兜底）。
+//
+// 限流参数由 limiter 管理（支持热更新）；当触发限流时记指标 + 返 ResourceExhausted。
+func MerchantRateLimitInterceptor(limiter *ratelimit.MerchantLimiter, logger *zap.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		md, _ := metadata.FromIncomingContext(ctx)
+		merchantID := strings.TrimSpace(strings.Join(md.Get("x-merchant-id"), ""))
+		if merchantID != "" && !limiter.Allow(merchantID) {
+			if logger != nil {
+				logger.Warn("merchant rate limit exceeded",
+					zap.String("merchant_id", merchantID),
+					zap.String("method", info.FullMethod))
+			}
+			return nil, status.Error(codes.ResourceExhausted, "merchant rate limit exceeded")
 		}
 		return handler(ctx, req)
 	}

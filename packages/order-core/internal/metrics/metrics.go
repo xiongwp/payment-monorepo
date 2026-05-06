@@ -98,6 +98,12 @@ var GRPCRequestDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 	Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
 }, []string{"method"})
 
+// MerchantRateLimitThrottled merchant 维度限流触发计数。告警规则：单 merchant 5min 内 > 1000。
+var MerchantRateLimitThrottled = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "order_merchant_ratelimit_throttled_total",
+	Help: "Requests throttled by merchant rate limit",
+}, []string{"merchant_id"})
+
 // ─── Webhook 投递 ─────────────────────────────────────────────────────────────
 
 var WebhookDeliveryTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -232,6 +238,7 @@ func Register() {
 		NotifyLatency,
 		GRPCRequestTotal,
 		GRPCRequestDuration,
+		MerchantRateLimitThrottled,
 		WebhookDeliveryTotal,
 		WebhookDeliveryLatency,
 		WorkerRunTotal,

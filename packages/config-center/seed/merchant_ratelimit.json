@@ -1,0 +1,16 @@
+{
+  "default": {
+    "rps": 100,
+    "burst": 200
+  },
+  "merchants": {
+    "M_premium_001": {
+      "rps": 1000,
+      "burst": 2000
+    },
+    "M_test_999": {
+      "rps": 5,
+      "burst": 10
+    }
+  }
+}

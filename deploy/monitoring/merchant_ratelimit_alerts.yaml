@@ -1,0 +1,37 @@
+groups:
+  - name: merchant_ratelimit
+    interval: 30s
+    rules:
+      # 单个 merchant 5min 内限流超过 1000 次 → warning
+      - alert: MerchantRateLimitWarning
+        expr: |
+          increase(order_merchant_ratelimit_throttled_total[5m]) > 1000
+          or
+          increase(paycore_merchant_ratelimit_throttled_total[5m]) > 1000
+        for: 2m
+        labels:
+          severity: warning
+          component: payment
+        annotations:
+          summary: "Merchant {{ $labels.merchant_id }} rate limit exceeded"
+          description: |
+            Merchant {{ $labels.merchant_id }} throttled {{ $value }} times in 5 minutes.
+            Check if the merchant is experiencing traffic surge or attack.
+          runbook_url: "https://wiki.internal/payment/merchant-ratelimit-runbook"
+
+      # 单个 merchant 5min 内限流超过 5000 次 → critical
+      - alert: MerchantRateLimitCritical
+        expr: |
+          increase(order_merchant_ratelimit_throttled_total[5m]) > 5000
+          or
+          increase(paycore_merchant_ratelimit_throttled_total[5m]) > 5000
+        for: 1m
+        labels:
+          severity: critical
+          component: payment
+        annotations:
+          summary: "Merchant {{ $labels.merchant_id }} rate limit critical"
+          description: |
+            Merchant {{ $labels.merchant_id }} throttled {{ $value }} times in 5 minutes (CRITICAL).
+            Immediate investigation required.
+          runbook_url: "https://wiki.internal/payment/merchant-ratelimit-runbook"
