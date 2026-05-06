@@ -178,6 +178,14 @@ type Processor struct {
 	logger     *zap.Logger
 	// breaker 可选；nil 时全部路径直通（兼容旧 ctor）
 	breakers BreakerRegistry
+	// bulkhead 可选；nil 时不限流（dev / 单测）
+	bulkhead Bulkhead
+}
+
+// Bulkhead 抽象 resilience.Bulkhead 的最小接口，避免循环 import。
+type Bulkhead interface {
+	Acquire(merchantID string) bool
+	Release(merchantID string)
 }
 
 // BreakerRegistry 抽象 resilience.Registry 的最小接口，避免循环 import。
@@ -200,6 +208,9 @@ func NewProcessor(cc CardCenter, networks map[string]Network, repo CardTransacti
 // SetBreakers 注册 breaker registry；nil 等于关熔断（dev 路径兼容）。
 // fx provider chain 把 resilience.Registry 注入到这里。
 func (p *Processor) SetBreakers(b BreakerRegistry) { p.breakers = b }
+
+// SetBulkhead 注册 per-merchant 并发隔离器。nil 等于关 bulkhead。
+func (p *Processor) SetBulkhead(b Bulkhead) { p.bulkhead = b }
 
 // Authorize 处理 payment-channel 来的 Authorize 请求。
 //
@@ -255,6 +266,25 @@ func (p *Processor) Authorize(ctx context.Context, in *AuthorizeInput) (*Authori
 		metrics.AuthorizeTotal.WithLabelValues(authNetwork, authResult).Inc()
 		metrics.AuthorizeDuration.WithLabelValues(authNetwork).Observe(time.Since(authStart).Seconds())
 	}()
+
+	// **Bulkhead**：单 merchant 并发隔离。一个商户出现死循环最多打爆自己的
+	// bucket，不影响其他商户。Acquire 失败 fail-fast SOFT decline。
+	// MerchantDescriptor 用作 bucket key（同商户稳定）；空 key 走全局 bucket。
+	if p.bulkhead != nil {
+		if !p.bulkhead.Acquire(in.MerchantDescriptor) {
+			authResult = "declined"
+			p.logger.Warn("bulkhead full, fail-fast",
+				zap.String("pi_id", in.PIID),
+				zap.String("merchant", in.MerchantDescriptor))
+			return &AuthorizeOutput{
+				Status:          "declined",
+				DeclineCode:     "BULKHEAD_FULL",
+				DeclineReason:   "merchant concurrency limit exceeded; please retry",
+				DeclineCategory: "SOFT",
+			}, nil
+		}
+		defer p.bulkhead.Release(in.MerchantDescriptor)
+	}
 
 	// 幂等检查：同一 idempotency_key 已处理过 → 返原结果
 	if in.IdempotencyKey != "" {

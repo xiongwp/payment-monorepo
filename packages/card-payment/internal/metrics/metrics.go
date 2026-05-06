@@ -107,6 +107,31 @@ var FraudScoreHist = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 // HardDeclineRate 监控 HARD 占比；用 sum_over_time 计算 5min 窗内 HARD/total。
 // （Counter 不直接给 rate；这里靠 PromQL 算）
 
+// BulkheadActive 当前在飞的 Authorize 总数（per-instance）。saturation 信号。
+// PromQL: paycard_bulkhead_active / paycard_bulkhead_capacity > 0.8 → 报警
+var BulkheadActive = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "paycard_bulkhead_active",
+	Help: "Authorize calls currently in flight (sum across all merchants)",
+})
+
+var BulkheadRejectedTotal = prometheus.NewCounter(prometheus.CounterOpts{
+	Name: "paycard_bulkhead_rejected_total",
+	Help: "Authorize calls rejected by bulkhead (single-merchant concurrency limit hit)",
+})
+
+var BulkheadCapacity = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "paycard_bulkhead_capacity",
+	Help: "Per-merchant max concurrent Authorize",
+})
+
+// DependencyUp 下游依赖可达性（card-center / kms-manage / DB / 各 network endpoint）。
+// 1 = up；0 = down。Probe goroutine 每 N 秒刷一次。
+// /readyz 把所有 critical=true 的 DependencyUp == 1 才算 ready。
+var DependencyUp = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "paycard_dependency_up",
+	Help: "Downstream dependency reachability (1=up, 0=down)",
+}, []string{"dependency"})
+
 // Register 把所有 collector 注册到默认 registry。main.go fx.Invoke 时调一次。
 func Register() {
 	prometheus.MustRegister(
@@ -121,6 +146,10 @@ func Register() {
 		CircuitTransitions,
 		DeclineCategoryTotal,
 		FraudScoreHist,
+		BulkheadActive,
+		BulkheadRejectedTotal,
+		BulkheadCapacity,
+		DependencyUp,
 	)
 }
 
@@ -131,12 +160,20 @@ var draining atomic.Bool
 // BeginDrain 标记 drain 状态：/readyz 503。
 func BeginDrain() { draining.Store(true) }
 
+// ReadinessProbe 由 caller 提供 critical 依赖检查；返 nil = ready。
+// 例：返 errors.New("card-center unreachable") 让 K8s 摘流量。
+type ReadinessProbe func() error
+
 // StartServer 起 /metrics + /healthz + /readyz HTTP server。
 // 不挂任何 mTLS：仅 prometheus scrape + k8s probe 用，端点应在隔离 DC 内网。
-func StartServer(addr string, logger *zap.Logger) {
+//
+// probe nil → /readyz 仅看 drain 状态（向后兼容）。
+// probe 非空 → 失败时 503 + body 写错误原因（运维 tail 看）。
+func StartServer(addr string, logger *zap.Logger, probe ...ReadinessProbe) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		// liveness：只要进程没卡死就返 200。drain 也返 200（liveness != readiness）。
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -144,6 +181,15 @@ func StartServer(addr string, logger *zap.Logger) {
 		if draining.Load() {
 			http.Error(w, "draining", http.StatusServiceUnavailable)
 			return
+		}
+		for _, p := range probe {
+			if p == nil {
+				continue
+			}
+			if err := p(); err != nil {
+				http.Error(w, "not ready: "+err.Error(), http.StatusServiceUnavailable)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))

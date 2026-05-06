@@ -56,6 +56,7 @@ func main() {
 			newCardCenterClient,
 			newNetworks,
 			newBreakerRegistry,
+			newBulkhead,
 			newProcessor,
 			newGRPCServer,
 		),
@@ -109,19 +110,65 @@ func startReconcile(lc fx.Lifecycle, v *viper.Viper, repo processor.CardTransact
 }
 
 // startMetricsHTTP 起 prometheus scrape + k8s probe 端口。
-// 默认 :9544（card-center 用 :9543，错开一格）。OnStop 时置 drain，
-// /readyz 503 摘流量；GRPC GracefulStop 在 startGRPC 那边管。
-func startMetricsHTTP(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) {
+// 默认 :9544。
+//
+// /readyz 检查链：
+//   1. drain 标志（OnStop 后立即 503，让 K8s 摘流量）
+//   2. DB Ping（meta + 任一 shard，确保 GORM 连接活）
+// 任一失败 → 503 + 错误原因（kubectl describe 看得到）。
+//
+// 同时起一个 5s tick 的 goroutine 把 bulkhead.active 推到 prometheus gauge。
+func startMetricsHTTP(lc fx.Lifecycle, v *viper.Viper, mgr *repo.Manager,
+	bulkhead *resilience.Bulkhead, logger *zap.Logger) {
 	addr := v.GetString("metrics.addr")
 	if addr == "" {
 		addr = ":9544"
 	}
+	probe := func() error {
+		// DB meta 必须 reachable（不通 → 写不进 audit_log，拒绝服务）
+		if mgr == nil {
+			return errors.New("db manager nil")
+		}
+		if metaDB := mgr.Meta(); metaDB != nil {
+			if sqlDB, err := metaDB.DB(); err == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+				defer cancel()
+				if err := sqlDB.PingContext(ctx); err != nil {
+					metrics.DependencyUp.WithLabelValues("db_meta").Set(0)
+					return fmt.Errorf("db_meta ping: %w", err)
+				}
+				metrics.DependencyUp.WithLabelValues("db_meta").Set(1)
+			}
+		}
+		return nil
+	}
+
+	// bulkhead 活跃数推送：5s 一次，给 prometheus 收集（保证 saturation 信号实时）
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if bulkhead != nil {
+					active, rejected, _ := bulkhead.Stats()
+					metrics.BulkheadActive.Set(float64(active))
+					_ = rejected // 累计 rejected 直接 inc 不用 set
+				}
+			}
+		}
+	}()
+
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
-			metrics.StartServer(addr, logger)
+			metrics.StartServer(addr, logger, probe)
 			return nil
 		},
 		OnStop: func(_ context.Context) error {
+			cancel()
 			metrics.BeginDrain()
 			logger.Info("card-payment draining: /readyz now returns 503")
 			return nil
@@ -164,6 +211,11 @@ func loadConfig() (*viper.Viper, error) {
 		// 服务自注册（被 order-core / payment-core / BFF 调用）
 		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl",
 		"server.grpc_port",
+		// metrics + 可用性参数
+		"metrics.addr",
+		"bulkhead.per_merchant_max",
+		"reconcile.disable", "reconcile.interval", "reconcile.stuck_age",
+		"reconcile.limit_per_shard", "reconcile.query_timeout", "reconcile.cycle_timeout",
 	} {
 		_ = v.BindEnv(k)
 	}
@@ -418,9 +470,24 @@ func newBreakerRegistry(logger *zap.Logger) *resilience.Registry {
 	return reg
 }
 
-func newProcessor(cc processor.CardCenter, networks map[string]processor.Network, repo processor.CardTransactionRepo, breakers *resilience.Registry, logger *zap.Logger) *processor.Processor {
+// newBulkhead 单 merchant 并发隔离器；默认 32 在飞 / merchant，
+// 可配 bulkhead.per_merchant_max 调（生产建议 16-64 之间，按业务峰值定）。
+func newBulkhead(v *viper.Viper, logger *zap.Logger) *resilience.Bulkhead {
+	maxN := v.GetInt("bulkhead.per_merchant_max")
+	if maxN <= 0 {
+		maxN = 32
+	}
+	metrics.BulkheadCapacity.Set(float64(maxN))
+	// reject 时 +1 metrics counter，Prometheus alerting 看 rate
+	resilience.OnRejectHook = func() { metrics.BulkheadRejectedTotal.Inc() }
+	logger.Info("bulkhead configured", zap.Int("per_merchant_max", maxN))
+	return resilience.NewBulkhead(maxN)
+}
+
+func newProcessor(cc processor.CardCenter, networks map[string]processor.Network, repo processor.CardTransactionRepo, breakers *resilience.Registry, bulkhead *resilience.Bulkhead, logger *zap.Logger) *processor.Processor {
 	p := processor.NewProcessor(cc, networks, repo, logger)
 	p.SetBreakers(breakers)
+	p.SetBulkhead(bulkhead)
 	return p
 }
 
