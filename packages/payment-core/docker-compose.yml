@@ -39,6 +39,9 @@ services:
       PAYCORE_CHANNEL_ENDPOINT: "payment-channel:9092"
       PAYCORE_RISK_ENDPOINT: "risk-manage:9590"
       PAYCORE_KMS_ENDPOINT: "kms-manage:9390"
+      # config-center: routing weights / risk fail_policy / circuit breaker
+      PAYCORE_CONFIGCENTER_ENDPOINT: "http://config-center:9691"
+      PAYCORE_CONFIGCENTER_NAMESPACE: "payment-core"
     volumes:
       # viper 只认 config.yaml。把 docker 变体盖在它上面，避免容器装载本地开发
       # 的空 endpoint（那样会退回 passthrough / noop）。

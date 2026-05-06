@@ -76,6 +76,9 @@ services:
       CARDCENTER_TLS_CLIENT_CA: "/etc/tls/client-ca.crt"
       CARDCENTER_KMS_ENDPOINT: "kms-card:9290"
       CARDCENTER_AUDIT_KAFKA_BROKERS: "audit-kafka:9093"
+      # config-center: per-user tokenize 限流 / HTTPS CORS / session TTL / Luhn 严格 mode
+      CARDCENTER_CONFIGCENTER_ENDPOINT: "http://config-center:9691"
+      CARDCENTER_CONFIGCENTER_NAMESPACE: "card-center"
       CARDCENTER_DATABASE_META_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-meta:3306)/card_center_meta?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
       CARDCENTER_DATABASE_SHARD_0_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-shard-0:3306)/card_center_db_0?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
       CARDCENTER_DATABASE_SHARD_1_DSN: "root:${CARD_DB_PASSWORD:?}@tcp(card-shard-1:3306)/card_center_db_1?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"

@@ -37,6 +37,7 @@ import (
 	"github.com/xiongwp/card-center/internal/sharding"
 	"github.com/xiongwp/card-center/internal/vault"
 	"github.com/xiongwp/payment-util/audit/kafkago"
+	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/payment-util/trace"
@@ -49,6 +50,8 @@ func main() {
 		fx.Provide(
 			loadConfig,
 			newLogger,
+			// config-center: per-user tokenize 限流 / HTTPS CORS / session TTL / Luhn 严格 mode
+			configcenter.FxProvider("card-center"),
 			newRouter,
 			newDBManager,
 			newKMSClient,

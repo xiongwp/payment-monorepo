@@ -79,6 +79,9 @@ services:
       CARDPAYMENT_CARD_CENTER_CLIENT_CERT: "/etc/tls/server.crt"
       CARDPAYMENT_CARD_CENTER_CLIENT_KEY:  "/etc/tls/server.key"
       CARDPAYMENT_CARD_CENTER_SERVER_CA:   "/etc/tls/client-ca.crt"
+      # config-center: bulkhead.per_merchant_max / network.{visa,mc}.timeout / reconcile interval
+      CARDPAYMENT_CONFIGCENTER_ENDPOINT: "http://config-center:9691"
+      CARDPAYMENT_CONFIGCENTER_NAMESPACE: "card-payment"
       CARDPAYMENT_NETWORK_VISA_ENDPOINT: "${VISA_ENDPOINT:?}"
       CARDPAYMENT_DATABASE_META_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(card-payment-meta:3306)/card_payment_meta?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"
       CARDPAYMENT_DATABASE_SHARD_0_DSN: "root:${CARDPAY_DB_PASSWORD:?}@tcp(cardpay-shard-0:3306)/card_payment_db_0?charset=utf8mb4&parseTime=True&loc=Local&tls=preferred"

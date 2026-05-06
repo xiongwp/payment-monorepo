@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -45,6 +46,8 @@ func main() {
 			loadConfig,
 			newLeaderToolkit,
 			newLogger,
+			// config-center: refund max / webhook retries / outbox interval / charge expire 等
+			configcenter.FxProvider("order-core"),
 			newRouter,
 			newDBManager,
 			newIDGen,

@@ -36,6 +36,7 @@ import (
 	"github.com/xiongwp/card-payment/internal/resilience"
 	"github.com/xiongwp/card-payment/internal/server"
 	"github.com/xiongwp/card-payment/internal/sharding"
+	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/payment-util/trace"
 )
@@ -50,6 +51,8 @@ func main() {
 		fx.Provide(
 			loadConfig,
 			newLogger,
+			// config-center: bulkhead.per_merchant_max / network.{visa,mc}.timeout / reconcile interval
+			configcenter.FxProvider("card-payment"),
 			newRouter,
 			newDBManager,
 			newCardTransactionRepo,

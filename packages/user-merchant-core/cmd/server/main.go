@@ -32,6 +32,8 @@ import (
 	"github.com/xiongwp/user-merchant-core/internal/sharding"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/xiongwp/payment-util/configcenter"
+
 	"github.com/xiongwp/user-merchant-core/pkg/configx"
 	"github.com/xiongwp/user-merchant-core/pkg/dbx"
 	"github.com/xiongwp/user-merchant-core/pkg/grpcutil"
@@ -48,6 +50,8 @@ func main() {
 		fx.Provide(
 			loadConfig,
 			newLogger,
+			// config-center: JWT TTL / OTP / bcrypt cost / retention 等动态配置
+			configcenter.FxProvider("user-merchant-core"),
 			newDBManager,
 			newShardRouter,
 			newIDGen,

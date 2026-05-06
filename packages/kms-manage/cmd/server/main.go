@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -39,6 +40,8 @@ func main() {
 		fx.Provide(
 			loadConfig,
 			newLogger,
+			// config-center: rate_limit / auth tokens / SAN whitelist (敏感，建议 TARGETED 推)
+			configcenter.FxProvider("kms-manage"),
 			newKeystore,
 			newKMSSvc,
 			newServer,

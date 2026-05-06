@@ -64,6 +64,9 @@ services:
       KMS_LOG_DEV: "false"
       # ── 服务发现（自注册到 etcd 让 payment-core / payment-channel / user-merchant-core 发现）──
       KMS_REGISTRY_ENDPOINTS: "etcd:2379"
+      # config-center: rate_limit / auth tokens / SAN whitelist (敏感 — 建议 TARGETED 推)
+      KMS_CONFIGCENTER_ENDPOINT: "http://config-center:9691"
+      KMS_CONFIGCENTER_NAMESPACE: "kms-manage"
 
 # BuildKit secret：Dockerfile 用它从环境变量拿 GITHUB_TOKEN clone payment-util。
 secrets:

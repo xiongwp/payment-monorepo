@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -40,6 +41,8 @@ func main() {
 		fx.Provide(
 			loadConfig,
 			newLogger,
+			// config-center: 对账批跑窗口 / 异常 case 阈值
+			configcenter.FxProvider("clearing-settlement"),
 			newSettlementService,
 			newAdminConfig,
 			newAdminServer,

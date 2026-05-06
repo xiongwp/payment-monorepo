@@ -15,6 +15,34 @@
 
 **架构选择**：v1.0 SDK ↔ server 走 HTTP+SSE 而非 gRPC，避开沙箱无 protoc 的依赖；服务依然按其他服务的 fx + mTLS + etcd 模板组织。后续 `make proto` 跑过后可在不破坏 SDK 接口的前提下加 gRPC handler（rpcClient 已抽象为接口）。
 
+## 全平台集成 — 11 个服务已接 SDK ✅
+
+| 服务 | namespace | 集成深度 | 删的旧物 |
+| --- | --- | --- | --- |
+| accounting-system | accounting-system | **深度** — wrap SystemConfigService，9 caller 零改动 | DB 表 system_config + repo + reload 扇出 + 3 admin handler |
+| api-gateway | api-gateway | **深度** — RateLimitHub + ApplyParams + OnChange 热更新 | rate_limit 静态字段 → 动态 SetLimit |
+| user-merchant-core | user-merchant-core | SDK 注入（fxprovider） | yaml bootstrap 保留 |
+| order-core | order-core | SDK 注入 | yaml bootstrap 保留 |
+| payment-core | payment-core | SDK 注入 | yaml bootstrap 保留 |
+| payment-channel | payment-channel | SDK 注入 | yaml bootstrap 保留 |
+| risk-manage | risk-manage | SDK 注入 | yaml bootstrap 保留 |
+| card-center | card-center | SDK 注入 | yaml bootstrap 保留 |
+| card-payment | card-payment | SDK 注入 | yaml bootstrap 保留 |
+| clearing-settlement | clearing-settlement | SDK 注入 | yaml bootstrap 保留 |
+| kms-manage | kms-manage | SDK 注入 | yaml bootstrap 保留 |
+
+**集成深度说明**：
+- **深度** = 完成 yaml/DB 删除 + 业务代码改读 SDK + 热更新链路
+- **SDK 注入** = main.go fx.Provide(configcenter.FxProvider("<ns>"))；docker-compose 注 endpoint + namespace；服务可注入 `*configcenter.Client`，业务读改 SDK 走渐进迁
+
+后续每个服务的「业务代码改读 SDK」按 accounting-system 模板执行：替换 `cfg.X.Y` → `cli.GetXxx(ctx, "X.Y", def)`，或保留接口 wrap SDK（accounting-system 模式）。
+
+**部署 / Docker**：
+- `bash deploy-stack.sh up` 按依赖顺序拉起 14 stack；config-center 第一个，阻塞等 /healthz 200
+- `bash deploy-stack.sh seed` 写入 7 条 accounting-system 历史 key
+- 所有 11 服务 docker-compose 注入 `<PREFIX>_CONFIGCENTER_ENDPOINT` + `<PREFIX>_CONFIGCENTER_NAMESPACE`
+- 共享外部网络 `payment-stack`，容器 DNS 走 `config-center` 即可
+
 ## 老系统集成 — 第 1 个：accounting-system（v2 已切）
 
 | 删除 | 替换 |

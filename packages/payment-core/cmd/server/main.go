@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -41,6 +42,8 @@ func main() {
 		fx.Provide(
 			loadConfig,
 			newLogger,
+			// config-center: routing weights / risk fail_policy / circuit breaker
+			configcenter.FxProvider("payment-core"),
 			newKMSClient,
 			newRiskClient,
 			newRouter,

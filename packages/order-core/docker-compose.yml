@@ -82,6 +82,9 @@ services:
       ORDERCORE_PAYMENT_CORE_ENDPOINT: "payment-core:9090"
       # etcd 服务发现 + 自注册
       ORDERCORE_REGISTRY_ENDPOINTS: "etcd:2379"
+      # config-center: refund max / webhook retries / outbox interval / charge expire
+      ORDERCORE_CONFIGCENTER_ENDPOINT: "http://config-center:9691"
+      ORDERCORE_CONFIGCENTER_NAMESPACE: "order-core"
     volumes:
       # viper 只认 config.yaml。把 docker 变体盖在它上面，避免容器装载本地开发
       # 的 127.0.0.1:3306-3316 端口映射。
