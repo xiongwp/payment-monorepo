@@ -297,6 +297,12 @@ func envInt(name string, def int) int {
 
 // mustDial 优先走 etcd resolver（多副本场景）；endpoints 空就退回直连 fallbackAddr。
 // fallbackAddr 用于本地 dev / 单实例部署 / etcd 故障兜底。
+//
+// 启动期还会做一道**注册探测**：REGISTRY_ENDPOINTS 配了，但 etcd 上 0 个
+// <service>/* 注册条目时，自动降级到 fallbackAddr 直连，避免出现 round_robin
+// balancer "no children to pick from" 的红错（kms-manage / risk-manage 等
+// 容器还没起 / 起来但还没注册就常踩这个）。等 service 真注册了，下次 BFF
+// 重启会自动切回 etcd resolver 模式（也可挂热重载，目前先 boot-time 兜底）。
 func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn {
 	keepalive := grpc.WithKeepaliveParams(keepalive.ClientParameters{
 		Time:                30 * time.Second,
@@ -304,6 +310,24 @@ func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn 
 		PermitWithoutStream: true,
 	})
 	if len(registry) > 0 {
+		// 探测 etcd 上有没有 <service>/* 注册条目；2s 超时不挡 BFF 启动。
+		registered, err := serviceregistry.HasRegisteredInstances(registry, service, 2*time.Second)
+		if err != nil {
+			log.Printf("[bff] WARN probe etcd for %q failed: %v；继续按 fallback 直连", service, err)
+		}
+		if !registered {
+			log.Printf("[bff] WARN %q etcd 无注册条目，降级直连 %s（待该服务起来并注册到 etcd 后重启 BFF 会自动切回 etcd resolver）",
+				service, fallbackAddr)
+			conn, derr := grpc.NewClient(fallbackAddr,
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				keepalive,
+				grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
+			)
+			if derr != nil {
+				log.Fatalf("dial %s fallback (%s): %v", service, fallbackAddr, derr)
+			}
+			return conn
+		}
 		conn, err := serviceregistry.DialFromEndpoints(registry, service,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			keepalive,

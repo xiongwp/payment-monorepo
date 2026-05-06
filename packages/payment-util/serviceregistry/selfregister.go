@@ -2,6 +2,8 @@ package serviceregistry
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -128,3 +130,41 @@ var ErrNoEndpoints = errNoEndpoints{}
 type errNoEndpoints struct{}
 
 func (errNoEndpoints) Error() string { return "serviceregistry: no etcd endpoints configured" }
+
+// HasRegisteredInstances 探测 etcd 里是否有 service 的注册条目。
+// 用于客户端启动期：etcd 配了但 service 还没注册时，调用方可以跳过 etcd
+// resolver 直接走 fallbackAddr 直连，避免 round_robin balancer 因为 0 个
+// SubConn 报 "no children to pick from"。
+//
+// 协议契约（跟 Registrar.Register 写入格式对齐）：
+//
+//	key 形态：<service>/<addr>      (e.g. "kms-manage/10.0.1.7:9290")
+//	所以 prefix Get "<service>/" 能拿到所有 live 副本数。
+//
+// 参数：
+//   - endpoints：etcd cluster endpoints；空切片直接返 false（端到端短路 dev 模式）
+//   - service  ：注册时用的 service name
+//   - timeout  ：probe 超时；建议 2s，不要把 BFF 启动期拖到分钟级
+//
+// 返回：
+//   - true  : etcd 上至少 1 个 <service>/* key
+//   - false : 0 个 key 或 endpoints 空 / etcd 不可达（caller 应降级直连）
+//   - err   : etcd 自身报错（区别于 0 entries 情况），调用方可只记日志不阻塞
+func HasRegisteredInstances(endpoints []string, service string, timeout time.Duration) (bool, error) {
+	if len(endpoints) == 0 || service == "" {
+		return false, nil
+	}
+	cli, err := NewEtcdClient(endpoints)
+	if err != nil {
+		return false, fmt.Errorf("serviceregistry: probe new client: %w", err)
+	}
+	defer cli.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	prefix := strings.TrimRight(service, "/") + "/"
+	resp, err := cli.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+	if err != nil {
+		return false, fmt.Errorf("serviceregistry: probe get %q: %w", prefix, err)
+	}
+	return resp.Count > 0, nil
+}
