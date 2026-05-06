@@ -547,63 +547,466 @@ const adminTemplates = `
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>{{.Title}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · Config Center</title>
 <style>
-  body { font-family: -apple-system, sans-serif; max-width: 1100px; margin: 24px auto; padding: 0 12px; color: #222; }
-  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
-  th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
-  th { background: #f5f5f5; }
-  pre { background: #f9f9f9; padding: 8px; border-radius: 3px; overflow-x: auto; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
-  .b-full { background:#e6f4ea; color:#1e7e34; }
-  .b-canary { background:#fff3cd; color:#856404; }
-  .b-targeted { background:#cce5ff; color:#004085; }
-  .b-scheduled { background:#e2e3e5; color:#383d41; }
-  nav a { margin-right: 12px; }
-  form .row { margin: 8px 0; }
-  input, textarea, select { width: 100%; box-sizing: border-box; padding: 6px; }
-  button { background: #1f6feb; color: white; padding: 8px 16px; border: 0; border-radius: 4px; cursor: pointer; }
-  .muted { color: #888; font-size: 12px; }
+  /* ── 跟 payment-admin-web / accounting-admin-web (Ant Design v5) 视觉对齐 ── */
+  :root {
+    --ant-primary: #1677ff;
+    --ant-primary-hover: #4096ff;
+    --ant-primary-active: #0958d9;
+    --ant-success: #52c41a;
+    --ant-warning: #faad14;
+    --ant-error: #ff4d4f;
+    --ant-text: rgba(0,0,0,0.88);
+    --ant-text-secondary: rgba(0,0,0,0.65);
+    --ant-text-tertiary: rgba(0,0,0,0.45);
+    --ant-border: #d9d9d9;
+    --ant-border-secondary: #f0f0f0;
+    --ant-bg-layout: #f5f5f5;
+    --ant-bg-container: #fff;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
+                 Helvetica, Arial, "PingFang SC", "Hiragino Sans GB",
+                 "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    color: var(--ant-text);
+    background: var(--ant-bg-layout);
+    line-height: 1.5715;
+  }
+  /* ── App layout：左侧 sidebar + 顶部 header + 内容区 ── */
+  .app { display: flex; min-height: 100vh; }
+  .sider {
+    width: 220px; background: #001529; color: rgba(255,255,255,0.85);
+    flex-shrink: 0; padding: 0;
+  }
+  .sider .logo {
+    height: 56px; line-height: 56px; padding: 0 24px;
+    color: #fff; font-size: 16px; font-weight: 600;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  .sider .logo .badge-cc {
+    display: inline-block; margin-left: 8px; padding: 1px 6px;
+    background: var(--ant-primary); border-radius: 3px;
+    font-size: 11px; font-weight: 400;
+  }
+  .sider nav { padding: 8px 0; }
+  .sider nav a {
+    display: block; padding: 10px 24px;
+    color: rgba(255,255,255,0.75); text-decoration: none;
+    transition: background 0.2s;
+  }
+  .sider nav a:hover { background: rgba(255,255,255,0.08); color: #fff; }
+  .sider nav a.active { background: var(--ant-primary); color: #fff; }
+  .sider nav .group {
+    padding: 16px 24px 8px; font-size: 12px;
+    color: rgba(255,255,255,0.4); text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .main { flex: 1; min-width: 0; }
+  .header {
+    height: 56px; background: #fff; padding: 0 24px;
+    border-bottom: 1px solid var(--ant-border-secondary);
+    display: flex; align-items: center;
+  }
+  .header .crumb { color: var(--ant-text-secondary); }
+  .header .crumb a { color: var(--ant-primary); text-decoration: none; }
+  .header .crumb a:hover { color: var(--ant-primary-hover); }
+  .header .crumb .sep { margin: 0 8px; color: var(--ant-text-tertiary); }
+
+  .content { padding: 24px; max-width: 1280px; }
+  .page-title { font-size: 20px; font-weight: 600; margin: 0 0 16px; color: var(--ant-text); }
+  .page-desc { color: var(--ant-text-secondary); margin: 0 0 24px; }
+
+  /* ── Card ── */
+  .card {
+    background: var(--ant-bg-container);
+    border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    border: 1px solid var(--ant-border-secondary);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .card-head {
+    padding: 12px 24px; border-bottom: 1px solid var(--ant-border-secondary);
+    font-weight: 500; font-size: 16px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .card-head .extra { font-size: 14px; font-weight: normal; }
+  .card-body { padding: 24px; }
+
+  /* ── Alert ── */
+  .alert {
+    padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;
+    border: 1px solid; line-height: 1.6;
+  }
+  .alert-info {
+    background: #e6f4ff; border-color: #91caff; color: #002c8c;
+  }
+  .alert-info::before { content: "ⓘ "; font-weight: bold; }
+
+  /* ── Table ── */
+  table {
+    width: 100%; border-collapse: collapse; background: var(--ant-bg-container);
+  }
+  table thead th {
+    background: #fafafa; padding: 12px 16px;
+    text-align: left; font-weight: 500;
+    color: var(--ant-text); border-bottom: 1px solid var(--ant-border-secondary);
+    font-size: 14px;
+  }
+  table tbody td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--ant-border-secondary);
+    vertical-align: top;
+  }
+  table tbody tr:hover { background: #fafafa; }
+  table tbody tr:last-child td { border-bottom: none; }
+  table a { color: var(--ant-primary); text-decoration: none; }
+  table a:hover { color: var(--ant-primary-hover); text-decoration: underline; }
+
+  /* ── Tag / Badge ── */
+  .tag, .badge {
+    display: inline-block; padding: 0 7px; line-height: 20px;
+    font-size: 12px; border-radius: 4px;
+    border: 1px solid; white-space: nowrap;
+  }
+  .b-full, .b-FULL, .b-full      { background:#f6ffed; color:#389e0d; border-color:#b7eb8f; }
+  .b-canary, .b-CANARY           { background:#fffbe6; color:#d48806; border-color:#ffe58f; }
+  .b-targeted, .b-TARGETED       { background:#e6f4ff; color:#0958d9; border-color:#91caff; }
+  .b-scheduled, .b-SCHEDULED     { background:#f9f0ff; color:#531dab; border-color:#d3adf7; }
+  .b-add { background:#f6ffed; color:#389e0d; border-color:#b7eb8f; }
+  .b-del { background:#fff1f0; color:#cf1322; border-color:#ffa39e; }
+  .b-ctx { background:#fafafa; color:#595959; border-color:#d9d9d9; }
+
+  /* ── Buttons ── */
+  button, .btn {
+    background: var(--ant-primary); color: #fff;
+    border: 1px solid var(--ant-primary); padding: 6px 16px;
+    border-radius: 6px; cursor: pointer; font-size: 14px;
+    transition: all 0.2s; line-height: 1.5;
+  }
+  button:hover, .btn:hover { background: var(--ant-primary-hover); border-color: var(--ant-primary-hover); }
+  button:active, .btn:active { background: var(--ant-primary-active); }
+  .btn-default {
+    background: #fff; color: var(--ant-text); border-color: var(--ant-border);
+  }
+  .btn-default:hover { color: var(--ant-primary); border-color: var(--ant-primary); }
+  .btn-danger { background: var(--ant-error); border-color: var(--ant-error); }
+
+  /* ── Form ── */
+  form .row { margin-bottom: 16px; }
+  form label {
+    display: block; margin-bottom: 6px;
+    color: var(--ant-text); font-size: 14px;
+  }
+  input, textarea, select {
+    width: 100%; padding: 6px 11px; font-size: 14px;
+    border: 1px solid var(--ant-border); border-radius: 6px;
+    transition: all 0.2s; line-height: 1.5715;
+    color: var(--ant-text); background: #fff;
+    font-family: inherit;
+  }
+  textarea { font-family: ui-monospace, "SF Mono", Consolas, monospace; min-height: 80px; }
+  input:focus, textarea:focus, select:focus {
+    border-color: var(--ant-primary);
+    box-shadow: 0 0 0 2px rgba(5,145,255,0.1);
+    outline: none;
+  }
+
+  /* ── Misc ── */
+  pre {
+    background: #f5f5f5; padding: 12px; border-radius: 6px;
+    overflow-x: auto; font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 13px; margin: 0;
+  }
+  .muted { color: var(--ant-text-tertiary); font-size: 13px; }
+  .strong { font-weight: 500; }
+  h2 { font-size: 18px; font-weight: 600; margin: 24px 0 12px; }
+  h3 { font-size: 16px; font-weight: 600; margin: 20px 0 8px; }
+  hr { border: none; border-top: 1px solid var(--ant-border-secondary); margin: 16px 0; }
+  .toolbar { margin-bottom: 16px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .toolbar input, .toolbar select { width: auto; flex: 0 1 auto; }
 </style>
 </head>
 <body>
-<nav>
-  <a href="/admin/">Namespaces</a>
-  <a href="/admin/audit">Audit Log</a>
-</nav>
-<h1>{{.Title}}</h1>
-{{template "body" .}}
+<div class="app">
+  <aside class="sider">
+    <div class="logo">Config Center<span class="badge-cc">v1</span></div>
+    <nav>
+      <div class="group">概览</div>
+      <a href="/admin/" {{if .Groups}}class="active"{{end}}>首页</a>
+      <a href="/admin/items">全平台 key 检索</a>
+      <a href="/admin/audit">审计日志</a>
+      <div class="group">业务命名空间</div>
+      <a href="/admin/ns/order-core">order-core</a>
+      <a href="/admin/ns/payment-core">payment-core</a>
+      <a href="/admin/ns/payment-channel">payment-channel</a>
+      <a href="/admin/ns/card-center">card-center</a>
+      <a href="/admin/ns/card-payment">card-payment</a>
+      <a href="/admin/ns/user-merchant-core">user-merchant-core</a>
+      <a href="/admin/ns/risk-manage">risk-manage</a>
+      <a href="/admin/ns/api-gateway">api-gateway</a>
+      <a href="/admin/ns/accounting-system">accounting-system</a>
+      <a href="/admin/ns/clearing-settlement">clearing-settlement</a>
+      <a href="/admin/ns/reconplatform">reconplatform</a>
+      <a href="/admin/ns/kms-manage">kms-manage</a>
+    </nav>
+  </aside>
+  <div class="main">
+    <header class="header">
+      <div class="crumb">
+        <a href="/admin/">Config Center</a>
+        {{if .Namespace}}<span class="sep">/</span><a href="/admin/ns/{{.Namespace}}">{{.Namespace}}</a>{{end}}
+        {{if .Key}}<span class="sep">/</span>{{.Key}}{{end}}
+      </div>
+    </header>
+    <main class="content">
+      <h1 class="page-title">{{.Title}}</h1>
+      {{template "body" .}}
+    </main>
+  </div>
+</div>
 </body></html>
 {{end}}
 
 {{define "index"}}{{template "layout" .}}{{end}}
+{{define "list_keys"}}{{template "layout" .}}{{end}}
+{{define "key_detail"}}{{template "layout" .}}{{end}}
+{{define "edit"}}{{template "layout" .}}{{end}}
+{{define "diff"}}{{template "layout" .}}{{end}}
+{{define "list_items"}}{{template "layout" .}}{{end}}
+{{define "new_item"}}{{template "layout" .}}{{end}}
+{{define "audit"}}{{template "layout" .}}{{end}}
+
 {{define "body"}}
-{{- /* 全平台 12 namespace 按业务角色分组 */ -}}
-<p class="muted">
-  本系统是全平台所有服务的<b>动态配置统一入口</b>。
+{{- /* body 按页面类型 dispatch；layout 调本块时根据 .Title 关键词分支 */ -}}
+
+{{if .Groups}}
+{{- /* 首页：全平台 12 namespace 按业务角色分组 */ -}}
+<div class="alert alert-info">
+  本系统是全平台所有服务的<strong>动态配置统一入口</strong>。
   改任一 key → SDK watch → 集群所有副本秒级 OnChange 热更新。
-  各业务服务原 /admin/config 端点已 410 Gone，请改用本页。
-</p>
+  各业务服务原 <code>/admin/config</code> 端点已 410 Gone，请改用本页。
+</div>
 {{range .Groups}}
-<h2>{{.Title}}</h2>
+<div class="card">
+  <div class="card-head">{{.Title}}</div>
+  <table>
+    <thead><tr><th>Namespace</th><th>主要配置项</th><th style="width:200px">动作</th></tr></thead>
+    <tbody>
+    {{range .Items}}
+    <tr>
+      <td><strong>{{.Name}}</strong></td>
+      <td class="muted">{{.Note}}</td>
+      <td>
+        <a href="/admin/ns/{{.Name}}">查看 keys</a> ·
+        <a href="/admin/items/new?ns={{.Name}}">新增 key</a>
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{else if .Items}}
+{{- /* list_keys：单 namespace 下所有 key */ -}}
+{{if .Namespace}}<p class="muted">Namespace: <b>{{.Namespace}}</b></p>{{end}}
+<p>
+  <a href="/admin/items/new?ns={{.Namespace}}">+ 新增 key</a> |
+  <a href="/admin/">返回首页</a>
+</p>
 <table>
-  <tr><th>Namespace</th><th>主要配置项</th><th>动作</th></tr>
+  <tr><th>Key</th><th>Active Version</th><th>Latest Version</th><th>Updated</th><th>动作</th></tr>
   {{range .Items}}
   <tr>
-    <td><b>{{.Name}}</b></td>
-    <td class="muted">{{.Note}}</td>
+    <td><a href="/admin/ns/{{$.Namespace}}/{{.KeyName}}">{{.KeyName}}</a></td>
+    <td>v{{.ActiveVersion}}</td>
+    <td>v{{.LatestVersion}}</td>
+    <td class="muted">{{formatTime .UpdatedAt}}</td>
     <td>
-      <a href="/admin/ns/{{.Name}}">查看 keys</a> |
-      <a href="/admin/items/new?ns={{.Name}}">新增 key</a>
+      <a href="/admin/ns/{{$.Namespace}}/{{.KeyName}}/edit">编辑</a>
     </td>
   </tr>
   {{end}}
 </table>
+{{if eq (len .Items) 0}}
+<p class="muted">本 namespace 暂无 key。点 <a href="/admin/items/new?ns={{.Namespace}}">+ 新增 key</a> 写第一条。</p>
 {{end}}
-<p class="muted" style="margin-top:24px">
-  <a href="/admin/items">全平台 key 检索</a> |
-  <a href="/admin/audit">审计日志</a> |
-  <a href="/healthz">健康</a>
+
+{{else if .Versions}}
+{{- /* key_detail：单 key 历史版本 + 当前 active */ -}}
+<p class="muted">
+  <a href="/admin/ns/{{.Namespace}}">← {{.Namespace}}</a> /
+  <b>{{.Key}}</b>
 </p>
+{{if .Current}}
+<h2>当前生效</h2>
+<table>
+  <tr><th>Version</th><td>v{{.Current.Version}}</td></tr>
+  <tr><th>Strategy</th><td><span class="badge b-{{.Current.Strategy | printf "%s" | toLower}}">{{.Current.Strategy}}</span></td></tr>
+  <tr><th>Format</th><td>{{.Current.Format}}</td></tr>
+  <tr><th>Effective</th><td>{{formatTime .Current.EffectiveAt}}</td></tr>
+  <tr><th>Expire</th><td>{{formatTime .Current.ExpireAt}}</td></tr>
+  <tr><th>Updated By</th><td>{{.Current.CreatedBy}}</td></tr>
+  <tr><th>Reason</th><td>{{.Current.ChangeReason}}</td></tr>
+  <tr><th>Value</th><td><pre>{{truncate .Current.Value 1024}}</pre></td></tr>
+</table>
+<p>
+  <a href="/admin/ns/{{.Namespace}}/{{.Key}}/edit">编辑（产新版本）</a>
+</p>
+{{end}}
+
+{{if .Subscribers}}
+<h3>订阅服务</h3>
+<p>{{range .Subscribers}}<span class="badge b-full">{{.}}</span> {{end}}</p>
+{{end}}
+
+<h2>历史版本</h2>
+<table>
+  <tr><th>Version</th><th>Strategy</th><th>Created By</th><th>Created At</th><th>Reason</th><th>动作</th></tr>
+  {{range .Versions}}
+  <tr>
+    <td>v{{.Version}}</td>
+    <td><span class="badge b-{{.Strategy | printf "%s" | toLower}}">{{.Strategy}}</span></td>
+    <td>{{.CreatedBy}}</td>
+    <td class="muted">{{formatTime .CreatedAt}}</td>
+    <td class="muted">{{truncate .ChangeReason 64}}</td>
+    <td>
+      {{if $.Current}}{{if ne .Version $.Current.Version}}
+      <form method="POST" action="/admin/ns/{{$.Namespace}}/{{$.Key}}/rollback" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="to" value="{{.Version}}">
+        <input type="text" name="reason" placeholder="rollback 原因" style="width:120px;display:inline">
+        <button type="submit" onclick="return confirm('确认回滚到 v{{.Version}}？')">回滚</button>
+      </form>
+      <a href="/admin/ns/{{$.Namespace}}/{{$.Key}}/diff?from={{.Version}}&to={{$.Current.Version}}">diff</a>
+      {{end}}{{end}}
+    </td>
+  </tr>
+  {{end}}
+</table>
+
+{{else if .Lines}}
+{{- /* diff 页 */ -}}
+<p class="muted">
+  <a href="/admin/ns/{{.Namespace}}/{{.Key}}">← {{.Namespace}}/{{.Key}}</a> diff
+  v{{.From.Version}} → v{{.To.Version}}
+</p>
+<table>
+  <tr><th>old</th><th>new</th><th>kind</th><th>line</th></tr>
+  {{range .Lines}}
+  <tr>
+    <td class="muted">{{if .OldNum}}{{.OldNum}}{{end}}</td>
+    <td class="muted">{{if .NewNum}}{{.NewNum}}{{end}}</td>
+    <td><span class="badge b-{{.Kind}}">{{.Kind}}</span></td>
+    <td><pre>{{.Text}}</pre></td>
+  </tr>
+  {{end}}
+</table>
+
+{{else if .Services}}
+{{- /* new_item：新增配置 */ -}}
+<form method="POST" action="/admin/items/new">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <div class="row"><label>Namespace</label>
+    <select name="namespace">
+      {{range .Services}}<option value="{{.}}">{{.}}</option>{{end}}
+    </select>
+  </div>
+  <div class="row"><label>Key</label><input name="key" required placeholder="e.g. rate_limit.rps"></div>
+  <div class="row"><label>Format</label>
+    <select name="format">
+      <option value="json">json</option>
+      <option value="plain">plain</option>
+      <option value="yaml">yaml</option>
+    </select>
+  </div>
+  <div class="row"><label>Strategy</label>
+    <select name="strategy">
+      <option value="FULL">FULL（全量）</option>
+      <option value="CANARY">CANARY（灰度）</option>
+      <option value="TARGETED">TARGETED（白名单）</option>
+      <option value="SCHEDULED">SCHEDULED（按时生效）</option>
+    </select>
+  </div>
+  <div class="row"><label>Value</label><textarea name="value" rows="6" required></textarea></div>
+  <div class="row"><label>订阅服务（多选）</label>
+    {{range .Services}}<label style="display:inline;margin-right:12px"><input type="checkbox" name="subscribers" value="{{.}}" style="width:auto"> {{.}}</label>{{end}}
+  </div>
+  <div class="row"><label>Reason</label><input name="reason" placeholder="变更说明"></div>
+  <div class="row"><button type="submit">创建</button></div>
+</form>
+
+{{else if .Current}}
+{{- /* edit 页：单 key 的编辑表单（产新 version） */ -}}
+<p class="muted">
+  <a href="/admin/ns/{{.Namespace}}/{{.Key}}">← {{.Namespace}}/{{.Key}}</a> 编辑
+</p>
+<form method="POST" action="/admin/ns/{{.Namespace}}/{{.Key}}/put">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <div class="row"><label>Format</label>
+    <select name="format">
+      <option value="json"{{if eq .Current.Format "json"}} selected{{end}}>json</option>
+      <option value="plain"{{if eq .Current.Format "plain"}} selected{{end}}>plain</option>
+      <option value="yaml"{{if eq .Current.Format "yaml"}} selected{{end}}>yaml</option>
+    </select>
+  </div>
+  <div class="row"><label>Strategy</label>
+    <select name="strategy">
+      <option value="FULL"{{if eq .Current.Strategy "FULL"}} selected{{end}}>FULL</option>
+      <option value="CANARY"{{if eq .Current.Strategy "CANARY"}} selected{{end}}>CANARY</option>
+      <option value="TARGETED"{{if eq .Current.Strategy "TARGETED"}} selected{{end}}>TARGETED</option>
+      <option value="SCHEDULED"{{if eq .Current.Strategy "SCHEDULED"}} selected{{end}}>SCHEDULED</option>
+    </select>
+  </div>
+  <div class="row"><label>Strategy Spec (JSON)</label><textarea name="strategy_spec" rows="3">{{.Current.StrategySpec}}</textarea></div>
+  <div class="row"><label>Effective at (RFC3339, 留空立即)</label><input name="effective_at" type="datetime-local"></div>
+  <div class="row"><label>Expire at (留空永不过期)</label><input name="expire_at" type="datetime-local"></div>
+  <div class="row"><label>Value</label><textarea name="value" rows="8" required>{{.Current.Value}}</textarea></div>
+  <div class="row"><label>Reason</label><input name="reason" required placeholder="变更说明（必填，进 audit log）"></div>
+  <div class="row"><button type="submit">提交（产生新版本）</button></div>
+</form>
+
+{{else if .Rows}}
+{{- /* list_items 全平台 + audit 共用 */ -}}
+{{if .Q}}<p class="muted">搜索: <b>{{.Q}}</b>{{if .Subscriber}} (sub={{.Subscriber}}){{end}}</p>{{end}}
+<form method="GET" style="margin-bottom:12px">
+  <input name="q" value="{{.Q}}" placeholder="按 key/namespace 模糊搜索" style="width:280px;display:inline">
+  <input name="sub" value="{{.Subscriber}}" placeholder="订阅服务过滤" style="width:200px;display:inline">
+  <button type="submit">搜</button>
+</form>
+<table>
+  {{- /* list_items rows are *ConfigItemView, audit rows are *ConfigAuditEntry — 字段不同分支 */ -}}
+  {{range .Rows}}
+    {{if .KeyName}}
+      {{- /* ConfigItemView */ -}}
+      <tr>
+        <td><a href="/admin/ns/{{.Namespace}}/{{.KeyName}}">{{.Namespace}} / {{.KeyName}}</a></td>
+        <td>v{{.ActiveVersion}}</td>
+        <td class="muted">{{formatTime .UpdatedAt}}</td>
+      </tr>
+    {{else}}
+      {{- /* ConfigAuditEntry */ -}}
+      <tr>
+        <td class="muted">{{formatTime .CreatedAt}}</td>
+        <td><span class="badge b-full">{{.Op}}</span></td>
+        <td><a href="/admin/ns/{{.Namespace}}/{{.KeyName}}">{{.Namespace}}/{{.KeyName}}</a></td>
+        <td>{{.Actor}}</td>
+        <td class="muted">{{truncate .ChangeReason 80}}</td>
+      </tr>
+    {{end}}
+  {{end}}
+</table>
+{{if eq (len .Rows) 0}}<p class="muted">无数据</p>{{end}}
+
+{{else}}
+<p class="muted">空页（路由没匹配到模板分支）</p>
+{{end}}
 {{end}}
 `
