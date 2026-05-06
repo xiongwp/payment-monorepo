@@ -433,6 +433,19 @@ cmd_up() {
         # 补灌 card_* 库（如果之前 shared-db 已起、init 没含这俩，这里 idempotent 补建）
         ensure_card_dbs
         ;;
+      config-center)
+        info "  等 config-center /healthz（最多 60s）"
+        local cc_deadline=$((SECONDS + 60))
+        until curl -fs http://localhost:9691/healthz >/dev/null 2>&1; do
+          (( SECONDS > cc_deadline )) && { warn "config-center healthz 超时"; break; }
+          sleep 2
+        done
+        if curl -fs http://localhost:9691/healthz >/dev/null 2>&1; then
+          # 自动 seed：写 12 namespace 默认 key（PUT 是幂等，重复跑无害）
+          info "  自动 seed config-center 12 namespace 默认 key"
+          bash "$ROOT/config-center/deploy.sh" seed 2>&1 | sed 's/^/    /' || warn "seed 失败（可手动跑 deploy.sh seed 重试）"
+        fi
+        ;;
     esac
     ok "$svc 启动完成"
   done
