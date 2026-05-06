@@ -57,8 +57,10 @@ RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
 # 本仓代码 → /src/kms-manage（与 /src/payment-util 同级，匹配 go.mod 里的 ../payment-util）
 COPY . /src/kms-manage
 WORKDIR /src/kms-manage
-RUN go mod tidy
-RUN go mod download
+# GOPROXY 多源 + 重试：抗 sumdb / 单一 proxy 网络抖动 (storage.googleapis.com EOF 等)
+ENV GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
+ENV GOSUMDB=off
+RUN for i in 1 2 3 4 5; do       go mod tidy && go mod download && break;       echo "[go mod] attempt $i failed; retry after 5s..." >&2;       sleep 5;     done
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/kms-manage ./cmd/server
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/kmsctl ./cmd/kmsctl
 

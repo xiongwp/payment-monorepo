@@ -82,8 +82,10 @@ RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
 COPY . /src/order-core
 
 WORKDIR /src/order-core
-RUN go mod tidy
-RUN go mod download
+# GOPROXY 多源 + 重试：抗 sumdb / 单一 proxy 网络抖动 (storage.googleapis.com EOF 等)
+ENV GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
+ENV GOSUMDB=off
+RUN for i in 1 2 3 4 5; do       go mod tidy && go mod download && break;       echo "[go mod] attempt $i failed; retry after 5s..." >&2;       sleep 5;     done
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
     -o /out/order-core ./cmd/server
 

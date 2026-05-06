@@ -93,20 +93,50 @@ func NewFromViper(v *viper.Viper, defaultNamespace string, logger *zap.Logger) (
 		instanceID = "anon-" + fmt.Sprint(time.Now().UnixNano())
 	}
 
+	// 启动期重试：业务服务可能比 config-center 早起来 (deploy 顺序 / 重启风暴 /
+	// 容器编排时序)。每次失败退避 2s, 4s, 8s ... 最长 60s，总等待最多 5 分钟，
+	// 给 config-center pod 足够时间 init MySQL + 监听端口。
+	//
+	// 5 分钟还连不上 → prod fail-fast 启动失败（K8s 会重启），dev 返 nil 兜底。
 	rpc := NewHTTPClient(endpoint, nil)
-	cli, err := NewWithRPC(rpc, Config{
-		Namespace:        namespace,
-		InstanceID:       instanceID,
-		ReconnectBackoff: 1 * time.Second,
-		InitTimeout:      10 * time.Second,
-		Logger:           logger,
-	})
+	var (
+		cli      *Client
+		err      error
+		backoff  = 2 * time.Second
+		maxWait  = 5 * time.Minute
+		started  = time.Now()
+	)
+	for {
+		cli, err = NewWithRPC(rpc, Config{
+			Namespace:        namespace,
+			InstanceID:       instanceID,
+			ReconnectBackoff: 1 * time.Second,
+			InitTimeout:      10 * time.Second,
+			Logger:           logger,
+		})
+		if err == nil {
+			break
+		}
+		if time.Since(started) >= maxWait {
+			break
+		}
+		logger.Warn("config-center not ready yet; retrying",
+			zap.String("endpoint", endpoint),
+			zap.Duration("backoff", backoff),
+			zap.Duration("elapsed", time.Since(started)),
+			zap.Error(err))
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > 60*time.Second {
+			backoff = 60 * time.Second
+		}
+	}
 	if err != nil {
 		env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
 		if env == "prod" || env == "production" {
-			return nil, fmt.Errorf("config-center init failed (prod fail-fast): %w", err)
+			return nil, fmt.Errorf("config-center init failed after %s (prod fail-fast): %w", maxWait, err)
 		}
-		logger.Warn("config-center init failed; non-prod degrades to all-defaults",
+		logger.Warn("config-center init failed after retry; non-prod degrades to all-defaults",
 			zap.String("namespace", namespace),
 			zap.Error(err))
 		return nil, nil

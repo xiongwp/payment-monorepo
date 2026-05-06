@@ -78,7 +78,14 @@ RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
 COPY . /src/api-gateway
 WORKDIR /src/api-gateway
 
-RUN go mod tidy
+# GOPROXY 多源 + 重试：抗 sumdb / 单一 proxy 网络抖动
+ENV GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
+ENV GOSUMDB=off
+RUN for i in 1 2 3 4 5; do \
+      go mod tidy && go mod download && break; \
+      echo "[go mod] attempt $i failed; retry after 5s..." >&2; \
+      sleep 5; \
+    done
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/api-gateway ./cmd/server
 
 # ── runtime ─────────────────────────────────────────────────────────────────
