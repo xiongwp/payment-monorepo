@@ -1,0 +1,165 @@
+---
+# Alertmanager Configuration for Payment Platform
+# Routing: critical→PagerDuty+Slack #payment-oncall, warning→#payment-platform, info→#payment-metrics
+
+global:
+  resolve_timeout: 5m
+  slack_api_url: '${SLACK_WEBHOOK_URL}'  # Environment variable
+  pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+# Top-level route with defaults
+route:
+  receiver: 'null'  # Default (unused if all alerts match more specific routes)
+  group_by: ['alertname', 'severity', 'domain']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+
+  routes:
+    # ========================================================================
+    # CRITICAL: Page immediately (PagerDuty + Slack #payment-oncall)
+    # ========================================================================
+    - match:
+        severity: critical
+      receiver: 'critical'
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 4h
+      continue: true
+
+    # ========================================================================
+    # WARNING: Ticket for tracking (Slack #payment-platform)
+    # ========================================================================
+    - match:
+        severity: warning
+      receiver: 'warning'
+      group_wait: 5m
+      group_interval: 30m
+      repeat_interval: 24h
+      continue: true
+
+    # ========================================================================
+    # INFO: Metrics & early signals (Slack #payment-metrics)
+    # ========================================================================
+    - match:
+        severity: info
+      receiver: 'info'
+      group_wait: 10m
+      group_interval: 60m
+      repeat_interval: 24h
+      continue: true
+
+receivers:
+  # ========================================================================
+  # CRITICAL: PagerDuty + Slack #payment-oncall
+  # ========================================================================
+  - name: critical
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_PAYMENT_SERVICE_KEY}'  # Environment variable
+        description: '{{ .GroupLabels.alertname }} ({{ .GroupLabels.severity }})'
+        details:
+          firing: '{{ template "pagerduty.default.instances" .Alerts.Firing }}'
+          resolved: '{{ template "pagerduty.default.instances" .Alerts.Resolved }}'
+        client: 'Alertmanager / Payment Platform'
+        client_url: '{{ .ExternalURL }}'
+
+    slack_configs:
+      - channel: '#payment-oncall'
+        title: 'CRITICAL: {{ .GroupLabels.alertname }}'
+        text: |
+          Severity: {{ .GroupLabels.severity }}
+          Domain: {{ .GroupLabels.domain }}
+          {{ range .Alerts.Firing }}
+          *Alert:* {{ .Labels.alertname }}
+          *Summary:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          {{ end }}
+        send_resolved: true
+        color: 'danger'
+
+  # ========================================================================
+  # WARNING: Slack #payment-platform (tracking, not paging)
+  # ========================================================================
+  - name: warning
+    slack_configs:
+      - channel: '#payment-platform'
+        title: 'WARNING: {{ .GroupLabels.alertname }}'
+        text: |
+          Severity: {{ .GroupLabels.severity }}
+          Domain: {{ .GroupLabels.domain }}
+          {{ range .Alerts.Firing }}
+          *Alert:* {{ .Labels.alertname }}
+          *Summary:* {{ .Annotations.summary }}
+          {{ end }}
+        send_resolved: true
+        color: 'warning'
+
+  # ========================================================================
+  # INFO: Slack #payment-metrics (early signals, capacity planning)
+  # ========================================================================
+  - name: info
+    slack_configs:
+      - channel: '#payment-metrics'
+        title: 'INFO: {{ .GroupLabels.alertname }}'
+        text: |
+          Domain: {{ .GroupLabels.domain }}
+          {{ range .Alerts.Firing }}
+          *Alert:* {{ .Labels.alertname }}
+          *Summary:* {{ .Annotations.summary }}
+          {{ end }}
+        send_resolved: false
+        color: 'good'
+
+  # Null receiver (silences alerts that don't match any route)
+  - name: 'null'
+
+# ============================================================================
+# INHIBITION RULES (suppress noisy alerts when critical issues exist)
+# ============================================================================
+inhibit_rules:
+  # If page-level SLO burn detected, suppress ticket-level burn alerts
+  - source_match:
+      severity: critical
+      slo: availability
+    target_match:
+      severity: warning
+      slo: availability
+    equal: ['severity', 'slo']
+
+  # If a dependency is down, suppress derived circuit-breaker flapping alerts
+  - source_match:
+      severity: critical
+      domain: reliability
+      alertname: DependencyDown
+    target_match:
+      domain: reliability
+      alertname: CircuitBreakerFlapping
+    equal: ['alertname']
+
+  # If fund-safety critical (outbox lag, KMS failure), suppress capacity warnings
+  # (degradation expected during incident)
+  - source_match:
+      severity: critical
+      domain: funds_safety
+    target_match:
+      severity: warning
+      domain: capacity
+    equal: ['alertname']
+
+# ============================================================================
+# TEMPLATES (Slack message formatting)
+# ============================================================================
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'  # External template files
+
+# ============================================================================
+# ENVIRONMENT VARIABLES (inject at deployment)
+# ============================================================================
+# Before starting alertmanager, export:
+#   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../...
+#   PAGERDUTY_PAYMENT_SERVICE_KEY=xxxxxxxxxxxxxxxx
+#
+# Example Docker/K8s:
+#   docker run -e SLACK_WEBHOOK_URL=$SLACK_WEBHOOK_URL \
+#              -e PAGERDUTY_PAYMENT_SERVICE_KEY=$PAGERDUTY_KEY \
+#              prom/alertmanager:latest

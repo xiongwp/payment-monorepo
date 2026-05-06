@@ -1,0 +1,416 @@
+---
+# Prometheus Alert Rules for Payment Platform SLO Monitoring
+# Covers: SLO burn-rate, fund safety, capacity, and business alerts
+groups:
+  # ============================================================================
+  # SLO BURN-RATE ALERTS (Error Budget Tracking)
+  # ============================================================================
+  - name: slo_burn_rate
+    interval: 30s
+    rules:
+      # Ticket-level alert: 6h window × 6x burn rate (sustained 1h)
+      # Burns budget ~3% per hour; sustained 1h = burning fastest acceptable tier
+      - alert: SLOBurnRateTicket
+        expr: |
+          (1 - (sum(rate(api_gateway_http_requests_total{status=~"2..|3.."}[6h]))
+                / sum(rate(api_gateway_http_requests_total[6h]))))
+          > 0.0006 * (1 - 0.9995)
+        for: 1h
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "SLO burn-rate ticket: {{ $value | humanizePercentage }}"
+          description: |
+            Error rate > 6x normal burn detected over 6h window.
+            Budget exhaustion risk: ~3% per hour. Ticket for tracking.
+
+      # Page-level alert: 1h window × 14.4x burn rate (sustained 5min)
+      # Burns budget ~10% per hour; sustained 5min = critical trajectory
+      - alert: SLOBurnRatePage
+        expr: |
+          (1 - (sum(rate(api_gateway_http_requests_total{status=~"2..|3.."}[1h]))
+                / sum(rate(api_gateway_http_requests_total[1h]))))
+          > 0.0014 * (1 - 0.9995)
+        for: 5m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "SLO burn-rate PAGE: {{ $value | humanizePercentage }}"
+          description: |
+            Error rate > 14.4x normal burn over 1h window.
+            Page immediately. Error budget exhaustion risk: ~10% per hour.
+
+  # ============================================================================
+  # FUND SAFETY ALERTS (Ledger Reconciliation & Integrity)
+  # ============================================================================
+  - name: fund_safety
+    interval: 30s
+    rules:
+      # Ledger reconciliation exception: pending > 10 for 5min → critical
+      # TODO: outbox_lag_seconds metric to be implemented in P0-7-followup
+      - alert: LedgerReconPendingHigh
+        expr: accounting_outbox_pending_records > 10
+        for: 5m
+        labels:
+          severity: critical
+          domain: funds_safety
+        annotations:
+          summary: "High ledger recon pending: {{ $value }} records"
+          description: |
+            Accounting outbox pending > 10 for 5min.
+            Check MySQL write latency, replication lag, connection pool saturation.
+
+      # Outbox oldest pending age > 60s → critical (data loss risk)
+      # TODO: Confirm metric name is accounting_outbox_oldest_pending_age_seconds
+      - alert: OutboxLagHigh
+        expr: accounting_outbox_oldest_pending_age_seconds > 60
+        for: 2m
+        labels:
+          severity: critical
+          domain: funds_safety
+        annotations:
+          summary: "Outbox oldest pending age: {{ $value }}s"
+          description: |
+            Oldest outbox record stuck > 60s.
+            Risk of transaction loss if MySQL write fails.
+            Check MySQL pool, replication, and logs.
+
+      # KMS decrypt failure rate > 1% → critical (card data inaccessible)
+      - alert: KMSDecryptFailureRate
+        expr: |
+          sum(rate(kms_op_total{op="decrypt",result="err"}[5m]))
+          / sum(rate(kms_op_total{op="decrypt"}[5m])) > 0.01
+        for: 2m
+        labels:
+          severity: critical
+          domain: funds_safety
+        annotations:
+          summary: "KMS decrypt failure rate: {{ $value | humanizePercentage }}"
+          description: |
+            KMS decrypt errors > 1%.
+            Detokenization failing; charge auth chain blocked.
+            Check KMS service health, HSM connectivity, key rotation.
+
+      # Audit chain integrity failure (synthetic probe mismatch)
+      - alert: AuditChainIntegrityFailed
+        expr: |
+          sum(rate(risk_synthetic_probe_total{name="audit_chain",result="mismatch"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          domain: funds_safety
+        annotations:
+          summary: "Audit chain integrity check FAILED"
+          description: |
+            Risk management audit chain verification failing.
+            Manual intervention required: engage SRE + Compliance.
+            Possible causes: KMS key loss, audit table corruption, detector misconfiguration.
+
+  # ============================================================================
+  # CAPACITY ALERTS (Infrastructure Saturation)
+  # ============================================================================
+  - name: capacity
+    interval: 30s
+    rules:
+      # DB pool utilization > 80% for 10min → warning
+      - alert: DBPoolSaturationHigh
+        expr: |
+          (accounting_db_pool_in_use_conns / accounting_db_pool_max_open_conns) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          domain: capacity
+        annotations:
+          summary: "DB pool {{ $labels.shard }} saturation: {{ $value | humanizePercentage }}"
+          description: |
+            Connection pool utilization > 80%.
+            Risk: new requests queued, latency tail increases.
+            Action: scale pool size, add read replicas, or reduce concurrent load.
+
+      # Card-payment bulkhead active / capacity > 80% → warning (per merchant)
+      # TODO: paycard_bulkhead_active and paycard_bulkhead_capacity exist; metric waiting for per-merchant labels
+      - alert: BulkheadSaturationHigh
+        expr: |
+          (paycard_bulkhead_active / paycard_bulkhead_capacity) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          domain: capacity
+        annotations:
+          summary: "Card-payment bulkhead saturation: {{ $value | humanizePercentage }}"
+          description: |
+            Concurrent authorize in-flight > 80% of capacity.
+            Single merchant hitting per-request concurrency limit soon.
+            Scale merchant limit or increase total bulkhead capacity.
+
+      # KMS cache hitrate < 70% → info (early scaling signal)
+      # TODO: kms_cache_hits / kms_cache_total metrics to be implemented in P0-7-followup
+      - alert: KMSCacheHitRateLow
+        expr: |
+          (sum(rate(kms_cache_hits_total[5m])) / sum(rate(kms_cache_requests_total[5m]))) < 0.7
+        for: 15m
+        labels:
+          severity: info
+          domain: capacity
+        annotations:
+          summary: "KMS cache hitrate: {{ $value | humanizePercentage }}"
+          description: |
+            Cache efficiency < 70%; more HSM hits than expected.
+            Monitor for increased KMS latency; plan key expansion.
+
+      # Single shard QPS > 5000 → warning (reshard planning)
+      # TODO: Waiting for per-shard request rate metric; placeholder query
+      - alert: ShardQPSHigh
+        expr: |
+          (sum(rate(accounting_booking_total[1m])) by (shard) / 60) > 5000
+        for: 10m
+        labels:
+          severity: warning
+          domain: capacity
+        annotations:
+          summary: "Shard {{ $labels.shard }} QPS high: {{ $value | humanizeDecimal }}"
+          description: |
+            Single shard > 5000 QPS. Plan resharding.
+            Monitor write latency; evaluate split strategy.
+
+  # ============================================================================
+  # BUSINESS ALERTS (Auth Success, 3DS, Risk, Routing)
+  # ============================================================================
+  - name: business
+    interval: 30s
+    rules:
+      # Auth success rate < 90% by (channel, country) sustained 10min → critical
+      # TODO: paycard_authorize_total with channel + country labels; awaiting implementation
+      - alert: AuthSuccessRateLow
+        expr: |
+          (sum(rate(paycard_authorize_total{result="ok"}[5m])) by (network)
+          / sum(rate(paycard_authorize_total[5m])) by (network)) < 0.9
+        for: 10m
+        labels:
+          severity: critical
+          domain: business
+        annotations:
+          summary: "Auth success rate {{ $labels.network }}: {{ $value | humanizePercentage }}"
+          description: |
+            Success rate < 90%. Possible card network issues, configuration drift.
+            Check: adapter error logs, circuit state, card org decline rate.
+
+      # 3DS challenge rate deviation from 7d baseline ±50% → warning
+      # TODO: paycard_3ds_challenge_rate metric awaiting implementation
+      - alert: ThreeDSChallengeRateAnomaly
+        expr: |
+          abs(
+            (sum(rate(paycard_3ds_challenge_total[1h])) / 60)
+            - (sum(rate(paycard_3ds_challenge_total[7d] offset 7d)) / (7 * 86400))
+          ) / (sum(rate(paycard_3ds_challenge_total[7d] offset 7d)) / (7 * 86400)) > 0.5
+        for: 30m
+        labels:
+          severity: warning
+          domain: business
+        annotations:
+          summary: "3DS challenge rate anomaly: {{ $value | humanizePercentage }} delta"
+          description: |
+            3DS challenge rate ±50% vs 7d baseline.
+            Possible: card issuer rule change, fraud spike, gateway config drift.
+
+      # Risk review queue p95 age > 30min → warning
+      # TODO: risk_review_queue_age_seconds metric awaiting implementation
+      - alert: RiskReviewQueueAgePHigh
+        expr: |
+          histogram_quantile(0.95, sum(rate(risk_review_queue_age_seconds_bucket[5m])) by (le)) > 1800
+        for: 15m
+        labels:
+          severity: warning
+          domain: business
+        annotations:
+          summary: "Risk review queue p95 age: {{ $value | humanizeDuration }}"
+          description: |
+            Pending manual reviews piling up. Risk analysts overwhelmed.
+            Check: review_pending_count, rule hit rate, override ratio.
+
+      # Payment routing fallback rate > 5% → warning (adapter degradation)
+      - alert: PaymentRoutingFallbackHigh
+        expr: |
+          (sum(rate(paycore_route_total{adapter="no_match"}[5m]))
+          / sum(rate(paycore_route_total[5m]))) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          domain: business
+        annotations:
+          summary: "Routing fallback rate: {{ $value | humanizePercentage }}"
+          description: |
+            > 5% of charges falling back (no adapter matched or all degraded).
+            Check: adapter circuit states, configuration consistency, rule evaluation.
+
+  # ============================================================================
+  # LATENCY & PERFORMANCE (P99 Overbudget)
+  # ============================================================================
+  - name: latency
+    interval: 30s
+    rules:
+      # API Gateway P99 > 1s (over budget: 1s max) → warning
+      - alert: APIGatewayP99OverBudget
+        expr: |
+          histogram_quantile(0.99, sum(rate(api_gateway_http_request_duration_seconds_bucket[5m])) by (le)) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "API Gateway P99: {{ $value | humanizeDuration }} (budget: 1s)"
+          description: |
+            Gateway tail latency exceeded SLO budget.
+            Check: downstream service latencies, payload sizes, auth overhead.
+
+      # Order-core Charge P99 > 2s (budget: 2s SLO for CreatePI+Confirm) → warning
+      - alert: OrderCoreChargeP99High
+        expr: |
+          histogram_quantile(0.99, sum(rate(paycore_charge_duration_seconds_bucket[5m])) by (le)) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "Order-core Charge P99: {{ $value | humanizeDuration }} (budget: 2s)"
+          description: |
+            Charge operation tail latency high.
+            Check: card-payment latency, network adapter roundtrip, KMS delays.
+
+      # Card-payment Authorize P99 > 5s (network-dependent budget) → warning
+      - alert: CardPaymentAuthorizeP99High
+        expr: |
+          histogram_quantile(0.99, sum(rate(paycard_authorize_duration_seconds_bucket[5m])) by (le)) > 5.0
+        for: 5m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "Card-payment Authorize P99: {{ $value | humanizeDuration }} (budget: 5s)"
+          description: |
+            Detokenize + network timeout delays. Check: card-center latency, HSM, card org response time.
+
+      # Accounting Outbox MySQL Write P99 > 200ms → warning
+      - alert: AccountingOutboxMySQLP99High
+        expr: |
+          histogram_quantile(0.99, sum(rate(accounting_outbox_mysql_write_duration_seconds_bucket[5m])) by (le)) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "Accounting Outbox MySQL P99: {{ $value | humanizeDuration }} (budget: 200ms)"
+          description: |
+            Single record write > 200ms. Check: MySQL slow log, lock contention, replication lag.
+
+  # ============================================================================
+  # CIRCUIT BREAKER & DEPENDENCY HEALTH
+  # ============================================================================
+  - name: circuit_breaker
+    interval: 30s
+    rules:
+      # Circuit breaker transition flapping: > 10 transitions per network/5min → warning
+      - alert: CircuitBreakerFlapping
+        expr: |
+          (sum(rate(paycard_circuit_transitions_total{from="CLOSED",to="OPEN"}[5m])) by (network) * 300) > 10
+        for: 5m
+        labels:
+          severity: warning
+          domain: reliability
+        annotations:
+          summary: "Circuit breaker flapping for {{ $labels.network }}"
+          description: |
+            Network adapter opens/closes repeatedly.
+            Indicates borderline health: close to failure threshold.
+            Manual circuit reset may be needed; check adapter logs.
+
+      # Any critical dependency down for 2min → critical
+      - alert: DependencyDown
+        expr: paycard_dependency_up == 0
+        for: 2m
+        labels:
+          severity: critical
+          domain: reliability
+        annotations:
+          summary: "Dependency {{ $labels.dependency }} DOWN"
+          description: |
+            {{ $labels.dependency }} unreachable for 2min.
+            Transactions blocked. Manual remediation: restart service / fix network.
+
+  # ============================================================================
+  # INFRASTRUCTURE & OPERATIONAL HEALTH
+  # ============================================================================
+  - name: infrastructure
+    interval: 30s
+    rules:
+      # TCC recovery failures (frozen balance not released) → critical
+      - alert: TCCRecoveryFailure
+        expr: rate(accounting_tcc_recovery_failures_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          domain: infrastructure
+        annotations:
+          summary: "TCC recovery failures detected"
+          description: |
+            Frozen balance not released after TCC rollback.
+            Manual intervention: unlock accounts via admin tool.
+            Audit: identify root cause (MySQL, network, timeout).
+
+      # Outbox records permanently failed (reached retry limit) → critical
+      - alert: OutboxFailuresPermanent
+        expr: rate(accounting_outbox_failed_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          domain: infrastructure
+        annotations:
+          summary: "Outbox permanent failures detected"
+          description: |
+            Records exhausted retries without success.
+            Money stuck in flight. Manual recovery needed.
+            Check: MySQL connectivity, TX log, recovery tool status.
+
+      # Deadlock/lock exhaustion on hot accounts → warning
+      - alert: MySQLDeadlockRetryExhausted
+        expr: rate(accounting_deadlock_retry_exhausted_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          domain: infrastructure
+        annotations:
+          summary: "MySQL deadlock retries exhausted ({{ $value | humanizeDecimal }}/s)"
+          description: |
+            Hot account contention too high; retry budget exhausted.
+            Action: reduce per-account concurrency, split accounts, or add shards.
+
+      # Goroutine leak detection (wind-manage) → warning
+      - alert: GoroutineLeakDetected
+        expr: rate(risk_goroutine_count[5m]) > 50 or risk_goroutine_count > 1000
+        for: 15m
+        labels:
+          severity: warning
+          domain: infrastructure
+        annotations:
+          summary: "Goroutine leak in risk-manage: {{ $value | humanizeDecimal }}"
+          description: |
+            Goroutine count growing (> 50/s) or > 1000 total.
+            Possible worker not stopping, context leak, channel reader not exiting.
+            Action: review pprof trace, identify goroutine type, fix.
+
+      # Warm account initialization failures → critical
+      - alert: WarmAccountInitializationFailed
+        expr: rate(accounting_warm_account_failures_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          domain: infrastructure
+        annotations:
+          summary: "Warm account pre-load failures"
+          description: |
+            Hot accounts failed to pre-warm into Redis at startup.
+            First transactions will miss cache and may trigger stampede.
+            Check: Redis connectivity, DB query performance, free memory.
+

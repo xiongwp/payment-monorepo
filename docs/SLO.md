@@ -175,6 +175,27 @@ card-payment 落 DB           : 50ms
 
 ---
 
+## 监控告警 (P0-7)
+
+完整的 Prometheus alert rules + Alertmanager 路由配置已实装：
+
+- **告警规则**: `deploy/alertmanager/payment-rules.yml`
+  - SLO burn-rate (ticket/page 双层告警)
+  - 资金安全 (ledger recon, outbox lag, KMS, audit chain)
+  - 容量 (DB pool, bulkhead, KMS cache, shard QPS)
+  - 业务 (auth success, 3DS, risk review, routing fallback)
+  - 基础设施 (TCC recovery, outbox failure, deadlock, goroutine leak)
+
+- **Alertmanager 配置**: `deploy/alertmanager/alertmanager.yml`
+  - critical → PagerDuty + Slack #payment-oncall
+  - warning → Slack #payment-platform
+  - info → Slack #payment-metrics
+
+- **Runbook**: `docs/runbooks/RUNBOOK.md`
+  - 每个 critical alert 的症状、排查步骤、修复 SOP、回滚预案
+
+---
+
 ## 改动这个文档时
 
 任何 SLO 调整都要走 SRE review；不能因为达不到就放宽。要么改实现，要么承认现状（写 acknowledgement）。
