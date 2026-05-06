@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 )
 
@@ -37,8 +38,12 @@ func (w *ExpireWorker) Start(ctx context.Context) {
 	defer t.Stop()
 
 	runOnce := func() {
-		if _, err := w.svc.ExpireOverdue(ctx, w.limit); err != nil {
-			w.logger.Warn("expire sweep failed", zap.Error(err))
+		// 每次扫过期单都起 background ctx：trace_id 新发 + shadow=false。
+		// 防止 expire 路径若意外读到 shadow ctx 把 *_shadow 单 mark 到主表。
+		bgCtx, cancel := trace.NewBackground(ctx, "expire-worker", w.logger, w.interval)
+		defer cancel()
+		if _, err := w.svc.ExpireOverdue(bgCtx, w.limit); err != nil {
+			trace.Logger(bgCtx, w.logger).Warn("expire sweep failed", zap.Error(err))
 		}
 	}
 	runOnce() // 启动先跑一次

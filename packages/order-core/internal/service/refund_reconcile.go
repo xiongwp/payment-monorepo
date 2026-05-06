@@ -13,6 +13,7 @@ import (
 	"github.com/xiongwp/order-core/internal/idgen"
 	"github.com/xiongwp/order-core/internal/repo"
 	"github.com/xiongwp/order-core/internal/sharding"
+	"github.com/xiongwp/payment-util/trace"
 )
 
 // RefundReconcileService 处理晚到的渠道成功回调与退款的最终一致性。
@@ -197,8 +198,12 @@ func (w *RefundRetryWorker) Start(ctx context.Context) {
 	t := time.NewTicker(w.interval)
 	defer t.Stop()
 	runOnce := func() {
-		if err := w.sweep(ctx); err != nil {
-			w.logger.Warn("refund retry sweep error", zap.Error(err))
+		// trace.NewBackground 每 tick 一次：trace_id 新生成 + shadow=false
+		// 强制。refund 路径要写主表 + 调真渠道，不能 shadow 漂移。
+		bgCtx, cancel := trace.NewBackground(ctx, "refund-retry-worker", w.logger, w.interval)
+		defer cancel()
+		if err := w.sweep(bgCtx); err != nil {
+			trace.Logger(bgCtx, w.logger).Warn("refund retry sweep error", zap.Error(err))
 		}
 	}
 	runOnce()

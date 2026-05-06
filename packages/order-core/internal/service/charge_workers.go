@@ -9,6 +9,7 @@ import (
 	"github.com/xiongwp/order-core/internal/channel"
 	"github.com/xiongwp/order-core/internal/domain"
 	"github.com/xiongwp/order-core/internal/repo"
+	"github.com/xiongwp/payment-util/trace"
 )
 
 // ─── ChargeExpireWorker：过期 Charge 终态化 ─────────────────────────────────
@@ -55,16 +56,20 @@ func (w *ChargeExpireWorker) Start(ctx context.Context) {
 	t := time.NewTicker(w.interval)
 	defer t.Stop()
 	run := func() {
-		list, err := w.chargeRepo.ListExpired(ctx, time.Now().UTC(), w.limit)
+		// 每次扫一拨过期 charge 都起 background ctx：trace_id 新发 + shadow=false。
+		// expireOne 会调真渠道 Query 兜底，不能漏带 shadow flag 把压测打到真渠道。
+		bgCtx, cancel := trace.NewBackground(ctx, "charge-expire-worker", w.logger, w.interval)
+		defer cancel()
+		list, err := w.chargeRepo.ListExpired(bgCtx, time.Now().UTC(), w.limit)
 		if err != nil {
-			w.logger.Warn("list expired charges failed", zap.Error(err))
+			trace.Logger(bgCtx, w.logger).Warn("list expired charges failed", zap.Error(err))
 			return
 		}
 		for _, c := range list {
-			w.expireOne(ctx, c)
+			w.expireOne(bgCtx, c)
 		}
 		if len(list) > 0 {
-			w.logger.Info("expired charges swept", zap.Int("count", len(list)))
+			trace.Logger(bgCtx, w.logger).Info("expired charges swept", zap.Int("count", len(list)))
 		}
 	}
 	run()
@@ -190,10 +195,12 @@ func (w *ReconcileWorker) Start(ctx context.Context) {
 	t := time.NewTicker(w.interval)
 	defer t.Stop()
 	run := func() {
+		bgCtx, cancel := trace.NewBackground(ctx, "reconcile-worker", w.logger, w.interval)
+		defer cancel()
 		cutoff := time.Now().UTC().Add(-w.staleAfter)
-		list, err := w.chargeRepo.ListPendingForReconcile(ctx, cutoff, w.limit)
+		list, err := w.chargeRepo.ListPendingForReconcile(bgCtx, cutoff, w.limit)
 		if err != nil {
-			w.logger.Warn("list pending charges for reconcile failed", zap.Error(err))
+			trace.Logger(bgCtx, w.logger).Warn("list pending charges for reconcile failed", zap.Error(err))
 			return
 		}
 		if len(list) == 0 {
@@ -201,13 +208,13 @@ func (w *ReconcileWorker) Start(ctx context.Context) {
 		}
 		pc := w.registry.Get(w.chName)
 		if pc == nil {
-			w.logger.Warn("no channel registered for reconcile", zap.String("name", w.chName))
+			trace.Logger(bgCtx, w.logger).Warn("no channel registered for reconcile", zap.String("name", w.chName))
 			return
 		}
 		for _, c := range list {
-			w.reconcileOne(ctx, pc, c)
+			w.reconcileOne(bgCtx, pc, c)
 		}
-		w.logger.Info("reconcile pass completed", zap.Int("count", len(list)))
+		trace.Logger(bgCtx, w.logger).Info("reconcile pass completed", zap.Int("count", len(list)))
 	}
 	run()
 	for {
