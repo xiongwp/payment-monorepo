@@ -49,6 +49,13 @@ services:
       - ./database/metadb/init/init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
 
   config-center:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        payment-util: ../payment-util
+      secrets:
+        - GITHUB_TOKEN
     image: config-center:latest
     container_name: config-center
     depends_on:
@@ -85,3 +92,9 @@ services:
 
 volumes:
   config-meta-data:
+
+# BuildKit secret：Dockerfile 走 git clone fallback 时用。
+# 用法：GITHUB_TOKEN=ghp_xxx docker compose build
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN
