@@ -52,13 +52,21 @@ type Repo interface {
 	PutVersion(ctx context.Context, in PutVersionInput) (int64, error)
 	// Rollback 事务：copy 旧 version 为新 version，把 active_version 指过去
 	Rollback(ctx context.Context, namespace, key string, toVersion int64, actor, reason string) (int64, error)
-	// GetActive 取 (namespace, key) 当前生效版本
+	// GetActive 取 (namespace, key) 当前生效版本（active_version 指针对应的 row）
 	GetActive(ctx context.Context, namespace, key string) (*ConfigRow, error)
-	// ListNamespace 取 namespace 下所有 active config（snapshot 用）
-	ListNamespace(ctx context.Context, namespace string) ([]*ConfigRow, error)
-	// SinceVersion 取 namespace 下 max(version_id) > since 的所有 row（resume 用）
+
+	// ListNamespaceForSnapshot 给 watch 初始 snapshot 用：
+	//   每个 key **都返两份**（如果有）：
+	//     1. 当前生效版本（config_item.active_version 指向）
+	//     2. 未来生效版本（config_version.effective_at > now 且 version > active_version）
+	//        多个 SCHEDULED 排队时按 effective_at 升序，全推；客户端 SDK
+	//        cache 会以最近一个为 pending（之后的覆盖前面的）
+	//   客户端按 IsEffective(now) 决定槽位：active vs pending。
+	ListNamespaceForSnapshot(ctx context.Context, namespace string) ([]*ConfigRow, error)
+
+	// SinceVersion 取 namespace 下 version > since 的所有 row（resume 用）
 	SinceVersion(ctx context.Context, namespace string, since int64) ([]*ConfigRow, error)
-	// ListVersions 取 (namespace, key) 历史 version 列表
+	// ListVersions 取 (namespace, key) 历史 version 列表（admin 详情页用）
 	ListVersions(ctx context.Context, namespace, key string, limit int) ([]*ConfigRow, error)
 	// Delete 软删（标 deleted=1）+ audit
 	Delete(ctx context.Context, namespace, key, actor, reason string) error
@@ -166,16 +174,27 @@ func (s *Service) GetConfig(ctx context.Context, namespace, key, instanceID stri
 	return row, nil
 }
 
-// WatchNamespace 客户端 stream：first push snapshot/since-version diff，then realtime。
+// WatchNamespace 客户端 stream：先发 snapshot（含每 key 的「当前生效 + 未来即将生效」
+// 两份），后接 realtime 增量。
+//
+// **snapshot 推送规则**（保证客户端启动后本地 cache 完整）：
+//   - 每个 key 推 1-N 行：
+//     · 必含 config_item.active_version 指向的当前生效行
+//     · 加推 config_version 中 effective_at > now 且 version > active 的"未来 SCHEDULED"行
+//   - 客户端按各行 IsEffective(now) 自动归位：立即生效→active 槽，未来生效→pending 槽
+//
+// since_version > 0：resume 模式，只发 version > sinceVersion 的增量；客户端
+// 用本地 maxVersion 续传，断网期间漏掉的事件重连后补齐。
+//
 // 每个订阅一个独立 channel；caller 要 range channel 直到 ctx.Done。
 func (s *Service) WatchNamespace(ctx context.Context, namespace, instanceID string, sinceVersion int64) (<-chan *Event, error) {
 	out := make(chan *Event, 64)
-	// 1) 先发 snapshot 或 since-version 增量
+	// 1) 先发 snapshot（含未来版本）或 since-version 增量
 	go func() {
 		var rows []*ConfigRow
 		var err error
 		if sinceVersion <= 0 {
-			rows, err = s.repo.ListNamespace(ctx, namespace)
+			rows, err = s.repo.ListNamespaceForSnapshot(ctx, namespace)
 		} else {
 			rows, err = s.repo.SinceVersion(ctx, namespace, sinceVersion)
 		}

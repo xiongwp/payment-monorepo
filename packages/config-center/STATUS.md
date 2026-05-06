@@ -17,6 +17,37 @@
 | 11 | 审计 log 时间序 | admin `/audit` |
 | 12 | architecture & 迁移 plan 文档 | `README.md` |
 
+## 健康 / 可扩展性（已加）
+
+| 维度 | 实现 |
+| --- | --- |
+| **liveness** | HTTP `/healthz` — 进程没卡死即 OK，**不查依赖**（避免下游故障误杀 pod） |
+| **readiness** | HTTP `/readyz` — DB ping + 注册的依赖 probe 全 OK + 不在 drain 才 200；任一 down → 503 + body 写具体哪个 down |
+| **gRPC health** | `grpc.health.v1.Health/Check` — K8s gRPC probe / istio sidecar / SDK 客户端可用 |
+| **drain 协调** | fx OnStop → BeginDrain → /readyz 立即 503 + grpc health NOT_SERVING；K8s 摘流量再 GracefulStop |
+| **多副本 fan-out** | `internal/pusher/kafka_bridge.go` — admin write 既本地 hub.Publish 又发 Kafka topic `config-center.events`；其他副本消费回环 fan-out 给自己 watcher |
+| **客户端 since_version resume** | Kafka 漏发 / 副本切换时，客户端用本地 maxVersion 重连后服务端补齐增量，最终一致 |
+| **读副本路由** | DB GetActive / SinceVersion 路径可走 read replica（GetMetaRO 模式，跟其他服务对齐） |
+| **SDK 启动期阻塞** | NewWithRPC 同步拉一次 snapshot；超时 + 0 数据 → 返 error 让 main fx fail-fast；防止服务带空 cache 上线 |
+
+## SDK 双版本本地缓存（已加）
+
+```
+entry { active, pending *ConfigValue }
+```
+
+- **active** = 当前生效版本
+- **pending** = 已收到但 `effective_at > now` 的未来版本
+
+读时间感知（Get 优先级）：
+
+```
+pending(IsEffective(now)) > active(IsEffective(now)) > fallback.active
+```
+
+server 推 SCHEDULED 配置时 SDK 立刻收到 cfg；按 `EffectiveAt` 自动归位 active 或 pending 槽。
+1Hz swapper 后台 ticker 到点 atomic swap pending → active；同时 `Get` 自身也是时间感知 — 即使 swapper 滞后 ≤1s，业务读也按当前 `time.Now()` 选最该生效的版本。
+
 ## v0.1 限制（生产前要补）
 
 - proto stub 没生成（需 protoc + go-proto-gen）— 建议跑 `make proto` 一次

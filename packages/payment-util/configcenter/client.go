@@ -197,6 +197,15 @@ func New(cfg Config) (*Client, error) {
 
 // NewWithRPC 给定一个已建好的 rpcClient（typically wrapping generated proto stub）。
 // 真实代码：configcenter.NewWithRPC(rpc, cfg) 包装 grpc dial + protobuf stub。
+//
+// **启动期阻塞**：
+//   1. 同步调 rpc.Watch（since_version=0）拿全量 snapshot；caller 必须在
+//      cfg.InitTimeout（默认 10s）内全部收到，否则返 error 让 fx fail-fast。
+//   2. 收到 snapshot 后初始化 cache，再起常驻 watchLoop / swapperLoop。
+//   3. caller (main.go) 应该判断 error：
+//        if err != nil { logger.Fatal("config-center 起不来，服务拒绝启动") }
+//      或退化策略（dev only）：用 hardcoded fallback 继续。
+//      生产**必须** fatal — 防止服务带空 cache 上线读 default 行为不符合预期。
 func NewWithRPC(rpc rpcClient, cfg Config) (*Client, error) {
 	if cfg.Namespace == "" {
 		return nil, errors.New("configcenter: namespace required")
@@ -220,13 +229,99 @@ func NewWithRPC(rpc rpcClient, cfg Config) (*Client, error) {
 		listeners: make(map[string][]listener),
 		stopCh:    make(chan struct{}),
 	}
-	// 起 watch goroutine（异步）；初始 snapshot 通过 watch 的 since_version=0 拿。
+
+	// **同步初始化**：调一次 Watch 拉 SNAPSHOT，超时 → 失败。
+	if err := c.initialLoad(); err != nil {
+		return nil, fmt.Errorf("configcenter: initial load: %w", err)
+	}
+
+	// 初始 snapshot 已写 cache；现在起常驻 goroutine 接增量。
 	c.wg.Add(1)
 	go c.watchLoop()
-	// 起 swapper：每秒检查所有 pending，到点 atomic 提到 active
 	c.wg.Add(1)
 	go c.swapperLoop()
 	return c, nil
+}
+
+// initialLoad 同步阻塞：调一次 Watch 拉全量 snapshot 写本地 cache。
+//
+// 实现要点：
+//   - since_version=0 → server 推 EventType=SNAPSHOT 给本 namespace 全量
+//   - server 推完 snapshot 会发一个 sentinel 事件（type=SNAPSHOT, Config=nil 表示 done）
+//     或直接保持 stream open 进入 realtime 模式 — SDK 用 InitTimeout 兜底
+//   - timeout 内没收到任何事件（namespace 空也算 OK）→ 仍认为初始化成功
+//   - 网络 / RPC 错 → 返 error 让 caller fail-fast
+//
+// 改进点（生产可加）：
+//   - server stream 加 explicit "snapshot_done" 事件让 client 精准判定
+//   - 给 ctx 加 deadline；超时直接 error 返
+func (c *Client) initialLoad() error {
+	ctx, cancel := context.WithTimeout(context.Background(), c.cfg.InitTimeout)
+	defer cancel()
+
+	// 用 channel 收事件，超时 / 收满 / 错误任一退出
+	done := make(chan error, 1)
+	receivedAtLeastOne := false
+
+	go func() {
+		err := c.rpc.Watch(ctx, c.cfg.Namespace, c.cfg.InstanceID, 0, func(ev *WatchEvent) {
+			if ev != nil && ev.Config != nil {
+				c.applyEvent(ev) // 写 cache，但不触发 listeners（启动期没有 listeners）
+				receivedAtLeastOne = true
+			}
+		})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		// 短连接情况：server 推完 snapshot 立即关 stream；这是 OK 的
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+			return err
+		}
+	case <-ctx.Done():
+		// timeout：退化判断 — 有数据就算 OK，没有就报错（namespace 真的空时
+		// 业务也得感知；不能让一个错配 namespace 的服务装作"我配置加载好了"）
+		if !receivedAtLeastOne {
+			return fmt.Errorf("init timeout %s with no snapshot received (namespace=%q reachable?)",
+				c.cfg.InitTimeout, c.cfg.Namespace)
+		}
+		c.logger.Info("configcenter: snapshot phase ended on timeout (received some)",
+			zap.Duration("timeout", c.cfg.InitTimeout))
+	}
+	c.logger.Info("configcenter: initial snapshot loaded",
+		zap.String("namespace", c.cfg.Namespace),
+		zap.Int64("max_version", c.maxVersion.Load()))
+	return nil
+}
+
+// applyEvent onEvent 的纯写 cache 版本（不触发 listeners）。
+// 启动期没人监听，省去 fireListeners 调用。
+func (c *Client) applyEvent(ev *WatchEvent) {
+	cfg := ev.Config
+	old := c.cache.Load()
+	newEntries := make(map[string]*cacheEntry)
+	if old != nil {
+		for k, e := range old.entries {
+			newEntries[k] = e
+		}
+	}
+	now := time.Now()
+	prev := newEntries[cfg.Key]
+	if prev == nil {
+		prev = &cacheEntry{}
+	}
+	if cfg.IsEffective(now) {
+		newEntries[cfg.Key] = &cacheEntry{active: cfg}
+	} else if !cfg.EffectiveAt.IsZero() && cfg.EffectiveAt.After(now) {
+		newEntries[cfg.Key] = &cacheEntry{active: prev.active, pending: cfg}
+	} else {
+		newEntries[cfg.Key] = prev
+	}
+	c.cache.Store(&cacheSnapshot{entries: newEntries, fallback: old})
+	if cfg.Version > c.maxVersion.Load() {
+		c.maxVersion.Store(cfg.Version)
+	}
 }
 
 // Close 优雅停止 watch goroutine + 释放资源。
