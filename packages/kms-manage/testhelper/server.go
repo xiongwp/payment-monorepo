@@ -89,7 +89,10 @@ func Start(t testing.TB, cfg StartConfig) *Server {
 	}
 	logger := zap.NewNop()
 	svc := service.NewKMSService(store, logger)
-	handler := server.NewServer(server.Deps{KMSSvc: svc, Logger: logger})
+	handler, err := server.NewServer(server.Deps{KMSSvc: svc, Logger: logger})
+	if err != nil {
+		t.Fatalf("testhelper: server.NewServer: %v", err)
+	}
 
 	lis := bufconn.Listen(1 << 20)
 	grpcSrv := grpc.NewServer()
