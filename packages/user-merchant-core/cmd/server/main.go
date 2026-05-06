@@ -535,16 +535,13 @@ func startRetentionSweeper(lc fx.Lifecycle, r repo.MerchantRepository, v *viper.
 	if !v.GetBool("retention.enabled") {
 		return
 	}
-	duration := v.GetDuration("retention.duration")
-	interval := v.GetDuration("retention.interval")
+	// retention 100% 走 config-center；不可达 → hardcoded（7y / 24h）。
+	duration := 7 * 365 * 24 * time.Hour
+	interval := 24 * time.Hour
 	if cli != nil {
 		ctx := context.Background()
-		if d := cli.GetDuration(ctx, "retention.duration", duration); d > 0 {
-			duration = d
-		}
-		if d := cli.GetDuration(ctx, "retention.interval", interval); d > 0 {
-			interval = d
-		}
+		duration = cli.GetDuration(ctx, "retention.duration", duration)
+		interval = cli.GetDuration(ctx, "retention.interval", interval)
 	}
 	sweeper := service.NewRetentionSweeper(r, duration, interval, logger.Named("retention"))
 	swCtx, cancel := context.WithCancel(context.Background())
@@ -639,17 +636,11 @@ func newAuthIssuer(v *viper.Viper, cli *configcenter.Client) (*authpkg.Issuer, e
 	if alg == "" {
 		alg = authpkg.AlgHS256
 	}
-	ttl := v.GetDuration("auth.jwt_ttl")
-	if ttl <= 0 {
-		ttl = 24 * time.Hour
-	}
-	// config-center 优先：admin 改 namespace=user-merchant-core 下的 jwt.ttl 即时生效
-	// （Issuer 内部不暴露 SetTTL，目前是启动期 snapshot；下次 Issue 调用看新值需要
-	// 在 Issuer 加 atomic.Pointer[Duration]，可作 follow-on 优化）。
+	// jwt.ttl 100% 走 config-center；不可达 → hardcoded 24h。
+	// admin /admin/ns/user-merchant-core 改 jwt.ttl 下次 Issue 生效（Issuer 没暴露 SetTTL）。
+	ttl := 24 * time.Hour
 	if cli != nil {
-		if d := cli.GetDuration(context.Background(), "jwt.ttl", ttl); d > 0 {
-			ttl = d
-		}
+		ttl = cli.GetDuration(context.Background(), "jwt.ttl", ttl)
 	}
 	cfg := authpkg.IssuerConfig{
 		Algorithm:  alg,

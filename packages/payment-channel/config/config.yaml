@@ -16,9 +16,8 @@ call_retry_worker:
 auth:
   tokens: []   # 留空禁用；非空开启 bearer 鉴权
 
-rate_limit:
-  rps: 2000
-  burst: 4000
+# rate_limit / 其它动态配置已迁到 config-center；
+# admin /admin/ns/payment-channel 改 rate_limit.{rps,burst} 即时生效。
 
 database:
   meta:

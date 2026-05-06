@@ -88,33 +88,23 @@ func startReconcile(lc fx.Lifecycle, v *viper.Viper, cli *configcenter.Client,
 		logger.Warn("reconcile worker disabled by config (dev only)")
 		return
 	}
+	// reconcile 全部走 config-center；不可达 → hardcoded safe default。
+	// admin /admin/ns/card-payment 改 reconcile.{interval,limit_per_shard,
+	// stuck_age,query_timeout,cycle_timeout} 下次 cycle 生效。
 	cfg := reconcile.Config{
-		Limit:        v.GetInt("reconcile.limit_per_shard"),
-		StuckAge:     v.GetDuration("reconcile.stuck_age"),
-		QueryTimeout: v.GetDuration("reconcile.query_timeout"),
-		CycleTimeout: v.GetDuration("reconcile.cycle_timeout"),
+		Limit:        500,
+		StuckAge:     60 * time.Second,
+		QueryTimeout: 5 * time.Second,
+		CycleTimeout: 30 * time.Second,
 	}
-	interval := v.GetDuration("reconcile.interval")
-	if interval <= 0 {
-		interval = 30 * time.Second
-	}
-	// config-center 覆盖：admin 改 namespace=card-payment 下
-	//   reconcile.{interval,limit_per_shard,stuck_age,query_timeout,cycle_timeout}
+	interval := 30 * time.Second
 	if cli != nil {
 		ctx0 := context.Background()
 		cfg.Limit = cli.GetInt(ctx0, "reconcile.limit_per_shard", cfg.Limit)
-		if d := cli.GetDuration(ctx0, "reconcile.stuck_age", cfg.StuckAge); d > 0 {
-			cfg.StuckAge = d
-		}
-		if d := cli.GetDuration(ctx0, "reconcile.query_timeout", cfg.QueryTimeout); d > 0 {
-			cfg.QueryTimeout = d
-		}
-		if d := cli.GetDuration(ctx0, "reconcile.cycle_timeout", cfg.CycleTimeout); d > 0 {
-			cfg.CycleTimeout = d
-		}
-		if d := cli.GetDuration(ctx0, "reconcile.interval", interval); d > 0 {
-			interval = d
-		}
+		cfg.StuckAge = cli.GetDuration(ctx0, "reconcile.stuck_age", cfg.StuckAge)
+		cfg.QueryTimeout = cli.GetDuration(ctx0, "reconcile.query_timeout", cfg.QueryTimeout)
+		cfg.CycleTimeout = cli.GetDuration(ctx0, "reconcile.cycle_timeout", cfg.CycleTimeout)
+		interval = cli.GetDuration(ctx0, "reconcile.interval", interval)
 	}
 	w := reconcile.New(repo, networks, cfg, logger)
 	if w == nil {
@@ -497,11 +487,8 @@ func newBreakerRegistry(logger *zap.Logger) *resilience.Registry {
 //
 // config-center key: bulkhead.per_merchant_max（namespace=card-payment）。
 // admin 改后下次重启生效（resilience.Bulkhead 当前没暴露 SetCapacity 热更）。
-func newBulkhead(v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) *resilience.Bulkhead {
-	maxN := v.GetInt("bulkhead.per_merchant_max")
-	if maxN <= 0 {
-		maxN = 256
-	}
+func newBulkhead(cli *configcenter.Client, logger *zap.Logger) *resilience.Bulkhead {
+	maxN := 256 // hardcoded safe default
 	if cli != nil {
 		maxN = cli.GetInt(context.Background(), "bulkhead.per_merchant_max", maxN)
 	}

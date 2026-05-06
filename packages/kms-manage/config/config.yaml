@@ -13,9 +13,9 @@ keystore:
 auth:
   tokens: []
 
-rate_limit:
-  rps: 500
-  burst: 1000
+# rate_limit / auth.allowed_client_ids (SAN whitelist) 100% 走 config-center。
+# admin /admin/ns/kms-manage 改 rate_limit.{rps,burst} 或
+# auth.allowed_client_ids 即时生效。SAN 推荐用 TARGETED 策略灰度。
 
 # 服务发现：把当前进程注册到 etcd，让 BFF / payment-core 通过
 # "etcd:///kms-manage" 解析所有副本 + round_robin LB。

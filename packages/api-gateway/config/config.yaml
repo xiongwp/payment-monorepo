@@ -38,21 +38,12 @@ auth:
   tokens: []
 
 # config-center —— 全平台动态配置中心（必填，prod fail-fast）。
-# rate_limit / cors / cookie / shadow trusted CIDR 等所有动态配置由本服务推送。
-# admin web `/admin/ns/api-gateway` 改任一 key → 集群秒级 SetLimit 热更新。
+# 所有动态配置（rate_limit / cors / cookie / shadow trusted CIDR 等）由本服务推送。
+# admin `/admin/ns/api-gateway` 改任一 key → 集群秒级热更新。
 configcenter:
   endpoint: "http://config-center:9691"
   namespace: "api-gateway"
   # instance_id 留空 → 用 HOSTNAME / POD_NAME
-
-# rate_limit dev/CI 兜底（启动期 config-center 不可达时用；prod 不可达直接 fail-fast）。
-# 真实运行值在 config-center 下 namespace=api-gateway, key=rate_limit JSON：
-#   {"ip_rps":100,"ip_burst":200,"merchant_rps":1000,"merchant_burst":2000}
-rate_limit:
-  ip_rps: 100
-  ip_burst: 200
-  merchant_rps: 1000
-  merchant_burst: 2000
 
 # 下游 gRPC 服务地址。空 = 该路由禁用。
 upstream:

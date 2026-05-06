@@ -101,9 +101,9 @@ func assertProdSafety(v *viper.Viper) error {
 			return fmt.Errorf("PROD-SAFETY: KMS %s required in env=prod (mTLS mandatory; P0-4)", k)
 		}
 	}
-	if len(v.GetStringSlice("auth.allowed_client_ids")) == 0 {
-		return fmt.Errorf("PROD-SAFETY: KMS auth.allowed_client_ids must be non-empty in env=prod (at least one CN/SAN whitelisted; P0-4)")
-	}
+	// auth.allowed_client_ids (SAN whitelist) + rate_limit 已 100% 迁到 config-center。
+	// SAN 在 namespace=kms-manage 下 key=auth.allowed_client_ids（JSON list）；
+	// 强制 prod 必须配 config-center，admin web 必须有非空 allowlist 才接调用。
 	return configcenter.AssertProdMandatory(v)
 }
 
@@ -160,21 +160,16 @@ func newServer(svc *service.KMSService, v *viper.Viper, cli *configcenter.Client
 	for _, t := range v.GetStringSlice("auth.tokens") {
 		tokens[t] = "ok"
 	}
-	// SAN whitelist 走 config-center（敏感，admin 应用 TARGETED 推单台先 canary 再扩）。
-	allowed := v.GetStringSlice("auth.allowed_client_ids")
-	rps := v.GetFloat64("rate_limit.rps")
-	burst := v.GetInt("rate_limit.burst")
+	// SAN whitelist + rate_limit 100% 走 config-center；不可达 → hardcoded safe default。
+	// SAN 是敏感字段 — 推荐 admin 用 TARGETED 推单台先 canary 再扩。
+	var allowed []string
+	rps := 500.0
+	burst := 1000
 	if cli != nil {
 		ctx := context.Background()
-		if a := cli.GetStringList(ctx, "auth.allowed_client_ids", allowed); len(a) > 0 {
-			allowed = a
-		}
-		if v := cli.GetFloat64(ctx, "rate_limit.rps", rps); v > 0 {
-			rps = v
-		}
-		if v := cli.GetInt(ctx, "rate_limit.burst", burst); v > 0 {
-			burst = v
-		}
+		allowed = cli.GetStringList(ctx, "auth.allowed_client_ids", nil)
+		rps = cli.GetFloat64(ctx, "rate_limit.rps", rps)
+		burst = cli.GetInt(ctx, "rate_limit.burst", burst)
 	}
 	return server.NewServer(server.Deps{
 		KMSSvc:     svc,

@@ -107,22 +107,14 @@ func assertProdSafety(v *viper.Viper) error {
 	if strings.TrimSpace(v.GetString("risk.endpoint")) == "" && len(v.GetStringSlice("registry.endpoints")) == 0 {
 		return fmt.Errorf("PROD-SAFETY: risk.endpoint must be configured in env=prod (NoopClient all-allow is fund-risk)")
 	}
-	if !v.GetBool("risk.fail_close") {
-		return fmt.Errorf("PROD-SAFETY: risk.fail_close must be true in env=prod (rpc 故障时不能默许放行)")
-	}
 	if strings.TrimSpace(v.GetString("channel.endpoint")) == "" && len(v.GetStringSlice("registry.endpoints")) == 0 {
 		return fmt.Errorf("PROD-SAFETY: channel.endpoint must be configured in env=prod")
 	}
 	if strings.TrimSpace(v.GetString("kms.endpoint")) == "" {
 		return fmt.Errorf("PROD-SAFETY: kms.endpoint must be configured in env=prod (passthrough decrypt is forbidden)")
 	}
-	// rate limit：rps=0 等于无限流量，prod 必须显式配
-	if v.GetFloat64("rate_limit.rps") <= 0 {
-		return fmt.Errorf("PROD-SAFETY: rate_limit.rps must be > 0 in env=prod (recommend 2000)")
-	}
-	if v.GetInt("rate_limit.burst") <= 0 {
-		return fmt.Errorf("PROD-SAFETY: rate_limit.burst bootstrap must be > 0 in env=prod (config-center 不可达兜底；recommend 4000)")
-	}
+	// risk.fail_policy / risk.default_timeout / rate_limit.* 已 100% 迁到 config-center。
+	// 启动期 SDK 拉一次；admin 改 namespace=payment-core 下对应 key 即时生效。
 	return configcenter.AssertProdMandatory(v)
 }
 
@@ -181,16 +173,15 @@ func newPaymentSvc(r *routing.Router, c channelclient.Client, risk riskclient.Cl
 	v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) *service.PaymentService {
 	svc := service.NewPaymentService(r, c, risk, logger)
 
-	// risk.fail_policy: "close" / "open"。yaml bootstrap → SDK 启动期覆盖 →
-	// SDK OnChange 推送时秒级 SetRiskFailClose 热更新。
-	failClose := v.GetBool("risk.fail_close")
+	// risk.fail_policy 100% 走 config-center；不可达 → 默认 close（保守）。
+	// admin /admin/ns/payment-core 改 risk.fail_policy 后秒级 SetRiskFailClose。
+	failClose := true
 	if cli != nil {
-		policy := cli.GetString(context.Background(), "risk.fail_policy", "")
-		switch policy {
-		case "close":
-			failClose = true
+		switch cli.GetString(context.Background(), "risk.fail_policy", "close") {
 		case "open":
 			failClose = false
+		default:
+			failClose = true
 		}
 	}
 	svc.SetRiskFailClose(failClose)
@@ -198,12 +189,10 @@ func newPaymentSvc(r *routing.Router, c channelclient.Client, risk riskclient.Cl
 		logger.Info("risk fail-close mode ENABLED — risk outage will block all payments")
 	}
 
-	// 默认风控超时（兜底）。
-	defaultTimeout := v.GetDuration("risk.default_timeout")
+	// risk.default_timeout 100% 走 config-center；不可达 → 1s 安全默认。
+	defaultTimeout := 1 * time.Second
 	if cli != nil {
-		if d := cli.GetDuration(context.Background(), "risk.default_timeout", defaultTimeout); d > 0 {
-			defaultTimeout = d
-		}
+		defaultTimeout = cli.GetDuration(context.Background(), "risk.default_timeout", defaultTimeout)
 	}
 	if defaultTimeout > 0 {
 		svc.SetRiskTimeoutDefault(defaultTimeout)

@@ -469,23 +469,14 @@ func newRESTServer(v *viper.Viper, cli *configcenter.Client, svc *service.Servic
 	if !v.GetBool("https.enabled") || vfy == nil {
 		return nil
 	}
-	burst := v.GetInt("ratelimit.tokenize.burst")
-	if burst <= 0 {
-		burst = 10 // 一阵子内的并发空间，给 SDK 重试 + 单页多卡场景留 buffer
-	}
-	refill := v.GetDuration("ratelimit.tokenize.refill")
-	if refill <= 0 {
-		refill = 2 * time.Second // 30 tokens / 分钟稳定速率（原 5/min 太严）
-	}
-	// config-center 覆盖：admin 改 namespace=card-center 下
-	//   tokenize.per_user_rps（按业务期望转 burst/refill）
-	//   ratelimit.tokenize.burst / .refill（直接传）
+	// tokenize 限流 100% 走 config-center；不可达 → hardcoded safe default
+	// (burst=10, refill=2s ≈ 30 tokens/分钟稳定速率)。
+	burst := 10
+	refill := 2 * time.Second
 	if cli != nil {
 		ctx := context.Background()
 		burst = cli.GetInt(ctx, "ratelimit.tokenize.burst", burst)
-		if d := cli.GetDuration(ctx, "ratelimit.tokenize.refill", refill); d > 0 {
-			refill = d
-		}
+		refill = cli.GetDuration(ctx, "ratelimit.tokenize.refill", refill)
 	}
 	rl := httpsauth.NewMemoryBucket(burst, refill)
 	rl.Cleanup(10*time.Minute, time.Hour)

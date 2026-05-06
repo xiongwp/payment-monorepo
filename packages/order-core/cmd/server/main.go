@@ -509,26 +509,21 @@ func wireInlineAccountingDelivery(svc service.AccountingOutboxService, client se
 // admin 改后下次 worker 重启生效（worker 当前没暴露 SetConfig 热更新）。
 func newAccountingOutboxWorker(outbox repo.AccountingOutboxRepository, client service.AccountingClient,
 	v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) *service.AccountingOutboxWorker {
+	// outbox 全部走 config-center；不可达 → hardcoded safe defaults。
 	cfg := service.AccountingOutboxWorkerConfig{
-		BatchSize:    v.GetInt("accounting_outbox.batch_size"),
-		PollInterval: v.GetDuration("accounting_outbox.poll_interval"),
-		MaxAttempts:  v.GetInt("accounting_outbox.max_attempts"),
-		BaseBackoff:  v.GetDuration("accounting_outbox.base_backoff"),
-		MaxBackoff:   v.GetDuration("accounting_outbox.max_backoff"),
+		BatchSize:    500,
+		PollInterval: 100 * time.Millisecond,
+		MaxAttempts:  10,
+		BaseBackoff:  500 * time.Millisecond,
+		MaxBackoff:   30 * time.Second,
 	}
 	if cli != nil {
 		ctx := context.Background()
 		cfg.BatchSize = cli.GetInt(ctx, "outbox.batch_size", cfg.BatchSize)
-		if d := cli.GetDuration(ctx, "outbox.poll_interval", cfg.PollInterval); d > 0 {
-			cfg.PollInterval = d
-		}
+		cfg.PollInterval = cli.GetDuration(ctx, "outbox.poll_interval", cfg.PollInterval)
 		cfg.MaxAttempts = cli.GetInt(ctx, "outbox.max_attempts", cfg.MaxAttempts)
-		if d := cli.GetDuration(ctx, "outbox.base_backoff", cfg.BaseBackoff); d > 0 {
-			cfg.BaseBackoff = d
-		}
-		if d := cli.GetDuration(ctx, "outbox.max_backoff", cfg.MaxBackoff); d > 0 {
-			cfg.MaxBackoff = d
-		}
+		cfg.BaseBackoff = cli.GetDuration(ctx, "outbox.base_backoff", cfg.BaseBackoff)
+		cfg.MaxBackoff = cli.GetDuration(ctx, "outbox.max_backoff", cfg.MaxBackoff)
 	}
 	return service.NewAccountingOutboxWorker(outbox, client, logger.Named("accounting-outbox-worker"), cfg)
 }
@@ -750,13 +745,12 @@ func newChargeExpireWorker(
 	cli *configcenter.Client,
 	logger *zap.Logger,
 ) *service.ChargeExpireWorker {
-	interval := v.GetDuration("charge_expire_worker.interval")
-	limit := v.GetInt("charge_expire_worker.limit")
+	// charge_expire_worker 全部走 config-center；不可达 → hardcoded safe defaults。
+	interval := 60 * time.Second
+	limit := 500
 	if cli != nil {
 		ctx := context.Background()
-		if d := cli.GetDuration(ctx, "charge_expire_worker.interval", interval); d > 0 {
-			interval = d
-		}
+		interval = cli.GetDuration(ctx, "charge_expire_worker.interval", interval)
 		limit = cli.GetInt(ctx, "charge_expire_worker.limit", limit)
 	}
 	return service.NewChargeExpireWorker(

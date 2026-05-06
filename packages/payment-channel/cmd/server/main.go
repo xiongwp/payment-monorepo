@@ -142,9 +142,7 @@ func assertProdSafety(v *viper.Viper) error {
 		}
 	}
 	// rate limit：prod 必须显式配
-	if v.GetFloat64("rate_limit.rps") <= 0 {
-		return fmt.Errorf("PROD-SAFETY: rate_limit.rps bootstrap must be > 0 in env=prod (config-center 不可达兜底；recommend 2000)")
-	}
+	// rate_limit 已 100% 迁到 config-center；yaml 不再保留。
 	return configcenter.AssertProdMandatory(v)
 }
 
@@ -482,17 +480,13 @@ func newServer(svc *service.AcquirerService, v *viper.Viper, cli *configcenter.C
 	for _, t := range v.GetStringSlice("auth.tokens") {
 		tokens[t] = "ok"
 	}
-	// rate_limit 走 config-center；不可达 → 用 yaml bootstrap 兜底。
-	// admin 改 namespace=payment-channel 的 rate_limit.rps / rate_limit.burst 实时推送。
-	rps := v.GetFloat64("rate_limit.rps")
-	burst := v.GetInt("rate_limit.burst")
+	// rate_limit 100% 走 config-center；config-center 不可达 → hardcoded safe default。
+	// admin /admin/ns/payment-channel/rate_limit.{rps,burst} 改后即时生效。
+	rps := 2000.0
+	burst := 4000
 	if cli != nil {
-		if v := cli.GetFloat64(context.Background(), "rate_limit.rps", rps); v > 0 {
-			rps = v
-		}
-		if v := cli.GetInt(context.Background(), "rate_limit.burst", burst); v > 0 {
-			burst = v
-		}
+		rps = cli.GetFloat64(context.Background(), "rate_limit.rps", rps)
+		burst = cli.GetInt(context.Background(), "rate_limit.burst", burst)
 	}
 	return server.NewServer(server.Deps{
 		AcquirerSvc:          svc,

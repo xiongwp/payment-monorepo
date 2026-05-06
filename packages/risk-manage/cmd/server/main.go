@@ -432,37 +432,32 @@ type breakerPair struct {
 //   reliability.ipintel.fail_threshold / open_duration
 //   reliability.mlscore.fail_threshold / open_duration
 // 即时生效（Breaker.SetConfig 锁内整体替换）。
-func newBreakers(v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) breakerPair {
+// newBreakers 100% 走 config-center；不可达 → hardcoded safe default。
+//
+// admin /admin/ns/risk-manage 改 reliability.{ipintel,mlscore}.{fail_threshold,
+// open_duration} 即时生效（Breaker.SetConfig 锁内整体替换）。
+func newBreakers(cli *configcenter.Client, logger *zap.Logger) breakerPair {
 	ctx := context.Background()
-	build := func(yamlKey, name string, defThr int, defOpen time.Duration) *reliability.Breaker {
-		thr := v.GetInt(yamlKey + ".fail_threshold")
-		if thr <= 0 {
-			thr = defThr
-		}
-		open := v.GetDuration(yamlKey + ".open_duration")
-		if open <= 0 {
-			open = defOpen
-		}
+	build := func(ccKey, name string, defThr int, defOpen time.Duration) *reliability.Breaker {
+		thr := defThr
+		open := defOpen
 		if cli != nil {
-			thr = cli.GetInt(ctx, yamlKey+".fail_threshold", thr)
-			if d := cli.GetDuration(ctx, yamlKey+".open_duration", open); d > 0 {
-				open = d
-			}
+			thr = cli.GetInt(ctx, ccKey+".fail_threshold", defThr)
+			open = cli.GetDuration(ctx, ccKey+".open_duration", defOpen)
 		}
 		br := reliability.NewBreaker(reliability.Config{Name: name, FailThreshold: thr, OpenDuration: open})
-		// OnChange 热更新
 		if cli != nil {
 			apply := func(_ *configcenter.ConfigValue) {
-				thr := cli.GetInt(ctx, yamlKey+".fail_threshold", defThr)
-				open := cli.GetDuration(ctx, yamlKey+".open_duration", defOpen)
+				thr := cli.GetInt(ctx, ccKey+".fail_threshold", defThr)
+				open := cli.GetDuration(ctx, ccKey+".open_duration", defOpen)
 				br.SetConfig(reliability.Config{Name: name, FailThreshold: thr, OpenDuration: open})
 				logger.Info("breaker hot-reloaded",
 					zap.String("name", name),
 					zap.Int("fail_threshold", thr),
 					zap.Duration("open_duration", open))
 			}
-			cli.OnChange(yamlKey+".fail_threshold", apply)
-			cli.OnChange(yamlKey+".open_duration", apply)
+			cli.OnChange(ccKey+".fail_threshold", apply)
+			cli.OnChange(ccKey+".open_duration", apply)
 		}
 		return br
 	}

@@ -60,12 +60,11 @@ timeouts:
     "/usermerchant.v1.MerchantService/AuthenticateByAPIKey": 1s
     "/usermerchant.v1.MerchantSecretService/BulkGetPlaintext": 3s
 
-# 软删商户在 Terminated 之后保留 N 天供合规审计，到期后真删（级联 KYC doc + audit）。
-# 合规要求 ≥ 7 年时把 duration 调到 61320h (7y)。
+# 软删商户保留期 / 扫描间隔 100% 走 config-center
+# (namespace=user-merchant-core, key=retention.{duration,interval})。
+# 此处只留 enabled 开关，dev/CI 关闭整个 sweeper。
 retention:
   enabled: false
-  duration: 61320h    # 7y 默认；dev 可置 24h
-  interval: 24h
 
 # OpenTelemetry：endpoint 空 → 关闭（tracex 还会自己生成 trace_id 串日志）。
 # 典型 collector：otel-collector:4317；sample_ratio 生产常用 0.05–0.1。
