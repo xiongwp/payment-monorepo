@@ -131,7 +131,11 @@ func ShadowMiddleware(cfg ShadowConfig, logger *zap.Logger) func(http.Handler) h
 						zap.String("method", r.Method))
 				}
 				if metrics.ShadowHeaderRejected != nil {
-					metrics.ShadowHeaderRejected.WithLabelValues(r.URL.Path).Inc()
+					// **不能用 r.URL.Path** — 含 user_id / order_id / mch_id 的路径
+					// 会让 prometheus label 基数爆表（10K user × 5 path = 50K series，
+					// 内存 + scrape 都炸）。改用 path "桶"（first 2 segments），
+					// 把 /api/v1/merchants/123/orders/456 归一成 /api/v1/merchants。
+					metrics.ShadowHeaderRejected.WithLabelValues(pathBucket(r.URL.Path)).Inc()
 				}
 				r.Header.Del(shadow.MetadataKey)
 			}
@@ -407,4 +411,31 @@ func IsAdminFromContext(r *http.Request) bool {
 // WithIsAdmin 在 ctx 标记 admin 身份；admin token middleware 通过校验后调用。
 func WithIsAdmin(r *http.Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), isAdminCtxKey{}, true))
+}
+
+// pathBucket 把 url path 归一成 prometheus label 用的低基数桶：
+// 取头 2 段（含 /api/v1）。例：
+//
+//	/api/v1/merchants/123/orders/456 → /api/v1/merchants
+//	/api/v1/cards                    → /api/v1/cards
+//	/healthz                         → /healthz
+//	(empty / "/")                    → /
+//
+// 上限 2 段保证：常见 ~20 个业务 path 集合不会因 user_id / mch_id / order_id
+// 在路径里而爆基数。生产经 grafana 仍能看到核心路径的 X-Shadow 拒绝分布。
+func pathBucket(p string) string {
+	if p == "" || p == "/" {
+		return "/"
+	}
+	parts := strings.SplitN(p, "/", 5) // ["", "api", "v1", "merchants", "..."]
+	switch {
+	case len(parts) <= 1:
+		return "/"
+	case len(parts) == 2:
+		return "/" + parts[1]
+	case len(parts) == 3:
+		return "/" + parts[1] + "/" + parts[2]
+	default:
+		return "/" + parts[1] + "/" + parts[2] + "/" + parts[3]
+	}
 }
