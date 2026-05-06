@@ -99,8 +99,11 @@ RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
 COPY . /src/payment-admin-web/backend
 
 WORKDIR /src/payment-admin-web/backend
-RUN go mod tidy
-RUN go mod download -x
+# GOPROXY 多源 + 重试：抗 sumdb / 单一 proxy 网络抖动 (storage.googleapis.com EOF 等)
+ENV GOPROXY=https://proxy.golang.org,https://goproxy.cn,direct
+ENV GOSUMDB=off
+ENV GOINSECURE=goproxy.cn
+RUN for i in 1 2 3 4 5; do go mod tidy && go mod download && exit 0; echo "[go mod] attempt $i failed; retry after 5s..." >&2; sleep 5; done; echo "[go mod] all 5 attempts failed; aborting build" >&2; exit 1 -x
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
     -o /out/payment-admin-backend ./cmd/server
 
