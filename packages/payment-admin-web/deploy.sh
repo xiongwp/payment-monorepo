@@ -509,6 +509,14 @@ cmd_logs() {
   $COMPOSE $(compose_files "$1") logs -f "${@:2}"
 }
 
+cmd_seed() {
+  # 把全平台动态配置写入 config-center（12 namespace 默认 key）。
+  # 部署完业务栈后跑一次；admin 后续在 config-center admin web 统一管理。
+  info "调 ../config-center/deploy.sh seed 写 12 namespace 默认 key..."
+  bash "$ROOT/config-center/deploy.sh" seed
+  ok "seed 完成；改 key 走 http://localhost:9691/admin/"
+}
+
 cmd_check() {
   local ports=(
     "kms-manage:9290"
@@ -569,6 +577,7 @@ case "${1:-}" in
   status)    shift; cmd_status "$@" ;;
   logs)      shift; cmd_logs "$@" ;;
   check)     shift; cmd_check ;;
+  seed)      shift; cmd_seed ;;
   debug-mysql) shift; cmd_debug_mysql ;;
   *)
     cat <<'EOF'

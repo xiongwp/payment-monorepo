@@ -150,25 +150,71 @@ func (h *AdminHandler) newItem(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// index 列 namespace。
+// index 全平台配置统一入口 —— 按角色分组展示 12 个 namespace。
+//
+// 把所有业务服务的「配置管理页面」收口到这里：
+//   - 业务侧服务（accounting-system / order-core / payment-core 等）原本各自
+//     的 admin /config endpoint 已 410 Gone 改 redirect → config-center
+//   - 全平台动态配置只在本页编辑、版本化、审计、灰度推送
+//   - 改一次 → SDK watch → 集群所有副本秒级 OnChange 热更新
+type namespaceGroup struct {
+	Title string
+	Items []namespaceItem
+}
+type namespaceItem struct {
+	Name string
+	Note string
+}
+
 func (h *AdminHandler) index(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/admin/" && r.URL.Path != "/admin" {
 		http.NotFound(w, r)
 		return
 	}
-	// MVP：硬列已知 namespace；生产从 DB 拉
-	data := struct {
-		Title      string
-		Namespaces []string
-	}{
-		Title: "Config Center",
-		Namespaces: []string{
-			"card-payment", "card-center", "order-core", "payment-core",
-			"payment-channel", "user-merchant-core", "accounting-system",
-			"risk-manage", "api-gateway",
+	// 12 namespace 按业务角色分组，让 admin 一目了然
+	groups := []namespaceGroup{
+		{
+			Title: "支付核心",
+			Items: []namespaceItem{
+				{"order-core", "PI / refund / outbox / charge_expire"},
+				{"payment-core", "routing weights / risk fail_policy / breaker"},
+				{"payment-channel", "adapter timeouts / rate_limit"},
+			},
+		},
+		{
+			Title: "卡支付（PCI 隔离）",
+			Items: []namespaceItem{
+				{"card-center", "tokenize 限流 / session TTL / Luhn 严格 mode"},
+				{"card-payment", "bulkhead / network 超时 / reconcile interval"},
+			},
+		},
+		{
+			Title: "用户 / 商户 / 风控",
+			Items: []namespaceItem{
+				{"user-merchant-core", "JWT TTL / OTP / bcrypt cost / retention"},
+				{"risk-manage", "rule thresholds / fail-policy / circuit breaker"},
+				{"api-gateway", "rate_limit / cors / cookie / shadow trusted CIDR"},
+			},
+		},
+		{
+			Title: "记账 / 清算 / 对账",
+			Items: []namespaceItem{
+				{"accounting-system", "tcc_recovery / outbox.poll / day_cut.chunk_size"},
+				{"clearing-settlement", "对账批跑窗口 / 异常 case 阈值"},
+				{"reconplatform", "rules (expr 表达式 map)"},
+			},
+		},
+		{
+			Title: "基础设施",
+			Items: []namespaceItem{
+				{"kms-manage", "rate_limit / SAN whitelist (敏感，建议 TARGETED)"},
+			},
 		},
 	}
-	h.render(w, "index", data)
+	h.render(w, "index", map[string]any{
+		"Title":  "Config Center — 全平台动态配置统一入口",
+		"Groups": groups,
+	})
 }
 
 // namespaceOrKey dispatch /admin/ns/{ns}, /admin/ns/{ns}/{key}, /admin/ns/{ns}/{key}/edit
@@ -532,10 +578,32 @@ const adminTemplates = `
 
 {{define "index"}}{{template "layout" .}}{{end}}
 {{define "body"}}
-{{- /* 默认页面：list namespaces */ -}}
-<h2>Namespaces</h2>
-<ul>
-{{range .Namespaces}}<li><a href="/admin/ns/{{.}}">{{.}}</a></li>{{end}}
-</ul>
+{{- /* 全平台 12 namespace 按业务角色分组 */ -}}
+<p class="muted">
+  本系统是全平台所有服务的<b>动态配置统一入口</b>。
+  改任一 key → SDK watch → 集群所有副本秒级 OnChange 热更新。
+  各业务服务原 /admin/config 端点已 410 Gone，请改用本页。
+</p>
+{{range .Groups}}
+<h2>{{.Title}}</h2>
+<table>
+  <tr><th>Namespace</th><th>主要配置项</th><th>动作</th></tr>
+  {{range .Items}}
+  <tr>
+    <td><b>{{.Name}}</b></td>
+    <td class="muted">{{.Note}}</td>
+    <td>
+      <a href="/admin/ns/{{.Name}}">查看 keys</a> |
+      <a href="/admin/items/new?ns={{.Name}}">新增 key</a>
+    </td>
+  </tr>
+  {{end}}
+</table>
+{{end}}
+<p class="muted" style="margin-top:24px">
+  <a href="/admin/items">全平台 key 检索</a> |
+  <a href="/admin/audit">审计日志</a> |
+  <a href="/healthz">健康</a>
+</p>
 {{end}}
 `
