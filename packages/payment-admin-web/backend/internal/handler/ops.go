@@ -19,13 +19,22 @@ func NewOpsHandler(d clients.Deps) *OpsHandler { return &OpsHandler{deps: d} }
 
 // ── 风控规则管理 ──────────────────────────────────────────────────
 
-// GET /api/ops/risk/rules — 列出所有风控规则
+// GET /api/ops/risk/rules — 列出所有风控规则。
+//
+// 下游 risk-manage gRPC 不可用 → 返空 list + service_status 字段（页面不崩）。
+// 规则源真正的入口现在是 Config Center namespace=risk-manage / reconplatform。
 func (h *OpsHandler) ListRiskRules(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	resp, err := h.deps.Risk.ListRules(ctx, &riskv1.ListRulesRequest{})
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeJSON(w, map[string]interface{}{
+			"rules":          []any{},
+			"total":          0,
+			"service_status": "unavailable",
+			"service_error":  err.Error(),
+			"hint":           "规则改用 Config Center 管理：/admin/ns/risk-manage（reliability.* 阈值）+ /admin/ns/reconplatform（rules expr）",
+		})
 		return
 	}
 	items := make([]map[string]interface{}, 0, len(resp.GetRules()))
@@ -39,19 +48,25 @@ func (h *OpsHandler) ListRiskRules(w http.ResponseWriter, r *http.Request) {
 			"config":      rule.GetConfigJson(),
 		})
 	}
-	writeJSON(w, map[string]interface{}{"rules": items, "total": len(items)})
+	writeJSON(w, map[string]interface{}{"rules": items, "total": len(items), "service_status": "ok"})
 }
 
-// POST /api/ops/risk/reload — 热重载风控规则
+// POST /api/ops/risk/reload — 热重载风控规则。
+// risk-manage 不可用时降级返友好提示，让前端不弹红错。
 func (h *OpsHandler) ReloadRiskRules(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	resp, err := h.deps.Risk.ReloadRules(ctx, &riskv1.ReloadRulesRequest{})
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeJSON(w, map[string]interface{}{
+			"loaded":         0,
+			"service_status": "unavailable",
+			"service_error":  err.Error(),
+			"hint":           "走 Config Center 改 namespace=reconplatform/rules 后 SDK OnChange 自动热更新，不需要本端点",
+		})
 		return
 	}
-	writeJSON(w, map[string]interface{}{"loaded": resp.GetLoaded()})
+	writeJSON(w, map[string]interface{}{"loaded": resp.GetLoaded(), "service_status": "ok"})
 }
 
 // ── 各服务健康 + metrics 聚合 ─────────────────────────────────────

@@ -51,6 +51,10 @@ func NewRiskHandler() *RiskHandler {
 // ── Reviews ──────────────────────────────────────────────────────
 
 // GET /api/risk/reviews?status=pending&limit=100&offset=0
+//
+// risk-manage 的 /admin/review/* 端点是 v2 路线图项（review queue 真实数据未
+// 写完），下游 connection refused / 404 不该让前端崩。降级为友好空响应 +
+// service_status 字段，前端弹横幅。
 func (h *RiskHandler) ListReviews(w http.ResponseWriter, r *http.Request) {
 	q := url.Values{}
 	if v := r.URL.Query().Get("status"); v != "" {
@@ -64,12 +68,19 @@ func (h *RiskHandler) ListReviews(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/review/list?"+q.Encode())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		// 下游不可用 → 返空列表 + 状态信息（前端不报错）
+		writeJSON(w, map[string]any{
+			"items":          []any{},
+			"total":          0,
+			"service_status": "unavailable",
+			"service_error":  err.Error(),
+			"hint":           "review queue 模块暂未实装；规则配置请用 Config Center namespace=risk-manage 管理",
+		})
 		return
 	}
 	var items []map[string]any
 	_ = json.Unmarshal(body, &items)
-	writeJSON(w, map[string]any{"items": items, "total": len(items)})
+	writeJSON(w, map[string]any{"items": items, "total": len(items), "service_status": "ok"})
 }
 
 // GET /api/risk/reviews/{id}
