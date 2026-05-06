@@ -312,7 +312,9 @@ func newAuditEmitter(lc fx.Lifecycle, mgr *repo.Manager, v *viper.Viper, logger 
 	if producer == nil {
 		logger.Warn("audit emitter running DB-only (no Kafka brokers); dev mode acceptable")
 	}
-	return audit.New(producer, topic, mgr.Meta(), logger), nil
+	// audit_log 已分 10 库 × 100 表，传整个 mgr 让 emitter 按 user_id 路由
+	// + 维护 per-shard 链式签名（详见 internal/audit/audit.go）。
+	return audit.New(producer, topic, mgr, logger), nil
 }
 
 func newService(v *vault.Vault, sr repo.StoredCardRepo, pr repo.PaymentTokenRepo, ae service.AuditEmitter, logger *zap.Logger) *service.Service {

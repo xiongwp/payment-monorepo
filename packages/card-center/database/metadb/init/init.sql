@@ -49,29 +49,19 @@ CREATE TABLE IF NOT EXISTS `user_card_session` (
     KEY `idx_expires_at`         (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='HTTPS 入口的用户会话 token (Bearer auth)';
 
--- audit_log：每次 Tokenize / Detokenize 写一行（同步落 DB + 异步发 Kafka 双重保险）。
--- 7 年留存（PCI-DSS 10.7）+ tamper-evident chain（prev_hash + row_hash）。
-CREATE TABLE IF NOT EXISTS `audit_log` (
-    `id`           BIGINT       NOT NULL AUTO_INCREMENT,
-    `op`           VARCHAR(32)  NOT NULL,             -- tokenize / create_payment / detokenize / delete / revoke
-    `caller`       VARCHAR(64)  NOT NULL,             -- 客户端 CN（mTLS）
-    `caller_ip`    VARCHAR(64)  DEFAULT NULL,
-    `user_id`      BIGINT       DEFAULT NULL,
-    `pi_id`        VARCHAR(64)  DEFAULT NULL,
-    `token_hash`   CHAR(64)     DEFAULT NULL,        -- token 的 sha256，避免存 token 本身
-    `kms_kid`      VARCHAR(32)  DEFAULT NULL,
-    `masked_pan`   VARCHAR(20)  DEFAULT NULL,        -- BIN+last4，展示 / 取证用
-    `network`      VARCHAR(16)  DEFAULT NULL,        -- visa / mastercard / ...
-    `result`       VARCHAR(16)  NOT NULL,             -- ok / denied / error
-    `reason`       VARCHAR(256) DEFAULT NULL,
-    `trace_id`     VARCHAR(64)  DEFAULT NULL,
-    `prev_hash`    CHAR(64)     DEFAULT NULL,         -- 前一行 row_hash（链式签名 tamper-evident）
-    `row_hash`     CHAR(64)     NOT NULL,
-    `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (`id`),
-    KEY `idx_op_created`  (`op`, `created_at`),
-    KEY `idx_caller`      (`caller`),
-    KEY `idx_user`        (`user_id`),
-    KEY `idx_pi`          (`pi_id`),
-    KEY `idx_token_hash`  (`token_hash`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='card-center audit log (7y retention)';
+-- ─── audit_log 已从 meta 移到 shard ─────────────────────────────────────────
+-- 详见 packages/card-center/database/userdb/init/N_init.sql 里的
+-- audit_log_NN 分片表（10 库 × 10 表 = 100 表，按 user_id 路由）。
+--
+-- 移走原因（10K TPS 时 meta 单库 audit insert 是写瓶颈）：
+--   - 单 MySQL ~30K simple-insert/s 上限
+--   - 10K charge × 1-2 audit/charge = 15K-20K writes/s ≈ 67% 容量
+--   - fsync 频率 + AUTO_INCREMENT 锁 + 链式 sha256 串行 → 实际更慢
+--
+-- 分片设计（per-shard chain）：
+--   - 路由 key: user_id；user_id 为空（系统操作）走 trace_id hash 兜底
+--   - 链式签名变 per-shard：每 (db_idx, table_idx) 维护独立 prev_hash 链
+--     verify 工具按 (db_idx, table_idx) 走 100 条独立链各自验证完整性
+--   - 跨 shard 全局序由 Kafka append-only 保证（PCI Req 10 canonical store）
+--
+-- meta 这边只留 leaf_alloc + user_card_session（量小、不分片）。

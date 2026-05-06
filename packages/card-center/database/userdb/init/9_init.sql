@@ -54,6 +54,44 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_90` (
     KEY `idx_expires_at`  (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='One-time payment token usage tracking';
 
+-- ─── audit_log：每次 Tokenize / Detokenize / DeleteCard 写一行 ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈（meta 单库 audit insert ~30K/s 上限，
+-- 全平台 audit 量峰值会达到这个）。
+--
+-- 路由 key：user_id（同 card_stored_token），保证同 user 的所有 audit 都在同 shard，
+-- 取证 / 客服 / 合规审查时一次 SELECT 拿全。user_id 为空（系统级操作）走 trace_id hash。
+--
+-- 链式签名变 per-shard：每个 (db_idx, table_idx) 维护独立 prev_hash 链。
+-- 跨 shard 完整性靠 Kafka append-only canonical store + 数据湖归档保证。
+-- verify CLI 工具按 (db_idx, table_idx) 走 100 条独立链。
+--
+-- 7 年留存（PCI-DSS 10.7）。冷热分离：30d 后归档到数据湖，DB 只留近 30d 热查询。
+CREATE TABLE IF NOT EXISTS `audit_log_90` (
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT,
+    `op`           VARCHAR(32)  NOT NULL,             -- tokenize / create_payment / detokenize / delete / revoke
+    `caller`       VARCHAR(64)  NOT NULL,             -- 客户端 CN（mTLS）
+    `caller_ip`    VARCHAR(64)  DEFAULT NULL,
+    `user_id`      BIGINT       DEFAULT NULL,
+    `pi_id`        VARCHAR(64)  DEFAULT NULL,
+    `token_hash`   CHAR(64)     DEFAULT NULL,        -- token 的 sha256，避免存 token 本身
+    `kms_kid`      VARCHAR(32)  DEFAULT NULL,
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,        -- BIN+last4，展示 / 取证用
+    `network`      VARCHAR(16)  DEFAULT NULL,        -- visa / mastercard / ...
+    `result`       VARCHAR(16)  NOT NULL,             -- ok / denied / error
+    `reason`       VARCHAR(256) DEFAULT NULL,
+    `trace_id`     VARCHAR(64)  DEFAULT NULL,
+    `prev_hash`    CHAR(64)     DEFAULT NULL,         -- 前一行 row_hash（per-shard 链 head）
+    `row_hash`     CHAR(64)     NOT NULL,
+    `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_op_created`  (`op`, `created_at`),
+    KEY `idx_caller`      (`caller`),
+    KEY `idx_user`        (`user_id`),
+    KEY `idx_pi`          (`pi_id`),
+    KEY `idx_token_hash`  (`token_hash`),
+    KEY `idx_trace`       (`trace_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='card-center audit log shard 90 (PCI 10.7 7y retention)';
+
 -- card-center 分片表模板。9 = 0..9，91 = 00..99（globalTblIdx）。
 -- generate.sh 把所有 9 / 91 替换后产 init/N_init.sql。
 --
@@ -105,6 +143,44 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_91` (
     KEY `idx_pi`          (`pi_id`),
     KEY `idx_expires_at`  (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='One-time payment token usage tracking';
+
+-- ─── audit_log：每次 Tokenize / Detokenize / DeleteCard 写一行 ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈（meta 单库 audit insert ~30K/s 上限，
+-- 全平台 audit 量峰值会达到这个）。
+--
+-- 路由 key：user_id（同 card_stored_token），保证同 user 的所有 audit 都在同 shard，
+-- 取证 / 客服 / 合规审查时一次 SELECT 拿全。user_id 为空（系统级操作）走 trace_id hash。
+--
+-- 链式签名变 per-shard：每个 (db_idx, table_idx) 维护独立 prev_hash 链。
+-- 跨 shard 完整性靠 Kafka append-only canonical store + 数据湖归档保证。
+-- verify CLI 工具按 (db_idx, table_idx) 走 100 条独立链。
+--
+-- 7 年留存（PCI-DSS 10.7）。冷热分离：30d 后归档到数据湖，DB 只留近 30d 热查询。
+CREATE TABLE IF NOT EXISTS `audit_log_91` (
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT,
+    `op`           VARCHAR(32)  NOT NULL,             -- tokenize / create_payment / detokenize / delete / revoke
+    `caller`       VARCHAR(64)  NOT NULL,             -- 客户端 CN（mTLS）
+    `caller_ip`    VARCHAR(64)  DEFAULT NULL,
+    `user_id`      BIGINT       DEFAULT NULL,
+    `pi_id`        VARCHAR(64)  DEFAULT NULL,
+    `token_hash`   CHAR(64)     DEFAULT NULL,        -- token 的 sha256，避免存 token 本身
+    `kms_kid`      VARCHAR(32)  DEFAULT NULL,
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,        -- BIN+last4，展示 / 取证用
+    `network`      VARCHAR(16)  DEFAULT NULL,        -- visa / mastercard / ...
+    `result`       VARCHAR(16)  NOT NULL,             -- ok / denied / error
+    `reason`       VARCHAR(256) DEFAULT NULL,
+    `trace_id`     VARCHAR(64)  DEFAULT NULL,
+    `prev_hash`    CHAR(64)     DEFAULT NULL,         -- 前一行 row_hash（per-shard 链 head）
+    `row_hash`     CHAR(64)     NOT NULL,
+    `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_op_created`  (`op`, `created_at`),
+    KEY `idx_caller`      (`caller`),
+    KEY `idx_user`        (`user_id`),
+    KEY `idx_pi`          (`pi_id`),
+    KEY `idx_token_hash`  (`token_hash`),
+    KEY `idx_trace`       (`trace_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='card-center audit log shard 91 (PCI 10.7 7y retention)';
 
 -- card-center 分片表模板。9 = 0..9，92 = 00..99（globalTblIdx）。
 -- generate.sh 把所有 9 / 92 替换后产 init/N_init.sql。
@@ -158,6 +234,44 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_92` (
     KEY `idx_expires_at`  (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='One-time payment token usage tracking';
 
+-- ─── audit_log：每次 Tokenize / Detokenize / DeleteCard 写一行 ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈（meta 单库 audit insert ~30K/s 上限，
+-- 全平台 audit 量峰值会达到这个）。
+--
+-- 路由 key：user_id（同 card_stored_token），保证同 user 的所有 audit 都在同 shard，
+-- 取证 / 客服 / 合规审查时一次 SELECT 拿全。user_id 为空（系统级操作）走 trace_id hash。
+--
+-- 链式签名变 per-shard：每个 (db_idx, table_idx) 维护独立 prev_hash 链。
+-- 跨 shard 完整性靠 Kafka append-only canonical store + 数据湖归档保证。
+-- verify CLI 工具按 (db_idx, table_idx) 走 100 条独立链。
+--
+-- 7 年留存（PCI-DSS 10.7）。冷热分离：30d 后归档到数据湖，DB 只留近 30d 热查询。
+CREATE TABLE IF NOT EXISTS `audit_log_92` (
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT,
+    `op`           VARCHAR(32)  NOT NULL,             -- tokenize / create_payment / detokenize / delete / revoke
+    `caller`       VARCHAR(64)  NOT NULL,             -- 客户端 CN（mTLS）
+    `caller_ip`    VARCHAR(64)  DEFAULT NULL,
+    `user_id`      BIGINT       DEFAULT NULL,
+    `pi_id`        VARCHAR(64)  DEFAULT NULL,
+    `token_hash`   CHAR(64)     DEFAULT NULL,        -- token 的 sha256，避免存 token 本身
+    `kms_kid`      VARCHAR(32)  DEFAULT NULL,
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,        -- BIN+last4，展示 / 取证用
+    `network`      VARCHAR(16)  DEFAULT NULL,        -- visa / mastercard / ...
+    `result`       VARCHAR(16)  NOT NULL,             -- ok / denied / error
+    `reason`       VARCHAR(256) DEFAULT NULL,
+    `trace_id`     VARCHAR(64)  DEFAULT NULL,
+    `prev_hash`    CHAR(64)     DEFAULT NULL,         -- 前一行 row_hash（per-shard 链 head）
+    `row_hash`     CHAR(64)     NOT NULL,
+    `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_op_created`  (`op`, `created_at`),
+    KEY `idx_caller`      (`caller`),
+    KEY `idx_user`        (`user_id`),
+    KEY `idx_pi`          (`pi_id`),
+    KEY `idx_token_hash`  (`token_hash`),
+    KEY `idx_trace`       (`trace_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='card-center audit log shard 92 (PCI 10.7 7y retention)';
+
 -- card-center 分片表模板。9 = 0..9，93 = 00..99（globalTblIdx）。
 -- generate.sh 把所有 9 / 93 替换后产 init/N_init.sql。
 --
@@ -209,6 +323,44 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_93` (
     KEY `idx_pi`          (`pi_id`),
     KEY `idx_expires_at`  (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='One-time payment token usage tracking';
+
+-- ─── audit_log：每次 Tokenize / Detokenize / DeleteCard 写一行 ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈（meta 单库 audit insert ~30K/s 上限，
+-- 全平台 audit 量峰值会达到这个）。
+--
+-- 路由 key：user_id（同 card_stored_token），保证同 user 的所有 audit 都在同 shard，
+-- 取证 / 客服 / 合规审查时一次 SELECT 拿全。user_id 为空（系统级操作）走 trace_id hash。
+--
+-- 链式签名变 per-shard：每个 (db_idx, table_idx) 维护独立 prev_hash 链。
+-- 跨 shard 完整性靠 Kafka append-only canonical store + 数据湖归档保证。
+-- verify CLI 工具按 (db_idx, table_idx) 走 100 条独立链。
+--
+-- 7 年留存（PCI-DSS 10.7）。冷热分离：30d 后归档到数据湖，DB 只留近 30d 热查询。
+CREATE TABLE IF NOT EXISTS `audit_log_93` (
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT,
+    `op`           VARCHAR(32)  NOT NULL,             -- tokenize / create_payment / detokenize / delete / revoke
+    `caller`       VARCHAR(64)  NOT NULL,             -- 客户端 CN（mTLS）
+    `caller_ip`    VARCHAR(64)  DEFAULT NULL,
+    `user_id`      BIGINT       DEFAULT NULL,
+    `pi_id`        VARCHAR(64)  DEFAULT NULL,
+    `token_hash`   CHAR(64)     DEFAULT NULL,        -- token 的 sha256，避免存 token 本身
+    `kms_kid`      VARCHAR(32)  DEFAULT NULL,
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,        -- BIN+last4，展示 / 取证用
+    `network`      VARCHAR(16)  DEFAULT NULL,        -- visa / mastercard / ...
+    `result`       VARCHAR(16)  NOT NULL,             -- ok / denied / error
+    `reason`       VARCHAR(256) DEFAULT NULL,
+    `trace_id`     VARCHAR(64)  DEFAULT NULL,
+    `prev_hash`    CHAR(64)     DEFAULT NULL,         -- 前一行 row_hash（per-shard 链 head）
+    `row_hash`     CHAR(64)     NOT NULL,
+    `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_op_created`  (`op`, `created_at`),
+    KEY `idx_caller`      (`caller`),
+    KEY `idx_user`        (`user_id`),
+    KEY `idx_pi`          (`pi_id`),
+    KEY `idx_token_hash`  (`token_hash`),
+    KEY `idx_trace`       (`trace_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='card-center audit log shard 93 (PCI 10.7 7y retention)';
 
 -- card-center 分片表模板。9 = 0..9，94 = 00..99（globalTblIdx）。
 -- generate.sh 把所有 9 / 94 替换后产 init/N_init.sql。
@@ -262,6 +414,44 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_94` (
     KEY `idx_expires_at`  (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='One-time payment token usage tracking';
 
+-- ─── audit_log：每次 Tokenize / Detokenize / DeleteCard 写一行 ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈（meta 单库 audit insert ~30K/s 上限，
+-- 全平台 audit 量峰值会达到这个）。
+--
+-- 路由 key：user_id（同 card_stored_token），保证同 user 的所有 audit 都在同 shard，
+-- 取证 / 客服 / 合规审查时一次 SELECT 拿全。user_id 为空（系统级操作）走 trace_id hash。
+--
+-- 链式签名变 per-shard：每个 (db_idx, table_idx) 维护独立 prev_hash 链。
+-- 跨 shard 完整性靠 Kafka append-only canonical store + 数据湖归档保证。
+-- verify CLI 工具按 (db_idx, table_idx) 走 100 条独立链。
+--
+-- 7 年留存（PCI-DSS 10.7）。冷热分离：30d 后归档到数据湖，DB 只留近 30d 热查询。
+CREATE TABLE IF NOT EXISTS `audit_log_94` (
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT,
+    `op`           VARCHAR(32)  NOT NULL,             -- tokenize / create_payment / detokenize / delete / revoke
+    `caller`       VARCHAR(64)  NOT NULL,             -- 客户端 CN（mTLS）
+    `caller_ip`    VARCHAR(64)  DEFAULT NULL,
+    `user_id`      BIGINT       DEFAULT NULL,
+    `pi_id`        VARCHAR(64)  DEFAULT NULL,
+    `token_hash`   CHAR(64)     DEFAULT NULL,        -- token 的 sha256，避免存 token 本身
+    `kms_kid`      VARCHAR(32)  DEFAULT NULL,
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,        -- BIN+last4，展示 / 取证用
+    `network`      VARCHAR(16)  DEFAULT NULL,        -- visa / mastercard / ...
+    `result`       VARCHAR(16)  NOT NULL,             -- ok / denied / error
+    `reason`       VARCHAR(256) DEFAULT NULL,
+    `trace_id`     VARCHAR(64)  DEFAULT NULL,
+    `prev_hash`    CHAR(64)     DEFAULT NULL,         -- 前一行 row_hash（per-shard 链 head）
+    `row_hash`     CHAR(64)     NOT NULL,
+    `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_op_created`  (`op`, `created_at`),
+    KEY `idx_caller`      (`caller`),
+    KEY `idx_user`        (`user_id`),
+    KEY `idx_pi`          (`pi_id`),
+    KEY `idx_token_hash`  (`token_hash`),
+    KEY `idx_trace`       (`trace_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='card-center audit log shard 94 (PCI 10.7 7y retention)';
+
 -- card-center 分片表模板。9 = 0..9，95 = 00..99（globalTblIdx）。
 -- generate.sh 把所有 9 / 95 替换后产 init/N_init.sql。
 --
@@ -313,6 +503,44 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_95` (
     KEY `idx_pi`          (`pi_id`),
     KEY `idx_expires_at`  (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='One-time payment token usage tracking';
+
+-- ─── audit_log：每次 Tokenize / Detokenize / DeleteCard 写一行 ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈（meta 单库 audit insert ~30K/s 上限，
+-- 全平台 audit 量峰值会达到这个）。
+--
+-- 路由 key：user_id（同 card_stored_token），保证同 user 的所有 audit 都在同 shard，
+-- 取证 / 客服 / 合规审查时一次 SELECT 拿全。user_id 为空（系统级操作）走 trace_id hash。
+--
+-- 链式签名变 per-shard：每个 (db_idx, table_idx) 维护独立 prev_hash 链。
+-- 跨 shard 完整性靠 Kafka append-only canonical store + 数据湖归档保证。
+-- verify CLI 工具按 (db_idx, table_idx) 走 100 条独立链。
+--
+-- 7 年留存（PCI-DSS 10.7）。冷热分离：30d 后归档到数据湖，DB 只留近 30d 热查询。
+CREATE TABLE IF NOT EXISTS `audit_log_95` (
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT,
+    `op`           VARCHAR(32)  NOT NULL,             -- tokenize / create_payment / detokenize / delete / revoke
+    `caller`       VARCHAR(64)  NOT NULL,             -- 客户端 CN（mTLS）
+    `caller_ip`    VARCHAR(64)  DEFAULT NULL,
+    `user_id`      BIGINT       DEFAULT NULL,
+    `pi_id`        VARCHAR(64)  DEFAULT NULL,
+    `token_hash`   CHAR(64)     DEFAULT NULL,        -- token 的 sha256，避免存 token 本身
+    `kms_kid`      VARCHAR(32)  DEFAULT NULL,
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,        -- BIN+last4，展示 / 取证用
+    `network`      VARCHAR(16)  DEFAULT NULL,        -- visa / mastercard / ...
+    `result`       VARCHAR(16)  NOT NULL,             -- ok / denied / error
+    `reason`       VARCHAR(256) DEFAULT NULL,
+    `trace_id`     VARCHAR(64)  DEFAULT NULL,
+    `prev_hash`    CHAR(64)     DEFAULT NULL,         -- 前一行 row_hash（per-shard 链 head）
+    `row_hash`     CHAR(64)     NOT NULL,
+    `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_op_created`  (`op`, `created_at`),
+    KEY `idx_caller`      (`caller`),
+    KEY `idx_user`        (`user_id`),
+    KEY `idx_pi`          (`pi_id`),
+    KEY `idx_token_hash`  (`token_hash`),
+    KEY `idx_trace`       (`trace_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='card-center audit log shard 95 (PCI 10.7 7y retention)';
 
 -- card-center 分片表模板。9 = 0..9，96 = 00..99（globalTblIdx）。
 -- generate.sh 把所有 9 / 96 替换后产 init/N_init.sql。
@@ -366,6 +594,44 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_96` (
     KEY `idx_expires_at`  (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='One-time payment token usage tracking';
 
+-- ─── audit_log：每次 Tokenize / Detokenize / DeleteCard 写一行 ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈（meta 单库 audit insert ~30K/s 上限，
+-- 全平台 audit 量峰值会达到这个）。
+--
+-- 路由 key：user_id（同 card_stored_token），保证同 user 的所有 audit 都在同 shard，
+-- 取证 / 客服 / 合规审查时一次 SELECT 拿全。user_id 为空（系统级操作）走 trace_id hash。
+--
+-- 链式签名变 per-shard：每个 (db_idx, table_idx) 维护独立 prev_hash 链。
+-- 跨 shard 完整性靠 Kafka append-only canonical store + 数据湖归档保证。
+-- verify CLI 工具按 (db_idx, table_idx) 走 100 条独立链。
+--
+-- 7 年留存（PCI-DSS 10.7）。冷热分离：30d 后归档到数据湖，DB 只留近 30d 热查询。
+CREATE TABLE IF NOT EXISTS `audit_log_96` (
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT,
+    `op`           VARCHAR(32)  NOT NULL,             -- tokenize / create_payment / detokenize / delete / revoke
+    `caller`       VARCHAR(64)  NOT NULL,             -- 客户端 CN（mTLS）
+    `caller_ip`    VARCHAR(64)  DEFAULT NULL,
+    `user_id`      BIGINT       DEFAULT NULL,
+    `pi_id`        VARCHAR(64)  DEFAULT NULL,
+    `token_hash`   CHAR(64)     DEFAULT NULL,        -- token 的 sha256，避免存 token 本身
+    `kms_kid`      VARCHAR(32)  DEFAULT NULL,
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,        -- BIN+last4，展示 / 取证用
+    `network`      VARCHAR(16)  DEFAULT NULL,        -- visa / mastercard / ...
+    `result`       VARCHAR(16)  NOT NULL,             -- ok / denied / error
+    `reason`       VARCHAR(256) DEFAULT NULL,
+    `trace_id`     VARCHAR(64)  DEFAULT NULL,
+    `prev_hash`    CHAR(64)     DEFAULT NULL,         -- 前一行 row_hash（per-shard 链 head）
+    `row_hash`     CHAR(64)     NOT NULL,
+    `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_op_created`  (`op`, `created_at`),
+    KEY `idx_caller`      (`caller`),
+    KEY `idx_user`        (`user_id`),
+    KEY `idx_pi`          (`pi_id`),
+    KEY `idx_token_hash`  (`token_hash`),
+    KEY `idx_trace`       (`trace_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='card-center audit log shard 96 (PCI 10.7 7y retention)';
+
 -- card-center 分片表模板。9 = 0..9，97 = 00..99（globalTblIdx）。
 -- generate.sh 把所有 9 / 97 替换后产 init/N_init.sql。
 --
@@ -417,6 +683,44 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_97` (
     KEY `idx_pi`          (`pi_id`),
     KEY `idx_expires_at`  (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='One-time payment token usage tracking';
+
+-- ─── audit_log：每次 Tokenize / Detokenize / DeleteCard 写一行 ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈（meta 单库 audit insert ~30K/s 上限，
+-- 全平台 audit 量峰值会达到这个）。
+--
+-- 路由 key：user_id（同 card_stored_token），保证同 user 的所有 audit 都在同 shard，
+-- 取证 / 客服 / 合规审查时一次 SELECT 拿全。user_id 为空（系统级操作）走 trace_id hash。
+--
+-- 链式签名变 per-shard：每个 (db_idx, table_idx) 维护独立 prev_hash 链。
+-- 跨 shard 完整性靠 Kafka append-only canonical store + 数据湖归档保证。
+-- verify CLI 工具按 (db_idx, table_idx) 走 100 条独立链。
+--
+-- 7 年留存（PCI-DSS 10.7）。冷热分离：30d 后归档到数据湖，DB 只留近 30d 热查询。
+CREATE TABLE IF NOT EXISTS `audit_log_97` (
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT,
+    `op`           VARCHAR(32)  NOT NULL,             -- tokenize / create_payment / detokenize / delete / revoke
+    `caller`       VARCHAR(64)  NOT NULL,             -- 客户端 CN（mTLS）
+    `caller_ip`    VARCHAR(64)  DEFAULT NULL,
+    `user_id`      BIGINT       DEFAULT NULL,
+    `pi_id`        VARCHAR(64)  DEFAULT NULL,
+    `token_hash`   CHAR(64)     DEFAULT NULL,        -- token 的 sha256，避免存 token 本身
+    `kms_kid`      VARCHAR(32)  DEFAULT NULL,
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,        -- BIN+last4，展示 / 取证用
+    `network`      VARCHAR(16)  DEFAULT NULL,        -- visa / mastercard / ...
+    `result`       VARCHAR(16)  NOT NULL,             -- ok / denied / error
+    `reason`       VARCHAR(256) DEFAULT NULL,
+    `trace_id`     VARCHAR(64)  DEFAULT NULL,
+    `prev_hash`    CHAR(64)     DEFAULT NULL,         -- 前一行 row_hash（per-shard 链 head）
+    `row_hash`     CHAR(64)     NOT NULL,
+    `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_op_created`  (`op`, `created_at`),
+    KEY `idx_caller`      (`caller`),
+    KEY `idx_user`        (`user_id`),
+    KEY `idx_pi`          (`pi_id`),
+    KEY `idx_token_hash`  (`token_hash`),
+    KEY `idx_trace`       (`trace_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='card-center audit log shard 97 (PCI 10.7 7y retention)';
 
 -- card-center 分片表模板。9 = 0..9，98 = 00..99（globalTblIdx）。
 -- generate.sh 把所有 9 / 98 替换后产 init/N_init.sql。
@@ -470,6 +774,44 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_98` (
     KEY `idx_expires_at`  (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='One-time payment token usage tracking';
 
+-- ─── audit_log：每次 Tokenize / Detokenize / DeleteCard 写一行 ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈（meta 单库 audit insert ~30K/s 上限，
+-- 全平台 audit 量峰值会达到这个）。
+--
+-- 路由 key：user_id（同 card_stored_token），保证同 user 的所有 audit 都在同 shard，
+-- 取证 / 客服 / 合规审查时一次 SELECT 拿全。user_id 为空（系统级操作）走 trace_id hash。
+--
+-- 链式签名变 per-shard：每个 (db_idx, table_idx) 维护独立 prev_hash 链。
+-- 跨 shard 完整性靠 Kafka append-only canonical store + 数据湖归档保证。
+-- verify CLI 工具按 (db_idx, table_idx) 走 100 条独立链。
+--
+-- 7 年留存（PCI-DSS 10.7）。冷热分离：30d 后归档到数据湖，DB 只留近 30d 热查询。
+CREATE TABLE IF NOT EXISTS `audit_log_98` (
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT,
+    `op`           VARCHAR(32)  NOT NULL,             -- tokenize / create_payment / detokenize / delete / revoke
+    `caller`       VARCHAR(64)  NOT NULL,             -- 客户端 CN（mTLS）
+    `caller_ip`    VARCHAR(64)  DEFAULT NULL,
+    `user_id`      BIGINT       DEFAULT NULL,
+    `pi_id`        VARCHAR(64)  DEFAULT NULL,
+    `token_hash`   CHAR(64)     DEFAULT NULL,        -- token 的 sha256，避免存 token 本身
+    `kms_kid`      VARCHAR(32)  DEFAULT NULL,
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,        -- BIN+last4，展示 / 取证用
+    `network`      VARCHAR(16)  DEFAULT NULL,        -- visa / mastercard / ...
+    `result`       VARCHAR(16)  NOT NULL,             -- ok / denied / error
+    `reason`       VARCHAR(256) DEFAULT NULL,
+    `trace_id`     VARCHAR(64)  DEFAULT NULL,
+    `prev_hash`    CHAR(64)     DEFAULT NULL,         -- 前一行 row_hash（per-shard 链 head）
+    `row_hash`     CHAR(64)     NOT NULL,
+    `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_op_created`  (`op`, `created_at`),
+    KEY `idx_caller`      (`caller`),
+    KEY `idx_user`        (`user_id`),
+    KEY `idx_pi`          (`pi_id`),
+    KEY `idx_token_hash`  (`token_hash`),
+    KEY `idx_trace`       (`trace_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='card-center audit log shard 98 (PCI 10.7 7y retention)';
+
 -- card-center 分片表模板。9 = 0..9，99 = 00..99（globalTblIdx）。
 -- generate.sh 把所有 9 / 99 替换后产 init/N_init.sql。
 --
@@ -521,4 +863,42 @@ CREATE TABLE IF NOT EXISTS `card_payment_token_used_99` (
     KEY `idx_pi`          (`pi_id`),
     KEY `idx_expires_at`  (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='One-time payment token usage tracking';
+
+-- ─── audit_log：每次 Tokenize / Detokenize / DeleteCard 写一行 ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈（meta 单库 audit insert ~30K/s 上限，
+-- 全平台 audit 量峰值会达到这个）。
+--
+-- 路由 key：user_id（同 card_stored_token），保证同 user 的所有 audit 都在同 shard，
+-- 取证 / 客服 / 合规审查时一次 SELECT 拿全。user_id 为空（系统级操作）走 trace_id hash。
+--
+-- 链式签名变 per-shard：每个 (db_idx, table_idx) 维护独立 prev_hash 链。
+-- 跨 shard 完整性靠 Kafka append-only canonical store + 数据湖归档保证。
+-- verify CLI 工具按 (db_idx, table_idx) 走 100 条独立链。
+--
+-- 7 年留存（PCI-DSS 10.7）。冷热分离：30d 后归档到数据湖，DB 只留近 30d 热查询。
+CREATE TABLE IF NOT EXISTS `audit_log_99` (
+    `id`           BIGINT       NOT NULL AUTO_INCREMENT,
+    `op`           VARCHAR(32)  NOT NULL,             -- tokenize / create_payment / detokenize / delete / revoke
+    `caller`       VARCHAR(64)  NOT NULL,             -- 客户端 CN（mTLS）
+    `caller_ip`    VARCHAR(64)  DEFAULT NULL,
+    `user_id`      BIGINT       DEFAULT NULL,
+    `pi_id`        VARCHAR(64)  DEFAULT NULL,
+    `token_hash`   CHAR(64)     DEFAULT NULL,        -- token 的 sha256，避免存 token 本身
+    `kms_kid`      VARCHAR(32)  DEFAULT NULL,
+    `masked_pan`   VARCHAR(20)  DEFAULT NULL,        -- BIN+last4，展示 / 取证用
+    `network`      VARCHAR(16)  DEFAULT NULL,        -- visa / mastercard / ...
+    `result`       VARCHAR(16)  NOT NULL,             -- ok / denied / error
+    `reason`       VARCHAR(256) DEFAULT NULL,
+    `trace_id`     VARCHAR(64)  DEFAULT NULL,
+    `prev_hash`    CHAR(64)     DEFAULT NULL,         -- 前一行 row_hash（per-shard 链 head）
+    `row_hash`     CHAR(64)     NOT NULL,
+    `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_op_created`  (`op`, `created_at`),
+    KEY `idx_caller`      (`caller`),
+    KEY `idx_user`        (`user_id`),
+    KEY `idx_pi`          (`pi_id`),
+    KEY `idx_token_hash`  (`token_hash`),
+    KEY `idx_trace`       (`trace_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='card-center audit log shard 99 (PCI 10.7 7y retention)';
 

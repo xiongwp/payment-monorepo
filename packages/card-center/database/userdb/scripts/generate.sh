@@ -11,6 +11,7 @@ mkdir -p "$OUTPUT_DIR"
 SHADOW_BASES=(
   card_stored_token
   card_payment_token_used
+  audit_log
 )
 
 for db in $(seq 0 9); do
