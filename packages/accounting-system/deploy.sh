@@ -30,6 +30,41 @@ check_deps() {
     info "Docker 版本: $(docker --version)"
 }
 
+# ── 确保 config-center 已起来（accounting-system 启动期会同步连它拉 snapshot）──
+ensure_config_center() {
+    # 共享网络（其他 stack 也用这个）
+    if ! docker network inspect "${SHARED_DB_NETWORK:-payment-stack}" &>/dev/null; then
+        info "创建共享 docker 网络 ${SHARED_DB_NETWORK:-payment-stack}"
+        docker network create "${SHARED_DB_NETWORK:-payment-stack}"
+    fi
+
+    # config-center healthz 检查
+    if curl -fs http://localhost:9691/healthz &>/dev/null; then
+        success "config-center 已就绪 (http://localhost:9691)"
+        return 0
+    fi
+
+    warn "config-center 未就绪 → 自动起 config-center stack..."
+    local cc_dir
+    cc_dir="$(cd "$(dirname "$0")/../config-center" && pwd)"
+    if [[ ! -d "$cc_dir" ]]; then
+        warn "找不到 ../config-center；accounting-system 将以 dev 模式启动"
+        warn "（启动期 SDK 5 分钟退避重试，连不上自动用 hardcoded default 兜底）"
+        return 0
+    fi
+    (cd "$cc_dir" && bash deploy.sh up) || error "config-center 启动失败"
+
+    # 再次检查
+    for i in {1..30}; do
+        curl -fs http://localhost:9691/healthz &>/dev/null && {
+            success "config-center 就绪"
+            return 0
+        }
+        sleep 2
+    done
+    warn "config-center 30s 内还未就绪；继续启动 accounting-system（SDK 内置 5 分钟重连）"
+}
+
 # ── 构建镜像 ──────────────────────────────────────────────────────────────────
 build_image() {
     info "构建应用镜像..."
@@ -135,6 +170,7 @@ show_status() {
 case "$MODE" in
   full|dev)
     check_deps
+    ensure_config_center        # ← config-center 必须先于 accounting-system
     build_image
     start_services
     wait_all_mysql
@@ -145,9 +181,12 @@ case "$MODE" in
     ;;
 
   down)
-    info "停止并清理所有容器..."
-    ${COMPOSE_CMD} -f docker-compose.yml down -v
-    success "已停止"
+    info "停止并清理所有容器（含残留 scale 副本）..."
+    ${COMPOSE_CMD} -f docker-compose.yml down -v --remove-orphans
+    # 清掉 50051-50060 range 留下的 scale 副本（accounting-service-2 等）
+    docker ps -a --filter "name=accounting-system-accounting" -q 2>/dev/null \
+      | xargs -r docker rm -f >/dev/null 2>&1 || true
+    success "已停止 + 清孤立容器"
     ;;
 
   restart)
