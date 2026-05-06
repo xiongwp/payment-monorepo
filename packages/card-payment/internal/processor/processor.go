@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/xiongwp/card-payment/internal/metrics"
 )
 
 // Network 卡组织 adapter 接口（visa / mastercard / jcb / amex / unionpay 各一个实现）
@@ -174,6 +176,16 @@ type Processor struct {
 	networks   map[string]Network // "visa" → visaAdapter
 	repo       CardTransactionRepo
 	logger     *zap.Logger
+	// breaker 可选；nil 时全部路径直通（兼容旧 ctor）
+	breakers BreakerRegistry
+}
+
+// BreakerRegistry 抽象 resilience.Registry 的最小接口，避免循环 import。
+type BreakerRegistry interface {
+	// Allow network 对应的 breaker 是否允许放行（false → fail-fast）
+	Allow(network string) bool
+	// Record 调 adapter 后报结果给 breaker（success / failure）
+	Record(network string, success bool)
 }
 
 func NewProcessor(cc CardCenter, networks map[string]Network, repo CardTransactionRepo, logger *zap.Logger) *Processor {
@@ -184,6 +196,10 @@ func NewProcessor(cc CardCenter, networks map[string]Network, repo CardTransacti
 		logger:     logger,
 	}
 }
+
+// SetBreakers 注册 breaker registry；nil 等于关熔断（dev 路径兼容）。
+// fx provider chain 把 resilience.Registry 注入到这里。
+func (p *Processor) SetBreakers(b BreakerRegistry) { p.breakers = b }
 
 // Authorize 处理 payment-channel 来的 Authorize 请求。
 //
@@ -228,6 +244,17 @@ func (p *Processor) Authorize(ctx context.Context, in *AuthorizeInput) (*Authori
 	if in == nil || in.PaymentToken == "" || in.PIID == "" {
 		return nil, fmt.Errorf("authorize: payment_token / pi_id required")
 	}
+	authStart := time.Now()
+	authNetwork := in.Network
+	authResult := "error" // 默认 error，函数返回前会被 patch 成 ok / declined / etc.
+	defer func() {
+		// network 可能为空（detok 前就报错）；用 "unknown" 占位避免 metrics 标签缺失
+		if authNetwork == "" {
+			authNetwork = "unknown"
+		}
+		metrics.AuthorizeTotal.WithLabelValues(authNetwork, authResult).Inc()
+		metrics.AuthorizeDuration.WithLabelValues(authNetwork).Observe(time.Since(authStart).Seconds())
+	}()
 
 	// 幂等检查：同一 idempotency_key 已处理过 → 返原结果
 	if in.IdempotencyKey != "" {
@@ -259,9 +286,26 @@ func (p *Processor) Authorize(ctx context.Context, in *AuthorizeInput) (*Authori
 	if network == "" {
 		network = detectNetworkFromPAN(detok.PAN)
 	}
+	authNetwork = network
 	adapter, ok := p.networks[network]
 	if !ok {
 		return nil, fmt.Errorf("authorize: network %q not supported", network)
+	}
+
+	// **熔断检查**：network breaker open → 直接 fail-fast，不发 HTTPS。
+	// caller 看到 status=declined / DeclineCategory=SOFT 可以重路由到 fallback
+	// network（同卡如果支持多 brand，BIN routing 能选 fallback）。
+	if p.breakers != nil && !p.breakers.Allow(network) {
+		p.logger.Warn("network circuit OPEN, fail-fast",
+			zap.String("pi_id", in.PIID),
+			zap.String("network", network))
+		return &AuthorizeOutput{
+			Status:          "declined",
+			DeclineCode:     "CIRCUIT_OPEN",
+			DeclineReason:   "network temporarily unavailable (breaker open)",
+			Network:         network,
+			DeclineCategory: "SOFT",
+		}, nil
 	}
 
 	masked := maskPAN(detok.PAN)
@@ -282,6 +326,23 @@ func (p *Processor) Authorize(ctx context.Context, in *AuthorizeInput) (*Authori
 	}()
 
 	resp, err := adapter.Authorize(ctx, authReq)
+	// 熔断器记录：网络错（err != nil）= failure；HARD decline 也算 failure（卡组织
+	// 主动拒，但 5xx / TLS / decode 错跟 hard decline 都该计入失败窗口）。
+	// SOFT decline 不算 failure（业务正常拒，不应触发熔断）。
+	if p.breakers != nil {
+		switch {
+		case err != nil:
+			p.breakers.Record(network, false)
+		case resp != nil && (resp.Status == "approved" || resp.Status == "pending" || resp.DeclineCategory == "SOFT"):
+			p.breakers.Record(network, true)
+		case resp != nil && resp.DeclineCategory == "HARD":
+			// HARD decline 算成功 from breaker 视角（网络/服务正常，
+			// 是业务拒绝），不计 failure。
+			p.breakers.Record(network, true)
+		default:
+			p.breakers.Record(network, false)
+		}
+	}
 	// ─── PAN 生命周期结束（authReq / detok 在 defer 里清掉）───
 	if err != nil {
 		// network 故障也要写 DB，方便对账（status=error）
@@ -335,6 +396,23 @@ func (p *Processor) Authorize(ctx context.Context, in *AuthorizeInput) (*Authori
 			zap.String("decline_code", resp.DeclineCode),
 			zap.Int("fraud_score", resp.FraudScore),
 			zap.String("masked_pan", masked))
+	}
+	// metrics: decline 分类 + fraud_score 直方图
+	if resp.DeclineCategory != "" {
+		metrics.DeclineCategoryTotal.WithLabelValues(network, resp.DeclineCategory).Inc()
+	}
+	if resp.FraudScore > 0 {
+		metrics.FraudScoreHist.WithLabelValues(network).Observe(float64(resp.FraudScore))
+	}
+	switch resp.Status {
+	case "approved":
+		authResult = "ok"
+	case "declined":
+		authResult = "declined"
+	case "pending":
+		authResult = "pending"
+	default:
+		authResult = "error"
 	}
 
 	return &AuthorizeOutput{

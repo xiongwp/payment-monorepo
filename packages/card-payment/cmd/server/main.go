@@ -33,6 +33,7 @@ import (
 	"github.com/xiongwp/card-payment/internal/processor"
 	"github.com/xiongwp/card-payment/internal/reconcile"
 	"github.com/xiongwp/card-payment/internal/repo"
+	"github.com/xiongwp/card-payment/internal/resilience"
 	"github.com/xiongwp/card-payment/internal/server"
 	"github.com/xiongwp/card-payment/internal/sharding"
 	"github.com/xiongwp/payment-util/shadow"
@@ -54,6 +55,7 @@ func main() {
 			newCardTransactionRepo,
 			newCardCenterClient,
 			newNetworks,
+			newBreakerRegistry,
 			newProcessor,
 			newGRPCServer,
 		),
@@ -391,8 +393,35 @@ func newNetworks(v *viper.Viper, logger *zap.Logger) map[string]processor.Networ
 	return out
 }
 
-func newProcessor(cc processor.CardCenter, networks map[string]processor.Network, repo processor.CardTransactionRepo, logger *zap.Logger) *processor.Processor {
-	return processor.NewProcessor(cc, networks, repo, logger)
+// newBreakerRegistry 给 5 个 network 各起一个独立熔断器。
+//
+// 默认阈值（resilience.Config defaults）：
+//   WindowSize: 50    每 network 滑窗大小
+//   ConsecutiveFails: 8   连续失败 8 次直接 trip（fast-trip）
+//   FailureRate: 0.5  窗满后 fail-rate ≥ 50% trip
+//   OpenDuration: 30s  Open 持续时长
+// 转 metrics 时 Closed=0 / Open=1 / HalfOpen=2。
+func newBreakerRegistry(logger *zap.Logger) *resilience.Registry {
+	keys := []string{"visa", "mastercard", "jcb", "amex", "unionpay"}
+	reg := resilience.NewRegistry(keys, func(network string, from, to resilience.State) {
+		metrics.CircuitTransitions.WithLabelValues(network, from.String(), to.String()).Inc()
+		metrics.CircuitState.WithLabelValues(network).Set(float64(to))
+		logger.Warn("network circuit transition",
+			zap.String("network", network),
+			zap.String("from", from.String()),
+			zap.String("to", to.String()))
+	})
+	// 启动期初始化所有 gauge 为 0（Closed），便于 Grafana 看不到 NaN
+	for _, k := range keys {
+		metrics.CircuitState.WithLabelValues(k).Set(0)
+	}
+	return reg
+}
+
+func newProcessor(cc processor.CardCenter, networks map[string]processor.Network, repo processor.CardTransactionRepo, breakers *resilience.Registry, logger *zap.Logger) *processor.Processor {
+	p := processor.NewProcessor(cc, networks, repo, logger)
+	p.SetBreakers(breakers)
+	return p
 }
 
 func newGRPCServer(v *viper.Viper, p *processor.Processor, logger *zap.Logger) (*grpc.Server, error) {

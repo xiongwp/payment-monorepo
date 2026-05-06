@@ -75,6 +75,38 @@ var GRPCRequestDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 	Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 }, []string{"method"})
 
+// CircuitState 每个 network adapter 的熔断器状态。0=Closed 1=Open 2=HalfOpen。
+// PromQL: max by (network) (paycard_circuit_state) > 0 → 至少一个 network 不 Closed。
+var CircuitState = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "paycard_circuit_state",
+	Help: "Network adapter circuit breaker state (0=closed 1=open 2=half_open)",
+}, []string{"network"})
+
+// CircuitTransitions 状态切换计数。flapping 检测：
+// rate(paycard_circuit_transitions_total{from=\"CLOSED\",to=\"OPEN\"}[5m]) 频繁 → 抖动告警。
+var CircuitTransitions = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "paycard_circuit_transitions_total",
+	Help: "Network adapter circuit breaker transitions",
+}, []string{"network", "from", "to"})
+
+// DeclineCategoryTotal 卡组织 decline 分类计数。HARD = 黑名单候选，
+// 业务监控应该关注 HARD 增长率（突发 = 卡组织风控规则变了 / 真有 attack）。
+var DeclineCategoryTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "paycard_decline_category_total",
+	Help: "Authorize decline by network + category (HARD/SOFT)",
+}, []string{"network", "category"})
+
+// FraudScoreHist 卡组织端反欺诈分布（HARD decline 时一般 90+，正常 < 30）。
+// 桶按 10 分一档，便于 PromQL histogram_quantile。
+var FraudScoreHist = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+	Name:    "paycard_fraud_score",
+	Help:    "Network-returned fraud score distribution per network",
+	Buckets: []float64{10, 20, 30, 40, 50, 60, 70, 80, 90, 100},
+}, []string{"network"})
+
+// HardDeclineRate 监控 HARD 占比；用 sum_over_time 计算 5min 窗内 HARD/total。
+// （Counter 不直接给 rate；这里靠 PromQL 算）
+
 // Register 把所有 collector 注册到默认 registry。main.go fx.Invoke 时调一次。
 func Register() {
 	prometheus.MustRegister(
@@ -85,6 +117,10 @@ func Register() {
 		DetokenizeDuration,
 		GRPCRequestTotal,
 		GRPCRequestDuration,
+		CircuitState,
+		CircuitTransitions,
+		DeclineCategoryTotal,
+		FraudScoreHist,
 	)
 }
 
