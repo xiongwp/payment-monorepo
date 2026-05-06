@@ -15,12 +15,25 @@ type KMSHandler struct{ deps clients.Deps }
 func NewKMSHandler(d clients.Deps) *KMSHandler { return &KMSHandler{deps: d} }
 
 // GET /api/kms/keys
+//
+// kms-manage gRPC 不可用时（etcd 没注册 / 服务未起 / 网络隔离）返
+// 降级响应：empty list + service_status=unavailable + hint，前端 UI 弹
+// 友好横幅而不是红错（同 risk / config 等其他 BFF 入口策略）。
+//
+// 常见错误：
+//   - "no children to pick from" → etcd resolver 无 kms-manage 注册条目
+//   - "connection refused"       → kms-manage 容器没起 / 端口不通
+//   - "context deadline exceeded" → kms-manage 自身忙死或健康但不响应
 func (h *KMSHandler) List(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	resp, err := h.deps.KMS.ListKeys(ctx, &kmsv1.ListKeysRequest{})
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		hint := "kms-manage 不可用：检查容器是否健康、etcd 是否拿到注册条目；" +
+			"key 列表 / 轮换属于敏感操作不能从 config-center 旁路。常见原因：" +
+			"(1) docker compose 没起 kms-manage；(2) kms-manage 起来但 mTLS 证书过期；" +
+			"(3) etcd 注册键被 prune 了。docker logs kms-manage 看启动日志。"
+		gracefulDownstreamHint(w, "items", err, hint)
 		return
 	}
 	items := make([]map[string]interface{}, 0, len(resp.GetKeys()))
@@ -33,8 +46,9 @@ func (h *KMSHandler) List(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, map[string]interface{}{
-		"items":         items,
-		"active_key_id": resp.GetActiveKeyId(),
+		"items":          items,
+		"active_key_id":  resp.GetActiveKeyId(),
+		"service_status": "ok",
 	})
 }
 

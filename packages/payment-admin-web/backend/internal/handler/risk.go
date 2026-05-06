@@ -54,13 +54,34 @@ func NewRiskHandler() *RiskHandler {
 func gracefulDownstream(w http.ResponseWriter, key string, err error) {
 	hint := "risk-manage 下游不可用；规则 / 阈值类配置请在 Config Center " +
 		"namespace=risk-manage 或 reconplatform 管理"
+	gracefulDownstreamHint(w, key, err, hint)
+}
+
+// gracefulDownstreamHint 同 gracefulDownstream，但允许定制 hint 文案，
+// 给 kms / order / payment-channel 等其他下游 handler 复用。
+//
+// 响应体：
+//
+//	{ <key>: [], total: 0, service_status: "unavailable",
+//	  service_error: "<grpc/http err>", hint: "<人类可读的引导>" }
+//
+// 前端按 service_status 字段决定是否展示降级 banner（不弹红错）。
+func gracefulDownstreamHint(w http.ResponseWriter, key string, err error, hint string) {
 	writeJSON(w, map[string]any{
 		key:              []any{},
 		"total":          0,
 		"service_status": "unavailable",
-		"service_error":  err.Error(),
+		"service_error":  errString(err),
 		"hint":           hint,
 	})
+}
+
+// errString nil-safe err.Error()，避免 nil deref。
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // ── Reviews ──────────────────────────────────────────────────────
