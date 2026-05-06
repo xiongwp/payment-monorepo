@@ -11,7 +11,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -98,19 +97,4 @@ func startServiceRegistrar(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) 
 	})
 }
 
-// splitCSV 把 "a,b,c" 拆成 []string；空 token 自动丢。给"环境变量是逗号分隔
-// 字符串、想当 list 用"的场景用。viper.GetStringSlice 在 env 来源时不会按
-// 逗号拆，需要手工补。
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
+// splitCSV 在 main.go 里定义；这里曾经的副本是 merge 后冗余。
