@@ -75,6 +75,27 @@ func (r *Router) RouteByMerchantID(merchantID string) (dbIndex, globalTableIndex
 	return r.RouteByID(id)
 }
 
+// RouteByString FNV-1a 哈希字符串后路由。
+//
+// 给 actor / trace_id 等非数字 key 用（admin audit_log 按 actor 路由时
+// actor 可能是 "admin_42" / "svc-bot" 这种非纯数字串，需要哈希）。
+// 跟 order-core/internal/sharding/router.go 的实现保持一致。
+func (r *Router) RouteByString(s string) (dbIndex, globalTableIndex int) {
+	if s == "" {
+		return 0, 0
+	}
+	const (
+		offset64 uint64 = 14695981039346656037
+		prime64  uint64 = 1099511628211
+	)
+	h := offset64
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= prime64
+	}
+	return r.RouteByID(int64(h & 0x7fffffffffffffff))
+}
+
 // TableName 按 ctx + (base, globalTblIdx) 解出最终表名（含 shadow 后缀）。
 //
 // 主流量：base + "_" + idx → "users_42"
