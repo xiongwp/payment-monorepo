@@ -14,6 +14,7 @@ import (
 	commonutil "github.com/accounting-system/internal/common"
 	grpcserver "github.com/accounting-system/internal/grpc"
 	"github.com/accounting-system/internal/idgen"
+	"github.com/accounting-system/internal/reconcile"
 	"github.com/accounting-system/internal/infrastructure/cache"
 	"github.com/accounting-system/internal/infrastructure/database"
 	kafkamq "github.com/accounting-system/internal/infrastructure/kafka"
@@ -106,6 +107,7 @@ func main() {
 		fx.Provide(service.NewBufferedBalanceWorker),
 		fx.Provide(service.NewIntegrityCheckWorker),
 		fx.Provide(service.NewFreezeCompensateOutboxWorker),
+		fx.Provide(NewReconcileWorkerFromConfig),
 		fx.Provide(grpcserver.NewServer),
 		fx.Provide(NewAdminHTTPConfig),
 		fx.Provide(func(m *database.Manager) adminhttp.HealthPinger { return m }),
@@ -125,6 +127,7 @@ func main() {
 			StartDayCutScheduler,
 			StartIntegrityCheckScheduler,
 			StartFreezeCompensateOutboxWorker,
+			StartReconcileWorker,
 			SetupHotPath,
 		),
 	)
@@ -1073,4 +1076,55 @@ func NewConfigCenterClient(v *viper.Viper, logger *zap.Logger) (*configcenter.Cl
 		zap.String("namespace", namespace),
 		zap.String("instance_id", instanceID))
 	return cli, nil
+}
+
+// NewReconcileWorkerFromConfig 从配置构造 reconcile worker（间隔、endpoint 等可配）
+func NewReconcileWorkerFromConfig(
+	v *viper.Viper,
+	outboxRepo repository.SettlementOutboxRepository,
+	dbManager *database.Manager,
+	router *sharding.Router,
+	logger *zap.Logger,
+) *reconcile.ReconcileWorker {
+	w := reconcile.NewReconcileWorker(outboxRepo, dbManager, router, logger)
+
+	// 从 config-center key=accounting-system/reconcile.interval 或 yaml 读取间隔
+	if intervalSec := v.GetInt("reconcile.interval_seconds"); intervalSec > 0 {
+		w.Interval = time.Duration(intervalSec) * time.Second
+	}
+	if staleHours := v.GetInt("reconcile.stale_threshold_hours"); staleHours > 0 {
+		w.StaleThresh = time.Duration(staleHours) * time.Hour
+	}
+
+	// order-core endpoint（从 service registry / config 拉）
+	if endpoint := v.GetString("reconcile.order_core_endpoint"); endpoint != "" {
+		w.SetOrderCoreEndpoint(endpoint)
+	}
+
+	return w
+}
+
+// StartReconcileWorker 启动 reconcile worker（leader-gated，保证只一个 pod 跑）
+func StartReconcileWorker(lc fx.Lifecycle, w *reconcile.ReconcileWorker, cli *clientv3.Client, logger *zap.Logger) {
+	ctx, cancel := context.WithCancel(context.Background())
+	id := hostnameOrUnknown()
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go serviceregistry.RunLeaderLoop(ctx, cli,
+				"/leader/accounting-system/reconcile",
+				id, 10*time.Second,
+				func(leaderCtx context.Context) {
+					logger.Info("reconcile worker elected leader", zap.String("identity", id))
+					w.Start(leaderCtx)
+					w.Wait()
+					logger.Info("reconcile worker leadership released", zap.String("identity", id))
+				})
+			logger.Info("reconcile worker registered (leader-gated; scans every 5min by default)")
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			cancel()
+			return nil
+		},
+	})
 }
