@@ -48,6 +48,21 @@ func NewRiskHandler() *RiskHandler {
 	}
 }
 
+// gracefulDownstream 下游不可用时统一返友好降级响应。
+// 所有 risk-manage proxy 端点都用这个 wrapper —— admin web 不再因为某个
+// 下游不可用就弹红错；改去 Config Center 是"动态配置"的官方入口。
+func gracefulDownstream(w http.ResponseWriter, key string, err error) {
+	hint := "risk-manage 下游不可用；规则 / 阈值类配置请在 Config Center " +
+		"namespace=risk-manage 或 reconplatform 管理"
+	writeJSON(w, map[string]any{
+		key:              []any{},
+		"total":          0,
+		"service_status": "unavailable",
+		"service_error":  err.Error(),
+		"hint":           hint,
+	})
+}
+
 // ── Reviews ──────────────────────────────────────────────────────
 
 // GET /api/risk/reviews?status=pending&limit=100&offset=0
@@ -96,7 +111,7 @@ func (h *RiskHandler) GetReview(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/review/get?id="+url.QueryEscape(id))
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var item map[string]any
@@ -122,7 +137,7 @@ func (h *RiskHandler) DecideReview(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyPost(r.Context(), "/admin/review/decide", in)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out map[string]any
@@ -135,7 +150,7 @@ func (h *RiskHandler) DecideReview(w http.ResponseWriter, r *http.Request) {
 func (h *RiskHandler) DashboardSummary(w http.ResponseWriter, r *http.Request) {
 	body, err := h.proxyGet(r.Context(), "/admin/dashboard/summary")
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -160,7 +175,7 @@ func (h *RiskHandler) RuleSetMode(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyPost(r.Context(), "/admin/rules/mode", in)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out map[string]any
@@ -173,7 +188,7 @@ func (h *RiskHandler) RuleSetMode(w http.ResponseWriter, r *http.Request) {
 func (h *RiskHandler) RulesList(w http.ResponseWriter, r *http.Request) {
 	body, err := h.proxyGet(r.Context(), "/admin/rules/list")
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out []map[string]any
@@ -199,7 +214,7 @@ func (h *RiskHandler) RulesUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	body, status, err := h.proxyPostStatus(r.Context(), "/admin/rules/update", in)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	writeProxyResult(w, body, status)
@@ -226,7 +241,7 @@ func (h *RiskHandler) RulesSimulate(w http.ResponseWriter, r *http.Request) {
 	}
 	body, status, err := h.proxyPostStatus(r.Context(), path, in)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	writeProxyResult(w, body, status)
@@ -248,7 +263,7 @@ func (h *RiskHandler) RulesDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	body, status, err := h.proxyPostStatus(r.Context(), "/admin/rules/delete", in)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	writeProxyResult(w, body, status)
@@ -276,7 +291,7 @@ func (h *RiskHandler) ExtSignalGet(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/extsignal/get?"+q.Encode())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -288,7 +303,7 @@ func (h *RiskHandler) ExtSignalGet(w http.ResponseWriter, r *http.Request) {
 func (h *RiskHandler) ExtSignalStats(w http.ResponseWriter, r *http.Request) {
 	body, err := h.proxyGet(r.Context(), "/admin/extsignal/stats")
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -300,7 +315,7 @@ func (h *RiskHandler) ExtSignalStats(w http.ResponseWriter, r *http.Request) {
 func (h *RiskHandler) Whoami(w http.ResponseWriter, r *http.Request) {
 	body, err := h.proxyGet(r.Context(), "/admin/whoami")
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -324,7 +339,7 @@ func (h *RiskHandler) DecisionSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/audit/search?"+q.Encode())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -349,7 +364,7 @@ func (h *RiskHandler) DecisionExplain(w http.ResponseWriter, r *http.Request) {
 	}
 	body, status, err := h.proxyPostStatus(r.Context(), "/admin/explain", in)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	writeProxyResult(w, body, status)
@@ -359,7 +374,7 @@ func (h *RiskHandler) DecisionExplain(w http.ResponseWriter, r *http.Request) {
 func (h *RiskHandler) RulesExport(w http.ResponseWriter, r *http.Request) {
 	body, err := h.proxyGet(r.Context(), "/admin/rules/export")
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
@@ -391,7 +406,7 @@ func (h *RiskHandler) RulesImport(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -403,7 +418,7 @@ func (h *RiskHandler) RulesImport(w http.ResponseWriter, r *http.Request) {
 func (h *RiskHandler) ChallengersList(w http.ResponseWriter, r *http.Request) {
 	body, err := h.proxyGet(r.Context(), "/admin/mlscore/challengers")
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -436,7 +451,7 @@ func (h *RiskHandler) proxyPostThrough(w http.ResponseWriter, r *http.Request, p
 	}
 	out, status, err := h.proxyPostStatus(r.Context(), path, json.RawMessage(body))
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	writeProxyResult(w, out, status)
@@ -446,7 +461,7 @@ func (h *RiskHandler) proxyPostThrough(w http.ResponseWriter, r *http.Request, p
 func (h *RiskHandler) MLScoreOverrideGet(w http.ResponseWriter, r *http.Request) {
 	body, err := h.proxyGet(r.Context(), "/admin/mlscore/override")
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -473,7 +488,7 @@ func (h *RiskHandler) MLScoreABTest(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/mlscore/abtest?"+q.Encode())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -493,7 +508,7 @@ func (h *RiskHandler) DashboardCohortTimeseries(w http.ResponseWriter, r *http.R
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/dashboard/cohort/timeseries?"+q.Encode())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -513,7 +528,7 @@ func (h *RiskHandler) DashboardCohort(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/dashboard/cohort?"+q.Encode())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -526,7 +541,7 @@ func (h *RiskHandler) DashboardCohort(w http.ResponseWriter, r *http.Request) {
 func (h *RiskHandler) RulesInsights(w http.ResponseWriter, r *http.Request) {
 	body, err := h.proxyGet(r.Context(), "/admin/rules/insights")
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -542,7 +557,7 @@ func (h *RiskHandler) RulesOverlap(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/rules/overlap?"+q.Encode())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -561,7 +576,7 @@ func (h *RiskHandler) RulesAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/rules/audit?"+q.Encode())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out []map[string]any
@@ -573,7 +588,7 @@ func (h *RiskHandler) RulesAudit(w http.ResponseWriter, r *http.Request) {
 func (h *RiskHandler) DashboardRecall(w http.ResponseWriter, r *http.Request) {
 	body, err := h.proxyGet(r.Context(), "/admin/dashboard/recall")
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -626,7 +641,7 @@ func (h *RiskHandler) caseMutation(w http.ResponseWriter, r *http.Request, path,
 	}
 	body, err := h.proxyPost(r.Context(), path, in)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out map[string]any
@@ -646,7 +661,7 @@ func (h *RiskHandler) ReviewsByAssignee(w http.ResponseWriter, r *http.Request) 
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/review/by-assignee?"+q.Encode())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -666,7 +681,7 @@ func (h *RiskHandler) ReviewsOverdue(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyGet(r.Context(), path)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out any
@@ -684,7 +699,7 @@ func (h *RiskHandler) RecentOutcomes(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/feedback/recent?limit="+limit)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var items []map[string]any
@@ -704,7 +719,7 @@ func (h *RiskHandler) GetOutcomes(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/feedback/get?id="+url.QueryEscape(id))
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var items []map[string]any
@@ -731,7 +746,7 @@ func (h *RiskHandler) RecordOutcome(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyPost(r.Context(), "/admin/feedback/outcome", in)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var out map[string]any
@@ -752,12 +767,12 @@ func (h *RiskHandler) ListDecisions(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := h.proxyGet(r.Context(), "/admin/audit/decisions?limit="+limit)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		gracefulDownstream(w, "items", err)
 		return
 	}
 	var rows []map[string]any
 	_ = json.Unmarshal(body, &rows)
-	writeJSON(w, map[string]any{"items": rows, "total": len(rows)})
+	writeJSON(w, map[string]any{"items": rows, "total": len(rows), "service_status": "ok"})
 }
 
 // ── HTTP proxy helpers ───────────────────────────────────────────

@@ -280,14 +280,18 @@ func (c *Client) initialLoad() error {
 			return err
 		}
 	case <-ctx.Done():
-		// timeout：退化判断 — 有数据就算 OK，没有就报错（namespace 真的空时
-		// 业务也得感知；不能让一个错配 namespace 的服务装作"我配置加载好了"）
-		if !receivedAtLeastOne {
-			return fmt.Errorf("init timeout %s with no snapshot received (namespace=%q reachable?)",
-				c.cfg.InitTimeout, c.cfg.Namespace)
+		// timeout：空 namespace（0 个 key）也算成功 — 业务用 hardcoded
+		// 默认值跑，admin 后续在 config-center admin web 加 key 即可热更新。
+		// 早期版本严格要求至少 1 个 key 太死板：seed 还没跑、新服务首次上线
+		// 都会卡这里，让所有业务服务集体启动失败。
+		if receivedAtLeastOne {
+			c.logger.Info("configcenter: snapshot phase ended on timeout (received some)",
+				zap.Duration("timeout", c.cfg.InitTimeout))
+		} else {
+			c.logger.Info("configcenter: namespace empty (no keys yet); SDK ready, business uses hardcoded defaults",
+				zap.String("namespace", c.cfg.Namespace),
+				zap.Duration("waited", c.cfg.InitTimeout))
 		}
-		c.logger.Info("configcenter: snapshot phase ended on timeout (received some)",
-			zap.Duration("timeout", c.cfg.InitTimeout))
 	}
 	c.logger.Info("configcenter: initial snapshot loaded",
 		zap.String("namespace", c.cfg.Namespace),
