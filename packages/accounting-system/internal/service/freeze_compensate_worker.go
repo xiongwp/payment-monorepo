@@ -24,6 +24,7 @@ import (
 	"github.com/accounting-system/internal/repository"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 )
 
@@ -99,7 +100,11 @@ func (w *FreezeCompensateOutboxWorker) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				w.scanOnce(ctx)
+				// 每 tick 起 background ctx：trace_id 新发 + shadow=false。
+				// 兜底补偿写主账，绝不能漏带 shadow 标。
+				tickCtx, cancel := trace.NewBackground(ctx, "freeze-compensate", w.logger, freezeCompensateScanInterval)
+				w.scanOnce(tickCtx)
+				cancel()
 			}
 		}
 	}()

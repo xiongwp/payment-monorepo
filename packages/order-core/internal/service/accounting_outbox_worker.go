@@ -10,6 +10,7 @@ import (
 	"github.com/xiongwp/order-core/internal/domain"
 	"github.com/xiongwp/order-core/internal/metrics"
 	"github.com/xiongwp/order-core/internal/repo"
+	"github.com/xiongwp/payment-util/trace"
 )
 
 // AccountingClient 抽象 accounting-system 的 HybridDoubleEntryBooking 调用，
@@ -133,7 +134,12 @@ func (w *AccountingOutboxWorker) Run(ctx context.Context) {
 		default:
 		}
 
-		fetched := w.Tick(ctx)
+		// 每个 Tick 起 background ctx：trace_id 新发 + shadow=false。
+		// outbox dispatch 会调下游 accounting-system gRPC 写主账，shadow
+		// 漂移会让压测的 outbox 行真的入账。
+		tickCtx, tickCancel := trace.NewBackground(ctx, "accounting-outbox-dispatch", w.logger, interval+w.pollInterval)
+		fetched := w.Tick(tickCtx)
+		tickCancel()
 		switch {
 		case fetched >= w.batchSize:
 			// 满批：积压未消化，立刻继续，不退避
@@ -370,7 +376,9 @@ func (w *AccountingOutboxArchiver) Run(ctx context.Context) {
 			w.logger.Info("accounting outbox archiver stopping")
 			return
 		case <-t.C:
-			w.Tick(ctx)
+			tickCtx, cancel := trace.NewBackground(ctx, "accounting-outbox-archiver", w.logger, w.pollInterval)
+			w.Tick(tickCtx)
+			cancel()
 		}
 	}
 }

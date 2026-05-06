@@ -26,6 +26,7 @@ import (
 	"github.com/accounting-system/internal/domain/model"
 	"github.com/accounting-system/internal/metrics"
 	"github.com/accounting-system/internal/repository"
+	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 )
 
@@ -83,7 +84,12 @@ func (w *TccRecoveryWorker) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.recover(ctx)
+			// 每 tick 起 background ctx：trace_id 新发 + shadow=false。
+			// TCC recovery 写主账 / 调下游 confirm-cancel，shadow 漂移会
+			// 把压测的 TCC 当真单 confirm。
+			tickCtx, cancel := trace.NewBackground(ctx, "tcc-recovery", w.logger, tccRecoveryInterval)
+			w.recover(tickCtx)
+			cancel()
 		}
 	}
 }
