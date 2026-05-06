@@ -128,9 +128,16 @@ type Client struct {
 	rpc    rpcClient
 	logger *zap.Logger
 
-	// 本地 cache：namespace 内 key → 最新 ConfigValue
-	cache       atomic.Pointer[cacheSnapshot]
-	maxVersion  atomic.Int64 // 已收到的最大 version（watch resume 用）
+	// **双版本本地 cache** — 每个 key 同时保存：
+	//   active   当前生效版本
+	//   pending  未来某时刻才生效的版本（effective_at > now）
+	// 业务 Get 永远只读 active；后台 swapper goroutine 到点把 pending 提到 active。
+	// 这样：
+	//   1. SCHEDULED 推送提前到达，本地待命；到点零延迟切换（不依赖 server 重推）
+	//   2. server 推送丢失或网络断了，本地按 pending 的 effective_at 自动切，业务无感
+	//   3. 切换是原子（atomic.Pointer 整体替换），业务读纳秒级
+	cache      atomic.Pointer[cacheSnapshot]
+	maxVersion atomic.Int64 // 已收到的最大 version（watch resume 用）
 
 	// 监听者：key → 回调函数 list（变更时全部叫一次）
 	listenersMu sync.RWMutex
@@ -140,11 +147,18 @@ type Client struct {
 	wg     sync.WaitGroup
 }
 
-// cacheSnapshot 一份完整的 (key→ConfigValue) map，用 atomic.Value 整体替换以实现 lock-free 读。
+// cacheEntry 单 key 的双版本槽。
+type cacheEntry struct {
+	// active 业务读到的当前生效值（永远满足 IsEffective(now) 或 nil）
+	active *ConfigValue
+	// pending 已收到但 effective_at > now 的未来值；到点后被 swapper 提到 active
+	pending *ConfigValue
+}
+
+// cacheSnapshot 整个 namespace 的 key 集合。整体替换实现 lock-free 读。
 type cacheSnapshot struct {
-	values map[string]*ConfigValue
-	// 上一个有效快照：当 atomic.Value 当前值因 effective_at 还没到 / expire 已过
-	// 不可用时，用 fallback 的最新有效值。极端场景兜底。
+	entries map[string]*cacheEntry
+	// fallback 上一份快照；当 active 因 expire 已过不可用时找上一个有效值兜底
 	fallback *cacheSnapshot
 }
 
@@ -209,6 +223,9 @@ func NewWithRPC(rpc rpcClient, cfg Config) (*Client, error) {
 	// 起 watch goroutine（异步）；初始 snapshot 通过 watch 的 since_version=0 拿。
 	c.wg.Add(1)
 	go c.watchLoop()
+	// 起 swapper：每秒检查所有 pending，到点 atomic 提到 active
+	c.wg.Add(1)
+	go c.swapperLoop()
 	return c, nil
 }
 
@@ -218,13 +235,22 @@ func (c *Client) Close() {
 	c.wg.Wait()
 }
 
-// Get 取一个 key 的当前值。永不阻塞 IO（纯本地 cache）。
+// Get 取一个 key 当前**按时间**最该生效的值。永不阻塞 IO（纯本地 cache）。
+//
+// 选择优先级（高 → 低，遇到第一个 IsEffective(now) 返）：
+//   1. **entry.pending** — 如果 pending.EffectiveAt 已经到点，pending 是"最新生效"
+//      （即使 swapper 还没跑到把它提到 active；swapper 是 1Hz tick，可能滞后 ≤1s）
+//      这一步保证读到的总是按时间最准的值，不受 swapper 节奏影响。
+//   2. **entry.active** — 当前在跑的版本，IsEffective 仍成立
+//   3. **fallback.active** — 上一份快照的 active（active 已 expire 时兜底）
 //
 // 返回：
-//   - 成功且生效中：返 *ConfigValue + nil
-//   - 不存在 / 已 expire / effective_at 在未来：返 nil + ErrNotFound
+//   - 命中 1/2/3：返 *ConfigValue + nil
+//   - 全部不可用 / key 不存在：返 nil + ErrNotFound / ErrNotEffective
 //
-// 业务侧典型用法：
+// 业务热路径调用：纳秒级（atomic.Pointer.Load + map lookup + 1-3 次 IsEffective）。
+//
+// 用法：
 //
 //	val, err := cli.Get(ctx, "rate_limit.rps")
 //	if err != nil { val = defaultVal }
@@ -233,20 +259,113 @@ func (c *Client) Get(ctx context.Context, key string) (*ConfigValue, error) {
 	if snap == nil {
 		return nil, ErrNotFound
 	}
-	v := snap.values[key]
-	if v == nil {
-		return nil, ErrNotFound
+	now := time.Now()
+	if e := snap.entries[key]; e != nil {
+		// 1) pending 已到点：它就是最新生效。哪怕 swapper 还没把它提到 active，
+		//    Get 也直接返 pending — 时间精度由 Get 自己负责，不依赖 swapper 节奏。
+		if e.pending != nil && e.pending.IsEffective(now) {
+			return e.pending, nil
+		}
+		// 2) active 仍在生效窗口
+		if e.active != nil && e.active.IsEffective(now) {
+			return e.active, nil
+		}
 	}
-	if !v.IsEffective(time.Now()) {
-		// 当前 version 不在生效窗口；fallback 到上一个有效快照
-		if snap.fallback != nil {
-			if fb := snap.fallback.values[key]; fb != nil && fb.IsEffective(time.Now()) {
-				return fb, nil
+	// 3) fallback 兜底（active 已 expire 时找上一个有效）
+	if snap.fallback != nil {
+		if fe := snap.fallback.entries[key]; fe != nil && fe.active != nil && fe.active.IsEffective(now) {
+			return fe.active, nil
+		}
+	}
+	return nil, ErrNotEffective
+}
+
+// GetPending 取该 key 即将生效的版本（如果有）。
+// 业务一般不需要；admin / debug 工具用，可视化"还有 N 秒切换"。
+func (c *Client) GetPending(key string) *ConfigValue {
+	snap := c.cache.Load()
+	if snap == nil {
+		return nil
+	}
+	if e := snap.entries[key]; e != nil {
+		return e.pending
+	}
+	return nil
+}
+
+// swapperLoop 后台 ticker：每秒扫所有 pending，到点 atomic swap 到 active。
+//
+// 1Hz 的精度满足业务需求（"凌晨 2 点切换 rate_limit"差几秒可接受）。
+// 高频精度的场景（毫秒级）可调到 100Hz；目前 1Hz 是合理默认。
+//
+// 切换过程：
+//   1. 检查 entry.pending != nil && pending.IsEffective(now)
+//   2. CoW 一份新 map，被影响的 entry 复制：active=pending; pending=nil
+//   3. cache.Store(newSnap)
+//   4. 触发 listeners（onChange / Bind）让业务知道切了
+//
+// **关键纪律**：swap 时也校验 pending 是否仍然 IsEffective —— 防止 server 撤回
+// 了 pending 但本地还在跑（撤回流程：server 推 update 替换原 pending → onEvent
+// 已经更新了 entry；这里是 race 兜底）。
+func (c *Client) swapperLoop() {
+	defer c.wg.Done()
+	t := time.NewTicker(1 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-t.C:
+			c.maybeSwap()
+		}
+	}
+}
+
+// maybeSwap 单次扫描；有 pending 到点就 atomic 替换 cache 整体。
+func (c *Client) maybeSwap() {
+	old := c.cache.Load()
+	if old == nil {
+		return
+	}
+	now := time.Now()
+	swapped := false
+	newEntries := make(map[string]*cacheEntry, len(old.entries))
+	for k, e := range old.entries {
+		if e.pending != nil && e.pending.IsEffective(now) {
+			// 切！pending → active
+			newEntries[k] = &cacheEntry{active: e.pending}
+			swapped = true
+			// 通知 listeners
+			c.fireListeners(k, e.pending)
+		} else {
+			// 不变（pending 还没到点 / 没 pending）
+			newEntries[k] = e
+		}
+	}
+	if !swapped {
+		return
+	}
+	c.cache.Store(&cacheSnapshot{entries: newEntries, fallback: old})
+	c.logger.Info("configcenter: pending → active swap committed",
+		zap.Time("at", now))
+}
+
+// fireListeners 抽到独立函数让 swapper 和 onEvent 共用。
+func (c *Client) fireListeners(key string, val *ConfigValue) {
+	c.listenersMu.RLock()
+	ls := c.listeners[key]
+	c.listenersMu.RUnlock()
+	for _, l := range ls {
+		if l.bind != nil {
+			if err := l.bind([]byte(val.Value)); err != nil {
+				c.logger.Warn("configcenter bind unmarshal failed",
+					zap.String("key", key), zap.Error(err))
 			}
 		}
-		return nil, ErrNotEffective
+		if l.onChange != nil {
+			l.onChange(val)
+		}
 	}
-	return v, nil
 }
 
 // GetString syntactic sugar：取不到返 fallback 默认值。
@@ -342,48 +461,77 @@ func (c *Client) watchLoop() {
 }
 
 // onEvent server 推过来的单个事件；更新本地 cache + 触发 listener。
+//
+// **路由到 active / pending 槽**：
+//   - cfg.EffectiveAt == zero 或 <= now → 立即生效，写 entry.active；
+//     如果 entry 已经有 pending 且 pending.Version < cfg.Version：清掉 pending
+//     （新 active 比 pending 还新，pending 失效）
+//   - cfg.EffectiveAt > now → 写 entry.pending（不动 active；business 还读老的）；
+//     swapper 会到点提
+//
+// EventDelete 同时清 active + pending。
 func (c *Client) onEvent(ev *WatchEvent) {
 	if ev == nil || ev.Config == nil {
 		return
 	}
 	cfg := ev.Config
 
-	// 更新 cache：CoW 一份新 map 整体替换，老 map 仍被读 goroutine 持有 → 安全。
 	old := c.cache.Load()
-	newMap := make(map[string]*ConfigValue)
+	newEntries := make(map[string]*cacheEntry)
 	if old != nil {
-		for k, v := range old.values {
-			newMap[k] = v
+		for k, e := range old.entries {
+			newEntries[k] = e
 		}
 	}
+
+	now := time.Now()
 	switch ev.Type {
 	case EventDelete:
-		delete(newMap, cfg.Key)
+		delete(newEntries, cfg.Key)
+		c.cache.Store(&cacheSnapshot{entries: newEntries, fallback: old})
+
 	default:
-		newMap[cfg.Key] = cfg
-	}
-	c.cache.Store(&cacheSnapshot{values: newMap, fallback: old})
-
-	// 推进 max version
-	if cfg.Version > c.maxVersion.Load() {
-		c.maxVersion.Store(cfg.Version)
-	}
-
-	// 通知监听器
-	c.listenersMu.RLock()
-	ls := c.listeners[cfg.Key]
-	c.listenersMu.RUnlock()
-	for _, l := range ls {
-		if ev.Type != EventDelete {
-			if l.bind != nil {
-				if err := l.bind([]byte(cfg.Value)); err != nil {
-					c.logger.Warn("configcenter bind unmarshal failed on update",
-						zap.String("key", cfg.Key), zap.Error(err))
-				}
-			}
+		// active vs pending 路由
+		var nextEntry *cacheEntry
+		prev := newEntries[cfg.Key]
+		if prev == nil {
+			prev = &cacheEntry{}
 		}
-		if l.onChange != nil {
-			l.onChange(cfg)
+		if cfg.IsEffective(now) {
+			// 立即生效
+			nextEntry = &cacheEntry{active: cfg}
+			// 如果有更老的 pending（version 更低），它已被覆盖
+		} else if !cfg.EffectiveAt.IsZero() && cfg.EffectiveAt.After(now) {
+			// 未来生效：放 pending；保留 active
+			nextEntry = &cacheEntry{
+				active:  prev.active,
+				pending: cfg,
+			}
+		} else {
+			// 已 expire 不入 cache（保持 prev）
+			nextEntry = prev
+		}
+		newEntries[cfg.Key] = nextEntry
+		c.cache.Store(&cacheSnapshot{entries: newEntries, fallback: old})
+
+		// 推进 max version（不管 active 还是 pending 都要推）
+		if cfg.Version > c.maxVersion.Load() {
+			c.maxVersion.Store(cfg.Version)
+		}
+
+		// 触发 listeners：仅当 active 真的变了才叫；pending 落地时是 swapper 叫
+		if nextEntry.active == cfg {
+			c.fireListeners(cfg.Key, cfg)
+		} else if cfg.IsEffective(now) {
+			// IsEffective 但走到 else 分支（极端：cfg 跟 prev.active 同一个）；
+			// 仍触发一次保 idempotent
+			c.fireListeners(cfg.Key, cfg)
+		} else {
+			// pending 入库；不通知业务，等 swap 时再通知
+			c.logger.Debug("configcenter: pending received, awaits effective_at",
+				zap.String("key", cfg.Key),
+				zap.Time("effective_at", cfg.EffectiveAt),
+				zap.Int64("version", cfg.Version))
 		}
 	}
 }
