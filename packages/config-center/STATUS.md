@@ -30,6 +30,25 @@
 | **读副本路由** | DB GetActive / SinceVersion 路径可走 read replica（GetMetaRO 模式，跟其他服务对齐） |
 | **SDK 启动期阻塞** | NewWithRPC 同步拉一次 snapshot；超时 + 0 数据 → 返 error 让 main fx fail-fast；防止服务带空 cache 上线 |
 
+## SDK 类型化 K-V 读取（已加）
+
+`payment-util/configcenter/typed.go` — 业务热路径不处理 raw string：
+
+| API | 返回 | 备注 |
+| --- | --- | --- |
+| `GetString(ctx, key, def)` | `string` | 已在 client.go |
+| `GetInt(ctx, key, def)` / `GetInt64` | `int` / `int64` | plain + json 都接受 |
+| `GetFloat64(ctx, key, def)` | `float64` | 同上 |
+| `GetBool(ctx, key, def)` | `bool` | 接受 true/1/yes/on 及 json bool |
+| `GetDuration(ctx, key, def)` | `time.Duration` | 必须 `30s` 这种格式（不接受裸数字防单位歧义） |
+| `GetStringList(ctx, key, def)` | `[]string` | json 数组 / CSV / 单值 三态兼容 |
+| `GetIntList(ctx, key, def)` | `[]int` | 同上 |
+| `GetMap(ctx, key, def)` | `map[string]string` | json 字典 |
+| `GetJSON[T](cli, ctx, key, dst)` | error | 泛型一把梭复杂结构 |
+| `MustGetJSON[T](cli, ctx, key, dst)` | bool | dst 已自带默认值时用 |
+
+热路径仍推荐 `Bind[T](&atomic.Pointer[T])` — 一次绑到 atomic 指针后，业务读 `ptr.Load()` 零分配。
+
 ## SDK 双版本本地缓存（已加）
 
 ```
