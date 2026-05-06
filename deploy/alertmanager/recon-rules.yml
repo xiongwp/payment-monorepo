@@ -1,0 +1,92 @@
+---
+# Prometheus Alert Rules for Reconciliation Platform
+# Covers: exception detection, data integrity, recon failure alerts
+groups:
+  # ============================================================================
+  # RECONCILIATION INTEGRITY ALERTS
+  # ============================================================================
+  - name: reconciliation
+    interval: 30s
+    rules:
+      # Critical: pending exceptions > 10 sustained 5min
+      # Indicates exceptions accumulating faster than being processed
+      - alert: ReconExceptionPendingHigh
+        expr: recon_exception_pending > 10
+        for: 5m
+        labels:
+          severity: critical
+          domain: funds_safety
+        annotations:
+          summary: "Recon pending exceptions high: {{ $value }} pending"
+          description: |
+            Reconciliation exceptions > 10 for 5 minutes.
+            Indicates backlog in exception detection/processing.
+            Action: Check reconplatform logs for errors, Kafka lag, Redis connectivity.
+            Review: pending exception types in Prometheus (recon_exception_total).
+
+      # Critical: single difference > 100,000 (PHP)
+      # Large amount discrepancies require immediate investigation
+      - alert: ReconDiffAmountCritical
+        expr: increase(recon_diff_amount_minor_total[1m]) > 100000
+        for: 1m
+        labels:
+          severity: critical
+          domain: funds_safety
+        annotations:
+          summary: "Recon critical diff: ₱{{ $value | humanize }}"
+          description: |
+            Single reconciliation difference > ₱100,000 detected.
+            Action: Immediate manual review of affected orders.
+            Check: payment vs ledger state, transaction logs, settlement reports.
+            Escalate: Finance team for fund recovery assessment.
+
+      # Warning: pending exceptions > 0 sustained 1h
+      # Indicates sorting/processing accumulation or slow resolution
+      - alert: ReconExceptionPendingWarning
+        expr: recon_exception_pending > 0
+        for: 1h
+        labels:
+          severity: warning
+          domain: funds_safety
+        annotations:
+          summary: "Recon pending exceptions: {{ $value }} accumulated"
+          description: |
+            Reconciliation has pending exceptions for 1 hour.
+            May indicate slow processing or backlog of manual reviews.
+            Action: Review exception types (recon_exception_total), check processing queue.
+            Monitor: if growing → escalate to critical; if stable → may be OK.
+
+      # Info: recon run failure rate > 1%
+      # Indicates systematic issues in reconciliation execution
+      - alert: ReconRunErrorRateHigh
+        expr: |
+          (sum(rate(recon_run_errors_total[5m]))
+          / sum(rate(recon_run_total[5m]))) > 0.01
+        for: 5m
+        labels:
+          severity: info
+          domain: operations
+        annotations:
+          summary: "Recon run error rate: {{ $value | humanizePercentage }}"
+          description: |
+            Reconciliation run error rate > 1% over 5min.
+            Possible causes: Kafka delivery issues, rule evaluation errors, state corruption.
+            Action: Check reconplatform logs for error patterns, verify rule syntax.
+            Monitor: if rate increases → escalate; if transient → observe.
+
+      # Warning: recon run duration p95 > 5s
+      # Indicates performance degradation or heavy processing
+      - alert: ReconRunDurationHigh
+        expr: |
+          histogram_quantile(0.95, sum(rate(recon_run_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 10m
+        labels:
+          severity: warning
+          domain: performance
+        annotations:
+          summary: "Recon p95 duration: {{ $value | humanizeDuration }}"
+          description: |
+            Reconciliation p95 run duration > 5 seconds sustained.
+            Possible causes: Redis latency, rule complexity, event batch size.
+            Action: Check Redis latency (redis_command_duration), review slow rule expressions.
+            Optimize: consider rule parallelization or Redis optimization.

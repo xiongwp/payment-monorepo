@@ -12,13 +12,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
 	"go.uber.org/zap"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/xiongwp/payment-util/configcenter"
 
@@ -68,12 +71,24 @@ func main() {
 		eng.Handle(ctx, ev)
 	})
 
+	// 暴露 Prometheus metrics endpoint 在 :8080/metrics
+	metricsPort := envOr("RECON_METRICS_PORT", "8080")
+	http.Handle("/metrics", promhttp.Handler())
+	go func() {
+		addr := fmt.Sprintf(":%s", metricsPort)
+		log.Printf("recon: metrics listening on %s/metrics", addr)
+		if err := http.ListenAndServe(addr, nil); err != nil {
+			logger.Error("metrics server failed", zap.Error(err))
+		}
+	}()
+
 	logger.Info("reconplatform started",
 		zap.String("redis", redisAddr),
 		zap.Strings("kafka_brokers", kafkaBrokers),
 		zap.Strings("consume_topics", consumeTopics),
 		zap.String("produce_topic", produceTopic),
-		zap.String("group", consumerGroup))
+		zap.String("group", consumerGroup),
+		zap.String("metrics_port", metricsPort))
 
 	for {
 		select {

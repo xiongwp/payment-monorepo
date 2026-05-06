@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"time"
 
+	"reconcile-system/internal/metrics"
 	"reconcile-system/internal/model"
 	"reconcile-system/internal/rule"
 	"reconcile-system/internal/store"
@@ -68,7 +70,35 @@ func (e *Engine) Handle(ctx context.Context, ev model.Event) {
 		"order":   map[string]interface{}{"amount": st.Order.Amount},
 		"payment": map[string]interface{}{"amount": st.Payment.Amount},
 	}
+
+	// 记录 reconciliation run 和检测时间
+	startTime := time.Now()
+	metrics.RunTotal.Inc()
+
 	results := e.rule.EvalAll(env)
+
+	// 检查是否存在差异异常（amount mismatch）
+	if st.Order.Amount != st.Payment.Amount {
+		diffAmount := st.Order.Amount - st.Payment.Amount
+		if diffAmount < 0 {
+			diffAmount = -diffAmount
+		}
+
+		// 确定严重程度：单笔 > 100,000 是 critical，否则 warning
+		severity := "warning"
+		if diffAmount > 100000 {
+			severity = "critical"
+		}
+
+		// 记录 exception
+		metrics.ExceptionTotal.WithLabelValues("amount_mismatch", severity).Inc()
+		metrics.ExceptionPending.Inc()
+		metrics.DiffAmountMinorTotal.WithLabelValues("amount_mismatch").Add(float64(diffAmount))
+
+		log.Printf("recon: amount exception detected order_id=%s order=%d payment=%d diff=%d severity=%s",
+			ev.OrderID, st.Order.Amount, st.Payment.Amount, diffAmount, severity)
+	}
+
 	for ruleName, status := range results {
 		select {
 		case e.out <- model.Result{OrderID: ev.OrderID, Rule: ruleName, Status: status}:
@@ -79,6 +109,10 @@ func (e *Engine) Handle(ctx context.Context, ev model.Event) {
 				ev.OrderID, ruleName, status)
 		}
 	}
+
+	// 记录 reconciliation 耗时
+	duration := time.Since(startTime).Seconds()
+	metrics.RunDurationSeconds.Observe(duration)
 	// reconcile 完成（match/mismatch 都算完成）→ Del 释放 state。删除失败只记日志，
 	// TTL 1h 兜底让 stale state 自然过期。
 	e.store.Del(ctx, ev.OrderID)
