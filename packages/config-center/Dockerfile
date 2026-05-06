@@ -2,9 +2,13 @@
 # 优先用本地兄弟仓 additional_contexts 注入；找不到 fallback git clone。
 #
 # 兄弟仓：
-#   payment-util  给 trace / shadow / serviceregistry helpers 用
+#   payment-util         给 trace / shadow / serviceregistry / mtls helpers 用
+#   user-merchant-core   admin 真鉴权调 IntrospectToken 用（P0-6 引入）
 
 FROM alpine:3.19 AS payment-util
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+
+FROM alpine:3.19 AS user-merchant-core
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS build
@@ -15,31 +19,37 @@ ENV GOFLAGS=-mod=mod
 ENV GOTOOLCHAIN=auto
 
 ARG PAYMENT_UTIL_REF=main
-ARG SIBLING_CONTEXT_VER=1
+ARG USER_MERCHANT_CORE_REF=main
+ARG SIBLING_CONTEXT_VER=2
 RUN echo "sibling-ctx ver=${SIBLING_CONTEXT_VER}"
 
 COPY --from=payment-util / /tmp/payment-util-staged/
+COPY --from=user-merchant-core / /tmp/user-merchant-core-staged/
 
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
-    name=payment-util; ref=${PAYMENT_UTIL_REF}; \
-    staged="/tmp/${name}-staged"; final="/src/${name}"; \
-    if [ -f "${staged}/go.mod" ]; then \
-      echo "→ Using local ${name}"; \
-      mkdir -p "${final}"; cp -a "${staged}/." "${final}/"; \
-    else \
-      TOKEN=""; \
-      [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
-      if [ -z "$TOKEN" ]; then \
-        echo "ERROR: provide ../${name} or GITHUB_TOKEN" >&2; exit 1; \
+    promote() { \
+      local name="$1"; local ref="$2"; \
+      local staged="/tmp/${name}-staged"; local final="/src/${name}"; \
+      if [ -f "${staged}/go.mod" ]; then \
+        echo "→ Using local ${name}"; \
+        mkdir -p "${final}"; cp -a "${staged}/." "${final}/"; \
+      else \
+        TOKEN=""; \
+        [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
+        if [ -z "$TOKEN" ]; then \
+          echo "ERROR: provide ../${name} or GITHUB_TOKEN" >&2; exit 1; \
+        fi; \
+        auth="x-access-token:${TOKEN}@"; \
+        url="https://${auth}github.com/xiongwp/${name}.git"; \
+        rm -rf "${final}"; \
+        git clone --depth=1 --branch "$ref" "$url" "$final" 2>/dev/null \
+          || git clone --depth=1 "$url" "$final"; \
       fi; \
-      auth="x-access-token:${TOKEN}@"; \
-      url="https://${auth}github.com/xiongwp/${name}.git"; \
-      rm -rf "${final}"; \
-      git clone --depth=1 --branch "$ref" "$url" "$final" 2>/dev/null \
-        || git clone --depth=1 "$url" "$final"; \
-    fi; \
-    rm -rf "${staged}"
+      rm -rf "${staged}"; \
+    }; \
+    promote payment-util       "${PAYMENT_UTIL_REF}"; \
+    promote user-merchant-core "${USER_MERCHANT_CORE_REF}"
 
 COPY . /src/config-center
 
