@@ -92,13 +92,22 @@ stack_down() {
 case "$ACTION" in
   up)
     ensure_network
-    for entry in "${STACKS[@]}"; do
-      IFS='|' read -r dir health <<< "$entry"
+    info "════════════════════════════════════════════════════════════════"
+    info " 部署顺序（严格按层）："
+    info "   Layer 0  payment-stack 网络     ← 已就绪"
+    info "   Layer 1  config-center          ← 阻塞等 /healthz 200"
+    info "   Layer 2  业务服务 (12 个)       ← 自动连 config-center"
+    info "════════════════════════════════════════════════════════════════"
+    for i in "${!STACKS[@]}"; do
+      IFS='|' read -r dir health <<< "${STACKS[$i]}"
+      info "[$((i+1))/${#STACKS[@]}] $dir"
       stack_up "$dir" "$health"
     done
     ok "全栈启动完成"
+    ok "  - config-center:  http://localhost:9691/admin/  ← admin 改 key 走这"
     ok "  - api-gateway:    http://localhost:8080"
-    ok "  - config-center:  http://localhost:9691/admin/"
+    ok ""
+    ok "首次部署后跑 'bash deploy-stack.sh seed' 写入 12 namespace 默认 key"
     ;;
   down)
     # 反向卸载
@@ -117,6 +126,19 @@ case "$ACTION" in
     ;;
   seed)
     bash "$ROOT/packages/config-center/deploy.sh" seed
+    ;;
+  restart-cc)
+    info "重启 config-center（业务服务会自动重连，不需要重启）"
+    (cd "$ROOT/packages/config-center" && docker compose restart)
+    ;;
+  check)
+    # 检查 config-center 是否在跑；业务侧 stack 启动前应先确认这个
+    if curl -fs http://localhost:9691/healthz >/dev/null 2>&1; then
+      ok "config-center 在跑（http://localhost:9691）"
+    else
+      warn "config-center 未就绪 → 业务服务启动会进入 SDK 重连等待（5 分钟超时）"
+      warn "建议先：bash $ROOT/packages/config-center/deploy.sh up"
+    fi
     ;;
   *)
     die "用法: $0 {up|down|status|seed}"
