@@ -622,7 +622,7 @@ func startGRPC(lc fx.Lifecycle, s *server.Server, v *viper.Viper, logger *zap.Lo
 //   - auth.jwt_alg = "HS256" 或缺省 → 用 auth.jwt_secret（dev / staging）
 //
 // assertProdSafety 在 env=prod 已经强制 jwt_alg == RS256；这里 fail-soft 不做二次校验。
-func newAuthIssuer(v *viper.Viper) (*authpkg.Issuer, error) {
+func newAuthIssuer(v *viper.Viper, cli *configcenter.Client) (*authpkg.Issuer, error) {
 	alg := authpkg.Algorithm(v.GetString("auth.jwt_alg"))
 	if alg == "" {
 		alg = authpkg.AlgHS256
@@ -630,6 +630,14 @@ func newAuthIssuer(v *viper.Viper) (*authpkg.Issuer, error) {
 	ttl := v.GetDuration("auth.jwt_ttl")
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
+	}
+	// config-center 优先：admin 改 namespace=user-merchant-core 下的 jwt.ttl 即时生效
+	// （Issuer 内部不暴露 SetTTL，目前是启动期 snapshot；下次 Issue 调用看新值需要
+	// 在 Issuer 加 atomic.Pointer[Duration]，可作 follow-on 优化）。
+	if cli != nil {
+		if d := cli.GetDuration(context.Background(), "jwt.ttl", ttl); d > 0 {
+			ttl = d
+		}
 	}
 	cfg := authpkg.IssuerConfig{
 		Algorithm:  alg,

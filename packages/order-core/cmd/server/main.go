@@ -501,13 +501,34 @@ func wireInlineAccountingDelivery(svc service.AccountingOutboxService, client se
 }
 
 // newAccountingOutboxWorker 轮询 outbox 投递到 accounting-system。
-func newAccountingOutboxWorker(outbox repo.AccountingOutboxRepository, client service.AccountingClient, v *viper.Viper, logger *zap.Logger) *service.AccountingOutboxWorker {
+//
+// config-center key（namespace=order-core）覆盖 yaml：
+//   outbox.batch_size / outbox.poll_interval / outbox.max_attempts /
+//   outbox.base_backoff / outbox.max_backoff
+//
+// admin 改后下次 worker 重启生效（worker 当前没暴露 SetConfig 热更新）。
+func newAccountingOutboxWorker(outbox repo.AccountingOutboxRepository, client service.AccountingClient,
+	v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) *service.AccountingOutboxWorker {
 	cfg := service.AccountingOutboxWorkerConfig{
 		BatchSize:    v.GetInt("accounting_outbox.batch_size"),
 		PollInterval: v.GetDuration("accounting_outbox.poll_interval"),
 		MaxAttempts:  v.GetInt("accounting_outbox.max_attempts"),
 		BaseBackoff:  v.GetDuration("accounting_outbox.base_backoff"),
 		MaxBackoff:   v.GetDuration("accounting_outbox.max_backoff"),
+	}
+	if cli != nil {
+		ctx := context.Background()
+		cfg.BatchSize = cli.GetInt(ctx, "outbox.batch_size", cfg.BatchSize)
+		if d := cli.GetDuration(ctx, "outbox.poll_interval", cfg.PollInterval); d > 0 {
+			cfg.PollInterval = d
+		}
+		cfg.MaxAttempts = cli.GetInt(ctx, "outbox.max_attempts", cfg.MaxAttempts)
+		if d := cli.GetDuration(ctx, "outbox.base_backoff", cfg.BaseBackoff); d > 0 {
+			cfg.BaseBackoff = d
+		}
+		if d := cli.GetDuration(ctx, "outbox.max_backoff", cfg.MaxBackoff); d > 0 {
+			cfg.MaxBackoff = d
+		}
 	}
 	return service.NewAccountingOutboxWorker(outbox, client, logger.Named("accounting-outbox-worker"), cfg)
 }

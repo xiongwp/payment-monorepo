@@ -465,7 +465,7 @@ func newHTTPSVerifier(v *viper.Viper, conn *grpc.ClientConn, logger *zap.Logger)
 //
 // rate limit 默认 5 tokenize / 分钟 per user_id。yaml: ratelimit.tokenize.burst /
 // ratelimit.tokenize.refill_seconds 可调。
-func newRESTServer(v *viper.Viper, svc *service.Service, vfy httpsauth.Verifier, logger *zap.Logger) *httpsauth.RESTServer {
+func newRESTServer(v *viper.Viper, cli *configcenter.Client, svc *service.Service, vfy httpsauth.Verifier, logger *zap.Logger) *httpsauth.RESTServer {
 	if !v.GetBool("https.enabled") || vfy == nil {
 		return nil
 	}
@@ -476,6 +476,16 @@ func newRESTServer(v *viper.Viper, svc *service.Service, vfy httpsauth.Verifier,
 	refill := v.GetDuration("ratelimit.tokenize.refill")
 	if refill <= 0 {
 		refill = 2 * time.Second // 30 tokens / 分钟稳定速率（原 5/min 太严）
+	}
+	// config-center 覆盖：admin 改 namespace=card-center 下
+	//   tokenize.per_user_rps（按业务期望转 burst/refill）
+	//   ratelimit.tokenize.burst / .refill（直接传）
+	if cli != nil {
+		ctx := context.Background()
+		burst = cli.GetInt(ctx, "ratelimit.tokenize.burst", burst)
+		if d := cli.GetDuration(ctx, "ratelimit.tokenize.refill", refill); d > 0 {
+			refill = d
+		}
 	}
 	rl := httpsauth.NewMemoryBucket(burst, refill)
 	rl.Cleanup(10*time.Minute, time.Hour)

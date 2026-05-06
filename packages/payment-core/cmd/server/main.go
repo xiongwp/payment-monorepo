@@ -177,18 +177,39 @@ func newRiskClient(v *viper.Viper, logger *zap.Logger) (riskclient.Client, error
 	return cli, nil
 }
 
-func newPaymentSvc(r *routing.Router, c channelclient.Client, risk riskclient.Client, v *viper.Viper, logger *zap.Logger) *service.PaymentService {
+func newPaymentSvc(r *routing.Router, c channelclient.Client, risk riskclient.Client,
+	v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) *service.PaymentService {
 	svc := service.NewPaymentService(r, c, risk, logger)
-	if v.GetBool("risk.fail_close") {
+
+	// risk.fail_policy: "close" / "open"（config-center 优先 yaml 兜底）。
+	// admin 改 namespace=payment-core 下的 risk.fail_policy 即时生效（注：
+	// SetRiskFailClose 是启动期 snapshot；改 policy 需要重启）。
+	failClose := v.GetBool("risk.fail_close")
+	if cli != nil {
+		policy := cli.GetString(context.Background(), "risk.fail_policy", "")
+		switch policy {
+		case "close":
+			failClose = true
+		case "open":
+			failClose = false
+		}
+	}
+	if failClose {
 		svc.SetRiskFailClose(true)
 		logger.Info("risk fail-close mode ENABLED — risk outage will block all payments")
 	}
 
 	// 默认风控超时（兜底）。risk.rpc_timeout 是 client dial / unary 整体超时；
 	// 这里再加 per-call 上限，避免某次调用拖慢整个 Charge 路径。
-	if d := v.GetDuration("risk.default_timeout"); d > 0 {
-		svc.SetRiskTimeoutDefault(d)
-		logger.Info("risk default timeout set", zap.Duration("timeout", d))
+	defaultTimeout := v.GetDuration("risk.default_timeout")
+	if cli != nil {
+		if d := cli.GetDuration(context.Background(), "risk.default_timeout", defaultTimeout); d > 0 {
+			defaultTimeout = d
+		}
+	}
+	if defaultTimeout > 0 {
+		svc.SetRiskTimeoutDefault(defaultTimeout)
+		logger.Info("risk default timeout set", zap.Duration("timeout", defaultTimeout))
 	}
 
 	// risk.merchant_timeout: { "<merchant_id>": "500ms", ... }

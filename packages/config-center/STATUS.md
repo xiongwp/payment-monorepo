@@ -21,15 +21,15 @@
 | --- | --- | --- | --- |
 | accounting-system | accounting-system | **深度** — wrap SystemConfigService，9 caller 零改动 | DB 表 system_config + repo + reload 扇出 + 3 admin handler |
 | api-gateway | api-gateway | **深度** — RateLimitHub + ApplyParams + OnChange 热更新 | rate_limit 静态字段 → 动态 SetLimit |
-| user-merchant-core | user-merchant-core | SDK 注入（fxprovider） | yaml bootstrap 保留 |
-| order-core | order-core | SDK 注入 | yaml bootstrap 保留 |
-| payment-core | payment-core | SDK 注入 | yaml bootstrap 保留 |
-| payment-channel | payment-channel | SDK 注入 | yaml bootstrap 保留 |
-| risk-manage | risk-manage | SDK 注入 | yaml bootstrap 保留 |
-| card-center | card-center | SDK 注入 | yaml bootstrap 保留 |
-| card-payment | card-payment | SDK 注入 | yaml bootstrap 保留 |
-| clearing-settlement | clearing-settlement | SDK 注入 | yaml bootstrap 保留 |
-| kms-manage | kms-manage | SDK 注入 | yaml bootstrap 保留 |
+| payment-channel | payment-channel | **深度** — newServer 接 SDK 读 rate_limit | yaml bootstrap 保留 |
+| risk-manage | risk-manage | **深度** — newBreakers 接 SDK 读 reliability.* | yaml bootstrap 保留 |
+| card-payment | card-payment | **深度** — newBulkhead 接 SDK 读 bulkhead.per_merchant_max | yaml bootstrap 保留 |
+| user-merchant-core | user-merchant-core | **深度** — newAuthIssuer 接 SDK 读 jwt.ttl | yaml bootstrap 保留 |
+| order-core | order-core | **深度** — newAccountingOutboxWorker 接 SDK 读 outbox.* | yaml bootstrap 保留 |
+| payment-core | payment-core | **深度** — newPaymentSvc 接 SDK 读 risk.fail_policy + risk.default_timeout | yaml bootstrap 保留 |
+| card-center | card-center | **深度** — newRESTServer 接 SDK 读 ratelimit.tokenize.* | yaml bootstrap 保留 |
+| kms-manage | kms-manage | **深度** — newServer 接 SDK 读 auth.allowed_client_ids + rate_limit.* | yaml bootstrap 保留 |
+| clearing-settlement | clearing-settlement | SDK 注入（业务接口少，按需扩） | yaml bootstrap 保留 |
 
 **集成深度说明**：
 - **深度** = 完成 yaml/DB 删除 + 业务代码改读 SDK + 热更新链路

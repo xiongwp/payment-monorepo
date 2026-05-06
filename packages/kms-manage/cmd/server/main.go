@@ -155,22 +155,38 @@ func newKMSSvc(s *keystore.Store, logger *zap.Logger) *service.KMSService {
 	return service.NewKMSService(s, logger)
 }
 
-func newServer(svc *service.KMSService, v *viper.Viper, logger *zap.Logger) (*server.Server, error) {
+func newServer(svc *service.KMSService, v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) (*server.Server, error) {
 	tokens := map[string]string{}
 	for _, t := range v.GetStringSlice("auth.tokens") {
 		tokens[t] = "ok"
 	}
+	// SAN whitelist 走 config-center（敏感，admin 应用 TARGETED 推单台先 canary 再扩）。
+	allowed := v.GetStringSlice("auth.allowed_client_ids")
+	rps := v.GetFloat64("rate_limit.rps")
+	burst := v.GetInt("rate_limit.burst")
+	if cli != nil {
+		ctx := context.Background()
+		if a := cli.GetStringList(ctx, "auth.allowed_client_ids", allowed); len(a) > 0 {
+			allowed = a
+		}
+		if v := cli.GetFloat64(ctx, "rate_limit.rps", rps); v > 0 {
+			rps = v
+		}
+		if v := cli.GetInt(ctx, "rate_limit.burst", burst); v > 0 {
+			burst = v
+		}
+	}
 	return server.NewServer(server.Deps{
-		KMSSvc:       svc,
-		AuthTokens:   tokens,
-		AllowedIDs:   v.GetStringSlice("auth.allowed_client_ids"),
+		KMSSvc:     svc,
+		AuthTokens: tokens,
+		AllowedIDs: allowed,
 		TLS: server.TLSPaths{
 			ServerCert: v.GetString("tls.server_cert"),
 			ServerKey:  v.GetString("tls.server_key"),
 			ClientCA:   v.GetString("tls.client_ca"),
 		},
-		RateLimitRPS: v.GetFloat64("rate_limit.rps"),
-		RateBurst:    v.GetInt("rate_limit.burst"),
+		RateLimitRPS: rps,
+		RateBurst:    burst,
 		Logger:       logger,
 	})
 }
