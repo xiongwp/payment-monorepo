@@ -36,6 +36,7 @@ import (
 	"github.com/xiongwp/card-center/internal/service"
 	"github.com/xiongwp/card-center/internal/sharding"
 	"github.com/xiongwp/card-center/internal/vault"
+	"github.com/xiongwp/payment-util/audit/kafkago"
 	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/payment-util/trace"
@@ -78,7 +79,8 @@ func loadConfig() (*viper.Viper, error) {
 		"kms.client_cert", "kms.client_key", "kms.server_ca",
 		"kms.bypass_hardened",
 		"tls.cert", "tls.key", "tls.client_ca",
-		"audit.kafka_brokers",
+		"audit.kafka_brokers", "audit.topic", "audit.kafka_acks",
+		"audit.kafka_write_timeout", "audit.kafka_batch_timeout", "audit.kafka_compression",
 		"database.meta.dsn", "database.meta.name",
 		"database.meta.max_open_conns", "database.meta.max_idle_conns", "database.meta.conn_max_lifetime",
 		// HTTPS 入口 + 用户登录态校验上游（mTLS gRPC 直连 user-merchant-core）
@@ -252,25 +254,54 @@ func newPaymentTokenRepo(mgr *repo.Manager) repo.PaymentTokenRepo {
 	return repo.NewPaymentTokenRepo(mgr)
 }
 
-// newAuditEmitter 构造 audit emitter；Kafka producer 当前未接（TODO sarama）。
-// service 层用 DB 落盘 + 试图发 Kafka 双写；producer 为 nil 时退化只 DB。
+// newAuditEmitter 构造 audit emitter。
 //
-// **PROD-SAFETY**：env=prod 时 producer nil 直接 fail。原 assertProdSafety
-// 只检查 kafka_brokers 非空但实际 producer 仍是 nil，是"假 guard"。
-// 真接通 sarama 之前 prod 起不来，强迫责任人不能糊弄。
-func newAuditEmitter(mgr *repo.Manager, v *viper.Viper, logger *zap.Logger) (service.AuditEmitter, error) {
+// 双写：Kafka producer (PCI Req 10 卸载存档) + audit_log DB (强一致 7 年留存)。
+// brokers 配上时 wire 真的 kafka-go 生产者；空时按环境决定行为：
+//   - dev: 退化 DB-only + warn
+//   - prod: fail-fast（PCI Req 10 不容许只 DB）
+func newAuditEmitter(lc fx.Lifecycle, mgr *repo.Manager, v *viper.Viper, logger *zap.Logger) (service.AuditEmitter, error) {
 	topic := v.GetString("audit.topic")
 	if topic == "" {
 		topic = "card-center.audit"
 	}
-	// TODO: 接 sarama 的 SyncProducer，实现 audit.KafkaProducer
-	var producer audit.KafkaProducer = nil
+	brokers := splitCSV(v.GetString("audit.kafka_brokers"))
+	if len(brokers) == 0 {
+		brokers = v.GetStringSlice("audit.kafka_brokers")
+	}
 	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
-	if (env == "prod" || env == "production") && producer == nil {
-		return nil, fmt.Errorf("PROD-SAFETY: audit.KafkaProducer not wired (sarama TODO); audit ONLY-DB in prod is a compliance gap (PCI DSS Req 10)")
+	isProd := env == "prod" || env == "production"
+
+	var producer audit.KafkaProducer
+	if len(brokers) > 0 {
+		p, err := kafkago.New(kafkago.Config{
+			Brokers:      brokers,
+			Acks:         v.GetString("audit.kafka_acks"),
+			WriteTimeout: v.GetDuration("audit.kafka_write_timeout"),
+			BatchTimeout: v.GetDuration("audit.kafka_batch_timeout"),
+			Compression:  v.GetString("audit.kafka_compression"),
+		}, logger)
+		if err != nil {
+			if isProd {
+				return nil, fmt.Errorf("PROD-SAFETY: audit kafka producer init: %w", err)
+			}
+			logger.Warn("audit kafka producer init failed, dev fallback DB-only", zap.Error(err))
+		} else {
+			producer = p
+			lc.Append(fx.Hook{
+				OnStop: func(_ context.Context) error { return p.Close() },
+			})
+			logger.Info("audit kafka producer wired",
+				zap.Strings("brokers", brokers),
+				zap.String("topic", topic))
+		}
+	}
+
+	if isProd && producer == nil {
+		return nil, fmt.Errorf("PROD-SAFETY: audit.kafka_brokers required in env=prod (PCI DSS Req 10 forbids DB-only audit)")
 	}
 	if producer == nil {
-		logger.Warn("audit emitter running DB-only (Kafka producer not wired); dev mode acceptable")
+		logger.Warn("audit emitter running DB-only (no Kafka brokers); dev mode acceptable")
 	}
 	return audit.New(producer, topic, mgr.Meta(), logger), nil
 }
