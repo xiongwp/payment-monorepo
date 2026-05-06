@@ -29,6 +29,7 @@ import (
 	"github.com/xiongwp/card-payment/internal/adapter/unionpay"
 	"github.com/xiongwp/card-payment/internal/adapter/visa"
 	"github.com/xiongwp/card-payment/internal/cardcenterclient"
+	"github.com/xiongwp/card-payment/internal/metrics"
 	"github.com/xiongwp/card-payment/internal/processor"
 	"github.com/xiongwp/card-payment/internal/repo"
 	"github.com/xiongwp/card-payment/internal/server"
@@ -38,6 +39,9 @@ import (
 )
 
 func main() {
+	// metrics.Register() 必须在 fx.New 前跑一次：collectors 是包级 var，
+	// 重启 fx graph 时若再注册会 panic（duplicate metric collector）。
+	metrics.Register()
 	app := fx.New(
 		fx.StartTimeout(30*time.Second),
 		fx.StopTimeout(30*time.Second),
@@ -52,9 +56,30 @@ func main() {
 			newProcessor,
 			newGRPCServer,
 		),
-		fx.Invoke(startGRPC, startServiceRegistrar),
+		fx.Invoke(startGRPC, startServiceRegistrar, startMetricsHTTP),
 	)
 	app.Run()
+}
+
+// startMetricsHTTP 起 prometheus scrape + k8s probe 端口。
+// 默认 :9544（card-center 用 :9543，错开一格）。OnStop 时置 drain，
+// /readyz 503 摘流量；GRPC GracefulStop 在 startGRPC 那边管。
+func startMetricsHTTP(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) {
+	addr := v.GetString("metrics.addr")
+	if addr == "" {
+		addr = ":9544"
+	}
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			metrics.StartServer(addr, logger)
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			metrics.BeginDrain()
+			logger.Info("card-payment draining: /readyz now returns 503")
+			return nil
+		},
+	})
 }
 
 func loadConfig() (*viper.Viper, error) {
@@ -69,6 +94,7 @@ func loadConfig() (*viper.Viper, error) {
 		"database.meta.dsn", "database.meta.name",
 		"database.meta.max_open_conns", "database.meta.max_idle_conns", "database.meta.conn_max_lifetime",
 		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl", "server.grpc_port",
+		"metrics.addr",
 	} {
 	_ = v.BindEnv(k)
 	}

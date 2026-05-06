@@ -252,15 +252,27 @@ func newPaymentTokenRepo(mgr *repo.Manager) repo.PaymentTokenRepo {
 	return repo.NewPaymentTokenRepo(mgr)
 }
 
-// newAuditEmitter 构造 audit emitter；Kafka producer 这里先注入 nil，
-// service 层只走 DB 落盘。生产引入 sarama / kafka-go 后这里替换。
-func newAuditEmitter(mgr *repo.Manager, v *viper.Viper, logger *zap.Logger) service.AuditEmitter {
+// newAuditEmitter 构造 audit emitter；Kafka producer 当前未接（TODO sarama）。
+// service 层用 DB 落盘 + 试图发 Kafka 双写；producer 为 nil 时退化只 DB。
+//
+// **PROD-SAFETY**：env=prod 时 producer nil 直接 fail。原 assertProdSafety
+// 只检查 kafka_brokers 非空但实际 producer 仍是 nil，是"假 guard"。
+// 真接通 sarama 之前 prod 起不来，强迫责任人不能糊弄。
+func newAuditEmitter(mgr *repo.Manager, v *viper.Viper, logger *zap.Logger) (service.AuditEmitter, error) {
 	topic := v.GetString("audit.topic")
 	if topic == "" {
 		topic = "card-center.audit"
 	}
 	// TODO: 接 sarama 的 SyncProducer，实现 audit.KafkaProducer
-	return audit.New(nil, topic, mgr.Meta(), logger)
+	var producer audit.KafkaProducer = nil
+	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+	if (env == "prod" || env == "production") && producer == nil {
+		return nil, fmt.Errorf("PROD-SAFETY: audit.KafkaProducer not wired (sarama TODO); audit ONLY-DB in prod is a compliance gap (PCI DSS Req 10)")
+	}
+	if producer == nil {
+		logger.Warn("audit emitter running DB-only (Kafka producer not wired); dev mode acceptable")
+	}
+	return audit.New(producer, topic, mgr.Meta(), logger), nil
 }
 
 func newService(v *vault.Vault, sr repo.StoredCardRepo, pr repo.PaymentTokenRepo, ae service.AuditEmitter, logger *zap.Logger) *service.Service {
