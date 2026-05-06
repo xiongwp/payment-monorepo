@@ -34,23 +34,14 @@ type Config struct {
 	Insecure   bool // dev 用 insecure；prod 必须 mTLS
 }
 
-// TokenizeRequest 业务层请求
-type TokenizeRequest struct {
-	UserID     int64
-	PAN        string // 仅 RPC 调用栈出现，本进程不存
-	ExpMonth   int
-	ExpYear    int
-	HolderName string
-	TraceID    string
-}
-
-// TokenizeResponse
-type TokenizeResponse struct {
-	StoredToken string
-	MaskedPAN   string
-	Network     string
-	KMSKid      string
-}
+// **PAN 单跳后 Tokenize 已退役**（task #81）：浏览器 → card-center HTTPS 直连
+// → user-merchant-core 只接 stored_token（已 KMS 加密）。本服务进程**完全不
+// touch PAN**。原 TokenizeRequest / TokenizeResponse 类型 + Tokenize 方法已
+// 删除，留下这段注释作为历史足迹防止后人重新加回去。
+//
+// 如果你看到这里想 "我加个 Tokenize 多方便" —— 不要。任何写 PAN 字段的代码
+// 都会让 user-merchant-core 进 SAQ-D scope，相当于把 PCI 合规半径扩大三倍。
+// PAN 流转走 card-center HTTPS 单跳，只此一条路径。
 
 // New dial
 func New(cfg Config) (*Client, error) {
@@ -80,25 +71,6 @@ func New(cfg Config) (*Client, error) {
 
 // Close 关连接
 func (c *Client) Close() error { return c.conn.Close() }
-
-// Tokenize 调 card-center.Tokenize
-//
-// TODO: 接通 cardcenterv1 generated stubs 后替换 stub 实现：
-//
-//	cli := cardcenterv1.NewCardCenterClient(c.conn)
-//	resp, err := cli.Tokenize(cctx, &cardcenterv1.TokenizeRequest{
-//	    UserId: strconv.FormatInt(req.UserID, 10),
-//	    Pan: req.PAN, ExpMonth: int32(req.ExpMonth), ExpYear: int32(req.ExpYear),
-//	    HolderName: req.HolderName, TraceId: req.TraceID,
-//	})
-//	if err != nil { return nil, err }
-//	return &TokenizeResponse{StoredToken: resp.StoredToken, MaskedPAN: resp.MaskedPan, Network: resp.Network, KMSKid: resp.KmsKid}, nil
-func (c *Client) Tokenize(ctx context.Context, req *TokenizeRequest) (*TokenizeResponse, error) {
-	cctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-	_ = cctx
-	return nil, errors.New("cardcenterclient: TODO wire cardcenterv1 stubs")
-}
 
 // DeleteCard 调 card-center.DeleteCard（业务层 soft delete）
 func (c *Client) DeleteCard(ctx context.Context, userID int64, storedToken, reason, traceID string) error {
