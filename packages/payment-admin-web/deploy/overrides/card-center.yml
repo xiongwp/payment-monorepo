@@ -29,34 +29,21 @@ services:
     ports:
       - "9443:9443"   # mTLS gRPC（dev 实际明文）
       - "9543:9543"   # /metrics
-<<<<<<< HEAD
       - "8443:8443"   # HTTPS REST (dev 明文)，前端 SDK 直发 PAN 用
-=======
-      - "8443:8443"   # HTTPS REST（dev 明文，前端 SDK 直发 PAN 用）
->>>>>>> feat/shadow-traffic
     environment:
       CARDCENTER_LOG_DEV: "true"
       CARDCENTER_ENV: "dev"
       CARDCENTER_SERVER_GRPC_PORT: "9443"
-<<<<<<< HEAD
       # ── 服务自注册（被 card-payment / api-gateway / BFF 调用）+ 出站发现 ──
-=======
-      # 服务自注册（被 card-payment / api-gateway / BFF 调用）
->>>>>>> feat/shadow-traffic
       CARDCENTER_REGISTRY_ENDPOINTS: "etcd:2379"
       CARDCENTER_REGISTRY_SERVICE_NAME: "card-center"
       CARDCENTER_REGISTRY_TTL: "10s"
       # KMS：联栈复用 main DC 的 kms-manage（生产严格独立 DC kms-card）
-<<<<<<< HEAD
       # 优先走 etcd 服务发现（kms-manage 启动期自注册到 etcd），绕开 docker
       # embedded DNS 把 kms-manage alias 错绑到不相关容器 IP 的状态机问题。
       # ENDPOINT 留作 fallback：etcd 不可用时回退静态 DNS。
       CARDCENTER_KMS_REGISTRY_ENDPOINTS: "etcd:2379"
       CARDCENTER_KMS_ENDPOINT: "kms-manage:9290"
-=======
-      CARDCENTER_KMS_REGISTRY_ENDPOINTS: "etcd:2379"
-      CARDCENTER_KMS_ENDPOINT: "172.18.0.13:9290"
->>>>>>> feat/shadow-traffic
       CARDCENTER_KMS_INSECURE: "true"
       # 临时旁路：跳过 hardenedOptions（service config + keepalive）排查 RPC 不下发
       CARDCENTER_KMS_BYPASS_HARDENED: "true"
@@ -66,11 +53,7 @@ services:
       CARDCENTER_HTTPS_PORT: "8443"
       CARDCENTER_HTTPS_DEV_NO_TLS: "true"
       CARDCENTER_HTTPS_CORS_ALLOWED_ORIGIN: "http://localhost:18080"
-<<<<<<< HEAD
       # IntrospectToken 走明文 gRPC（dev 不需要 mTLS cert）
-=======
-      # IntrospectToken 走 etcd:///user-merchant-core（dev 明文）
->>>>>>> feat/shadow-traffic
       CARDCENTER_AUTH_USER_MERCHANT_ENDPOINT: "user-merchant-core:9191"
       CARDCENTER_AUTH_USER_MERCHANT_INSECURE: "true"
       # DB 连 shared-* 实例

@@ -95,15 +95,10 @@ func loadConfig() (*viper.Viper, error) {
 	// 在 base config.yaml 没列的 key 也能被 USERMERCHANTCORE_<KEY> env 读到。
 	for _, k := range []string{
 		"risk.endpoint", "accounting.endpoint", "kms.endpoint",
-<<<<<<< HEAD
 		"registry.endpoints", "env",
 		// 服务自注册（被 card-center / api-gateway / order-core / BFF 调用）
 		"registry.service_name", "registry.advertise_host", "registry.ttl",
 		"server.grpc_port",
-=======
-		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl", "server.grpc_port",
-		"env",
->>>>>>> feat/shadow-traffic
 	} {
 		_ = v.BindEnv(k)
 	}

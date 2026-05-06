@@ -8,7 +8,6 @@ import (
 	"google.golang.org/grpc/keepalive"
 )
 
-<<<<<<< HEAD
 // hardenedServiceConfig 让 grpc-go：
 //  1. 对 resolver 返回的每个端点都建一条子连接，RPC 在子连接间轮询
 //     （resolver 推送变更——上线/下线——后自动 rebalance）。
@@ -19,9 +18,6 @@ import (
 // 且不能重试（如 Encrypt 反复执行会浪费 nonce 但不破数据，OK；但如果接口
 // 实际有副作用比如 CreateCharge，就要在 caller 层用 grpc-go 的 method-level
 // service config 关掉 retry）——目前 monorepo 内没这种 case，统一开 retry。
-=======
-// hardenedServiceConfig：round_robin LB + 幂等 RPC 自动重试瞬态错误。
->>>>>>> feat/shadow-traffic
 const hardenedServiceConfig = `{
   "loadBalancingConfig":[{"round_robin":{}}],
   "methodConfig":[{
@@ -35,7 +31,6 @@ const hardenedServiceConfig = `{
     }
   }]
 }`
-<<<<<<< HEAD
 
 // hardenedKeepalive 让客户端 10s 没流量就发一个 HTTP/2 ping，3s 收不到回包
 // 直接关掉 subconn 触发 reconnect。这是修 "副本被 scale/restart 后 client
@@ -93,52 +88,17 @@ func hardenedOptions() []grpc.DialOption {
 //
 // 用户传入的 opts 可以覆盖默认 service config / keepalive（如想自定义 retry
 // 或更宽松的 ping 周期）。Caller-provided option wins because 它出现在 fixed 之后。
-=======
-
-// hardenedKeepalive：10s ping / 3s timeout / PermitWithoutStream
-// 配套 hardenedServerKeepalive，少一边就被 GOAWAY ENHANCE_YOUR_CALM 踢。
-var hardenedKeepalive = keepalive.ClientParameters{
-	Time:                10 * time.Second,
-	Timeout:             3 * time.Second,
-	PermitWithoutStream: true,
-}
-
-var hardenedServerKeepalive = keepalive.EnforcementPolicy{
-	MinTime:             5 * time.Second,
-	PermitWithoutStream: true,
-}
-
-func hardenedOptions() []grpc.DialOption {
-	return []grpc.DialOption{
-		grpc.WithDefaultServiceConfig(hardenedServiceConfig),
-		grpc.WithKeepaliveParams(hardenedKeepalive),
-	}
-}
-
-// HardenedServerOptions 必须挂在 grpc.NewServer(...) 上，跟 hardenedKeepalive 配套。
-func HardenedServerOptions() []grpc.ServerOption {
-	return []grpc.ServerOption{
-		grpc.KeepaliveEnforcementPolicy(hardenedServerKeepalive),
-	}
-}
-
-// Dial 通过 etcd resolver "etcd:///<service>" 拨号，含 round_robin + keepalive + retry。
->>>>>>> feat/shadow-traffic
 func Dial(service string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	if service == "" {
 		return nil, fmt.Errorf("serviceregistry: empty service name")
 	}
 	target := fmt.Sprintf("%s:///%s", resolverScheme, service)
-<<<<<<< HEAD
 
-=======
->>>>>>> feat/shadow-traffic
 	fixed := hardenedOptions()
 	fixed = append(fixed, opts...)
 	return grpc.NewClient(target, fixed...)
 }
 
-<<<<<<< HEAD
 // DialWithFallback 是面向"既要支持 etcd resolver 又要支持单仓 dev 直连"的统一入口。
 //
 //	endpoints 非空 → 走 DialFromEndpoints(etcd resolver + round_robin + keepalive)
@@ -149,9 +109,6 @@ func Dial(service string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 // 跨项目寻址；本地 dev / 单仓 docker run 模式（无 etcd）退回直连仍然 work。
 //
 // fallbackAddr 在 endpoints 非空时被忽略；调用方仍要传以便降级 + 日志可读。
-=======
-// DialWithFallback：endpoints 非空 → etcd resolver；空 → 退回 fallbackAddr 静态 DNS。
->>>>>>> feat/shadow-traffic
 func DialWithFallback(endpoints []string, service, fallbackAddr string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	if len(endpoints) > 0 {
 		if service == "" {
@@ -162,27 +119,19 @@ func DialWithFallback(endpoints []string, service, fallbackAddr string, opts ...
 	if fallbackAddr == "" {
 		return nil, fmt.Errorf("serviceregistry: empty endpoints and empty fallbackAddr for service %q", service)
 	}
-<<<<<<< HEAD
 	// 直连模式也加 round_robin + keepalive：DNS 解析返回多 A 记录时（k8s
 	// headless svc / docker network 多副本同 alias）会均摊；副本被 kill 后
 	// 10s 内被 keepalive ping 探测出来踢掉，避免 stale 连接 hang。
-=======
->>>>>>> feat/shadow-traffic
 	fixed := hardenedOptions()
 	fixed = append(fixed, opts...)
 	return grpc.NewClient(fallbackAddr, fixed...)
 }
 
-<<<<<<< HEAD
 // DialDirect 是一条只走"静态 endpoint + hardened opts"的捷径，不需要走 etcd。
 // 适用于：endpoint 已经是 docker DNS / k8s headless svc 名字，调用方只想要
 // 自动 keepalive + round_robin + retry 这一套防 stale 的兜底配置。
 //
 // 等价于 DialWithFallback(nil, "", endpoint, opts...)。
-=======
-// DialDirect：只走静态 endpoint + hardened opts，不需要走 etcd。
-// 等价于 DialWithFallback(nil, "", endpoint, opts...)
->>>>>>> feat/shadow-traffic
 func DialDirect(endpoint string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	if endpoint == "" {
 		return nil, fmt.Errorf("serviceregistry: empty endpoint")

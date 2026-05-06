@@ -209,16 +209,11 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 			Time:    5 * time.Minute,
 			Timeout: 15 * time.Second,
 		}),
-<<<<<<< HEAD
 		// MinTime=5s（之前 30s）：和 serviceregistry.hardenedKeepalive 的 client
 		// Time=10s 配合，留 2× 裕度。原 30s 会把 monorepo 内统一升级后的 client
 		// （serviceregistry.DialDirect 默认 10s ping）当 abuse 用 GOAWAY
 		// "ENHANCE_YOUR_CALM/too_many_pings" 踢回，client 反复重连永远建不稳。
 		// 防 CPU 耗尽攻击改靠 RateLimitInterceptor + 上游 LB，不再依赖 ping 频率。
-=======
-		// MinTime=5s 配 monorepo client 端 10s ping。原 30s 会被 hardenedKeepalive
-		// 踢成 GOAWAY too_many_pings，client 反复重连永远建不稳。
->>>>>>> feat/shadow-traffic
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             5 * time.Second,
 			PermitWithoutStream: true,

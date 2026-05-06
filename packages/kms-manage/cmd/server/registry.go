@@ -31,13 +31,9 @@ func startServiceRegistrar(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) 
 	if port == 0 {
 		port = 9290
 	}
-<<<<<<< HEAD
 	// 注册地址：viper override > serviceregistry.AdvertiseAddr (env / 探主网卡 IP / hostname 兜底)
 	// 之前直接 os.Hostname() 会拿到容器 ID，docker DNS 不解析它，client 拿到端点后无法 dial。
 	var addr string
-=======
-var addr string
->>>>>>> feat/shadow-traffic
 	if h := v.GetString("registry.advertise_host"); h != "" {
 		addr = fmt.Sprintf("%s:%d", h, port)
 	} else {
