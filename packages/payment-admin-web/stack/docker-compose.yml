@@ -734,6 +734,29 @@ services:
       CARDCENTER_DATABASE_SHARD_9_DSN: "root:password@tcp(shared-shard-9:3306)/card_center_db_9?charset=utf8mb4&parseTime=True&loc=Local"
     ports: ["9443:9443"]
 
+  # ─── card-mock-network ──────────────────────────────────────────────
+  # 单进程模拟 5 家卡组织（Visa/Mastercard/JCB/AmEx/UnionPay）的 REST API。
+  # **dev 联栈专用**；生产由 card-payment.assertProdSafety 拒 endpoint 指
+  # localhost / .local / .internal，已挡住误用。
+  #
+  # 故障 / 异步 webhook 注入由 flag + per-request header 控制：
+  #   CMD --fault-rate 0.05 --latency-ms 100 --webhook-url http://card-payment:9444/_mock_callback
+  #   或者 caller 在 Authorize header 上加 X-Mock-Fault: 500 / timeout
+  card-mock-network:
+    build:
+      context: ../../card-payment
+      dockerfile: Dockerfile.mock
+      additional_contexts:
+        # 跟 card-payment 主 image 共享 sibling staging（go.mod replace 必须）
+        payment-util:    ../../payment-util
+        card-center-src: ../../card-center
+      secrets: [GITHUB_TOKEN]
+    image: card-mock-network:local
+    container_name: card-mock-network
+    restart: unless-stopped
+    command: ["--addr", ":9555", "--fault-rate", "0", "--latency-ms", "0"]
+    ports: ["9555:9555"]
+
   card-payment:
     build:
       context: ../../card-payment
@@ -745,20 +768,29 @@ services:
     container_name: card-payment
     restart: unless-stopped
     depends_on:
-      db-init:     {condition: service_completed_successfully}
-      card-center: {condition: service_started}
+      db-init:           {condition: service_completed_successfully}
+      card-center:       {condition: service_started}
+      card-mock-network: {condition: service_started}
     environment:
       CARDPAYMENT_LOG_DEV: "true"
       CARDPAYMENT_ENV: "dev"
       CARDPAYMENT_SERVER_GRPC_PORT: "9444"
       # 调 card-center 走容器内网络，dev 模式 mTLS 不启用（auto-degrade）
       CARDPAYMENT_CARD_CENTER_ENDPOINT: "card-center:9443"
-      # 网络（卡组织）：dev 全部走 mock 模式，按 BIN 模拟 decline
-      CARDPAYMENT_NETWORK_VISA_ENDPOINT: ""        # 空 → mock
-      CARDPAYMENT_NETWORK_MASTERCARD_ENDPOINT: ""
-      CARDPAYMENT_NETWORK_JCB_ENDPOINT: ""
-      CARDPAYMENT_NETWORK_AMEX_ENDPOINT: ""
-      CARDPAYMENT_NETWORK_UNIONPAY_ENDPOINT: ""
+      # 网络（卡组织）：dev 走 card-mock-network 容器；生产换成真 endpoint。
+      # 5 家共用一个 mock 进程，按 path 区分（/visa /mastercard 等）。
+      # endpoint 非空 → adapter 真发 HTTPS 给 mock；空 → 走 in-process mock fast path。
+      # 这里两条路径都通，保留同一行为做对比测试。
+      CARDPAYMENT_NETWORK_VISA_ENDPOINT: "http://card-mock-network:9555/visa"
+      CARDPAYMENT_NETWORK_VISA_INSECURE_SANDBOX: "true"
+      CARDPAYMENT_NETWORK_MASTERCARD_ENDPOINT: "http://card-mock-network:9555/mastercard"
+      CARDPAYMENT_NETWORK_MASTERCARD_INSECURE_SANDBOX: "true"
+      CARDPAYMENT_NETWORK_JCB_ENDPOINT: "http://card-mock-network:9555/jcb"
+      CARDPAYMENT_NETWORK_JCB_INSECURE_SANDBOX: "true"
+      CARDPAYMENT_NETWORK_AMEX_ENDPOINT: "http://card-mock-network:9555/amex"
+      CARDPAYMENT_NETWORK_AMEX_INSECURE_SANDBOX: "true"
+      CARDPAYMENT_NETWORK_UNIONPAY_ENDPOINT: "http://card-mock-network:9555/unionpay"
+      CARDPAYMENT_NETWORK_UNIONPAY_INSECURE_SANDBOX: "true"
       # DB DSN 复用 shared-*
       CARDPAYMENT_DATABASE_META_DSN: "root:password@tcp(shared-meta:3306)/card_payment_meta?charset=utf8mb4&parseTime=True&loc=Local"
       CARDPAYMENT_DATABASE_SHARD_0_DSN: "root:password@tcp(shared-shard-0:3306)/card_payment_db_0?charset=utf8mb4&parseTime=True&loc=Local"
