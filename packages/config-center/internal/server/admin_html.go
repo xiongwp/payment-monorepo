@@ -839,8 +839,8 @@ const adminTemplates = `
     {{range .Items}}
     <tr>
       <td><a href="/admin/ns/{{$.Namespace}}/{{.KeyName}}">{{.KeyName}}</a></td>
-      <td>v{{.ActiveVersion}}</td>
-      <td>v{{.LatestVersion}}</td>
+      <td>v{{.ActiveVersionNum}}</td>
+      <td>v{{.LatestVersionNum}}</td>
       <td class="muted">{{formatTime .UpdatedAt}}</td>
       <td><a href="/admin/ns/{{$.Namespace}}/{{.KeyName}}/edit">编辑</a></td>
     </tr>
@@ -1026,7 +1026,7 @@ const adminTemplates = `
     {{range .Rows}}
     <tr>
       <td><a href="/admin/ns/{{.Namespace}}/{{.KeyName}}">{{.Namespace}} / {{.KeyName}}</a></td>
-      <td>v{{.ActiveVersion}}</td>
+      <td>v{{.ActiveVersionNum}}</td>
       <td class="muted">{{formatTime .UpdatedAt}}</td>
     </tr>
     {{end}}

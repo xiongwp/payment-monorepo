@@ -496,10 +496,17 @@ func (r *Repo) SearchItems(ctx context.Context, q, subscriber string, limit int)
 	for _, it := range items {
 		out = append(out, itemToView(it))
 	}
+	if err := r.fillVersionNums(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
 // ListItemsByNamespace 单 namespace 全部 item（按 key_name 排序）。
+//
+// 同时一次性查 config_version.version（per-key 序号）填到 view 的
+// ActiveVersionNum / LatestVersionNum，admin UI 列表展示用 — 不要直接
+// 展示 config_item.active_version（那是全局自增 PK，跨 key 累加值）。
 func (r *Repo) ListItemsByNamespace(ctx context.Context, namespace string) ([]*service.ConfigItemView, error) {
 	var items []*ConfigItem
 	if err := r.db.WithContext(ctx).
@@ -512,7 +519,61 @@ func (r *Repo) ListItemsByNamespace(ctx context.Context, namespace string) ([]*s
 	for _, it := range items {
 		out = append(out, itemToView(it))
 	}
+	if err := r.fillVersionNums(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// fillVersionNums 批量填 view 里的 ActiveVersionNum / LatestVersionNum。
+//
+// items.{Active,Latest}Version 是 config_version.id（全局 PK），需 join
+// 拿到 config_version.version（per-key 序号 v1/v2/v3）。一次 IN 查询。
+func (r *Repo) fillVersionNums(ctx context.Context, views []*service.ConfigItemView) error {
+	if len(views) == 0 {
+		return nil
+	}
+	idSet := make(map[int64]struct{}, len(views)*2)
+	for _, v := range views {
+		if v.ActiveVersion > 0 {
+			idSet[v.ActiveVersion] = struct{}{}
+		}
+		if v.LatestVersion > 0 {
+			idSet[v.LatestVersion] = struct{}{}
+		}
+	}
+	if len(idSet) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	type idVer struct {
+		ID      int64
+		Version int64
+	}
+	var rows []idVer
+	if err := r.db.WithContext(ctx).
+		Table("config_version").
+		Select("id, version").
+		Where("id IN ?", ids).
+		Find(&rows).Error; err != nil {
+		return err
+	}
+	idToVer := make(map[int64]int64, len(rows))
+	for _, row := range rows {
+		idToVer[row.ID] = row.Version
+	}
+	for _, v := range views {
+		if n, ok := idToVer[v.ActiveVersion]; ok {
+			v.ActiveVersionNum = n
+		}
+		if n, ok := idToVer[v.LatestVersion]; ok {
+			v.LatestVersionNum = n
+		}
+	}
+	return nil
 }
 
 // GetVersion 单条 version 行 by id。diff 页用。

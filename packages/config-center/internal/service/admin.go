@@ -18,13 +18,21 @@ import (
 // ─── DTO ──────────────────────────────────────────────────────────────────
 
 // ConfigItemView admin 列表 / 单 namespace 视图行。
+//
+// 字段说明：
+//   - ActiveVersion / LatestVersion 是 config_version.id（全局 PK，跨 ns 累加）
+//     仅用于内部 join / 链接 — 不要在 UI 里展示给人看
+//   - ActiveVersionNum / LatestVersionNum 是 (namespace,key) 内的版本序号
+//     从 1 开始递增（v1 / v2 / v3）— admin UI 列表展示用这个
 type ConfigItemView struct {
-	ID            int64
-	Namespace     string
-	KeyName       string
-	ActiveVersion int64
-	LatestVersion int64
-	UpdatedAt     time.Time
+	ID               int64
+	Namespace        string
+	KeyName          string
+	ActiveVersion    int64 // config_version.id (global PK, internal use)
+	LatestVersion    int64 // config_version.id (global PK, internal use)
+	ActiveVersionNum int64 // per-key 序号 (UI 展示用)
+	LatestVersionNum int64 // per-key 序号 (UI 展示用)
+	UpdatedAt        time.Time
 }
 
 // ConfigAuditEntry admin /audit 页一行。
