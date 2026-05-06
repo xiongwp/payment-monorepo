@@ -79,10 +79,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_80` (
 CREATE TABLE IF NOT EXISTS `user_sessions_80` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-<<<<<<< HEAD
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
-=======
->>>>>>> feat/shadow-traffic
     `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
@@ -302,10 +299,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_81` (
 CREATE TABLE IF NOT EXISTS `user_sessions_81` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-<<<<<<< HEAD
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
-=======
->>>>>>> feat/shadow-traffic
     `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
@@ -525,10 +519,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_82` (
 CREATE TABLE IF NOT EXISTS `user_sessions_82` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-<<<<<<< HEAD
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
-=======
->>>>>>> feat/shadow-traffic
     `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
@@ -748,10 +739,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_83` (
 CREATE TABLE IF NOT EXISTS `user_sessions_83` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-<<<<<<< HEAD
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
-=======
->>>>>>> feat/shadow-traffic
     `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
@@ -971,10 +959,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_84` (
 CREATE TABLE IF NOT EXISTS `user_sessions_84` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-<<<<<<< HEAD
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
-=======
->>>>>>> feat/shadow-traffic
     `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
@@ -1194,10 +1179,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_85` (
 CREATE TABLE IF NOT EXISTS `user_sessions_85` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-<<<<<<< HEAD
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
-=======
->>>>>>> feat/shadow-traffic
     `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
@@ -1417,10 +1399,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_86` (
 CREATE TABLE IF NOT EXISTS `user_sessions_86` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-<<<<<<< HEAD
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
-=======
->>>>>>> feat/shadow-traffic
     `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
@@ -1640,10 +1619,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_87` (
 CREATE TABLE IF NOT EXISTS `user_sessions_87` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-<<<<<<< HEAD
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
-=======
->>>>>>> feat/shadow-traffic
     `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
@@ -1863,10 +1839,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_88` (
 CREATE TABLE IF NOT EXISTS `user_sessions_88` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-<<<<<<< HEAD
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
-=======
->>>>>>> feat/shadow-traffic
     `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',
@@ -2086,10 +2059,7 @@ CREATE TABLE IF NOT EXISTS `login_logs_89` (
 CREATE TABLE IF NOT EXISTS `user_sessions_89` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
-<<<<<<< HEAD
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
-=======
->>>>>>> feat/shadow-traffic
     `token`       VARCHAR(512) NOT NULL,
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
     `user_agent`  VARCHAR(255) NOT NULL DEFAULT '',

@@ -16,11 +16,7 @@ ARG PAYMENT_UTIL_REF=main
 ARG CARD_CENTER_REF=main
 
 # cache-buster
-<<<<<<< HEAD
 ARG SIBLING_CONTEXT_VER=3
-=======
-ARG SIBLING_CONTEXT_VER=99
->>>>>>> feat/shadow-traffic
 RUN echo "sibling-ctx ver=${SIBLING_CONTEXT_VER}"
 
 COPY --from=payment-util    / /tmp/payment-util-staged/
