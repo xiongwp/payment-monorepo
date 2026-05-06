@@ -80,52 +80,29 @@ CREATE TABLE IF NOT EXISTS `config_subscription` (
     KEY `idx_item`        (`item_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Config 项 ↔ 订阅服务 (多对多)';
 
--- config_audit_log：每次 admin 操作记一条，含**修改前/修改后完整快照**。
+-- config_audit_log：每次 admin 操作记一条。
 --
--- 设计原则：
---   - 每个 admin 动作（PUT / ROLLBACK / DELETE / CREATE / SUBSCRIBE_CHANGE）
---     都写一条；append-only，admin UI 不允许删
---   - 完整保存 value_before / value_after 完整文本（即使可以从 config_version
---     表 join 出来也冗余存一份，避免老 version GC 后审计失效）
---   - strategy_before / strategy_after：策略也变了要看出来
---   - subscribers_before / subscribers_after：订阅关系变更也算操作
---   - actor_ip + user_agent：取证需要
---   - 7 年留存（PCI / 内审），30d 后归档到数据湖
+-- before/after 不在本表冗余存（config_version 已经是 append-only 完整历史；
+-- 任何"看修改前/修改后"的查询走 join：
+--   admin diff page = SELECT FROM config_version WHERE version IN (before, after)
+-- 节省 ~3× DB 占用，diff 速度也够用）。
+--
+-- 本表只记 metadata：op + actor + IP + reason + version_before/after 指针。
 CREATE TABLE IF NOT EXISTS `config_audit_log` (
-    `id`                  BIGINT       NOT NULL AUTO_INCREMENT,
-    `namespace`           VARCHAR(64)  NOT NULL,
-    `key_name`            VARCHAR(128) NOT NULL,
-    -- 操作类型
-    `op`                  VARCHAR(20)  NOT NULL COMMENT 'CREATE / PUT / ROLLBACK / DELETE / SUBSCRIBE_ADD / SUBSCRIBE_REMOVE',
-    -- 版本号前后对照（PUT/ROLLBACK 会变；CREATE 时 before=NULL after=1）
-    `version_before`      BIGINT       DEFAULT NULL,
-    `version_after`       BIGINT       DEFAULT NULL,
-    -- 完整 value 快照（冗余存以防 version 被归档）
-    `value_before`        MEDIUMTEXT   DEFAULT NULL,
-    `value_after`         MEDIUMTEXT   DEFAULT NULL,
-    `format_before`       VARCHAR(16)  DEFAULT NULL,
-    `format_after`        VARCHAR(16)  DEFAULT NULL,
-    -- 策略 & 时间窗变化
-    `strategy_before`     VARCHAR(16)  DEFAULT NULL,
-    `strategy_after`      VARCHAR(16)  DEFAULT NULL,
-    `strategy_spec_before` JSON        DEFAULT NULL,
-    `strategy_spec_after` JSON         DEFAULT NULL,
-    `effective_at_before` DATETIME(3)  DEFAULT NULL,
-    `effective_at_after`  DATETIME(3)  DEFAULT NULL,
-    `expire_at_before`    DATETIME(3)  DEFAULT NULL,
-    `expire_at_after`     DATETIME(3)  DEFAULT NULL,
-    -- 订阅关系变更（SUBSCRIBE_ADD/REMOVE 时填）
-    `subscribers_before`  JSON         DEFAULT NULL COMMENT 'string[] of subscriber namespace',
-    `subscribers_after`   JSON         DEFAULT NULL,
-    -- 操作者上下文
-    `actor`               VARCHAR(64)  NOT NULL,
-    `actor_ip`            VARCHAR(64)  DEFAULT NULL,
-    `user_agent`          VARCHAR(256) DEFAULT NULL,
-    `change_reason`       VARCHAR(512) NOT NULL DEFAULT '' COMMENT 'admin 必填的变更原因',
-    `trace_id`            VARCHAR(64)  DEFAULT NULL,
-    `created_at`          DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT,
+    `namespace`       VARCHAR(64)  NOT NULL,
+    `key_name`        VARCHAR(128) NOT NULL,
+    `op`              VARCHAR(20)  NOT NULL COMMENT 'CREATE / PUT / ROLLBACK / DELETE / SUBSCRIBE_ADD / SUBSCRIBE_REMOVE',
+    `version_before`  BIGINT       DEFAULT NULL,
+    `version_after`   BIGINT       DEFAULT NULL,
+    `actor`           VARCHAR(64)  NOT NULL,
+    `actor_ip`        VARCHAR(64)  DEFAULT NULL,
+    `user_agent`      VARCHAR(256) DEFAULT NULL,
+    `change_reason`   VARCHAR(512) NOT NULL DEFAULT '',
+    `trace_id`        VARCHAR(64)  DEFAULT NULL,
+    `created_at`      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`id`),
     KEY `idx_ns_key_created` (`namespace`, `key_name`, `created_at`),
     KEY `idx_actor_created`  (`actor`, `created_at`),
     KEY `idx_op_created`     (`op`, `created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Config 操作审计 — 含完整 before/after 快照';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Config 操作审计 — 元数据only，diff 走 config_version 表';

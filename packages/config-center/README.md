@@ -1,6 +1,10 @@
 # config-center — 平台统一配置中心
 
+> **范围**：全平台所有服务（11 服务 + admin-web）的**所有运行时配置项** 统一在本服务里管理 / 维护 / 推送 / 审计。yaml / env 只保留 bootstrap 必需（DSN / 端口 / 证书路径），业务参数全部归集到这里。
+
 跟 card-center / order-core / payment-core 等服务采用**相同的代码架构**：fx DI + assertProdSafety + etcd 自注册 + mTLS gRPC + admin HTTP + Prometheus metrics + structured zap logging。
+
+**心跳 / 服务发现**：客户端连接靠 etcd lease + gRPC stream keepalive 维持，**不需要** instance 表 / heartbeat 表（无 DB 持久化）。
 
 ## 目录结构（参考其他服务）
 
@@ -144,22 +148,36 @@ SDK 关键特性：
 1. **静态配置**（部署时确定，重启生效）— 留在 yaml / env，不动
 2. **动态可推配置**（运行时改，热生效）— 这部分迁到 config-center
 
-### 可迁移清单（盘点后）
+### 全量配置迁移清单（**所有运行时参数集中**）
 
-| 服务 | 可推配置 | namespace.key | 类型 |
-| --- | --- | --- | --- |
-| payment-core | 渠道路由权重 | `payment-core` / `routing.weights` | json |
-| payment-core | 风控 fail-policy | `payment-core` / `risk.fail_policy` | plain |
-| payment-channel | 渠道 timeout | `payment-channel` / `<adapter>.timeout` | int |
-| payment-channel | 渠道是否启用 | `payment-channel` / `<adapter>.enabled` | bool |
-| risk-manage | 风控规则阈值 | `risk-manage` / `rule.<name>.threshold` | int |
-| order-core | refund 单笔上限 | `order-core` / `refund.max_amount` | int |
-| order-core | webhook 重试次数 | `order-core` / `webhook.max_retries` | int |
-| accounting-system | trial-balance 触发频率 | `accounting-system` / `daycut.interval` | duration |
-| api-gateway | per-merchant rate limit | `api-gateway` / `ratelimit.<mch_id>` | json |
-| card-payment | bulkhead per-merchant | `card-payment` / `bulkhead.per_merchant_max` | int |
-| card-payment | network adapter timeout | `card-payment` / `network.<n>.timeout` | duration |
-| card-center | per-user tokenize 限流 | `card-center` / `ratelimit.tokenize` | json |
+设计原则：**yaml / env 只留启动必需**（DSN / 端口 / mTLS cert / KMS bearer）；
+**所有业务参数 / 阈值 / 开关 / 策略 → config-center**。
+
+| 服务 | yaml 仅留 | 全部迁到 config-center |
+| --- | --- | --- |
+| api-gateway | port / TLS cert / 上游 endpoint | rate_limit / cors / shadow trusted CIDR / OTP 配置 / cookie secure |
+| user-merchant-core | DSN × 11 / KMS endpoint / mTLS | JWT TTL / kid rotation list / OTP code length / bcrypt cost / retention 7y |
+| order-core | DSN × 11 / 上游 endpoint / mTLS | refund max / webhook retries / outbox interval / charge expire / reconcile interval |
+| payment-core | DSN / 上游 endpoint / mTLS | routing weights / risk fail_policy / circuit breaker thresholds |
+| payment-channel | DSN / mTLS / mockserver flag | adapter endpoints + timeouts + enabled / call retry interval |
+| accounting-system | DSN × 11 / Kafka brokers / mTLS | day_cut interval / outbox concurrency / TCC recovery interval |
+| risk-manage | DSN / Kafka / ClickHouse / Nebula | risk rule thresholds / fail-open vs fail-close 默认 / circuit thresholds |
+| card-center | DSN × 11 / KMS endpoint / mTLS | per-user tokenize 限流 / HTTPS CORS / session TTL / Luhn 严格 mode |
+| card-payment | DSN × 11 / card-center endpoint / mTLS | bulkhead.per_merchant_max / network.{visa,mc,...}.timeout / reconcile interval |
+| kms-manage | keystore.dir / mTLS / etcd | rate_limit.rps / auth tokens / SAN whitelist (敏感，加 strategy=TARGETED 推) |
+| clearing-settlement | DSN / 上游 endpoint / mTLS | 对账批跑窗口 / 异常 case 阈值 |
+| reconplatform | DSN / Kafka | 规则配置 / case 自动 close 阈值 |
+| accounting-admin-web | port / 上游 endpoint / mTLS | 所有展示参数 / 操作权限矩阵 / 时区 / 默认分页大小 |
+| payment-admin-web | port / 上游 endpoint / mTLS | 同上 |
+
+**迁移路径**（每条配置）：
+1. yaml 删 → 业务代码改读 `configcenter.Get()` 或 `configcenter.Bind()`
+2. SDK 启动期同步拉一次；启动失败用 hardcoded fallback（避免拖死服务）
+3. admin-web 后台一处编辑，所有订阅服务实时收到（gRPC stream / WS / SSE）
+
+**敏感配置特殊处理**：
+- KMS bearer / mTLS cert path / DB password 等**不**迁（启动绑定，运行不变）
+- 但 **alg 白名单 / SAN allowlist** 这种「策略」类的迁，且必须用 `TARGETED` 推（先一台测过再扩）
 
 ### 迁移步骤（每条配置）
 
