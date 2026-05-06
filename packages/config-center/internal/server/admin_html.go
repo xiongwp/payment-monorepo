@@ -20,6 +20,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"html/template"
 	"net/http"
 	"strconv"
@@ -112,7 +114,7 @@ func (h *AdminHandler) newItem(w http.ResponseWriter, r *http.Request) {
 				"payment-channel", "user-merchant-core", "accounting-system",
 				"risk-manage", "api-gateway", "clearing-settlement",
 			},
-			"CSRFToken": csrfTokenFor(r),
+			"CSRFToken": ensureCSRF(w, r),
 		})
 	case http.MethodPost:
 		if !validateCSRF(r) {
@@ -269,7 +271,7 @@ func (h *AdminHandler) keyDetail(w http.ResponseWriter, r *http.Request, ns, key
 		"Current":     current,
 		"Versions":    versions,
 		"Subscribers": subs,
-		"CSRFToken":   csrfTokenFor(r),
+		"CSRFToken":   ensureCSRF(w, r),
 	})
 }
 
@@ -374,14 +376,46 @@ func (h *AdminHandler) keyAction(w http.ResponseWriter, r *http.Request, ns, key
 
 func (h *AdminHandler) renderEditForm(w http.ResponseWriter, r *http.Request, ns, key string) {
 	cur, _ := h.svc.GetActiveAdmin(r.Context(), ns, key)
-	h.render(w, "edit", map[string]any{
+	// 取已有最大 effective_at —— 新版本必须严格晚于它（monotonic schedule）
+	latestEff := latestEffectiveAt(r.Context(), h.svc, ns, key)
+	view := map[string]any{
 		"Page":      "edit",
 		"Title":     "Edit " + ns + "/" + key,
 		"Namespace": ns,
 		"Key":       key,
 		"Current":   cur,
-		"CSRFToken": csrfTokenFor(r),
-	})
+		"CSRFToken": ensureCSRF(w, r),
+	}
+	if !latestEff.IsZero() {
+		// 给 UI 显示用（YYYY-MM-DD HH:MM:SS 本地时间）
+		view["LatestEffectiveStr"] = latestEff.Local().Format("2006-01-02 15:04:05")
+		// 给 datetime-local 的 min 属性用（YYYY-MM-DDTHH:MM 本地时间，浏览器原生拦截）
+		view["LatestEffectiveAttrMin"] = latestEff.Local().Add(time.Minute).Format("2006-01-02T15:04")
+	}
+	h.render(w, "edit", view)
+}
+
+// latestEffectiveAt 取 (ns, key) 已有版本里最大的 effective_at（含 nil = 立即生效
+// 视为已发生）。返 0 时间表示该 key 从无定时版本，约束只对"晚于当前时间"生效。
+//
+// 对应 SCHEDULED 策略的单调约束："新版本生效时间必须晚于上一个版本"，避免
+// admin 误把 v3 的 effective_at 设得比 v2 早，导致 SDK 选版本时被 v2 抢回去
+// 又跳回 v3，引发抖动。
+func latestEffectiveAt(ctx context.Context, svc *service.Service, ns, key string) time.Time {
+	rows, err := svc.ListVersions(ctx, ns, key, 200)
+	if err != nil {
+		return time.Time{}
+	}
+	var latest time.Time
+	for _, r := range rows {
+		if r.EffectiveAt == nil {
+			continue
+		}
+		if r.EffectiveAt.After(latest) {
+			latest = *r.EffectiveAt
+		}
+	}
+	return latest
 }
 
 func (h *AdminHandler) handlePut(w http.ResponseWriter, r *http.Request, ns, key string) {
@@ -408,16 +442,35 @@ func (h *AdminHandler) handlePut(w http.ResponseWriter, r *http.Request, ns, key
 		Actor:        actor,
 		ChangeReason: r.FormValue("reason"),
 	}
+	// effective_at：空 = 立即生效；非空必须满足 2 条：
+	//   1. 严格晚于当前时间（过去时间没有意义，会立即生效得不偿失）
+	//   2. 严格晚于该 (ns, key) 已有版本中最大的 effective_at（保证多版本
+	//      schedule 单调递增，否则 SDK 选版本时可能被旧版本抢回去抖动）
 	if t := r.FormValue("effective_at"); t != "" {
-		if et, err := parseRFC3339(t); err == nil {
-			in.EffectiveAt = &et
+		et, err := parseRFC3339(t)
+		if err != nil {
+			http.Error(w, "effective_at 解析失败（需 RFC3339，例 2026-05-10T08:00:00Z）："+err.Error(),
+				http.StatusBadRequest)
+			return
 		}
-	}
-	if t := r.FormValue("expire_at"); t != "" {
-		if et, err := parseRFC3339(t); err == nil {
-			in.ExpireAt = &et
+		if !et.After(time.Now()) {
+			http.Error(w, "effective_at 必须晚于当前时间；要立即生效请留空",
+				http.StatusBadRequest)
+			return
 		}
+		if latest := latestEffectiveAt(r.Context(), h.svc, ns, key); !latest.IsZero() {
+			if !et.After(latest) {
+				http.Error(w, "effective_at 必须晚于已有最新版本生效时间 "+
+					latest.Local().Format("2006-01-02 15:04:05"), http.StatusBadRequest)
+				return
+			}
+		}
+		in.EffectiveAt = &et
 	}
+	// 不再提供 expire_at —— 配置应永久生效直到 admin 显式覆盖；
+	// 「过期自动失效」让运营忘记看 expire 时间会留下安全窗口（如黑名单到期但
+	// 没人注意，攻击者可乘）。需要"临时配置"的场景请用 SCHEDULED 策略 +
+	// 主动 rollback 替代。
 	if _, err := h.svc.PutConfig(r.Context(), in); err != nil {
 		http.Error(w, "put failed: "+err.Error(), http.StatusBadRequest)
 		return
@@ -495,14 +548,51 @@ func valueOrDefault(s, def string) string {
 	return s
 }
 
-// CSRF token 极简：从 cookie 读，跟 form 里的 hidden 字段比对（Double Submit）。
-// 真实实现要在 admin auth middleware 派发；这里 stub。
-func csrfTokenFor(r *http.Request) string {
-	c, err := r.Cookie("csrf_token")
-	if err != nil {
-		return "unset"
+// CSRF token Double-Submit Cookie 模式：
+//
+//	1. ensureCSRF：渲染表单页时调用 — 优先读现有 csrf_token cookie；缺失就
+//	   生成 32 字节随机 token、写到 cookie、塞进 form hidden 字段返给浏览器。
+//	2. validateCSRF：处理 POST 时调用 — form value 必须和 cookie 一致才放行。
+//
+// 之前的实现只读不写：第一次进表单页时 cookie 不存在，token 给 form 嵌的是
+// 字面量 "unset"，提交时 cookie 仍然空 → validateCSRF 永远 false → "csrf
+// check failed"。改成读时也写就解决了。
+//
+// 安全注意：
+//   - HttpOnly=false 是有意为之 — 表单是 server-rendered，但允许后续 JS
+//     扩展（admin 升级到 React 时复用）；攻击面只是 XSS 能读到 token，
+//     而 XSS 已经 game over，影响有限。
+//   - SameSite=Lax 拦掉跨站 form post（CSRF 主要防御层）；Strict 会破坏
+//     "从邮件链接打开 admin"的自然路径，Lax 是平衡选择。
+//   - cookie 不带 Domain 字段 → 默认 host-only，不会泄到 subdomain。
+//   - Secure 在 HTTPS 入口下应该开；本服务监听 9691 走 HTTP，不强制以免
+//     dev 环境不可用。生产部署如果走 nginx HTTPS 终结，建议在 nginx 层
+//     给所有响应注入 Secure 属性或在这里读 X-Forwarded-Proto 决定。
+func ensureCSRF(w http.ResponseWriter, r *http.Request) string {
+	if c, err := r.Cookie("csrf_token"); err == nil && c.Value != "" {
+		return c.Value
 	}
-	return c.Value
+	tok := newCSRFToken()
+	http.SetCookie(w, &http.Cookie{
+		Name:     "csrf_token",
+		Value:    tok,
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   24 * 60 * 60, // 24h；超过浏览器自动清，下一次请求再生
+	})
+	return tok
+}
+
+// newCSRFToken 32 字节强随机 → hex 64 字符。
+// crypto/rand 失败极小概率（OS entropy 不足）；fall back 时间戳避免阻塞。
+func newCSRFToken() string {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// 极小概率分支；回到时间戳，安全降级（被预测概率比正常低很多但仍 fail-safe）
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func validateCSRF(r *http.Request) bool {
@@ -956,8 +1046,7 @@ const adminTemplates = `
         </select>
       </div>
       <div class="row"><label>Strategy Spec (JSON，CANARY/TARGETED 用)</label><textarea name="strategy_spec" rows="2">{{if .Current}}{{.Current.StrategySpec}}{{end}}</textarea></div>
-      <div class="row"><label>Effective at（留空立即生效）</label><input name="effective_at" type="datetime-local"></div>
-      <div class="row"><label>Expire at（留空永不过期）</label><input name="expire_at" type="datetime-local"></div>
+      <div class="row"><label>Effective at（留空立即生效；必须晚于当前时间{{if .LatestEffectiveStr}} 且晚于已有最新版本生效时间 {{.LatestEffectiveStr}}{{end}}）</label><input name="effective_at" type="datetime-local"{{if .LatestEffectiveAttrMin}} min="{{.LatestEffectiveAttrMin}}"{{end}}></div>
       <div class="row"><label>Value</label><textarea name="value" rows="10" required>{{if .Current}}{{.Current.Value}}{{end}}</textarea></div>
       <div class="row"><label>变更说明（必填，写入 audit log）</label><input name="reason" required></div>
       <div class="row"><button class="btn" type="submit">提交（产新版本）</button></div>
