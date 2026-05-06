@@ -7,7 +7,9 @@ USE `order_meta`;
 
 CREATE TABLE IF NOT EXISTS `leaf_alloc_shadow`         LIKE `leaf_alloc`;
 CREATE TABLE IF NOT EXISTS `webhook_deliveries_shadow` LIKE `webhook_deliveries`;
-CREATE TABLE IF NOT EXISTS `admin_audit_log_shadow`    LIKE `admin_audit_log`;
+-- admin_audit_log_shadow 已迁到 shard（见 orderdb/init/N_init_shadow.sql 里
+-- 的 admin_audit_log_shadow_NN）；主表 admin_audit_log 在 order_meta 已删，
+-- 这里不再 CREATE LIKE。
 CREATE TABLE IF NOT EXISTS `gl_account_shadow`         LIKE `gl_account`;
 CREATE TABLE IF NOT EXISTS `gl_transaction_shadow`     LIKE `gl_transaction`;
 CREATE TABLE IF NOT EXISTS `gl_entry_shadow`           LIKE `gl_entry`;

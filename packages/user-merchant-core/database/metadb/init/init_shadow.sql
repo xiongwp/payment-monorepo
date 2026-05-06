@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS `auth_lookup_shadow`           LIKE `auth_lookup`;
 
 -- 合规审计（append-only）
 CREATE TABLE IF NOT EXISTS `merchant_kyc_audit_shadow`    LIKE `merchant_kyc_audit`;
-CREATE TABLE IF NOT EXISTS `admin_audit_log_shadow`       LIKE `admin_audit_log`;
+-- admin_audit_log_shadow 已迁到 shard（见 user-merchant-core/database/userdb/
+-- init/N_init_shadow.sql 里的 admin_audit_log_shadow_NN）；主表 admin_audit_log
+-- 在 user_merchant_meta 已删，这里不再 CREATE LIKE。
 
 -- RBAC 字典（虽然角色 / 权限通常静态，shadow 隔离避免压测期 admin 写覆盖主表）
 CREATE TABLE IF NOT EXISTS `roles_shadow`                 LIKE `roles`;
