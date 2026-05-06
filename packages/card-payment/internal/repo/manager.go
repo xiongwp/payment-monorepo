@@ -178,3 +178,39 @@ func (r *CardTransactionRepo) GetByNetworkRef(ctx context.Context, networkRefNo 
 	}
 	return nil, nil
 }
+
+// ListStuck 跨 shard 扫卡死交易（reconcile worker 使用）。
+//
+// 选择标准：status ∈ {pending, error} && updated_at <= now()-ageMin。
+//   - pending：网络 RPC ctx timeout 后留下，可能卡组织已扣未回
+//   - error：网络层报错，可能扣 / 未扣不确定
+//
+// 跨 100 张表 each shard select limit。limit 是**单表**上限：worst case
+// 单 cycle 拉 100*limit 行，按需收紧。生产先用 limit=20 → 单 cycle ≤ 2000 行
+// 再交给 worker 串行 inquiry，控速 ~ 60 RPS 卡组织（每张卡组织各 10~15 RPS）。
+//
+// 这里不做 row-lock —— 多实例都扫，靠 UpdateStatus 幂等性兜底（last-writer-wins
+// 是 OK 的，因为 Query 返回的网络侧状态是 deterministic 终态）。后续若发现
+// 重复 inquiry 给卡组织的 RPS 太高，再上 etcd lease。
+func (r *CardTransactionRepo) ListStuck(ctx context.Context, ageMin time.Duration, limit int) ([]*processor.CardTransaction, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	cutoff := time.Now().Add(-ageMin)
+	out := make([]*processor.CardTransaction, 0, limit*16)
+	for _, s := range r.mgr.router.AllShards() {
+		db := r.mgr.Shard(s.DBIndex)
+		tbl := r.mgr.router.TableName(ctx, tblCardTx, s.TableIndex)
+		var rows []*processor.CardTransaction
+		err := db.WithContext(ctx).Table(tbl).
+			Where("status IN ? AND updated_at <= ?", []string{"pending", "error"}, cutoff).
+			Order("updated_at ASC").
+			Limit(limit).
+			Find(&rows).Error
+		if err != nil {
+			return nil, fmt.Errorf("list stuck shard=%d table=%d: %w", s.DBIndex, s.TableIndex, err)
+		}
+		out = append(out, rows...)
+	}
+	return out, nil
+}

@@ -31,6 +31,7 @@ import (
 	"github.com/xiongwp/card-payment/internal/cardcenterclient"
 	"github.com/xiongwp/card-payment/internal/metrics"
 	"github.com/xiongwp/card-payment/internal/processor"
+	"github.com/xiongwp/card-payment/internal/reconcile"
 	"github.com/xiongwp/card-payment/internal/repo"
 	"github.com/xiongwp/card-payment/internal/server"
 	"github.com/xiongwp/card-payment/internal/sharding"
@@ -56,9 +57,53 @@ func main() {
 			newProcessor,
 			newGRPCServer,
 		),
-		fx.Invoke(startGRPC, startServiceRegistrar, startMetricsHTTP),
+		fx.Invoke(startGRPC, startServiceRegistrar, startMetricsHTTP, startReconcile),
 	)
 	app.Run()
+}
+
+// startReconcile 起后台对账 worker。**资金安全 P0**：
+// processor.Authorize ctx timeout / network err 时本地可能 status=pending|error
+// 但卡组织其实已扣，必须用 Query() 拿权威态修订。
+//
+// 默认 30s tick，单 cycle stuck_age=60s（Authorize timeout 30s × 2）。
+// 单实例都跑 OK：UpdateStatus 是 ref-key 幂等，多 worker 互不冲突。
+//
+// disable 开关：reconcile.disable=true（dev / 排查用）。prod 不允许 disable，
+// assertProdSafety 拦不到这里就让 worker 自己 panic。
+func startReconcile(lc fx.Lifecycle, v *viper.Viper, repo processor.CardTransactionRepo,
+	networks map[string]processor.Network, logger *zap.Logger) {
+	if v.GetBool("reconcile.disable") {
+		env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+		if env == "prod" || env == "production" {
+			logger.Panic("PROD-SAFETY: reconcile.disable=true forbidden in env=prod (will leave stuck card_transaction rows unreconciled)")
+		}
+		logger.Warn("reconcile worker disabled by config (dev only)")
+		return
+	}
+	cfg := reconcile.Config{
+		Limit:        v.GetInt("reconcile.limit_per_shard"),
+		StuckAge:     v.GetDuration("reconcile.stuck_age"),
+		QueryTimeout: v.GetDuration("reconcile.query_timeout"),
+		CycleTimeout: v.GetDuration("reconcile.cycle_timeout"),
+	}
+	w := reconcile.New(repo, networks, cfg, logger)
+	if w == nil {
+		logger.Warn("reconcile worker not started (nil repo or empty networks)")
+		return
+	}
+	interval := v.GetDuration("reconcile.interval")
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go w.Run(ctx, interval)
+	lc.Append(fx.Hook{
+		OnStop: func(_ context.Context) error {
+			cancel()
+			return nil
+		},
+	})
 }
 
 // startMetricsHTTP 起 prometheus scrape + k8s probe 端口。
@@ -95,6 +140,8 @@ func loadConfig() (*viper.Viper, error) {
 		"database.meta.max_open_conns", "database.meta.max_idle_conns", "database.meta.conn_max_lifetime",
 		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl", "server.grpc_port",
 		"metrics.addr",
+		"reconcile.disable", "reconcile.interval", "reconcile.stuck_age",
+		"reconcile.limit_per_shard", "reconcile.query_timeout", "reconcile.cycle_timeout",
 	} {
 	_ = v.BindEnv(k)
 	}

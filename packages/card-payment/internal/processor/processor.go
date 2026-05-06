@@ -132,6 +132,10 @@ type CardTransactionRepo interface {
 	UpdateStatus(ctx context.Context, networkRefNo string, status, declineCode string) error
 	GetByPI(ctx context.Context, piID string) (*CardTransaction, error)
 	GetByNetworkRef(ctx context.Context, networkRefNo string) (*CardTransaction, error)
+	// ListStuck 扫所有 shard，筛 status in ('pending','error') 且
+	// updated_at <= now()-ageMin 的行，最多 limit 行。给 reconcile worker 用。
+	// 注意跨分片扫表是 P99 杀手，limit 不要无脑放大。
+	ListStuck(ctx context.Context, ageMin time.Duration, limit int) ([]*CardTransaction, error)
 }
 
 // CardTransaction DB 行（**严禁**含 PAN / CVV / track data）
