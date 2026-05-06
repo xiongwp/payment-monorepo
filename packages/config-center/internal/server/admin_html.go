@@ -19,30 +19,160 @@
 package server
 
 import (
+	"container/list"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"html/template"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/xiongwp/config-center/internal/service"
+	"github.com/xiongwp/payment-util/serviceregistry"
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
 )
 
-// AdminHandler admin web UI handler set。
-type AdminHandler struct {
-	svc    *service.Service
-	tpl    *template.Template
+// cacheEntry 缓存条目：响应 + 过期时间。
+type cacheEntry struct {
+	resp    *usermerchantv1.IntrospectTokenResponse
+	expirAt time.Time
+}
+
+// tokenIntrospectorCache 进程内 LRU 缓存：token → (response + expiry)。
+// 最大 10K 条，按 token 的 expires_ms 过期。
+type tokenIntrospectorCache struct {
+	mu      sync.Mutex
+	items   map[string]*list.Element
+	list    *list.List
+	maxSize int
+}
+
+type lruItem struct {
+	key   string
+	entry *cacheEntry
+}
+
+func newTokenIntrospectorCache() *tokenIntrospectorCache {
+	return &tokenIntrospectorCache{
+		items:   make(map[string]*list.Element),
+		list:    list.New(),
+		maxSize: 10000,
+	}
+}
+
+// get 获取缓存（检查过期）。
+func (c *tokenIntrospectorCache) get(token string) (*usermerchantv1.IntrospectTokenResponse, bool) {
+	elem, ok := c.items[token]
+	if !ok {
+		return nil, false
+	}
+	item := elem.Value.(lruItem)
+	// 检查过期
+	if item.entry.expirAt.Before(time.Now()) {
+		delete(c.items, token)
+		c.list.Remove(elem)
+		return nil, false
+	}
+	c.list.MoveToFront(elem)
+	return item.entry.resp, true
+}
+
+// set 设置缓存（带 token 的过期时间）。
+func (c *tokenIntrospectorCache) set(token string, resp *usermerchantv1.IntrospectTokenResponse) {
+	elem, ok := c.items[token]
+	if ok {
+		item := elem.Value.(lruItem)
+		item.entry.resp = resp
+		item.entry.expirAt = time.UnixMilli(resp.ExpiresMs)
+		c.list.MoveToFront(elem)
+		return
+	}
+	// 超过容量：删除最旧
+	if len(c.items) >= c.maxSize {
+		back := c.list.Back()
+		if back != nil {
+			item := back.Value.(lruItem)
+			delete(c.items, item.key)
+			c.list.Remove(back)
+		}
+	}
+	elem = c.list.PushFront(lruItem{
+		key: token,
+		entry: &cacheEntry{
+			resp:    resp,
+			expirAt: time.UnixMilli(resp.ExpiresMs),
+		},
+	})
+	c.items[token] = elem
+}
+
+// tokenIntrospector 封装 user-merchant-core IntrospectToken 调用 + 缓存。
+type tokenIntrospector struct {
+	client usermerchantv1.UserServiceClient
+	cache  *tokenIntrospectorCache
 	logger *zap.Logger
 }
 
-// NewAdminHandler 加载 templates，挂 svc。
-func NewAdminHandler(svc *service.Service, logger *zap.Logger) (*AdminHandler, error) {
+// NewTokenIntrospector 创建 token introspector（调用方传入 endpoint）。
+func NewTokenIntrospector(endpoint string, logger *zap.Logger) (*tokenIntrospector, error) {
+	conn, err := serviceregistry.DialDirect(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("dial user-merchant-core: %w", err)
+	}
+	client := usermerchantv1.NewUserServiceClient(conn)
+	return &tokenIntrospector{
+		client: client,
+		cache:  newTokenIntrospectorCache(),
+		logger: logger,
+	}, nil
+}
+
+// introspect 调用 IntrospectToken，带 LRU 缓存（10K 条，按 token 过期时间）。
+func (ti *tokenIntrospector) introspect(ctx context.Context, token string) (*usermerchantv1.IntrospectTokenResponse, error) {
+	// 检查缓存
+	ti.cache.mu.Lock()
+	if cached, ok := ti.cache.get(token); ok {
+		ti.cache.mu.Unlock()
+		return cached, nil
+	}
+	ti.cache.mu.Unlock()
+
+	// 调 gRPC
+	resp, err := ti.client.IntrospectToken(ctx, &usermerchantv1.IntrospectTokenRequest{Jwt: token})
+	if err != nil {
+		return nil, err
+	}
+
+	// 仅缓存有效的 token（避免缓存坏数据）
+	if resp.Valid {
+		ti.cache.mu.Lock()
+		ti.cache.set(token, resp)
+		ti.cache.mu.Unlock()
+	}
+
+	return resp, nil
+}
+
+// AdminHandler admin web UI handler set。
+type AdminHandler struct {
+	svc        *service.Service
+	tpl        *template.Template
+	logger     *zap.Logger
+	introspect *tokenIntrospector
+}
+
+// NewAdminHandler 加载 templates，挂 svc 和 token introspector。
+func NewAdminHandler(svc *service.Service, logger *zap.Logger, introspect *tokenIntrospector) (*AdminHandler, error) {
 	tpl, err := template.New("admin").Funcs(template.FuncMap{
 		"formatTime": formatTime,
 		"truncate":   truncate,
@@ -51,13 +181,13 @@ func NewAdminHandler(svc *service.Service, logger *zap.Logger) (*AdminHandler, e
 	if err != nil {
 		return nil, err
 	}
-	return &AdminHandler{svc: svc, tpl: tpl, logger: logger}, nil
+	return &AdminHandler{svc: svc, tpl: tpl, logger: logger, introspect: introspect}, nil
 }
 
 // Mount 挂载路由到 mux。
 //
-// caller 应在外层 wrap admin auth middleware（验 admin role）；本 handler
-// 只信 ctx 里 actor 字段（typed key），不信 form input。
+// 所有 /admin/* 路由都经过 adminActorMiddleware 真鉴权（mTLS → IntrospectToken）。
+// 鉴权成功后 ctx 包含 actor（user_id）；失败返 4xx / 5xx。
 //
 // 路由清单：
 //
@@ -72,7 +202,7 @@ func NewAdminHandler(svc *service.Service, logger *zap.Logger) (*AdminHandler, e
 //	GET  /admin/audit                   审计 log
 func (h *AdminHandler) Mount(mux *http.ServeMux) {
 	wrap := func(handler http.HandlerFunc) http.HandlerFunc {
-		return adminActorMiddleware(handler)
+		return h.adminActorMiddleware(handler)
 	}
 	mux.HandleFunc("/admin/", wrap(h.index))
 	mux.HandleFunc("/admin/ns/", wrap(h.namespaceOrKey))
@@ -81,29 +211,108 @@ func (h *AdminHandler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/audit", wrap(h.audit))
 }
 
-// adminActorMiddleware 给所有 admin 请求注入 actor（写操作必填，否则 401）。
+// adminActorMiddleware 给所有 admin 请求做真鉴权（mTLS → IntrospectToken）。
 //
-// actor 解析顺序：
+// Token 来源（优先级）：
+//   1. cookie admin_session
+//   2. Authorization header (Bearer token)
 //
-//	1. HTTP header X-Admin-User —— 上游 nginx / api-gateway / SSO proxy 鉴权
-//	   后注入；生产部署用此路径
-//	2. env CONFIG_CENTER_DEV_ACTOR —— dev/staging 容器配置；不需要外部鉴权
-//	   也能跑写操作；prod 必须 unset 这个 env
-//	3. 兜底 "admin@localhost" —— 最低限度让本地 docker compose 起来即用
+// 步骤：
+//   1. 读 token；缺失 → 401 + 文案（登录页 v1 不实现，先返 401）
+//   2. 调 user-merchant-core IntrospectToken（mTLS gRPC，带缓存）
+//   3. 验 token 有效（valid=true）
+//   4. 验 expires_ms > now（过期 → 302 /admin/login）
+//   5. 验权限：permissions 里必须有 config_admin 或 super_admin（否则 403）
+//   6. 把 user_id 塞 ctx
 //
-// 真正的 admin SSO 鉴权（mTLS gRPC 到 user-merchant-core IntrospectToken）
-// 是 v1.1 路线图项；现在先用 header/env 让 admin UI 能用，audit log 也能
-// 落到操作人字段。生产前必须替换。
-func adminActorMiddleware(next http.HandlerFunc) http.HandlerFunc {
+// 错误处理：
+//   - 缺 token → 401 Unauthorized
+//   - token 无效 → 401 Unauthorized
+//   - token 过期 → 302 /admin/login
+//   - 权限不足 → 403 Forbidden
+//   - user-merchant-core 不可达 → 503 Service Unavailable（fail-secure，不允许 fail-open）
+//
+// Dev 模式：env CONFIG_CENTER_DEV_BYPASS=1 时跳过鉴权，直接用 CONFIG_CENTER_DEV_ACTOR。
+// 本地 docker-compose 可以 set，容器化部署默认 unset。
+func (h *AdminHandler) adminActorMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		actor := r.Header.Get("X-Admin-User")
-		if actor == "" {
-			actor = os.Getenv("CONFIG_CENTER_DEV_ACTOR")
+		// Dev bypass
+		if os.Getenv("CONFIG_CENTER_DEV_BYPASS") == "1" {
+			actor := os.Getenv("CONFIG_CENTER_DEV_ACTOR")
+			if actor == "" {
+				actor = "admin@localhost"
+			}
+			ctx := WithActor(r.Context(), actor)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
 		}
-		if actor == "" {
-			actor = "admin@localhost"
+
+		// 读 token（cookie 优先）
+		token := ""
+		if c, err := r.Cookie("admin_session"); err == nil {
+			token = c.Value
 		}
-		ctx := WithActor(r.Context(), actor)
+		if token == "" {
+			auth := r.Header.Get("Authorization")
+			if strings.HasPrefix(auth, "Bearer ") {
+				token = strings.TrimPrefix(auth, "Bearer ")
+			}
+		}
+
+		// 缺 token
+		if token == "" {
+			h.logger.Warn("admin: missing token")
+			http.Error(w, "Unauthorized: missing admin_session cookie or Authorization header", http.StatusUnauthorized)
+			return
+		}
+
+		// 调 user-merchant-core IntrospectToken
+		resp, err := h.introspect.introspect(r.Context(), token)
+		if err != nil {
+			h.logger.Warn("admin: introspect failed", zap.Error(err))
+			// gRPC 不可达 → 503
+			if status.Code(err) == codes.Unavailable {
+				http.Error(w, "Service Unavailable: user-merchant-core unreachable", http.StatusServiceUnavailable)
+				return
+			}
+			// 其他错误（如网络）→ 503
+			http.Error(w, "Service Unavailable: introspection failed", http.StatusServiceUnavailable)
+			return
+		}
+
+		// token 无效
+		if !resp.Valid {
+			h.logger.Warn("admin: token invalid", zap.String("user_id", resp.UserId))
+			http.Error(w, "Unauthorized: token invalid", http.StatusUnauthorized)
+			return
+		}
+
+		// 验 token 未过期
+		expiresAt := time.UnixMilli(resp.ExpiresMs)
+		if expiresAt.Before(time.Now()) {
+			h.logger.Warn("admin: token expired", zap.String("user_id", resp.UserId))
+			http.Redirect(w, r, "/admin/login", http.StatusFound) // 302
+			return
+		}
+
+		// 验权限（必须有 config_admin 或 super_admin）
+		hasConfigAdminRole := false
+		for _, perm := range resp.Permissions {
+			if perm == "config_admin" || perm == "super_admin" {
+				hasConfigAdminRole = true
+				break
+			}
+		}
+		if !hasConfigAdminRole {
+			h.logger.Warn("admin: insufficient permissions",
+				zap.String("user_id", resp.UserId),
+				zap.Strings("permissions", resp.Permissions))
+			http.Error(w, "Forbidden: insufficient permissions (requires config_admin or super_admin)", http.StatusForbidden)
+			return
+		}
+
+		// 鉴权成功，把 user_id 放 ctx
+		ctx := WithActor(r.Context(), resp.UserId)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }

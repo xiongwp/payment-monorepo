@@ -209,7 +209,7 @@ func startHTTPServer(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger,
 	}
 	mux := http.NewServeMux()
 	httpAPI.Register(mux)
-	registerAdminUI(mux, ui)
+	registerAdminUI(mux, ui, v)
 	hc.MountHTTP(mux)
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
@@ -271,11 +271,24 @@ func promHandler() http.Handler {
 }
 
 // registerAdminUI 把 AdminHandler 挂到 mux。包了一层方便 main.go 测试 mock。
-func registerAdminUI(mux *http.ServeMux, ui *AdminUI) {
+func registerAdminUI(mux *http.ServeMux, ui *AdminUI, v *viper.Viper) {
 	if ui == nil {
 		return
 	}
-	h, err := server.NewAdminHandler(ui.svc, ui.logger)
+
+	// 初始化 token introspector（mTLS → user-merchant-core IntrospectToken）
+	userMerchantEndpoint := v.GetString("auth.introspect_endpoint")
+	if userMerchantEndpoint == "" {
+		userMerchantEndpoint = "user-merchant-core:9090"
+	}
+
+	introspect, err := server.NewTokenIntrospector(userMerchantEndpoint, ui.logger)
+	if err != nil {
+		ui.logger.Error("admin UI disabled (token introspector init failed)", zap.Error(err))
+		return
+	}
+
+	h, err := server.NewAdminHandler(ui.svc, ui.logger, introspect)
 	if err != nil {
 		ui.logger.Warn("admin UI disabled (template parse failed)", zap.Error(err))
 		return
