@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/prometheus/client_golang v1.23.2
+	github.com/redis/go-redis/v9 v9.6.1
 	github.com/spf13/viper v1.19.0
 	github.com/xiongwp/payment-util v0.0.0-20260430112954-918ccf6739bd
 	go.uber.org/fx v1.20.1

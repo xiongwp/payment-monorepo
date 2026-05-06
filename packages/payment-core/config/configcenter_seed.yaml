@@ -1,0 +1,82 @@
+# Config Center Seed Data for payment-core fallback routing
+#
+# 用途：初始化配置中心的备用渠道路由规则
+# 执行：config-center-cli seed --namespace=payment-core --file=configcenter_seed.yaml
+#
+# 字段说明：
+#   namespace: 配置所属 namespace（必须与 payment-core SDK 订阅的一致）
+#   key: 配置键名
+#   format: 配置格式 (json/yaml/plain)
+#   value: 配置内容（JSON/YAML 格式）
+#   effective_at: 生效时间（留空 = 立即生效；RFC3339 格式）
+#   expire_at: 过期时间（留空 = 永不过期）
+
+configs:
+  - namespace: payment-core
+    key: routing.fallback
+    format: json
+    value: |
+      {
+        "rules": [
+          {
+            "country": "PH",
+            "payment_method": "GCASH",
+            "bin": "",
+            "currency": "PHP",
+            "priority": [
+              {"adapter": "gcash", "weight": 100},
+              {"adapter": "paymongo", "weight": 50},
+              {"adapter": "xendit", "weight": 25}
+            ]
+          },
+          {
+            "country": "PH",
+            "payment_method": "MAYA",
+            "bin": "",
+            "currency": "PHP",
+            "priority": [
+              {"adapter": "maya", "weight": 100},
+              {"adapter": "paymongo", "weight": 50}
+            ]
+          },
+          {
+            "country": "PH",
+            "payment_method": "CARD",
+            "bin": "",
+            "currency": "PHP",
+            "priority": [
+              {"adapter": "card", "weight": 100},
+              {"adapter": "stripe", "weight": 50}
+            ]
+          },
+          {
+            "country": "SG",
+            "payment_method": "GRABPAY",
+            "bin": "",
+            "currency": "SGD",
+            "priority": [
+              {"adapter": "grabpay", "weight": 100},
+              {"adapter": "paymongo", "weight": 50}
+            ]
+          }
+        ]
+      }
+    effective_at: ""
+    expire_at: ""
+
+  - namespace: payment-core
+    key: routing.retry.enabled
+    format: plain
+    value: "true"
+    effective_at: ""
+    expire_at: ""
+
+  - namespace: payment-core
+    key: routing.retry.backoffs
+    format: json
+    value: |
+      {
+        "durations_ms": [30000, 120000, 900000, 7200000]
+      }
+    effective_at: ""
+    expire_at: ""

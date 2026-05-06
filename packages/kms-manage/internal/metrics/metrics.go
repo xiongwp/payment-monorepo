@@ -13,11 +13,19 @@ import (
 	"go.uber.org/zap"
 )
 
-// KMSOpTotal 按操作 + 结果维度统计。op: encrypt/decrypt/gen_dek；result: ok/err/no_key/bad_format
+// KMSOpTotal 按操作 + 结果维度统计。
+// op: encrypt/decrypt/gen_dek
+// result: ok/err/no_key/bad_format/local_cache_hit/redis_cache_hit
 var KMSOpTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "kms_op_total",
 	Help: "KMS operations by op + result",
 }, []string{"op", "result"})
+
+// KMSCacheTotal 缓存命中率统计。layer: redis；result: hit/miss/error/corrupted/decrypt_fail
+var KMSCacheTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "kms_cache_total",
+	Help: "KMS cache operations by layer + result",
+}, []string{"layer", "result"})
 
 var GRPCRequestTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "kms_grpc_request_total",
@@ -53,6 +61,7 @@ func Register() {
 	once.Do(func() {
 		prometheus.MustRegister(
 			KMSOpTotal,
+			KMSCacheTotal,
 			GRPCRequestTotal,
 			GRPCRequestDuration,
 			ActiveKeyAgeSeconds,

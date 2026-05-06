@@ -167,11 +167,14 @@ type KMSService struct {
 	store        *keystore.Store
 	logger       *zap.Logger
 	decryptCache *decryptCache
+	redisCache   *RedisDecryptCache // nil if Redis unavailable
 	// activeKeyMu 保护 activeKeySnapshot；ActiveKeyID() 变化时清缓存。
 	activeKeyMu        sync.Mutex
 	activeKeySnapshot  string
 }
 
+// NewKMSService creates KMS service with local LRU cache.
+// For Redis cache, call SetRedisCache() after creation.
 func NewKMSService(store *keystore.Store, logger *zap.Logger) *KMSService {
 	return &KMSService{
 		store:             store,
@@ -179,6 +182,11 @@ func NewKMSService(store *keystore.Store, logger *zap.Logger) *KMSService {
 		decryptCache:      newDecryptCache(),
 		activeKeySnapshot: store.ActiveKeyID(),
 	}
+}
+
+// SetRedisCache attaches Redis cache layer. Safe to call multiple times.
+func (s *KMSService) SetRedisCache(rc *RedisDecryptCache) {
+	s.redisCache = rc
 }
 
 // Close 释放后台资源（gc goroutine）。fx OnStop 调用。
@@ -190,13 +198,16 @@ func (s *KMSService) Close() {
 
 // invalidateCacheIfActiveKeyChanged 检测 active key 切换，发生时清空 decrypt cache。
 // 在 Decrypt 入口调用一次即可（每次 RPC 一个原子比较；变化频率极低）。
-func (s *KMSService) invalidateCacheIfActiveKeyChanged() {
+func (s *KMSService) invalidateCacheIfActiveKeyChanged(ctx context.Context) {
 	cur := s.store.ActiveKeyID()
 	s.activeKeyMu.Lock()
 	if cur != s.activeKeySnapshot {
 		s.activeKeySnapshot = cur
 		s.activeKeyMu.Unlock()
 		s.decryptCache.clear()
+		if s.redisCache != nil {
+			s.redisCache.Clear(ctx)
+		}
 		if s.logger != nil {
 			s.logger.Info("kms decrypt cache cleared due to active key change",
 				zap.String("new_active_key", cur))
@@ -248,21 +259,39 @@ type DecryptOut struct {
 
 // Decrypt 会把密文里带的 key_id 查 keystore；找不到就失败。
 //
-// 短 TTL 缓存命中时跳过 AEAD 解密：业务服务启动期 secret.Resolve 反复解密同一字段
-// 是命中 hot spot，缓存把这种 startup burst 摊到一次 cryptoenv.Decrypt。
-// 失败结果不缓存（错误路径不应被反复"快速失败"，否则掩盖偶发问题）。
-func (s *KMSService) Decrypt(_ context.Context, in DecryptIn) (*DecryptOut, error) {
-	s.invalidateCacheIfActiveKeyChanged()
+// 两层缓存：
+// 1. 本地 LRU（无 TTL，进程内存，最快）→ miss → Redis（5min TTL，跨副本）→ miss → 真解密
+// 2. 缓存不包含失败结果（错误路径不应被反复"快速失败"）。
+func (s *KMSService) Decrypt(ctx context.Context, in DecryptIn) (*DecryptOut, error) {
+	s.invalidateCacheIfActiveKeyChanged(ctx)
 
 	cacheKey := decryptCacheKey(in.Ciphertext, in.Context)
+
+	// Layer 1: Local LRU
 	if e, ok := s.decryptCache.get(cacheKey); ok {
-		metrics.KMSOpTotal.WithLabelValues("decrypt", "cache_hit").Inc()
-		// 拷贝 plaintext 防 caller mutate 污染缓存条目
+		metrics.KMSOpTotal.WithLabelValues("decrypt", "local_cache_hit").Inc()
 		out := make([]byte, len(e.plaintext))
 		copy(out, e.plaintext)
 		return &DecryptOut{Plaintext: out, KeyID: e.keyID}, nil
 	}
 
+	// Layer 2: Redis
+	if s.redisCache != nil {
+		if plaintext, kid, ok := s.redisCache.Get(ctx, in.Ciphertext, in.Context); ok {
+			metrics.KMSOpTotal.WithLabelValues("decrypt", "redis_cache_hit").Inc()
+			// Populate local LRU for next hit
+			cached := make([]byte, len(plaintext))
+			copy(cached, plaintext)
+			s.decryptCache.set(cacheKey, decryptCacheEntry{
+				plaintext: cached,
+				keyID:     kid,
+				expires:   time.Now().Add(decryptCacheTTL),
+			})
+			return &DecryptOut{Plaintext: plaintext, KeyID: kid}, nil
+		}
+	}
+
+	// Cache miss: perform actual decryption
 	plain, kid, err := cryptoenv.Decrypt(s.store.Snapshot(), in.Ciphertext, in.Context)
 	if err != nil {
 		if kid != "" {
@@ -272,15 +301,20 @@ func (s *KMSService) Decrypt(_ context.Context, in DecryptIn) (*DecryptOut, erro
 		}
 		return nil, err
 	}
-	// 缓存条目存的是真实计算结果的副本（plain 来自 cryptoenv，归属调用方；
-	// 我们把另一份独立 slice 放进缓存，二者互不影响）
+
+	// Cache in both layers
 	cached := make([]byte, len(plain))
 	copy(cached, plain)
-	s.decryptCache.set(cacheKey, decryptCacheEntry{
+	entry := decryptCacheEntry{
 		plaintext: cached,
 		keyID:     kid,
 		expires:   time.Now().Add(decryptCacheTTL),
-	})
+	}
+	s.decryptCache.set(cacheKey, entry)
+	if s.redisCache != nil {
+		s.redisCache.Set(ctx, in.Ciphertext, in.Context, kid, cached)
+	}
+
 	metrics.KMSOpTotal.WithLabelValues("decrypt", "ok").Inc()
 	return &DecryptOut{Plaintext: plain, KeyID: kid}, nil
 }

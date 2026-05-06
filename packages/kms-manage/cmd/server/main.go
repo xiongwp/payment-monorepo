@@ -3,12 +3,14 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
 	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/trace"
@@ -43,6 +45,7 @@ func main() {
 			// config-center: rate_limit / auth tokens / SAN whitelist (敏感，建议 TARGETED 推)
 			configcenter.FxProvider("kms-manage"),
 			newKeystore,
+			newRedisClient,
 			newKMSSvc,
 			newServer,
 		),
@@ -151,8 +154,61 @@ func newKeystore(v *viper.Viper, logger *zap.Logger) (*keystore.Store, error) {
 	return s, nil
 }
 
-func newKMSSvc(s *keystore.Store, logger *zap.Logger) *service.KMSService {
-	return service.NewKMSService(s, logger)
+// newRedisClient creates optional Redis client for cache.
+// Redis configuration is optional; if unavailable, service degrades gracefully.
+func newRedisClient(v *viper.Viper, logger *zap.Logger) *redis.Client {
+	addr := v.GetString("redis.addr")
+	if addr == "" {
+		addr = "redis:6379" // default for docker-compose
+	}
+	enabled := v.GetBool("redis.enabled")
+	if !enabled {
+		logger.Info("redis cache disabled")
+		return nil
+	}
+	client := redis.NewClient(&redis.Options{
+		Addr:         addr,
+		Password:     v.GetString("redis.password"),
+		DB:           v.GetInt("redis.db"),
+		ReadTimeout:  v.GetDuration("redis.read_timeout"),
+		WriteTimeout: v.GetDuration("redis.write_timeout"),
+	})
+	// Test connection
+	ctx := context.Background()
+	if err := client.Ping(ctx).Err(); err != nil {
+		logger.Warn("redis connection failed; cache will be disabled",
+			zap.String("addr", addr), zap.Error(err))
+		return nil
+	}
+	logger.Info("redis client connected", zap.String("addr", addr))
+	return client
+}
+
+func newKMSSvc(s *keystore.Store, logger *zap.Logger, rc *redis.Client, v *viper.Viper) *service.KMSService {
+	svc := service.NewKMSService(s, logger)
+
+	// Attach Redis cache if available
+	if rc != nil {
+		ttl := v.GetDuration("redis.cache_ttl")
+		if ttl == 0 {
+			ttl = 5 * time.Minute
+		}
+		// Generate ephemeral key for at-rest encryption
+		ephemeralKey := make([]byte, 32)
+		if _, err := rand.Read(ephemeralKey); err != nil {
+			logger.Error("failed to generate ephemeral key", zap.Error(err))
+		} else {
+			redisCache, err := service.NewRedisDecryptCache(rc, ttl, ephemeralKey, logger)
+			if err != nil {
+				logger.Error("failed to create redis cache", zap.Error(err))
+			} else {
+				svc.SetRedisCache(redisCache)
+				logger.Info("redis decrypt cache enabled", zap.Duration("ttl", ttl))
+			}
+		}
+	}
+
+	return svc
 }
 
 func newServer(svc *service.KMSService, v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) (*server.Server, error) {

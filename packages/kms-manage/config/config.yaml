@@ -25,3 +25,14 @@ registry:
   service_name: kms-manage
   advertise_host: ""  # 留空 → os.Hostname()；K8s 推荐用 POD_IP（也可 REGISTRY_ADVERTISE_ADDR env 覆盖）
   ttl: 10s
+
+# Redis cache configuration for decrypt operations
+# Plaintext cached for 5min with TTL; encrypted at rest with ephemeral key
+redis:
+  enabled: false  # Set to true to enable Redis cache layer
+  addr: "redis:6379"
+  password: ""
+  db: 0
+  cache_ttl: "5m"  # Can be overridden via env KMS_REDIS_CACHE_TTL
+  read_timeout: "1s"
+  write_timeout: "1s"

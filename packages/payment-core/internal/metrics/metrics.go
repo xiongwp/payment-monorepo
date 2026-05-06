@@ -90,6 +90,18 @@ var RiskReportTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Help: "Post-charge risk.Report calls by status",
 }, []string{"status"})
 
+// P0-3：备用渠道路由指标
+var RoutingFallbackTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "payment_routing_fallback_total",
+	Help: "Fallback routing decisions from primary to secondary adapter",
+}, []string{"from_state", "to_adapter"})
+
+// P0-3：重试队列入队指标
+var RoutingRetryEnqueuedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "payment_routing_retry_enqueued_total",
+	Help: "Charge tasks enqueued for async retry (circuit_open / unavailable)",
+}, []string{"reason"})
+
 func Register() {
 	prometheus.MustRegister(
 		RouteTotal,
@@ -103,6 +115,8 @@ func Register() {
 		RiskScreenTotal,
 		RiskScreenDuration,
 		RiskReportTotal,
+		RoutingFallbackTotal,
+		RoutingRetryEnqueuedTotal,
 	)
 }
 

@@ -87,6 +87,7 @@ func isUnknownResultErr(err error) bool {
 
 type PaymentService struct {
 	router        *routing.Router
+	fallback      *routing.FallbackRouter // P0-3：备用渠道路由
 	client        channelclient.Client
 	risk          riskclient.Client
 	riskFailClose bool // true = risk 不可达时拒绝交易；false = fail-open 放行
@@ -105,12 +106,14 @@ type PaymentService struct {
 	maintenance           int32                    // atomic: 1 = maintenance mode, 0 = normal
 	breakers              *circuitbreaker.Registry
 	channelOps            *channelops.Manager
+	retryQueue            routing.RetryQueue       // P0-3：重试队列（outbox pattern）
 	logger                *zap.Logger
 }
 
 func NewPaymentService(r *routing.Router, c channelclient.Client, risk riskclient.Client, logger *zap.Logger) *PaymentService {
 	return &PaymentService{
 		router:                  r,
+		fallback:                routing.NewFallbackRouter(logger),
 		client:                  c,
 		risk:                    risk,
 		riskTimeoutByMerchant:   map[string]time.Duration{},
@@ -414,7 +417,7 @@ skipRiskDecision:
 		}, nil
 	}
 
-	// ── 熔断检查 ──────────────────────────────────────────────
+	// ── 熔断检查 + P0-3 备用渠道降级 ──────────────────────────────────────────────
 	// Probe / admin-simulated charges (from PH 渠道联测 页 or similar QA tools)
 	// bypass the circuit breaker entirely: their failure scenarios are
 	// intentional and must not count toward tripping real traffic. The
@@ -431,15 +434,30 @@ skipRiskDecision:
 		metrics.ChargeTotal.WithLabelValues(req.PaymentMethod, "probe", "unauthorized").Inc()
 	}
 	cb := s.breakers.Get(adapter)
+	primaryFailed := false
+	failReason := ""
+
 	if !isProbe && !cb.Allow() {
-		s.logger.Warn("circuit breaker open",
+		primaryFailed = true
+		failReason = "circuit_open"
+		s.logger.Warn("circuit breaker open, trying fallback",
 			zap.String("adapter", adapter), zap.String("pi_id", req.PaymentIntentID))
 		metrics.ChargeTotal.WithLabelValues(req.PaymentMethod, adapter, "circuit_open").Inc()
-		return &channel.PaymentResponse{
-			ResultType:     channel.ResultFailed,
-			FailureCode:    "channel_unavailable",
-			FailureMessage: fmt.Sprintf("adapter %s circuit breaker open", adapter),
-		}, nil
+
+		// P0-3：尝试 fallback 渠道
+		adapter, err = s.tryFallbackAdapter(ctx, adapter, req)
+		if err != nil {
+			// fallback 也失败，写 outbox 异步重试，返回 processing
+			s.enqueueRetry(ctx, req, adapter, failReason)
+			metrics.RoutingRetryEnqueuedTotal.WithLabelValues(failReason).Inc()
+			return &channel.PaymentResponse{
+				ResultType:     channel.ResultProcessing,
+				FailureCode:    "processing",
+				FailureMessage: "primary adapter unavailable, enqueued for async retry",
+			}, nil
+		}
+		metrics.RoutingFallbackTotal.WithLabelValues(cb.State(), adapter).Inc()
+		// fallback 成功继续路由到新 adapter
 	}
 
 	in := &channelv1.ChargeRequest{
@@ -837,4 +855,74 @@ func orDefault(v, d string) string {
 		return v
 	}
 	return d
+}
+
+// ─── P0-3 备用渠道降级 ──────────────────────────────────
+
+// tryFallbackAdapter 尝试 fallback 渠道链中的下一个 adapter。
+// 返回可用的 adapter 名；全部失败返 error。
+func (s *PaymentService) tryFallbackAdapter(ctx context.Context, failedAdapter string, req *channel.PaymentRequest) (string, error) {
+	chain := s.fallback.GetFallbackChain(failedAdapter, routing.FallbackInput{
+		Country:       req.Country,
+		PaymentMethod: req.PaymentMethod,
+		BIN:           req.Metadata["bin"],
+		Currency:      req.Currency,
+	})
+
+	// 跳过已失败的 adapter，尝试 chain 里的下一个
+	for _, adapter := range chain {
+		if adapter == failedAdapter {
+			continue
+		}
+		cb := s.breakers.Get(adapter)
+		if !cb.Allow() {
+			s.logger.Debug("fallback adapter also unavailable",
+				zap.String("adapter", adapter), zap.String("pi_id", req.PaymentIntentID))
+			continue
+		}
+		if !s.channelOps.IsEnabled(adapter) {
+			continue
+		}
+		s.logger.Info("fallback adapter available",
+			zap.String("from", failedAdapter), zap.String("to", adapter),
+			zap.String("pi_id", req.PaymentIntentID))
+		return adapter, nil
+	}
+
+	// 无可用 fallback
+	s.logger.Warn("no fallback adapter available",
+		zap.String("primary", failedAdapter), zap.String("pi_id", req.PaymentIntentID))
+	return "", fmt.Errorf("no fallback adapter available for %s", failedAdapter)
+}
+
+// enqueueRetry 把失败的 charge 写入 retry queue（outbox pattern）
+func (s *PaymentService) enqueueRetry(ctx context.Context, req *channel.PaymentRequest, adapter, reason string) {
+	if s.retryQueue == nil {
+		s.logger.Warn("retry queue not configured, dropping retry task",
+			zap.String("pi_id", req.PaymentIntentID))
+		return
+	}
+
+	task := &routing.RetryTask{
+		ID:              fmt.Sprintf("retry_%s_%d", req.PaymentIntentID, time.Now().UnixNano()),
+		PaymentIntentID: req.PaymentIntentID,
+		IdempotencyKey:  IdempotencyKey(req.PaymentIntentID, "charge", req.Amount, req.Currency),
+		Amount:          req.Amount,
+		Currency:        req.Currency,
+		PaymentMethod:   req.PaymentMethod,
+		Country:         req.Country,
+		BIN:             req.Metadata["bin"],
+		FailedAdapter:   adapter,
+		Reason:          reason,
+		Attempt:         0,
+		NextRetryAt:     (&routing.RetryScheduler{}).NextRetryTime(0),
+		Metadata:        req.Metadata,
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+	}
+
+	if err := s.retryQueue.Enqueue(ctx, task); err != nil {
+		s.logger.Error("enqueue retry task failed",
+			zap.String("pi_id", req.PaymentIntentID), zap.Error(err))
+	}
 }
