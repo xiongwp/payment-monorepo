@@ -45,6 +45,7 @@ func NewAdminHandler(svc *service.Service, logger *zap.Logger) (*AdminHandler, e
 	tpl, err := template.New("admin").Funcs(template.FuncMap{
 		"formatTime": formatTime,
 		"truncate":   truncate,
+		"isFuture":   isFuture,
 	}).Parse(adminTemplates)
 	if err != nil {
 		return nil, err
@@ -356,7 +357,7 @@ func unifiedDiff(a, b string) []DiffLine {
 	return out
 }
 
-// keyAction edit form / put / rollback / delete / diff
+// keyAction edit form / put / rollback / delete / cancel / diff
 func (h *AdminHandler) keyAction(w http.ResponseWriter, r *http.Request, ns, key, action string) {
 	switch action {
 	case "edit":
@@ -367,6 +368,8 @@ func (h *AdminHandler) keyAction(w http.ResponseWriter, r *http.Request, ns, key
 		h.handleRollback(w, r, ns, key)
 	case "delete":
 		h.handleDelete(w, r, ns, key)
+	case "cancel":
+		h.handleCancelPending(w, r, ns, key)
 	case "diff":
 		h.diff(w, r, ns, key)
 	default:
@@ -505,6 +508,44 @@ func (h *AdminHandler) handleDelete(w http.ResponseWriter, r *http.Request, ns, 
 	http.Error(w, "delete not implemented", http.StatusNotImplemented)
 }
 
+// handleCancelPending POST /admin/ns/{ns}/{key}/cancel?version=N
+//
+// 删一个未来排队中、还没到点的 SCHEDULED 版本。约束：
+//   - 必须是 effective_at > now 的 pending 版本
+//   - 不能是当前 active 版本
+//
+// 失败原因走 400 + 文本（约束语义清晰，admin 直接看错误就懂）；
+// 成功重定向回 key detail 页。
+func (h *AdminHandler) handleCancelPending(w http.ResponseWriter, r *http.Request, ns, key string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !validateCSRF(r) {
+		http.Error(w, "csrf check failed", http.StatusForbidden)
+		return
+	}
+	actor := actorFromCtx(r.Context())
+	if actor == "" {
+		http.Error(w, "no actor", http.StatusUnauthorized)
+		return
+	}
+	version, err := strconv.ParseInt(r.FormValue("version"), 10, 64)
+	if err != nil || version <= 0 {
+		http.Error(w, "version 参数缺失或非法", http.StatusBadRequest)
+		return
+	}
+	reason := r.FormValue("reason")
+	if reason == "" {
+		reason = "(no reason)"
+	}
+	if err := h.svc.CancelPendingVersion(r.Context(), ns, key, version, actor, reason); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/admin/ns/"+ns+"/"+key, http.StatusSeeOther)
+}
+
 func (h *AdminHandler) audit(w http.ResponseWriter, r *http.Request) {
 	// 取最近 100 条 audit log
 	rows, _ := h.svc.RecentAudit(r.Context(), 100)
@@ -602,6 +643,19 @@ func validateCSRF(r *http.Request) bool {
 		return false
 	}
 	return formTok == c.Value
+}
+
+// isFuture 模板辅助：判断 effective_at 是否还在未来。
+// SDK rule: r.EffectiveAt != nil && now < r.EffectiveAt → 未生效（pending）。
+// 只有 pending 行才能取消（hard-delete）；其他都只能 rollback。
+func isFuture(t any) bool {
+	switch v := t.(type) {
+	case time.Time:
+		return v.After(time.Now())
+	case *time.Time:
+		return v != nil && v.After(time.Now())
+	}
+	return false
 }
 
 func formatTime(t any) string {
@@ -973,25 +1027,42 @@ const adminTemplates = `
   <div class="card-body"><p class="muted">无历史版本</p></div>
   {{else}}
   <table>
-    <thead><tr><th>Version</th><th>Strategy</th><th>Created By</th><th>Created At</th><th>Reason</th><th style="width:300px">动作</th></tr></thead>
+    <thead><tr><th>Version</th><th>状态</th><th>Strategy</th><th>Effective At</th><th>Created By</th><th>Created At</th><th>Reason</th><th style="width:340px">动作</th></tr></thead>
     <tbody>
     {{range .Versions}}
     <tr>
       <td>v{{.Version}}</td>
+      <td>
+        {{if and $.Current (eq .Version $.Current.Version)}}<span class="badge b-FULL">当前生效</span>
+        {{else if .EffectiveAt}}{{if isFuture .EffectiveAt}}<span class="badge b-CANARY">待生效</span>{{else}}<span class="badge b-TARGETED">历史</span>{{end}}
+        {{else}}<span class="badge b-TARGETED">历史</span>{{end}}
+      </td>
       <td><span class="badge b-{{.Strategy}}">{{.Strategy}}</span></td>
+      <td class="muted">{{if .EffectiveAt}}{{formatTime .EffectiveAt}}{{else}}立即{{end}}</td>
       <td>{{.CreatedBy}}</td>
       <td class="muted">{{formatTime .CreatedAt}}</td>
-      <td class="muted">{{truncate .ChangeReason 64}}</td>
+      <td class="muted">{{truncate .ChangeReason 48}}</td>
       <td>
-        {{if $.Current}}{{if ne .Version $.Current.Version}}
-        <form method="POST" action="/admin/ns/{{$.Namespace}}/{{$.Key}}/rollback" style="display:inline-flex;gap:4px;align-items:center">
-          <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-          <input type="hidden" name="to" value="{{.Version}}">
-          <input type="text" name="reason" placeholder="rollback 原因" style="width:140px">
-          <button class="btn btn-danger" type="submit" onclick="return confirm('确认回滚到 v{{.Version}}？')">回滚</button>
-        </form>
-        <a class="btn btn-default" href="/admin/ns/{{$.Namespace}}/{{$.Key}}/diff?from={{.Version}}&to={{$.Current.Version}}">diff</a>
-        {{end}}{{end}}
+        {{if and $.Current (ne .Version $.Current.Version)}}
+          {{if and .EffectiveAt (isFuture .EffectiveAt)}}
+          {{/* 未来排队版本：只能取消，不能 rollback */}}
+          <form method="POST" action="/admin/ns/{{$.Namespace}}/{{$.Key}}/cancel" style="display:inline-flex;gap:4px;align-items:center">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="version" value="{{.Version}}">
+            <input type="text" name="reason" placeholder="取消原因" style="width:140px">
+            <button class="btn btn-danger" type="submit" onclick="return confirm('确认取消 pending v{{.Version}}？此版本将被永久删除')">取消</button>
+          </form>
+          {{else}}
+          {{/* 已生效过的历史版本：可以 rollback */}}
+          <form method="POST" action="/admin/ns/{{$.Namespace}}/{{$.Key}}/rollback" style="display:inline-flex;gap:4px;align-items:center">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="to" value="{{.Version}}">
+            <input type="text" name="reason" placeholder="rollback 原因" style="width:140px">
+            <button class="btn btn-danger" type="submit" onclick="return confirm('确认回滚到 v{{.Version}}？')">回滚</button>
+          </form>
+          {{end}}
+          <a class="btn btn-default" href="/admin/ns/{{$.Namespace}}/{{$.Key}}/diff?from={{.Version}}&to={{$.Current.Version}}">diff</a>
+        {{end}}
       </td>
     </tr>
     {{end}}

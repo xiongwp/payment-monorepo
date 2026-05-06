@@ -69,6 +69,11 @@ type Repo interface {
 	ListVersions(ctx context.Context, namespace, key string, limit int) ([]*ConfigRow, error)
 	// Delete 软删（标 deleted=1）+ audit
 	Delete(ctx context.Context, namespace, key, actor, reason string) error
+	// CancelPendingVersion 删除一个"未来排队中、还没到点"的 SCHEDULED 版本：
+	//   只允许删 effective_at > now() 且 != active_version 的行；
+	//   已经生效过 / 当前 active 的版本不能删（保审计 + rollback 能力）。
+	// 用于 admin 在 UI 上「计划改了又反悔」的场景。
+	CancelPendingVersion(ctx context.Context, namespace, key string, version int64, actor, reason string) error
 }
 
 // PutVersionInput Repo.PutVersion 的入参。
@@ -159,6 +164,37 @@ func (s *Service) Rollback(ctx context.Context, namespace, key string, toVersion
 		zap.Int64("new_version", newVer),
 		zap.String("actor", actor))
 	return newVer, nil
+}
+
+// CancelPendingVersion 删除一个未来排队中、还没到点的版本（admin 计划改了
+// 又反悔的场景）。约束在 repo 层：effective_at > now() 且 != active_version。
+//
+// 删除后给同 namespace 推 EventDelete（带版本号），客户端 SDK pending 槽
+// 自动清掉对应行；若同 key 还有更靠后的 SCHEDULED 版本，那条仍正常排队。
+func (s *Service) CancelPendingVersion(ctx context.Context, namespace, key string, version int64, actor, reason string) error {
+	if actor == "" {
+		return errors.New("actor required")
+	}
+	if version <= 0 {
+		return errors.New("version must be > 0")
+	}
+	if err := s.repo.CancelPendingVersion(ctx, namespace, key, version, actor, reason); err != nil {
+		return fmt.Errorf("cancel pending: %w", err)
+	}
+	// 通知客户端：同 (ns, key) 的 active 不变，但 pending 槽里那一项要移除。
+	// 简化：发一次当前 active 的 update，让 SDK 重建 pending 槽（snapshot 模式
+	// 下 SDK 会重读 namespace；增量模式 cache 自然 evict 那个版本号）。
+	row, err := s.repo.GetActive(ctx, namespace, key)
+	if err == nil && row != nil {
+		s.hub.Publish(namespace, &Event{Type: EventUpdate, Config: row})
+	}
+	s.logger.Warn("config cancel pending version",
+		zap.String("namespace", namespace),
+		zap.String("key", key),
+		zap.Int64("version", version),
+		zap.String("actor", actor),
+		zap.String("reason", reason))
+	return nil
 }
 
 // GetConfig 客户端读：判断 strategy 命中 + effective 窗口。

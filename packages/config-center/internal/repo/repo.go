@@ -459,6 +459,76 @@ func (r *Repo) Delete(ctx context.Context, namespace, key, actor, reason string)
 	})
 }
 
+// CancelPendingVersion 删一个排队中的 SCHEDULED 版本（effective_at > now 且
+// 未生效）。事务里做 4 件事：
+//
+//  1. 锁 (ns, key, version) 行；不存在或已删 → ErrNotFound
+//  2. 检查约束：effective_at > now() 且 id != config_item.active_version
+//     （任何"已生效过 / 当前生效"的版本不允许从这里删，保审计 + rollback）
+//  3. 硬删该 config_version 行（SCHEDULED 没生效不影响数据完整性）
+//  4. 写一条 CANCEL_PENDING audit log
+//
+// 为啥硬删而不软删？SCHEDULED 没生效 = 这条版本对系统来说从未存在过；硬删
+// 不破坏审计（audit_log 留着完整记录"谁在何时取消了什么"），但 config_version
+// 表里不留死行，version 序列号不会被它占用。
+func (r *Repo) CancelPendingVersion(ctx context.Context, namespace, key string, version int64, actor, reason string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var item ConfigItem
+		if err := tx.Where("namespace = ? AND key_name = ? AND deleted = 0", namespace, key).
+			First(&item).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("item not found: %s/%s", namespace, key)
+			}
+			return err
+		}
+		var ver ConfigVersion
+		if err := tx.Where("namespace = ? AND key_name = ? AND version = ?",
+			namespace, key, version).First(&ver).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("version v%d not found", version)
+			}
+			return err
+		}
+		// 约束 1：必须是 active 之外的版本（不允许删当前生效的）
+		if ver.ID == item.ActiveVersion {
+			return fmt.Errorf("v%d 是当前生效版本，不能取消；如需变更请新发版本或 rollback", version)
+		}
+		// 约束 2：effective_at 必须严格 > now（即"还没到点"）
+		now := time.Now()
+		if ver.EffectiveAt == nil {
+			return fmt.Errorf("v%d 立即生效（effective_at 为空），不在 pending 队列里；只能取消未来 SCHEDULED 版本", version)
+		}
+		if !ver.EffectiveAt.After(now) {
+			return fmt.Errorf("v%d 的 effective_at (%s) 已经到期或过去，不能取消；如需撤销请用 rollback",
+				version, ver.EffectiveAt.Format(time.RFC3339))
+		}
+		// 硬删
+		if err := tx.Delete(&ver).Error; err != nil {
+			return fmt.Errorf("delete pending version: %w", err)
+		}
+		// 同时把 latest_version 修正回当前 active（删掉的那条本来就不该是 latest 占位）
+		// 注：仅当被删的就是 latest 时才更新；否则 latest 已经是更高的有效版本
+		if item.LatestVersion == ver.ID {
+			if err := tx.Model(&ConfigItem{}).
+				Where("id = ?", item.ID).
+				Update("latest_version", item.ActiveVersion).Error; err != nil {
+				return fmt.Errorf("reset latest_version: %w", err)
+			}
+		}
+		// audit
+		verBefore := ver.ID
+		audit := &ConfigAuditLog{
+			Namespace:     namespace,
+			KeyName:       key,
+			Op:            "CANCEL_PENDING",
+			VersionBefore: &verBefore,
+			Actor:         actor,
+			ChangeReason:  reason,
+		}
+		return tx.Create(audit).Error
+	})
+}
+
 // ─── Admin / search 辅助 ──────────────────────────────────────────────────
 // 这些不在 service.Repo 接口里；admin handler 直接拿 *Repo 用。
 
