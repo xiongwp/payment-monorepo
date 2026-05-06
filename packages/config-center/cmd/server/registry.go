@@ -1,19 +1,16 @@
-// 服务自注册到 etcd。config-center 启动期把 (service="config-center", host:http_port)
-// 写到 etcd；调用方（业务服务的 SDK）通过 etcd resolver "etcd:///config-center"
-// 拿到所有活副本走 round_robin。
+// Service self-registration to etcd. config-center 启动期把自己写到 etcd；
+// 业务服务 SDK 可用 etcd:///config-center 走 round_robin LB。
 //
-// registry.endpoints 留空 → 跳过自注册（dev 单仓 / 本地 docker 用直连 hostname）。
+// registry.endpoints 留空 → 跳过自注册（dev 单实例 / docker 直连 hostname）。
 package main
 
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/spf13/viper"
 	"github.com/xiongwp/payment-util/serviceregistry"
-	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 )
@@ -21,13 +18,9 @@ import (
 func startServiceRegistrar(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) {
 	endpoints := v.GetStringSlice("registry.endpoints")
 	if len(endpoints) == 0 {
-		endpoints = splitRegCSV(v.GetString("registry.endpoints"))
-	}
-	if len(endpoints) == 0 {
 		logger.Info("registry.endpoints empty; config-center skipping etcd self-registration")
 		return
 	}
-
 	service := v.GetString("registry.service_name")
 	if service == "" {
 		service = "config-center"
@@ -36,7 +29,7 @@ func startServiceRegistrar(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) 
 	if port == 0 {
 		port = 9691
 	}
-	// 注册地址：advertise_host 优先；否则走 POD_IP / UDP-dial 探主网卡
+	// 注册地址三层优先级：advertise_host > AdvertiseAddr (POD_IP env / 主网卡探测) > hostname
 	var addr string
 	if h := v.GetString("registry.advertise_host"); h != "" {
 		addr = fmt.Sprintf("%s:%d", h, port)
@@ -48,55 +41,36 @@ func startServiceRegistrar(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) 
 		ttl = 10 * time.Second
 	}
 
-	var (
-		cli      *clientv3.Client
-		canceler context.CancelFunc
-	)
+	var sr *serviceregistry.SelfRegistration
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			c, err := clientv3.New(clientv3.Config{
-				Endpoints:   endpoints,
-				DialTimeout: 5 * time.Second,
-			})
+			regCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			s, err := serviceregistry.RegisterSelf(regCtx, endpoints, service, addr, ttl)
 			if err != nil {
-				return fmt.Errorf("etcd client: %w", err)
+				// 注册失败不阻断启动；HTTP listener 仍在跑，业务可走直连 endpoint
+				logger.Error("config-center self-registration failed",
+					zap.Error(err),
+					zap.String("service", service),
+					zap.String("addr", addr))
+				return nil
 			}
-			cli = c
-			rctx, cancel := context.WithCancel(context.Background())
-			canceler = cancel
-			if err := serviceregistry.Register(rctx, c, service, addr, ttl, logger); err != nil {
-				cancel()
-				_ = c.Close()
-				return fmt.Errorf("self-register %s @%s: %w", service, addr, err)
-			}
-			logger.Info("config-center: registered to etcd",
+			sr = s
+			logger.Info("config-center registered to etcd",
 				zap.String("service", service),
 				zap.String("addr", addr),
+				zap.Strings("etcd", endpoints),
 				zap.Duration("ttl", ttl))
 			return nil
 		},
 		OnStop: func(_ context.Context) error {
-			if canceler != nil {
-				canceler()
+			if sr == nil {
+				return nil
 			}
-			if cli != nil {
-				return cli.Close()
+			if err := sr.Close(); err != nil {
+				logger.Warn("config-center deregister failed", zap.Error(err))
 			}
 			return nil
 		},
 	})
-}
-
-func splitRegCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
