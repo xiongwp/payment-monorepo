@@ -136,11 +136,60 @@ case "$ACTION" in
     # rules.definitions：整个规则集（JSON 数组）作为单个 key。
     # admin 在 config-center UI 直接改 → SDK OnChange 秒级热推到所有 risk-manage
     # 副本，无需重启。每条规则的 mode/enabled/weight 都可线上调整。
-    seed risk-manage "rules.definitions" '[
-      {"id":"r_high_amount","name":"High Amount Review","type":"amount","decision":"REVIEW","enabled":true,"mode":"enforce","weight":40,"description":"金额 > 50000 触发人审"},
-      {"id":"r_velocity_5m","name":"5min Card Velocity","type":"velocity","decision":"DENY","enabled":true,"mode":"enforce","weight":60,"description":"5min 内同卡 >5 笔 直接拒绝"},
-      {"id":"r_country_blacklist","name":"Country Blacklist","type":"blacklist","decision":"DENY","enabled":false,"mode":"shadow","weight":80,"description":"高风险国家黑名单（默认 shadow，启用需 SOC 审批）"}
+    #
+    # 字段语义：
+    #   - decision: DENY  — 命中即拦截
+    #                 REVIEW— 命中触发人审/挂队列
+    #   - mode    : enforce / shadow（shadow = 只记录、不影响放行）
+    #   - weight  : 0=按 decision 默认，>0 影响多规则联合裁决
+    rules_definitions='[
+      {"id":"limit_per_txn_50k","name":"单笔上限 ₱50,000","type":"amount_limit","decision":"DENY","enabled":true,"mode":"enforce","weight":80},
+      {"id":"limit_daily_merchant_200k","name":"商户日累计上限 ₱200,000","type":"amount_limit","decision":"DENY","enabled":true,"mode":"enforce","weight":80},
+      {"id":"limit_daily_customer_100k","name":"用户日累计上限 ₱100,000","type":"amount_limit","decision":"DENY","enabled":true,"mode":"enforce","weight":80},
+      {"id":"limit_monthly_customer_500k","name":"用户月累计上限 ₱500,000","type":"amount_limit","decision":"DENY","enabled":true,"mode":"enforce","weight":80},
+
+      {"id":"velocity_customer_10_5m","name":"用户 5 分钟内不超过 10 笔","type":"velocity","decision":"DENY","enabled":true,"mode":"enforce","weight":70},
+      {"id":"velocity_ip_20_10m","name":"同 IP 10 分钟内不超过 20 笔","type":"velocity","decision":"DENY","enabled":true,"mode":"enforce","weight":70},
+      {"id":"velocity_device_5_3m","name":"同设备 3 分钟内不超过 5 笔","type":"velocity","decision":"DENY","enabled":true,"mode":"enforce","weight":70},
+
+      {"id":"bl_merchant","name":"商户黑名单","type":"blacklist","decision":"DENY","enabled":true,"mode":"enforce","weight":100},
+      {"id":"bl_customer","name":"用户黑名单","type":"blacklist","decision":"DENY","enabled":true,"mode":"enforce","weight":100},
+      {"id":"bl_ip","name":"IP 黑名单","type":"blacklist","decision":"DENY","enabled":true,"mode":"enforce","weight":90},
+      {"id":"bl_device","name":"设备黑名单","type":"blacklist","decision":"DENY","enabled":true,"mode":"enforce","weight":90},
+
+      {"id":"country_whitelist_ph","name":"仅允许 PH 交易","type":"country_block","decision":"DENY","enabled":true,"mode":"enforce","weight":80},
+
+      {"id":"reg_ip_10min_5","name":"同 IP 10 分钟注册 ≥ 5","type":"register_velocity","decision":"REVIEW","enabled":true,"mode":"enforce","weight":50},
+      {"id":"reg_ip_1h_20","name":"同 IP 1 小时注册 ≥ 20","type":"register_velocity","decision":"DENY","enabled":true,"mode":"enforce","weight":70},
+      {"id":"reg_device_3","name":"同设备注册 ≥ 3 账号","type":"register_velocity","decision":"REVIEW","enabled":true,"mode":"enforce","weight":50},
+      {"id":"reg_device_interval_30s","name":"同设备注册间隔 < 30s","type":"register_interval","decision":"REVIEW","enabled":true,"mode":"enforce","weight":50},
+      {"id":"reg_proxy_or_idc","name":"注册时使用代理 / 数据中心 IP","type":"dsl","decision":"REVIEW","enabled":true,"mode":"enforce","weight":40},
+      {"id":"virtual_phone_carrier","name":"虚拟运营商手机号","type":"dsl","decision":"REVIEW","enabled":true,"mode":"enforce","weight":40},
+      {"id":"phone_prefix_blacklist","name":"手机号段命中黑名单","type":"blacklist","decision":"DENY","enabled":true,"mode":"enforce","weight":80},
+      {"id":"disposable_email","name":"临时邮箱注册","type":"email_pattern","decision":"REVIEW","enabled":true,"mode":"enforce","weight":50},
+      {"id":"username_batch","name":"用户名批量模式","type":"username_pattern","decision":"REVIEW","enabled":true,"mode":"enforce","weight":40},
+      {"id":"reg_no_pageview","name":"注册后未浏览即操作","type":"dsl","decision":"REVIEW","enabled":true,"mode":"enforce","weight":30},
+      {"id":"new_account_sensitive_op","name":"新账号 5min 内敏感操作","type":"new_account_high_value","decision":"REVIEW","enabled":true,"mode":"enforce","weight":60},
+      {"id":"reg_device_account_switch","name":"同设备多账号","type":"fingerprint_multi_account","decision":"REVIEW","enabled":true,"mode":"enforce","weight":60},
+      {"id":"reg_burst_seconds","name":"秒级注册聚集","type":"register_velocity","decision":"DENY","enabled":true,"mode":"enforce","weight":80},
+      {"id":"reg_unknown_channel","name":"未知注册渠道","type":"dsl","decision":"REVIEW","enabled":true,"mode":"enforce","weight":30},
+      {"id":"ua_batch_reg","name":"同 UA 批量注册","type":"ua_batch_register","decision":"REVIEW","enabled":true,"mode":"enforce","weight":50},
+      {"id":"client_tampering","name":"客户端真实性检测","type":"client_tampering","decision":"DENY","enabled":true,"mode":"enforce","weight":90},
+
+      {"id":"login_geo_or_brute","name":"异地登录 / 失败暴增","type":"login_anomaly","decision":"REVIEW","enabled":true,"mode":"enforce","weight":50},
+      {"id":"cross_city_login","name":"跨城市快速登录","type":"dsl","decision":"REVIEW","enabled":true,"mode":"enforce","weight":50},
+      {"id":"new_device_login","name":"新设备登录","type":"dsl","decision":"REVIEW","enabled":true,"mode":"enforce","weight":40},
+      {"id":"new_device_sensitive","name":"新设备敏感操作","type":"dsl","decision":"REVIEW","enabled":true,"mode":"enforce","weight":60},
+      {"id":"multi_account_per_ip","name":"多账号同 IP 登录","type":"dsl","decision":"REVIEW","enabled":true,"mode":"enforce","weight":40},
+      {"id":"login_via_vpn","name":"代理/VPN 登录","type":"dsl","decision":"REVIEW","enabled":true,"mode":"enforce","weight":40},
+      {"id":"late_night_login","name":"凌晨登录","type":"dsl","decision":"REVIEW","enabled":true,"mode":"enforce","weight":20},
+      {"id":"bot_check","name":"Bot / 模拟器检测","type":"bot_detection","decision":"DENY","enabled":true,"mode":"enforce","weight":80},
+      {"id":"cookie_resets","name":"Cookie 频繁变更","type":"dsl","decision":"REVIEW","enabled":true,"mode":"enforce","weight":40},
+      {"id":"replay_attack","name":"Token / Body Replay","type":"dsl","decision":"DENY","enabled":true,"mode":"enforce","weight":80},
+      {"id":"fp_multi_account","name":"同设备指纹 ≥5 账号","type":"fingerprint_multi_account","decision":"DENY","enabled":true,"mode":"enforce","weight":70},
+      {"id":"desktop_no_battery","name":"桌面无电池 + 移动 UA（疑似模拟器）","type":"dsl","decision":"REVIEW","enabled":true,"mode":"enforce","weight":50}
     ]'
+    seed risk-manage "rules.definitions" "$rules_definitions"
 
     info "── card-payment ──"
     seed card-payment "bulkhead.per_merchant_max" "200" plain
