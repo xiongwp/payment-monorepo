@@ -138,6 +138,26 @@ func loadConfig() (*viper.Viper, error) {
 		"tls.cert", "tls.key", "tls.client_ca",
 		"network.visa.endpoint", "network.mastercard.endpoint", "network.jcb.endpoint",
 		"network.amex.endpoint", "network.unionpay.endpoint",
+		// Visa / CyberSource: mTLS + RSA-SHA256 HTTP Signature
+		"network.visa.merchant_id", "network.visa.api_key_id",
+		"network.visa.private_key_path", "network.visa.client_cert", "network.visa.client_key", "network.visa.server_ca",
+		"network.visa.timeout", "network.visa.insecure_sandbox",
+		// Mastercard MPGS: Basic + mTLS
+		"network.mastercard.merchant_id", "network.mastercard.api_password",
+		"network.mastercard.client_cert", "network.mastercard.client_key", "network.mastercard.server_ca",
+		"network.mastercard.timeout", "network.mastercard.insecure_sandbox",
+		// JCB: HMAC + mTLS
+		"network.jcb.merchant_id", "network.jcb.api_secret",
+		"network.jcb.client_cert", "network.jcb.client_key", "network.jcb.server_ca",
+		"network.jcb.timeout", "network.jcb.insecure_sandbox",
+		// AmEx: HMAC + mTLS
+		"network.amex.api_key", "network.amex.client_id", "network.amex.api_secret",
+		"network.amex.client_cert", "network.amex.client_key", "network.amex.server_ca",
+		"network.amex.timeout", "network.amex.insecure_sandbox",
+		// UnionPay: RSA-SHA256 form sig + optional mTLS
+		"network.unionpay.merchant_id", "network.unionpay.cert_id", "network.unionpay.private_key_path",
+		"network.unionpay.client_cert", "network.unionpay.client_key", "network.unionpay.server_ca",
+		"network.unionpay.timeout", "network.unionpay.insecure_sandbox",
 		"database.meta.dsn",
 		// 服务自注册（被 order-core / payment-core / BFF 调用）
 		"registry.endpoints", "registry.service_name", "registry.advertise_host", "registry.ttl",
@@ -187,6 +207,16 @@ func assertProdSafety(v *viper.Viper) error {
 		}
 		if !strings.HasPrefix(ep, "https://") {
 			return fmt.Errorf("PROD-SAFETY: network.%s.endpoint must use https://", n)
+		}
+		// 拒绝 prod 指向 mock-network（127.x / localhost / *.local / *.internal）
+		// mock-network 是 dev/sandbox 用的，prod 走 mock 等于资金路径假成功 → 灾难。
+		if strings.Contains(ep, "://localhost") || strings.Contains(ep, "://127.") ||
+			strings.Contains(ep, ".local") || strings.Contains(ep, ".internal") {
+			return fmt.Errorf("PROD-SAFETY: network.%s.endpoint points to local/mock host (%q); production must hit real network", n, ep)
+		}
+		// 拒绝 prod 开 insecure_sandbox（=跳过证书验证）
+		if v.GetBool("network." + n + ".insecure_sandbox") {
+			return fmt.Errorf("PROD-SAFETY: network.%s.insecure_sandbox=true forbidden in env=prod", n)
 		}
 		atLeastOne = true
 	}
@@ -281,42 +311,81 @@ func newCardCenterClient(v *viper.Viper) (processor.CardCenter, error) {
 // 每个 adapter：endpoint 为空 或 env != prod 时走 mock。生产 endpoint 必须 https://，
 // 由 assertProdSafety 校验。
 func newNetworks(v *viper.Viper, logger *zap.Logger) map[string]processor.Network {
-	mockMode := strings.ToLower(v.GetString("env")) != "prod" && strings.ToLower(v.GetString("env")) != "production"
+	env := strings.ToLower(v.GetString("env"))
+	mockMode := env != "prod" && env != "production"
 	out := make(map[string]processor.Network, 5)
 
+	// Visa Net (CyberSource): mTLS + RSA-SHA256 HTTP Signature
 	visaEP := v.GetString("network.visa.endpoint")
 	out["visa"] = visa.New(visa.Config{
-		Endpoint: visaEP, APIKey: v.GetString("network.visa.api_key"),
-		Cert: v.GetString("network.visa.cert"), Timeout: v.GetDuration("network.visa.timeout"),
-		Mock: mockMode || visaEP == "",
+		Endpoint:        visaEP,
+		MerchantID:      v.GetString("network.visa.merchant_id"),
+		APIKeyID:        v.GetString("network.visa.api_key_id"),
+		PrivateKeyPath:  v.GetString("network.visa.private_key_path"),
+		ClientCert:      v.GetString("network.visa.client_cert"),
+		ClientKey:       v.GetString("network.visa.client_key"),
+		ServerCA:        v.GetString("network.visa.server_ca"),
+		Timeout:         v.GetDuration("network.visa.timeout"),
+		Mock:            mockMode || visaEP == "",
+		InsecureSandbox: !mockMode && v.GetBool("network.visa.insecure_sandbox"),
 	}, logger)
 
+	// Mastercard MPGS: mTLS + Basic auth (merchant.<id>:password)
 	mcEP := v.GetString("network.mastercard.endpoint")
 	out["mastercard"] = mastercard.New(mastercard.Config{
-		Endpoint: mcEP, APIKey: v.GetString("network.mastercard.api_key"),
-		Cert: v.GetString("network.mastercard.cert"), Timeout: v.GetDuration("network.mastercard.timeout"),
-		Mock: mockMode || mcEP == "",
+		Endpoint:        mcEP,
+		MerchantID:      v.GetString("network.mastercard.merchant_id"),
+		APIPassword:     v.GetString("network.mastercard.api_password"),
+		ClientCert:      v.GetString("network.mastercard.client_cert"),
+		ClientKey:       v.GetString("network.mastercard.client_key"),
+		ServerCA:        v.GetString("network.mastercard.server_ca"),
+		Timeout:         v.GetDuration("network.mastercard.timeout"),
+		Mock:            mockMode || mcEP == "",
+		InsecureSandbox: !mockMode && v.GetBool("network.mastercard.insecure_sandbox"),
 	}, logger)
 
+	// JCB J/Smart: mTLS + HMAC-SHA256
 	jcbEP := v.GetString("network.jcb.endpoint")
 	out["jcb"] = jcb.New(jcb.Config{
-		Endpoint: jcbEP, APIKey: v.GetString("network.jcb.api_key"),
-		Cert: v.GetString("network.jcb.cert"), Timeout: v.GetDuration("network.jcb.timeout"),
-		Mock: mockMode || jcbEP == "",
+		Endpoint:        jcbEP,
+		MerchantID:      v.GetString("network.jcb.merchant_id"),
+		APISecret:       v.GetString("network.jcb.api_secret"),
+		ClientCert:      v.GetString("network.jcb.client_cert"),
+		ClientKey:       v.GetString("network.jcb.client_key"),
+		ServerCA:        v.GetString("network.jcb.server_ca"),
+		Timeout:         v.GetDuration("network.jcb.timeout"),
+		Mock:            mockMode || jcbEP == "",
+		InsecureSandbox: !mockMode && v.GetBool("network.jcb.insecure_sandbox"),
 	}, logger)
 
+	// AmEx Direct API: mTLS + HMAC-SHA256
 	amexEP := v.GetString("network.amex.endpoint")
 	out["amex"] = amex.New(amex.Config{
-		Endpoint: amexEP, APIKey: v.GetString("network.amex.api_key"),
-		Cert: v.GetString("network.amex.cert"), Timeout: v.GetDuration("network.amex.timeout"),
-		Mock: mockMode || amexEP == "",
+		Endpoint:        amexEP,
+		APIKey:          v.GetString("network.amex.api_key"),
+		ClientID:        v.GetString("network.amex.client_id"),
+		APISecret:       v.GetString("network.amex.api_secret"),
+		ClientCert:      v.GetString("network.amex.client_cert"),
+		ClientKey:       v.GetString("network.amex.client_key"),
+		ServerCA:        v.GetString("network.amex.server_ca"),
+		Timeout:         v.GetDuration("network.amex.timeout"),
+		Mock:            mockMode || amexEP == "",
+		InsecureSandbox: !mockMode && v.GetBool("network.amex.insecure_sandbox"),
 	}, logger)
 
+	// UnionPay UPI: mTLS optional + RSA-SHA256 form sig
 	upEP := v.GetString("network.unionpay.endpoint")
 	out["unionpay"] = unionpay.New(unionpay.Config{
-		Endpoint: upEP, APIKey: v.GetString("network.unionpay.api_key"),
-		Cert: v.GetString("network.unionpay.cert"), Timeout: v.GetDuration("network.unionpay.timeout"),
-		Mock: mockMode || upEP == "",
+		Endpoint:        upEP,
+		MerchantID:      v.GetString("network.unionpay.merchant_id"),
+		CertID:          v.GetString("network.unionpay.cert_id"),
+		PrivateKeyPath:  v.GetString("network.unionpay.private_key_path"),
+		ClientCert:      v.GetString("network.unionpay.client_cert"),
+		ClientKey:       v.GetString("network.unionpay.client_key"),
+		ServerCA:        v.GetString("network.unionpay.server_ca"),
+		Timeout:         v.GetDuration("network.unionpay.timeout"),
+		Mock:            mockMode || upEP == "",
+		InsecureSandbox: !mockMode && v.GetBool("network.unionpay.insecure_sandbox"),
 	}, logger)
 
 	return out

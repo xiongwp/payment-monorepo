@@ -54,6 +54,18 @@ type NetworkAuthResponse struct {
 	ARN           string
 	MaskedPAN     string // 由 adapter 生成（防止外层依赖 PAN 重新算）
 	Network       string
+
+	// ─── 风险信号字段（adapter 填，processor 透传给 risk-manage） ───
+	// 各 network adapter 把卡组织响应里的 AVS/CVV/3DS/fraud_score 映射到这。
+	// 空字符串 = 卡组织没返这个字段。Caller 应：
+	//   - DeclineCategory == "HARD" → 标黑名单候选，48h 拒同卡
+	//   - HighRisk == true → 不阻塞但写 audit + escalate review
+	AVSResult       string // Y / A / N / U / ""
+	CVVResult       string // M / N / P / U / ""
+	ThreeDSStatus   string // Y / A / N / U / ""
+	ThreeDSEci      string // 02 / 05 / 01 / 06 / ""
+	FraudScore      int    // 0..100；卡组织端反欺诈分
+	DeclineCategory string // HARD / SOFT / ""
 }
 
 type ThreeDSData struct {
@@ -202,6 +214,14 @@ type AuthorizeOutput struct {
 	MaskedPAN     string
 	Network       string
 	ARN           string
+
+	// Risk 字段透传，给 caller (payment-channel / risk-manage) 决策。
+	AVSResult       string
+	CVVResult       string
+	ThreeDSStatus   string
+	ThreeDSEci      string
+	FraudScore      int
+	DeclineCategory string
 }
 
 func (p *Processor) Authorize(ctx context.Context, in *AuthorizeInput) (*AuthorizeOutput, error) {
@@ -306,6 +326,17 @@ func (p *Processor) Authorize(ctx context.Context, in *AuthorizeInput) (*Authori
 		// 仍然返回 network 的成功结果，让上游知道钱扣了
 	}
 
+	// HARD decline 写一个 audit 警示日志（这里不能扩到 risk-manage —— 那是
+	// payment-channel 那侧调，避免绕回；本服务只把信号原样传上去）。
+	if resp.DeclineCategory == "HARD" {
+		p.logger.Warn("network HARD decline (suspected fraud / blacklist signal)",
+			zap.String("pi_id", in.PIID),
+			zap.String("network", network),
+			zap.String("decline_code", resp.DeclineCode),
+			zap.Int("fraud_score", resp.FraudScore),
+			zap.String("masked_pan", masked))
+	}
+
 	return &AuthorizeOutput{
 		NetworkRefNo:  resp.NetworkRefNo,
 		Status:        resp.Status,
@@ -314,6 +345,13 @@ func (p *Processor) Authorize(ctx context.Context, in *AuthorizeInput) (*Authori
 		MaskedPAN:     masked,
 		Network:       network,
 		ARN:           resp.ARN,
+		// 风险字段透传
+		AVSResult:       resp.AVSResult,
+		CVVResult:       resp.CVVResult,
+		ThreeDSStatus:   resp.ThreeDSStatus,
+		ThreeDSEci:      resp.ThreeDSEci,
+		FraudScore:      resp.FraudScore,
+		DeclineCategory: resp.DeclineCategory,
 	}, nil
 }
 
