@@ -222,6 +222,31 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_00` (
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 00)';
 
+-- ─── admin_audit_log_00：管理台 / 用户操作审计（按 actor 路由） ────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
+-- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_00` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
+    `actor_ip`       VARCHAR(64)           DEFAULT NULL,
+    `method`         VARCHAR(128) NOT NULL COMMENT 'gRPC fullMethod',
+    `target_id`      VARCHAR(64)           DEFAULT NULL,
+    `request_body`   MEDIUMTEXT            DEFAULT NULL COMMENT 'JSON; sensitive fields redacted by caller',
+    `status_code`    VARCHAR(32)  NOT NULL,
+    `response_err`   VARCHAR(512)          DEFAULT NULL,
+    `duration_ms`    INT                   DEFAULT NULL,
+    `trace_id`       VARCHAR(64)           DEFAULT NULL,
+    `prev_hash`      CHAR(64)              DEFAULT NULL COMMENT 'per-shard chain head',
+    `row_hash`       CHAR(64)     NOT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_method`  (`method`),
+    KEY `idx_target`  (`target_id`),
+    KEY `idx_trace`   (`trace_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 00';
+
 -- 分片表 schema 模板。0 和 01 由 generate.sh 替换：
 --   0     = 0..9         分库 idx
 --   01  = 00..99       全局表 idx (zero-padded)
@@ -441,6 +466,31 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_01` (
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 01)';
+
+-- ─── admin_audit_log_01：管理台 / 用户操作审计（按 actor 路由） ────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
+-- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_01` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
+    `actor_ip`       VARCHAR(64)           DEFAULT NULL,
+    `method`         VARCHAR(128) NOT NULL COMMENT 'gRPC fullMethod',
+    `target_id`      VARCHAR(64)           DEFAULT NULL,
+    `request_body`   MEDIUMTEXT            DEFAULT NULL COMMENT 'JSON; sensitive fields redacted by caller',
+    `status_code`    VARCHAR(32)  NOT NULL,
+    `response_err`   VARCHAR(512)          DEFAULT NULL,
+    `duration_ms`    INT                   DEFAULT NULL,
+    `trace_id`       VARCHAR(64)           DEFAULT NULL,
+    `prev_hash`      CHAR(64)              DEFAULT NULL COMMENT 'per-shard chain head',
+    `row_hash`       CHAR(64)     NOT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_method`  (`method`),
+    KEY `idx_target`  (`target_id`),
+    KEY `idx_trace`   (`trace_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 01';
 
 -- 分片表 schema 模板。0 和 02 由 generate.sh 替换：
 --   0     = 0..9         分库 idx
@@ -662,6 +712,31 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_02` (
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 02)';
 
+-- ─── admin_audit_log_02：管理台 / 用户操作审计（按 actor 路由） ────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
+-- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_02` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
+    `actor_ip`       VARCHAR(64)           DEFAULT NULL,
+    `method`         VARCHAR(128) NOT NULL COMMENT 'gRPC fullMethod',
+    `target_id`      VARCHAR(64)           DEFAULT NULL,
+    `request_body`   MEDIUMTEXT            DEFAULT NULL COMMENT 'JSON; sensitive fields redacted by caller',
+    `status_code`    VARCHAR(32)  NOT NULL,
+    `response_err`   VARCHAR(512)          DEFAULT NULL,
+    `duration_ms`    INT                   DEFAULT NULL,
+    `trace_id`       VARCHAR(64)           DEFAULT NULL,
+    `prev_hash`      CHAR(64)              DEFAULT NULL COMMENT 'per-shard chain head',
+    `row_hash`       CHAR(64)     NOT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_method`  (`method`),
+    KEY `idx_target`  (`target_id`),
+    KEY `idx_trace`   (`trace_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 02';
+
 -- 分片表 schema 模板。0 和 03 由 generate.sh 替换：
 --   0     = 0..9         分库 idx
 --   03  = 00..99       全局表 idx (zero-padded)
@@ -881,6 +956,31 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_03` (
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 03)';
+
+-- ─── admin_audit_log_03：管理台 / 用户操作审计（按 actor 路由） ────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
+-- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_03` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
+    `actor_ip`       VARCHAR(64)           DEFAULT NULL,
+    `method`         VARCHAR(128) NOT NULL COMMENT 'gRPC fullMethod',
+    `target_id`      VARCHAR(64)           DEFAULT NULL,
+    `request_body`   MEDIUMTEXT            DEFAULT NULL COMMENT 'JSON; sensitive fields redacted by caller',
+    `status_code`    VARCHAR(32)  NOT NULL,
+    `response_err`   VARCHAR(512)          DEFAULT NULL,
+    `duration_ms`    INT                   DEFAULT NULL,
+    `trace_id`       VARCHAR(64)           DEFAULT NULL,
+    `prev_hash`      CHAR(64)              DEFAULT NULL COMMENT 'per-shard chain head',
+    `row_hash`       CHAR(64)     NOT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_method`  (`method`),
+    KEY `idx_target`  (`target_id`),
+    KEY `idx_trace`   (`trace_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 03';
 
 -- 分片表 schema 模板。0 和 04 由 generate.sh 替换：
 --   0     = 0..9         分库 idx
@@ -1102,6 +1202,31 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_04` (
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 04)';
 
+-- ─── admin_audit_log_04：管理台 / 用户操作审计（按 actor 路由） ────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
+-- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_04` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
+    `actor_ip`       VARCHAR(64)           DEFAULT NULL,
+    `method`         VARCHAR(128) NOT NULL COMMENT 'gRPC fullMethod',
+    `target_id`      VARCHAR(64)           DEFAULT NULL,
+    `request_body`   MEDIUMTEXT            DEFAULT NULL COMMENT 'JSON; sensitive fields redacted by caller',
+    `status_code`    VARCHAR(32)  NOT NULL,
+    `response_err`   VARCHAR(512)          DEFAULT NULL,
+    `duration_ms`    INT                   DEFAULT NULL,
+    `trace_id`       VARCHAR(64)           DEFAULT NULL,
+    `prev_hash`      CHAR(64)              DEFAULT NULL COMMENT 'per-shard chain head',
+    `row_hash`       CHAR(64)     NOT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_method`  (`method`),
+    KEY `idx_target`  (`target_id`),
+    KEY `idx_trace`   (`trace_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 04';
+
 -- 分片表 schema 模板。0 和 05 由 generate.sh 替换：
 --   0     = 0..9         分库 idx
 --   05  = 00..99       全局表 idx (zero-padded)
@@ -1321,6 +1446,31 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_05` (
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 05)';
+
+-- ─── admin_audit_log_05：管理台 / 用户操作审计（按 actor 路由） ────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
+-- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_05` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
+    `actor_ip`       VARCHAR(64)           DEFAULT NULL,
+    `method`         VARCHAR(128) NOT NULL COMMENT 'gRPC fullMethod',
+    `target_id`      VARCHAR(64)           DEFAULT NULL,
+    `request_body`   MEDIUMTEXT            DEFAULT NULL COMMENT 'JSON; sensitive fields redacted by caller',
+    `status_code`    VARCHAR(32)  NOT NULL,
+    `response_err`   VARCHAR(512)          DEFAULT NULL,
+    `duration_ms`    INT                   DEFAULT NULL,
+    `trace_id`       VARCHAR(64)           DEFAULT NULL,
+    `prev_hash`      CHAR(64)              DEFAULT NULL COMMENT 'per-shard chain head',
+    `row_hash`       CHAR(64)     NOT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_method`  (`method`),
+    KEY `idx_target`  (`target_id`),
+    KEY `idx_trace`   (`trace_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 05';
 
 -- 分片表 schema 模板。0 和 06 由 generate.sh 替换：
 --   0     = 0..9         分库 idx
@@ -1542,6 +1692,31 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_06` (
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 06)';
 
+-- ─── admin_audit_log_06：管理台 / 用户操作审计（按 actor 路由） ────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
+-- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_06` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
+    `actor_ip`       VARCHAR(64)           DEFAULT NULL,
+    `method`         VARCHAR(128) NOT NULL COMMENT 'gRPC fullMethod',
+    `target_id`      VARCHAR(64)           DEFAULT NULL,
+    `request_body`   MEDIUMTEXT            DEFAULT NULL COMMENT 'JSON; sensitive fields redacted by caller',
+    `status_code`    VARCHAR(32)  NOT NULL,
+    `response_err`   VARCHAR(512)          DEFAULT NULL,
+    `duration_ms`    INT                   DEFAULT NULL,
+    `trace_id`       VARCHAR(64)           DEFAULT NULL,
+    `prev_hash`      CHAR(64)              DEFAULT NULL COMMENT 'per-shard chain head',
+    `row_hash`       CHAR(64)     NOT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_method`  (`method`),
+    KEY `idx_target`  (`target_id`),
+    KEY `idx_trace`   (`trace_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 06';
+
 -- 分片表 schema 模板。0 和 07 由 generate.sh 替换：
 --   0     = 0..9         分库 idx
 --   07  = 00..99       全局表 idx (zero-padded)
@@ -1761,6 +1936,31 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_07` (
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 07)';
+
+-- ─── admin_audit_log_07：管理台 / 用户操作审计（按 actor 路由） ────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
+-- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_07` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
+    `actor_ip`       VARCHAR(64)           DEFAULT NULL,
+    `method`         VARCHAR(128) NOT NULL COMMENT 'gRPC fullMethod',
+    `target_id`      VARCHAR(64)           DEFAULT NULL,
+    `request_body`   MEDIUMTEXT            DEFAULT NULL COMMENT 'JSON; sensitive fields redacted by caller',
+    `status_code`    VARCHAR(32)  NOT NULL,
+    `response_err`   VARCHAR(512)          DEFAULT NULL,
+    `duration_ms`    INT                   DEFAULT NULL,
+    `trace_id`       VARCHAR(64)           DEFAULT NULL,
+    `prev_hash`      CHAR(64)              DEFAULT NULL COMMENT 'per-shard chain head',
+    `row_hash`       CHAR(64)     NOT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_method`  (`method`),
+    KEY `idx_target`  (`target_id`),
+    KEY `idx_trace`   (`trace_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 07';
 
 -- 分片表 schema 模板。0 和 08 由 generate.sh 替换：
 --   0     = 0..9         分库 idx
@@ -1982,6 +2182,31 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_08` (
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 08)';
 
+-- ─── admin_audit_log_08：管理台 / 用户操作审计（按 actor 路由） ────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
+-- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_08` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
+    `actor_ip`       VARCHAR(64)           DEFAULT NULL,
+    `method`         VARCHAR(128) NOT NULL COMMENT 'gRPC fullMethod',
+    `target_id`      VARCHAR(64)           DEFAULT NULL,
+    `request_body`   MEDIUMTEXT            DEFAULT NULL COMMENT 'JSON; sensitive fields redacted by caller',
+    `status_code`    VARCHAR(32)  NOT NULL,
+    `response_err`   VARCHAR(512)          DEFAULT NULL,
+    `duration_ms`    INT                   DEFAULT NULL,
+    `trace_id`       VARCHAR(64)           DEFAULT NULL,
+    `prev_hash`      CHAR(64)              DEFAULT NULL COMMENT 'per-shard chain head',
+    `row_hash`       CHAR(64)     NOT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_method`  (`method`),
+    KEY `idx_target`  (`target_id`),
+    KEY `idx_trace`   (`trace_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 08';
+
 -- 分片表 schema 模板。0 和 09 由 generate.sh 替换：
 --   0     = 0..9         分库 idx
 --   09  = 00..99       全局表 idx (zero-padded)
@@ -2201,4 +2426,29 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_09` (
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 09)';
+
+-- ─── admin_audit_log_09：管理台 / 用户操作审计（按 actor 路由） ────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
+-- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_09` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
+    `actor_ip`       VARCHAR(64)           DEFAULT NULL,
+    `method`         VARCHAR(128) NOT NULL COMMENT 'gRPC fullMethod',
+    `target_id`      VARCHAR(64)           DEFAULT NULL,
+    `request_body`   MEDIUMTEXT            DEFAULT NULL COMMENT 'JSON; sensitive fields redacted by caller',
+    `status_code`    VARCHAR(32)  NOT NULL,
+    `response_err`   VARCHAR(512)          DEFAULT NULL,
+    `duration_ms`    INT                   DEFAULT NULL,
+    `trace_id`       VARCHAR(64)           DEFAULT NULL,
+    `prev_hash`      CHAR(64)              DEFAULT NULL COMMENT 'per-shard chain head',
+    `row_hash`       CHAR(64)     NOT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_method`  (`method`),
+    KEY `idx_target`  (`target_id`),
+    KEY `idx_trace`   (`trace_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 09';
 

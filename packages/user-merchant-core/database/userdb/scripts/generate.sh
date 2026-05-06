@@ -32,6 +32,7 @@ SHADOW_BASES=(
   merchants
   merchant_kyc_document
   merchant_channel_secret
+  admin_audit_log
 )
 
 for db in $(seq 0 9)

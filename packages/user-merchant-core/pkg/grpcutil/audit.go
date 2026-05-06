@@ -32,8 +32,12 @@ type AuditEntry struct {
 
 // AuditStore 写入后端（合规要求：append-only，本接口不暴露 Update/Delete）。
 // LastHash 供链式签名拿到上一行的 row_hash；Insert 保存整条。
+//
+// **分片**：admin_audit_log 已 10 库 × 10 表（按 actor 路由）。LastHash
+// 必须传 actor 让 store 路由到正确 shard 取该 shard 的链 head；不再有
+// 全局单链。
 type AuditStore interface {
-	LastHash(ctx context.Context) (string, error)
+	LastHash(ctx context.Context, actor string) (string, error)
 	Insert(ctx context.Context, entry *AuditEntry) error
 }
 
@@ -119,7 +123,8 @@ func AuditInterceptor(opt AuditOptions) grpc.UnaryServerInterceptor {
 }
 
 func writeAudit(ctx context.Context, store AuditStore, e *AuditEntry) {
-	prev, _ := store.LastHash(ctx)
+	// 链 head 按 actor 路由（admin_audit_log 已分 10×100 shard，per-shard 链）
+	prev, _ := store.LastHash(ctx, e.Actor)
 	e.PrevHash = prev
 	e.RowHash = ComputeRowHash(e)
 	_ = store.Insert(ctx, e)

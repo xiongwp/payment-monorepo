@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS `exception_case_30_shadow` LIKE `exception_case_30`;
 CREATE TABLE IF NOT EXISTS `inbound_webhook_30_shadow` LIKE `inbound_webhook_30`;
 CREATE TABLE IF NOT EXISTS `notify_log_30_shadow` LIKE `notify_log_30`;
 CREATE TABLE IF NOT EXISTS `accounting_outbox_30_shadow` LIKE `accounting_outbox_30`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_30_shadow` LIKE `admin_audit_log_30`;
 
 CREATE TABLE IF NOT EXISTS `payment_intent_31_shadow` LIKE `payment_intent_31`;
 CREATE TABLE IF NOT EXISTS `charge_31_shadow` LIKE `charge_31`;
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS `exception_case_31_shadow` LIKE `exception_case_31`;
 CREATE TABLE IF NOT EXISTS `inbound_webhook_31_shadow` LIKE `inbound_webhook_31`;
 CREATE TABLE IF NOT EXISTS `notify_log_31_shadow` LIKE `notify_log_31`;
 CREATE TABLE IF NOT EXISTS `accounting_outbox_31_shadow` LIKE `accounting_outbox_31`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_31_shadow` LIKE `admin_audit_log_31`;
 
 CREATE TABLE IF NOT EXISTS `payment_intent_32_shadow` LIKE `payment_intent_32`;
 CREATE TABLE IF NOT EXISTS `charge_32_shadow` LIKE `charge_32`;
@@ -34,6 +36,7 @@ CREATE TABLE IF NOT EXISTS `exception_case_32_shadow` LIKE `exception_case_32`;
 CREATE TABLE IF NOT EXISTS `inbound_webhook_32_shadow` LIKE `inbound_webhook_32`;
 CREATE TABLE IF NOT EXISTS `notify_log_32_shadow` LIKE `notify_log_32`;
 CREATE TABLE IF NOT EXISTS `accounting_outbox_32_shadow` LIKE `accounting_outbox_32`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_32_shadow` LIKE `admin_audit_log_32`;
 
 CREATE TABLE IF NOT EXISTS `payment_intent_33_shadow` LIKE `payment_intent_33`;
 CREATE TABLE IF NOT EXISTS `charge_33_shadow` LIKE `charge_33`;
@@ -45,6 +48,7 @@ CREATE TABLE IF NOT EXISTS `exception_case_33_shadow` LIKE `exception_case_33`;
 CREATE TABLE IF NOT EXISTS `inbound_webhook_33_shadow` LIKE `inbound_webhook_33`;
 CREATE TABLE IF NOT EXISTS `notify_log_33_shadow` LIKE `notify_log_33`;
 CREATE TABLE IF NOT EXISTS `accounting_outbox_33_shadow` LIKE `accounting_outbox_33`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_33_shadow` LIKE `admin_audit_log_33`;
 
 CREATE TABLE IF NOT EXISTS `payment_intent_34_shadow` LIKE `payment_intent_34`;
 CREATE TABLE IF NOT EXISTS `charge_34_shadow` LIKE `charge_34`;
@@ -56,6 +60,7 @@ CREATE TABLE IF NOT EXISTS `exception_case_34_shadow` LIKE `exception_case_34`;
 CREATE TABLE IF NOT EXISTS `inbound_webhook_34_shadow` LIKE `inbound_webhook_34`;
 CREATE TABLE IF NOT EXISTS `notify_log_34_shadow` LIKE `notify_log_34`;
 CREATE TABLE IF NOT EXISTS `accounting_outbox_34_shadow` LIKE `accounting_outbox_34`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_34_shadow` LIKE `admin_audit_log_34`;
 
 CREATE TABLE IF NOT EXISTS `payment_intent_35_shadow` LIKE `payment_intent_35`;
 CREATE TABLE IF NOT EXISTS `charge_35_shadow` LIKE `charge_35`;
@@ -67,6 +72,7 @@ CREATE TABLE IF NOT EXISTS `exception_case_35_shadow` LIKE `exception_case_35`;
 CREATE TABLE IF NOT EXISTS `inbound_webhook_35_shadow` LIKE `inbound_webhook_35`;
 CREATE TABLE IF NOT EXISTS `notify_log_35_shadow` LIKE `notify_log_35`;
 CREATE TABLE IF NOT EXISTS `accounting_outbox_35_shadow` LIKE `accounting_outbox_35`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_35_shadow` LIKE `admin_audit_log_35`;
 
 CREATE TABLE IF NOT EXISTS `payment_intent_36_shadow` LIKE `payment_intent_36`;
 CREATE TABLE IF NOT EXISTS `charge_36_shadow` LIKE `charge_36`;
@@ -78,6 +84,7 @@ CREATE TABLE IF NOT EXISTS `exception_case_36_shadow` LIKE `exception_case_36`;
 CREATE TABLE IF NOT EXISTS `inbound_webhook_36_shadow` LIKE `inbound_webhook_36`;
 CREATE TABLE IF NOT EXISTS `notify_log_36_shadow` LIKE `notify_log_36`;
 CREATE TABLE IF NOT EXISTS `accounting_outbox_36_shadow` LIKE `accounting_outbox_36`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_36_shadow` LIKE `admin_audit_log_36`;
 
 CREATE TABLE IF NOT EXISTS `payment_intent_37_shadow` LIKE `payment_intent_37`;
 CREATE TABLE IF NOT EXISTS `charge_37_shadow` LIKE `charge_37`;
@@ -89,6 +96,7 @@ CREATE TABLE IF NOT EXISTS `exception_case_37_shadow` LIKE `exception_case_37`;
 CREATE TABLE IF NOT EXISTS `inbound_webhook_37_shadow` LIKE `inbound_webhook_37`;
 CREATE TABLE IF NOT EXISTS `notify_log_37_shadow` LIKE `notify_log_37`;
 CREATE TABLE IF NOT EXISTS `accounting_outbox_37_shadow` LIKE `accounting_outbox_37`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_37_shadow` LIKE `admin_audit_log_37`;
 
 CREATE TABLE IF NOT EXISTS `payment_intent_38_shadow` LIKE `payment_intent_38`;
 CREATE TABLE IF NOT EXISTS `charge_38_shadow` LIKE `charge_38`;
@@ -100,6 +108,7 @@ CREATE TABLE IF NOT EXISTS `exception_case_38_shadow` LIKE `exception_case_38`;
 CREATE TABLE IF NOT EXISTS `inbound_webhook_38_shadow` LIKE `inbound_webhook_38`;
 CREATE TABLE IF NOT EXISTS `notify_log_38_shadow` LIKE `notify_log_38`;
 CREATE TABLE IF NOT EXISTS `accounting_outbox_38_shadow` LIKE `accounting_outbox_38`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_38_shadow` LIKE `admin_audit_log_38`;
 
 CREATE TABLE IF NOT EXISTS `payment_intent_39_shadow` LIKE `payment_intent_39`;
 CREATE TABLE IF NOT EXISTS `charge_39_shadow` LIKE `charge_39`;
@@ -111,4 +120,5 @@ CREATE TABLE IF NOT EXISTS `exception_case_39_shadow` LIKE `exception_case_39`;
 CREATE TABLE IF NOT EXISTS `inbound_webhook_39_shadow` LIKE `inbound_webhook_39`;
 CREATE TABLE IF NOT EXISTS `notify_log_39_shadow` LIKE `notify_log_39`;
 CREATE TABLE IF NOT EXISTS `accounting_outbox_39_shadow` LIKE `accounting_outbox_39`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_39_shadow` LIKE `admin_audit_log_39`;
 

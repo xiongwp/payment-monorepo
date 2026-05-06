@@ -17,8 +17,8 @@ func NewAuditStore(r repo.AuditRepository) grpcutil.AuditStore {
 	return &auditStoreAdapter{r: r}
 }
 
-func (a *auditStoreAdapter) LastHash(ctx context.Context) (string, error) {
-	return a.r.LastHash(ctx)
+func (a *auditStoreAdapter) LastHash(ctx context.Context, actor string) (string, error) {
+	return a.r.LastHash(ctx, actor)
 }
 
 func (a *auditStoreAdapter) Insert(ctx context.Context, e *grpcutil.AuditEntry) error {

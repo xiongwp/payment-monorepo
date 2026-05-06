@@ -298,8 +298,8 @@ func repoIdempotency(mgr *repo.Manager) repo.IdempotencyRepository {
 	return repo.NewIdempotencyRepository(mgr)
 }
 
-func repoAudit(mgr *repo.Manager) repo.AuditRepository {
-	return repo.NewAuditRepository(mgr)
+func repoAudit(mgr *repo.Manager, router *sharding.Router) repo.AuditRepository {
+	return repo.NewAuditRepository(mgr, router)
 }
 
 func repoUser(mgr *repo.Manager, router *sharding.Router) repo.UserRepository {

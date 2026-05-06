@@ -31,6 +31,7 @@ SHADOW_BASES=(
   inbound_webhook
   notify_log
   accounting_outbox
+  admin_audit_log
 )
 
 for db in $(seq 0 9); do

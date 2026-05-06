@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS `user_card_30_shadow` LIKE `user_card_30`;
 CREATE TABLE IF NOT EXISTS `merchants_30_shadow` LIKE `merchants_30`;
 CREATE TABLE IF NOT EXISTS `merchant_kyc_document_30_shadow` LIKE `merchant_kyc_document_30`;
 CREATE TABLE IF NOT EXISTS `merchant_channel_secret_30_shadow` LIKE `merchant_channel_secret_30`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_30_shadow` LIKE `admin_audit_log_30`;
 
 CREATE TABLE IF NOT EXISTS `users_31_shadow` LIKE `users_31`;
 CREATE TABLE IF NOT EXISTS `user_profiles_31_shadow` LIKE `user_profiles_31`;
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS `user_card_31_shadow` LIKE `user_card_31`;
 CREATE TABLE IF NOT EXISTS `merchants_31_shadow` LIKE `merchants_31`;
 CREATE TABLE IF NOT EXISTS `merchant_kyc_document_31_shadow` LIKE `merchant_kyc_document_31`;
 CREATE TABLE IF NOT EXISTS `merchant_channel_secret_31_shadow` LIKE `merchant_channel_secret_31`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_31_shadow` LIKE `admin_audit_log_31`;
 
 CREATE TABLE IF NOT EXISTS `users_32_shadow` LIKE `users_32`;
 CREATE TABLE IF NOT EXISTS `user_profiles_32_shadow` LIKE `user_profiles_32`;
@@ -41,6 +43,7 @@ CREATE TABLE IF NOT EXISTS `user_card_32_shadow` LIKE `user_card_32`;
 CREATE TABLE IF NOT EXISTS `merchants_32_shadow` LIKE `merchants_32`;
 CREATE TABLE IF NOT EXISTS `merchant_kyc_document_32_shadow` LIKE `merchant_kyc_document_32`;
 CREATE TABLE IF NOT EXISTS `merchant_channel_secret_32_shadow` LIKE `merchant_channel_secret_32`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_32_shadow` LIKE `admin_audit_log_32`;
 
 CREATE TABLE IF NOT EXISTS `users_33_shadow` LIKE `users_33`;
 CREATE TABLE IF NOT EXISTS `user_profiles_33_shadow` LIKE `user_profiles_33`;
@@ -54,6 +57,7 @@ CREATE TABLE IF NOT EXISTS `user_card_33_shadow` LIKE `user_card_33`;
 CREATE TABLE IF NOT EXISTS `merchants_33_shadow` LIKE `merchants_33`;
 CREATE TABLE IF NOT EXISTS `merchant_kyc_document_33_shadow` LIKE `merchant_kyc_document_33`;
 CREATE TABLE IF NOT EXISTS `merchant_channel_secret_33_shadow` LIKE `merchant_channel_secret_33`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_33_shadow` LIKE `admin_audit_log_33`;
 
 CREATE TABLE IF NOT EXISTS `users_34_shadow` LIKE `users_34`;
 CREATE TABLE IF NOT EXISTS `user_profiles_34_shadow` LIKE `user_profiles_34`;
@@ -67,6 +71,7 @@ CREATE TABLE IF NOT EXISTS `user_card_34_shadow` LIKE `user_card_34`;
 CREATE TABLE IF NOT EXISTS `merchants_34_shadow` LIKE `merchants_34`;
 CREATE TABLE IF NOT EXISTS `merchant_kyc_document_34_shadow` LIKE `merchant_kyc_document_34`;
 CREATE TABLE IF NOT EXISTS `merchant_channel_secret_34_shadow` LIKE `merchant_channel_secret_34`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_34_shadow` LIKE `admin_audit_log_34`;
 
 CREATE TABLE IF NOT EXISTS `users_35_shadow` LIKE `users_35`;
 CREATE TABLE IF NOT EXISTS `user_profiles_35_shadow` LIKE `user_profiles_35`;
@@ -80,6 +85,7 @@ CREATE TABLE IF NOT EXISTS `user_card_35_shadow` LIKE `user_card_35`;
 CREATE TABLE IF NOT EXISTS `merchants_35_shadow` LIKE `merchants_35`;
 CREATE TABLE IF NOT EXISTS `merchant_kyc_document_35_shadow` LIKE `merchant_kyc_document_35`;
 CREATE TABLE IF NOT EXISTS `merchant_channel_secret_35_shadow` LIKE `merchant_channel_secret_35`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_35_shadow` LIKE `admin_audit_log_35`;
 
 CREATE TABLE IF NOT EXISTS `users_36_shadow` LIKE `users_36`;
 CREATE TABLE IF NOT EXISTS `user_profiles_36_shadow` LIKE `user_profiles_36`;
@@ -93,6 +99,7 @@ CREATE TABLE IF NOT EXISTS `user_card_36_shadow` LIKE `user_card_36`;
 CREATE TABLE IF NOT EXISTS `merchants_36_shadow` LIKE `merchants_36`;
 CREATE TABLE IF NOT EXISTS `merchant_kyc_document_36_shadow` LIKE `merchant_kyc_document_36`;
 CREATE TABLE IF NOT EXISTS `merchant_channel_secret_36_shadow` LIKE `merchant_channel_secret_36`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_36_shadow` LIKE `admin_audit_log_36`;
 
 CREATE TABLE IF NOT EXISTS `users_37_shadow` LIKE `users_37`;
 CREATE TABLE IF NOT EXISTS `user_profiles_37_shadow` LIKE `user_profiles_37`;
@@ -106,6 +113,7 @@ CREATE TABLE IF NOT EXISTS `user_card_37_shadow` LIKE `user_card_37`;
 CREATE TABLE IF NOT EXISTS `merchants_37_shadow` LIKE `merchants_37`;
 CREATE TABLE IF NOT EXISTS `merchant_kyc_document_37_shadow` LIKE `merchant_kyc_document_37`;
 CREATE TABLE IF NOT EXISTS `merchant_channel_secret_37_shadow` LIKE `merchant_channel_secret_37`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_37_shadow` LIKE `admin_audit_log_37`;
 
 CREATE TABLE IF NOT EXISTS `users_38_shadow` LIKE `users_38`;
 CREATE TABLE IF NOT EXISTS `user_profiles_38_shadow` LIKE `user_profiles_38`;
@@ -119,6 +127,7 @@ CREATE TABLE IF NOT EXISTS `user_card_38_shadow` LIKE `user_card_38`;
 CREATE TABLE IF NOT EXISTS `merchants_38_shadow` LIKE `merchants_38`;
 CREATE TABLE IF NOT EXISTS `merchant_kyc_document_38_shadow` LIKE `merchant_kyc_document_38`;
 CREATE TABLE IF NOT EXISTS `merchant_channel_secret_38_shadow` LIKE `merchant_channel_secret_38`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_38_shadow` LIKE `admin_audit_log_38`;
 
 CREATE TABLE IF NOT EXISTS `users_39_shadow` LIKE `users_39`;
 CREATE TABLE IF NOT EXISTS `user_profiles_39_shadow` LIKE `user_profiles_39`;
@@ -132,4 +141,5 @@ CREATE TABLE IF NOT EXISTS `user_card_39_shadow` LIKE `user_card_39`;
 CREATE TABLE IF NOT EXISTS `merchants_39_shadow` LIKE `merchants_39`;
 CREATE TABLE IF NOT EXISTS `merchant_kyc_document_39_shadow` LIKE `merchant_kyc_document_39`;
 CREATE TABLE IF NOT EXISTS `merchant_channel_secret_39_shadow` LIKE `merchant_channel_secret_39`;
+CREATE TABLE IF NOT EXISTS `admin_audit_log_39_shadow` LIKE `admin_audit_log_39`;
 

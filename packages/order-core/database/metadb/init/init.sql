@@ -48,30 +48,12 @@ CREATE TABLE IF NOT EXISTS `webhook_deliveries` (
     INDEX `idx_claim` (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Webhook 投递日志';
 
--- ─── 管理台审计日志 (wave B) ──────────────────────────────────────────────────
--- 记录所有管理员操作（商户审核、KYC 推进、key rotate、手动退款、规则修改...）。
--- 合规要求：不可修改、保留 ≥7 年。分区留给运维做月度 partitioning。
-CREATE TABLE IF NOT EXISTS `admin_audit_log` (
-    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
-    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id (from bearer token)',
-    `actor_ip`       VARCHAR(64)  DEFAULT NULL,
-    `action`         VARCHAR(64)  NOT NULL COMMENT 'merchant.approve / refund.create / risk.rule.update / ...',
-    `target_type`    VARCHAR(32)  DEFAULT NULL COMMENT 'merchant/payment_intent/refund/risk_rule/...',
-    `target_id`      VARCHAR(64)  DEFAULT NULL,
-    `http_method`    VARCHAR(8)   DEFAULT NULL,
-    `http_path`      VARCHAR(256) DEFAULT NULL,
-    `http_status`    INT          DEFAULT NULL,
-    `request_body`   MEDIUMTEXT   DEFAULT NULL COMMENT 'JSON；敏感字段应由调用方 redact',
-    `response_code`  VARCHAR(32)  DEFAULT NULL COMMENT 'gRPC/HTTP error code if failure',
-    `response_msg`   VARCHAR(512) DEFAULT NULL,
-    `duration_ms`    INT          DEFAULT NULL,
-    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (`id`),
-    KEY `idx_actor`       (`actor`),
-    KEY `idx_action`      (`action`),
-    KEY `idx_target`      (`target_type`, `target_id`),
-    KEY `idx_created`     (`created`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='管理台审计日志 (append-only)';
+-- ─── admin_audit_log 已迁到 shard ───────────────────────────────────────────
+-- 见 packages/order-core/database/orderdb/init/N_init.sql 里的 admin_audit_log_NN
+-- 分片表（10 库 × 10 表 = 100 张），按 actor (admin user id) 哈希路由。
+-- 同一 admin 的所有操作在同一 shard，取证 / 客服查全。
+-- 10K TPS 写量：单 meta 库 ~30K insert/s 上限会变瓶颈，迁后总容量 10×。
+-- meta 这边只留 RBAC / GL / etc.，不再承载审计写。
 
 -- ─── Ledger (wave H) ─────────────────────────────────────────────────────────
 -- 双账记账。单币种 PHP（按产品决策不做 FX）。所有金额为 minor units

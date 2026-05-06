@@ -130,27 +130,11 @@ CREATE TABLE IF NOT EXISTS `merchant_kyc_audit` (
     KEY `idx_created`  (`created`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 状态流转日志';
 
--- ─── 管理员操作审计（tamper-evident，跨 merchant 全局，append-only）──────────
-CREATE TABLE IF NOT EXISTS `admin_audit_log` (
-    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
-    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
-    `actor_ip`       VARCHAR(64)           DEFAULT NULL,
-    `method`         VARCHAR(128) NOT NULL COMMENT 'gRPC fullMethod',
-    `target_id`      VARCHAR(64)           DEFAULT NULL COMMENT 'merchant_id / doc_id / secret_id',
-    `request_body`   MEDIUMTEXT            DEFAULT NULL COMMENT 'JSON; sensitive fields must be redacted before write',
-    `status_code`    VARCHAR(32)  NOT NULL,
-    `response_err`   VARCHAR(512)          DEFAULT NULL,
-    `duration_ms`    INT                   DEFAULT NULL,
-    `trace_id`       VARCHAR(64)           DEFAULT NULL,
-    `prev_hash`      CHAR(64)              DEFAULT NULL COMMENT 'sha256 of previous row (tamper-evident chain)',
-    `row_hash`       CHAR(64)     NOT NULL COMMENT 'sha256 of this row inputs',
-    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (`id`),
-    KEY `idx_actor`   (`actor`),
-    KEY `idx_method`  (`method`),
-    KEY `idx_target`  (`target_id`),
-    KEY `idx_created` (`created`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='管理台审计日志 (append-only)';
+-- ─── admin_audit_log 已迁到 shard ───────────────────────────────────────────
+-- 见 packages/user-merchant-core/database/userdb/init/N_init.sql 里的
+-- admin_audit_log_NN 分片表（10 库 × 10 表 = 100 张），按 actor 哈希路由。
+-- 链式签名 per-shard：每 (db,tbl) 独立 prev_hash 链。
+-- 10K TPS audit 写量：meta 单库 ~30K/s 上限会瓶颈，迁后总容量 10×。
 
 -- ─── RBAC 字典 ──────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS `roles` (

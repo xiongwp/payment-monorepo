@@ -321,6 +321,30 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_70` (
     KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
+-- ─── admin_audit_log_70：管理台操作审计（按 actor 路由） ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。同 actor 落同 shard，取证查全。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_70` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id (from bearer token)',
+    `actor_ip`       VARCHAR(64)  DEFAULT NULL,
+    `action`         VARCHAR(64)  NOT NULL COMMENT 'merchant.approve / refund.create / risk.rule.update / ...',
+    `target_type`    VARCHAR(32)  DEFAULT NULL,
+    `target_id`      VARCHAR(64)  DEFAULT NULL,
+    `http_method`    VARCHAR(8)   DEFAULT NULL,
+    `http_path`      VARCHAR(256) DEFAULT NULL,
+    `http_status`    INT          DEFAULT NULL,
+    `request_body`   MEDIUMTEXT   DEFAULT NULL COMMENT 'JSON, sensitive fields redacted by caller',
+    `response_code`  VARCHAR(32)  DEFAULT NULL,
+    `response_msg`   VARCHAR(512) DEFAULT NULL,
+    `duration_ms`    INT          DEFAULT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_action`  (`action`),
+    KEY `idx_target`  (`target_type`, `target_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 70';
+
 -- ============================================
 -- order-core 表结构模板（Stripe 风格）
 -- 10 库 × 10 表 = 100 张全局表
@@ -640,6 +664,30 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_71` (
     -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
     KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
+
+-- ─── admin_audit_log_71：管理台操作审计（按 actor 路由） ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。同 actor 落同 shard，取证查全。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_71` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id (from bearer token)',
+    `actor_ip`       VARCHAR(64)  DEFAULT NULL,
+    `action`         VARCHAR(64)  NOT NULL COMMENT 'merchant.approve / refund.create / risk.rule.update / ...',
+    `target_type`    VARCHAR(32)  DEFAULT NULL,
+    `target_id`      VARCHAR(64)  DEFAULT NULL,
+    `http_method`    VARCHAR(8)   DEFAULT NULL,
+    `http_path`      VARCHAR(256) DEFAULT NULL,
+    `http_status`    INT          DEFAULT NULL,
+    `request_body`   MEDIUMTEXT   DEFAULT NULL COMMENT 'JSON, sensitive fields redacted by caller',
+    `response_code`  VARCHAR(32)  DEFAULT NULL,
+    `response_msg`   VARCHAR(512) DEFAULT NULL,
+    `duration_ms`    INT          DEFAULT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_action`  (`action`),
+    KEY `idx_target`  (`target_type`, `target_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 71';
 
 -- ============================================
 -- order-core 表结构模板（Stripe 风格）
@@ -961,6 +1009,30 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_72` (
     KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
+-- ─── admin_audit_log_72：管理台操作审计（按 actor 路由） ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。同 actor 落同 shard，取证查全。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_72` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id (from bearer token)',
+    `actor_ip`       VARCHAR(64)  DEFAULT NULL,
+    `action`         VARCHAR(64)  NOT NULL COMMENT 'merchant.approve / refund.create / risk.rule.update / ...',
+    `target_type`    VARCHAR(32)  DEFAULT NULL,
+    `target_id`      VARCHAR(64)  DEFAULT NULL,
+    `http_method`    VARCHAR(8)   DEFAULT NULL,
+    `http_path`      VARCHAR(256) DEFAULT NULL,
+    `http_status`    INT          DEFAULT NULL,
+    `request_body`   MEDIUMTEXT   DEFAULT NULL COMMENT 'JSON, sensitive fields redacted by caller',
+    `response_code`  VARCHAR(32)  DEFAULT NULL,
+    `response_msg`   VARCHAR(512) DEFAULT NULL,
+    `duration_ms`    INT          DEFAULT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_action`  (`action`),
+    KEY `idx_target`  (`target_type`, `target_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 72';
+
 -- ============================================
 -- order-core 表结构模板（Stripe 风格）
 -- 10 库 × 10 表 = 100 张全局表
@@ -1280,6 +1352,30 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_73` (
     -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
     KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
+
+-- ─── admin_audit_log_73：管理台操作审计（按 actor 路由） ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。同 actor 落同 shard，取证查全。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_73` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id (from bearer token)',
+    `actor_ip`       VARCHAR(64)  DEFAULT NULL,
+    `action`         VARCHAR(64)  NOT NULL COMMENT 'merchant.approve / refund.create / risk.rule.update / ...',
+    `target_type`    VARCHAR(32)  DEFAULT NULL,
+    `target_id`      VARCHAR(64)  DEFAULT NULL,
+    `http_method`    VARCHAR(8)   DEFAULT NULL,
+    `http_path`      VARCHAR(256) DEFAULT NULL,
+    `http_status`    INT          DEFAULT NULL,
+    `request_body`   MEDIUMTEXT   DEFAULT NULL COMMENT 'JSON, sensitive fields redacted by caller',
+    `response_code`  VARCHAR(32)  DEFAULT NULL,
+    `response_msg`   VARCHAR(512) DEFAULT NULL,
+    `duration_ms`    INT          DEFAULT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_action`  (`action`),
+    KEY `idx_target`  (`target_type`, `target_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 73';
 
 -- ============================================
 -- order-core 表结构模板（Stripe 风格）
@@ -1601,6 +1697,30 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_74` (
     KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
+-- ─── admin_audit_log_74：管理台操作审计（按 actor 路由） ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。同 actor 落同 shard，取证查全。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_74` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id (from bearer token)',
+    `actor_ip`       VARCHAR(64)  DEFAULT NULL,
+    `action`         VARCHAR(64)  NOT NULL COMMENT 'merchant.approve / refund.create / risk.rule.update / ...',
+    `target_type`    VARCHAR(32)  DEFAULT NULL,
+    `target_id`      VARCHAR(64)  DEFAULT NULL,
+    `http_method`    VARCHAR(8)   DEFAULT NULL,
+    `http_path`      VARCHAR(256) DEFAULT NULL,
+    `http_status`    INT          DEFAULT NULL,
+    `request_body`   MEDIUMTEXT   DEFAULT NULL COMMENT 'JSON, sensitive fields redacted by caller',
+    `response_code`  VARCHAR(32)  DEFAULT NULL,
+    `response_msg`   VARCHAR(512) DEFAULT NULL,
+    `duration_ms`    INT          DEFAULT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_action`  (`action`),
+    KEY `idx_target`  (`target_type`, `target_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 74';
+
 -- ============================================
 -- order-core 表结构模板（Stripe 风格）
 -- 10 库 × 10 表 = 100 张全局表
@@ -1920,6 +2040,30 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_75` (
     -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
     KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
+
+-- ─── admin_audit_log_75：管理台操作审计（按 actor 路由） ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。同 actor 落同 shard，取证查全。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_75` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id (from bearer token)',
+    `actor_ip`       VARCHAR(64)  DEFAULT NULL,
+    `action`         VARCHAR(64)  NOT NULL COMMENT 'merchant.approve / refund.create / risk.rule.update / ...',
+    `target_type`    VARCHAR(32)  DEFAULT NULL,
+    `target_id`      VARCHAR(64)  DEFAULT NULL,
+    `http_method`    VARCHAR(8)   DEFAULT NULL,
+    `http_path`      VARCHAR(256) DEFAULT NULL,
+    `http_status`    INT          DEFAULT NULL,
+    `request_body`   MEDIUMTEXT   DEFAULT NULL COMMENT 'JSON, sensitive fields redacted by caller',
+    `response_code`  VARCHAR(32)  DEFAULT NULL,
+    `response_msg`   VARCHAR(512) DEFAULT NULL,
+    `duration_ms`    INT          DEFAULT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_action`  (`action`),
+    KEY `idx_target`  (`target_type`, `target_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 75';
 
 -- ============================================
 -- order-core 表结构模板（Stripe 风格）
@@ -2241,6 +2385,30 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_76` (
     KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
+-- ─── admin_audit_log_76：管理台操作审计（按 actor 路由） ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。同 actor 落同 shard，取证查全。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_76` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id (from bearer token)',
+    `actor_ip`       VARCHAR(64)  DEFAULT NULL,
+    `action`         VARCHAR(64)  NOT NULL COMMENT 'merchant.approve / refund.create / risk.rule.update / ...',
+    `target_type`    VARCHAR(32)  DEFAULT NULL,
+    `target_id`      VARCHAR(64)  DEFAULT NULL,
+    `http_method`    VARCHAR(8)   DEFAULT NULL,
+    `http_path`      VARCHAR(256) DEFAULT NULL,
+    `http_status`    INT          DEFAULT NULL,
+    `request_body`   MEDIUMTEXT   DEFAULT NULL COMMENT 'JSON, sensitive fields redacted by caller',
+    `response_code`  VARCHAR(32)  DEFAULT NULL,
+    `response_msg`   VARCHAR(512) DEFAULT NULL,
+    `duration_ms`    INT          DEFAULT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_action`  (`action`),
+    KEY `idx_target`  (`target_type`, `target_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 76';
+
 -- ============================================
 -- order-core 表结构模板（Stripe 风格）
 -- 10 库 × 10 表 = 100 张全局表
@@ -2560,6 +2728,30 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_77` (
     -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
     KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
+
+-- ─── admin_audit_log_77：管理台操作审计（按 actor 路由） ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。同 actor 落同 shard，取证查全。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_77` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id (from bearer token)',
+    `actor_ip`       VARCHAR(64)  DEFAULT NULL,
+    `action`         VARCHAR(64)  NOT NULL COMMENT 'merchant.approve / refund.create / risk.rule.update / ...',
+    `target_type`    VARCHAR(32)  DEFAULT NULL,
+    `target_id`      VARCHAR(64)  DEFAULT NULL,
+    `http_method`    VARCHAR(8)   DEFAULT NULL,
+    `http_path`      VARCHAR(256) DEFAULT NULL,
+    `http_status`    INT          DEFAULT NULL,
+    `request_body`   MEDIUMTEXT   DEFAULT NULL COMMENT 'JSON, sensitive fields redacted by caller',
+    `response_code`  VARCHAR(32)  DEFAULT NULL,
+    `response_msg`   VARCHAR(512) DEFAULT NULL,
+    `duration_ms`    INT          DEFAULT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_action`  (`action`),
+    KEY `idx_target`  (`target_type`, `target_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 77';
 
 -- ============================================
 -- order-core 表结构模板（Stripe 风格）
@@ -2881,6 +3073,30 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_78` (
     KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
 
+-- ─── admin_audit_log_78：管理台操作审计（按 actor 路由） ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。同 actor 落同 shard，取证查全。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_78` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id (from bearer token)',
+    `actor_ip`       VARCHAR(64)  DEFAULT NULL,
+    `action`         VARCHAR(64)  NOT NULL COMMENT 'merchant.approve / refund.create / risk.rule.update / ...',
+    `target_type`    VARCHAR(32)  DEFAULT NULL,
+    `target_id`      VARCHAR(64)  DEFAULT NULL,
+    `http_method`    VARCHAR(8)   DEFAULT NULL,
+    `http_path`      VARCHAR(256) DEFAULT NULL,
+    `http_status`    INT          DEFAULT NULL,
+    `request_body`   MEDIUMTEXT   DEFAULT NULL COMMENT 'JSON, sensitive fields redacted by caller',
+    `response_code`  VARCHAR(32)  DEFAULT NULL,
+    `response_msg`   VARCHAR(512) DEFAULT NULL,
+    `duration_ms`    INT          DEFAULT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_action`  (`action`),
+    KEY `idx_target`  (`target_type`, `target_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 78';
+
 -- ============================================
 -- order-core 表结构模板（Stripe 风格）
 -- 10 库 × 10 表 = 100 张全局表
@@ -3200,4 +3416,28 @@ CREATE TABLE IF NOT EXISTS `accounting_outbox_79` (
     -- claim_token 反查刚 claim 的批次；带前缀 + 纳秒时间戳 + 随机数，区分度足够
     KEY         `idx_claim`        (`claim_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='记账事件 outbox（投递给 accounting-system）';
+
+-- ─── admin_audit_log_79：管理台操作审计（按 actor 路由） ────────────────
+-- 从 meta 移到 shard 解 10K TPS 写瓶颈。同 actor 落同 shard，取证查全。
+CREATE TABLE IF NOT EXISTS `admin_audit_log_79` (
+    `id`             BIGINT       NOT NULL AUTO_INCREMENT,
+    `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id (from bearer token)',
+    `actor_ip`       VARCHAR(64)  DEFAULT NULL,
+    `action`         VARCHAR(64)  NOT NULL COMMENT 'merchant.approve / refund.create / risk.rule.update / ...',
+    `target_type`    VARCHAR(32)  DEFAULT NULL,
+    `target_id`      VARCHAR(64)  DEFAULT NULL,
+    `http_method`    VARCHAR(8)   DEFAULT NULL,
+    `http_path`      VARCHAR(256) DEFAULT NULL,
+    `http_status`    INT          DEFAULT NULL,
+    `request_body`   MEDIUMTEXT   DEFAULT NULL COMMENT 'JSON, sensitive fields redacted by caller',
+    `response_code`  VARCHAR(32)  DEFAULT NULL,
+    `response_msg`   VARCHAR(512) DEFAULT NULL,
+    `duration_ms`    INT          DEFAULT NULL,
+    `created`        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_actor`   (`actor`),
+    KEY `idx_action`  (`action`),
+    KEY `idx_target`  (`target_type`, `target_id`),
+    KEY `idx_created` (`created`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 79';
 

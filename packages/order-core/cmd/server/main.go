@@ -267,8 +267,8 @@ func repoNotifyLog(mgr *repo.Manager, r *sharding.Router) repo.NotifyLogReposito
 func repoInboundWebhook(mgr *repo.Manager, r *sharding.Router) repo.InboundWebhookRepository {
 	return repo.NewInboundWebhookRepository(mgr, r)
 }
-func repoAuditLog(mgr *repo.Manager) repo.AdminAuditRepository {
-	return repo.NewAdminAuditRepository(mgr)
+func repoAuditLog(mgr *repo.Manager, r *sharding.Router) repo.AdminAuditRepository {
+	return repo.NewAdminAuditRepository(mgr, r)
 }
 
 // newWebhookDispatcher 出站 webhook 投递器（wave C）。
