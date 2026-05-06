@@ -57,6 +57,7 @@ compose_files() {
   # 当成孤儿删掉（risk-stack 起来 → up accounting-system 时 risk-stack 全没了）。
   case "$1" in
     shared-db)            echo "-p shared-db          -f $HERE/deploy/shared-db/docker-compose.yml" ;;
+    config-center)        echo "-p config-center      -f $ROOT/config-center/docker-compose.yml" ;;
     kms-manage)           echo "-p kms-manage         -f $ROOT/kms-manage/docker-compose.yml          -f $OVR/kms-manage.yml" ;;
     # risk-stack: risk-manage 依赖 (Redis + Kafka + ClickHouse + Nebula +
     # Prometheus + Grafana + etcd)。在 risk-manage 之前起。
@@ -94,7 +95,7 @@ compose_files() {
 #   risk-stack         risk-redis + risk-kafka + clickhouse + nebula + 监控（accounting 复用 risk-redis）
 #   accounting-system  accounting-service + accounting-batchtask（复用 shared-db + risk-redis）
 #   risk-manage / payment-channel / order-core / user-merchant-core / payment-core / api-gateway / *-admin-web
-ALL_SERVICES=(shared-db kms-manage risk-stack accounting-system risk-manage payment-channel order-core user-merchant-core payment-core card-center card-payment api-gateway accounting-admin-web payment-admin-web)
+ALL_SERVICES=(shared-db config-center kms-manage risk-stack accounting-system risk-manage payment-channel order-core user-merchant-core payment-core card-center card-payment api-gateway accounting-admin-web payment-admin-web)
 
 # scale_args_of 返回 --scale a=N --scale b=M ... 用来起多副本。前提：override
 # 文件里该 service 没有 container_name，端口用 range，否则会撞名 / 撞端口。
@@ -363,15 +364,15 @@ cmd_up() {
   # 就把 shared-db 排前）时才执行；早调一次没坏处。
   ensure_card_dbs "${targets[@]}"
 
-  # 不论用户传啥 service，shared-db + risk-stack 是所有 app 的基础设施，
-  # 没起来 app 会连不上 MySQL / Redis / Kafka / etcd。这里自动前置。
-  # 用户显式只传了 shared-db 或 risk-stack 时则不再添加（避免无限循环）。
+  # 不论用户传啥 service，shared-db + risk-stack + config-center 是所有 app 的
+  # 基础设施。没起来 app 会连不上 MySQL / Redis / Kafka / etcd / 全平台动态配置。
+  # 用户显式只传基础设施本身时不再前置（避免无限循环）。
   ensure_infra_first() {
-    local infra=("shared-db" "risk-stack")
+    local infra=("shared-db" "risk-stack" "config-center")
     local need_prepend=false
     for t in "${targets[@]}"; do
       case "$t" in
-        shared-db|risk-stack) ;;
+        shared-db|risk-stack|config-center) ;;
         *) need_prepend=true ;;
       esac
     done
