@@ -28,6 +28,11 @@ RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholde
 FROM alpine:3.19 AS accounting-grpc-api
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
+# order-core 由 P0-1 reconcile worker 引入：反查 PI/Charge 状态修复 ledger 不一致。
+# 只用 api/proto/order/v1 包，不引服务端代码。
+FROM alpine:3.19 AS order-core
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+
 FROM golang:1.25-alpine AS builder
 
 RUN apk add --no-cache make tzdata git ca-certificates
@@ -39,10 +44,13 @@ ENV GOTOOLCHAIN=auto
 
 ARG PAYMENT_UTIL_REF=main
 ARG ACCOUNTING_GRPC_API_REF=main
+ARG ORDER_CORE_REF=main
+ARG SIBLING_CONTEXT_VER=2
 
 # Stage sibling sources：override 时拿到真实仓，否则拿到 placeholder（没 go.mod）。
 COPY --from=payment-util         / /tmp/payment-util-staged/
 COPY --from=accounting-grpc-api  / /tmp/accounting-grpc-api-staged/
+COPY --from=order-core           / /tmp/order-core-staged/
 
 # Promote：发现 go.mod 用本地，否则 git clone。
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
@@ -75,7 +83,8 @@ RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
       rm -rf "${staged}"; \
     }; \
     promote payment-util         "$PAYMENT_UTIL_REF"; \
-    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"
+    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"; \
+    promote order-core           "$ORDER_CORE_REF"
 
 # 这个仓自己的代码（outer compose 的 context 就是这个仓的根目录）
 COPY . /src/accounting-system

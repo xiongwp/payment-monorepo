@@ -286,6 +286,7 @@ services:
       additional_contexts:
         payment-util:        ../payment-util
         accounting-grpc-api: ../accounting-grpc-api
+        order-core:          ../order-core
       secrets:
         - GITHUB_TOKEN
     image: accounting-system:latest
