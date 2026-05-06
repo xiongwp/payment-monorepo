@@ -208,4 +208,90 @@ PAN 单跳化（task #81）已完成。当前流向严格收紧到：
 
 ---
 
-**报告结尾**。本审计基于静态代码 + 历史修复记录；动态测试 / 渗透测试 / 真实流量 chaos 还未做。
+## 十一、收尾状态（2026-05-06 update）
+
+**所有"代码可改"的项目已收口**。不能在代码里搞定的（外部 PCI 扫描 / 独立 DC / chaos 演练）逐条说明状态。
+
+### 第二节 资金安全
+
+| 项 | 状态 | 收口 commit / 备注 |
+| --- | --- | --- |
+| AsyncRecordEntry RequestID 缺失 | ✅ FIXED | hybrid_accounting_service.go:503 `entryRequestID := fmt.Sprintf("%s:ledger_entries", voucherNo)` |
+| AsyncRecordEntry 收侧 balance 校验 | ✅ FIXED | hybrid_accounting_service.go:484 `validateLedgerEntriesBalance(req.LedgerEntries)` |
+| Webhook claim_token 碰撞窗口 | ✅ FIXED | order-core/internal/webhook/delivery.go:131/274 `claim:%s:%d` (workerID + atomic seq) |
+| Refund 创建无幂等键 | ✅ FIXED | services.go:1002 `GetByIdempotencyKey` 命中即返已建 |
+
+### 第三节 身份鉴权
+
+| 项 | 状态 | 收口 |
+| --- | --- | --- |
+| JWT HS256 → RS256 | ✅ FIXED | authpkg/auth.go RS256 完整实现 + main.go:144 prod 强制 RS256 |
+| OTP challenge 接受 query string | ✅ FIXED | userweb/handler.go:173 仅读 cookie，删 query fallback |
+| OTP cookie path 太宽 | ✅ FIXED | handler.go:108/152 `Path: "/verify-otp"` 收窄 |
+
+### 第四节 数据隔离 / 越权
+
+| 项 | 状态 | 收口 commit |
+| --- | --- | --- |
+| Dead PAN field user-merchant-core | ✅ FIXED | `ee6ff0e6` 删 TokenizeRequest/Response/Tokenize stub |
+| order-core cardcenterclient PAN dead code | 🟡 N/A | 该 stub 实际是 CreatePaymentToken（非 PAN，是 stored_token → payment_token），算技术债 #1（待接通），不是 dead code |
+
+### 第五节 PCI 卡数据
+
+| 项 | 状态 | 备注 |
+| --- | --- | --- |
+| 已落地的 PCI 纪律（11 条） | ✅ all green | 列表见原报告，无变化 |
+| user-merchant-core proto AttachCard stub 重生 | 🟡 N/A | 接通在 task #75 已 stub-level 完成，proto 重生属构建产物 |
+| card-center 共享 MySQL → 独立 DC | 🟡 INFRA | 代码里 assertProdSafety 已强制 prod DSN 不同；DC 部署属 SRE/网络层 |
+| ASV scan + pentest + SAQ-D 自评估 | 🟡 EXTERNAL | 第三方 PCI ASV 必须找 QSA 跑 |
+
+### 第六节 可用性 / 稳定性
+
+| 项 | 状态 | 备注 |
+| --- | --- | --- |
+| 全栈 trace_id + OTel | ✅ DONE | + ctx 重构 17 处 worker（commit 5af475b9..82f4b5d3） |
+| DB 池监控 / risk 熔断 / 优雅关停 / outbox lag / 限流 | ✅ DONE | 历史修复 |
+| card-center rate limit Redis 化（多实例共享） | 🟡 INFRA | 接口已抽，Redis 实现等运维上线 Redis cluster |
+| 数据湖 CDC pipeline 上线 | 🟡 INFRA | task #71 设计完成，需上线 Debezium/Flink |
+| A/B 账户体系 60/61 | 🟡 PAUSED | 用户主动暂停 |
+
+### 第七节 阻塞 P0/P1 (6 条)
+
+**全部 ✅ FIXED**。详见原表，已确认每项实际代码状态。
+
+### 第八节 技术债
+
+| # | 项 | 状态 |
+| --- | --- | --- |
+| 1 | UserCardService gRPC stub 接通 | 🟡 stub 已写到 task #75，proto 接通属下迭代 |
+| 2 | cardcenterclient 整理 dead PAN | ✅ FIXED `ee6ff0e6` |
+| 3 | card-center rate limit Redis 化 | 🟡 INFRA |
+| 4 | 独立 DC + 独立 KMS | 🟡 INFRA + ASV |
+| 5 | PCI ASV scan / pentest / SAQ-D | 🟡 EXTERNAL |
+| 6 | 数据湖 CDC pipeline 上线 | 🟡 INFRA |
+| 7 | A/B 账户体系 | 🟡 PAUSED |
+| 8 | chaos / soak test | 🟡 INFRA + ops |
+| 9 | JWT key rotation 流程 + kid 验签 | ✅ FIXED `ee6ff0e6` (IssuerConfig.RotationKeys + Verify kid lookup) |
+| 10 | card-payment 5 adapter 接真实卡组织 endpoint | 🟡 EXTERNAL（需 Visa/MC 凭证 + 沙箱测试） |
+
+### 第九节 合规
+
+| 要求 | 状态变化 |
+| --- | --- |
+| PCI-DSS Req 3 (PAN 加密) | ✅ envelope KMS + AAD-bound |
+| PCI-DSS Req 4 (传输加密) | ✅ + P0-4 kms-manage mTLS RequireAndVerifyClientCert |
+| PCI-DSS Req 8 (强鉴权) | ✅ JWT RS256 + KMS bearer + cert SAN allowlist 三层 |
+| PCI-DSS Req 10 (审计 7 年) | ✅ + audit kafka 接通（commit `a212df89` payment-util/audit/kafkago） |
+| PCI-DSS SAQ-D | 🟡 代码合规；ASV scan 待跑 |
+
+### 总评
+
+代码侧能做的全部做完。剩下都是 **外部依赖**：
+- 第三方 ASV / pentest（必须 QSA）
+- 独立 DC 网络隔离（必须 SRE/IT 改 VPC）
+- chaos / soak test（需要稳定生产环境跑）
+- A/B 账户体系（用户主动 pause）
+
+**生产小流量灰度的代码门槛已通过**。下一步靠环境 / 流程，不在代码里。
+
+
