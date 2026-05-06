@@ -332,6 +332,11 @@ services:
       - TZ=Asia/Shanghai
       # ── 服务发现：自注册到 etcd（同 compose 内的 etcd container）──
       - ETCD_ENDPOINTS=etcd:2379
+      # ── config-center: 启动期同步拉一次 snapshot（namespace=accounting-system）
+      # 老 system_config 表已删；所有动态配置走这里。endpoint 通过共享网络
+      # payment-stack 走容器 DNS "config-center"。
+      - CFG_ENDPOINT=http://config-center:9691
+      - CFG_NAMESPACE=accounting-system
     restart: unless-stopped
 
   accounting-batchtask:

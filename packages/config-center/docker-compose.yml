@@ -1,13 +1,30 @@
-# config-center 联栈：1 个 meta MySQL + config-center 服务。
+# config-center 栈：1 meta MySQL + config-center 服务。
+#
+# **部署顺序**：config-center 必须在所有业务服务之前起来。其他服务在
+# fx 启动期会同步连 config-center 拉一次 snapshot；config-center 不可达时
+# prod 模式 fail-fast。
 #
 # 使用方式：
-#   cd packages/config-center
-#   docker compose up
+#   # 1. 创建联栈共享网络（其他 stack 也用这个）
+#   docker network create payment-stack 2>/dev/null || true
 #
-# 加入主仓 monorepo 的 deploy.sh 时，由 deploy.sh 注入 monorepo 公共网络
-# （payment-internal）以便其他服务通过 etcd / DNS resolve "config-center"。
+#   # 2. 起 config-center
+#   cd packages/config-center
+#   docker compose up -d
+#
+#   # 3. 起其他业务栈（accounting-system / api-gateway / ...），它们会通过
+#   #    payment-stack 网络 DNS 解析到 "config-center" 容器
+#
+# 健康探针：
+#   docker inspect config-center --format '{{json .State.Health}}'
+#
+# 跨副本扩展：要起多副本时把 config-center service 改成 deploy.replicas=N
+# 并配 kafka.* 环境变量，让 admin write 跨副本扇出（kafka_bridge.go）。
 
-version: "3.9"
+networks:
+  default:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true
 
 x-mysql-base: &mysql-base
   image: mysql:8.0
@@ -24,30 +41,47 @@ services:
   config-meta:
     <<: *mysql-base
     container_name: config-meta
-    ports:
-      - "127.0.0.1:13306:3306"
+    # 不暴露公网；其他服务通过 docker DNS "config-meta" 访问
+    expose:
+      - "3306"
     volumes:
       - config-meta-data:/var/lib/mysql
       - ./database/metadb/init/init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
 
   config-center:
-    image: config-center:dev
+    image: config-center:latest
     container_name: config-center
     depends_on:
       config-meta:
         condition: service_healthy
+    # 暴露给联栈内其他容器（不暴露宿主机；admin web 通过 ingress / SSH tunnel 访问）
+    expose:
+      - "9690"   # gRPC（保留，v1.0 SDK 走 HTTP）
+      - "9691"   # HTTP（admin web + SDK REST + SSE watch）
+      - "9692"   # /metrics
+    # 开发环境也把 9691 / 9692 暴露到宿主机方便 curl + Prometheus 抓
     ports:
-      - "9690:9690"   # gRPC
-      - "9691:9691"   # HTTP (admin + SDK REST + SSE)
-      - "9692:9692"   # /metrics
+      - "127.0.0.1:9691:9691"
+      - "127.0.0.1:9692:9692"
     environment:
-      CFG_ENV: "dev"
+      CFG_ENV: ${CONFIG_CENTER_ENV:-dev}
       CFG_DATABASE_META_DSN: "root:${CONFIG_DB_PASSWORD:-root}@tcp(config-meta:3306)/config_center_meta?charset=utf8mb4&parseTime=True&loc=Local"
       CFG_SERVER_HTTP_PORT: "9691"
       CFG_SERVER_GRPC_PORT: "9690"
       CFG_METRICS_ADDR: ":9692"
+      # 多副本扩展（单副本留空）
+      CFG_KAFKA_BROKERS: ${CONFIG_CENTER_KAFKA_BROKERS:-}
+      CFG_KAFKA_TOPIC: "config-center.events"
+      # etcd 自注册（业务服务通过 etcd:///config-center 走 round_robin）
+      CFG_REGISTRY_ENDPOINTS: ${ETCD_ENDPOINTS:-}
     volumes:
       - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9691/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
 
 volumes:
   config-meta-data:
