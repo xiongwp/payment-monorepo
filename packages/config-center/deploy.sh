@@ -93,13 +93,23 @@ case "$ACTION" in
     # 首次部署：seed 全平台默认 key（从老系统 yaml / DB 迁过来）。
     # 之后业务服务启动期同步连 config-center 拉这些 key 进本地 cache。
     base="http://localhost:9691/api/v1/configs"
+    # seed 用 jq 构造 body：value 里含 " 的复杂 JSON（rules.definitions /
+    # rate_limit 等）以前会把外层 -d "..." 引号炸了，导致 PUT 实际是非法 JSON
+    # 被 server 拒（但 deploy.sh 静默继续）。jq -nc --arg 把变量当字符串字面量
+    # 注入，自动转义 → 100% 合法 JSON。jq 在 mac/linux/容器都自带，没了就报错。
+    if ! command -v jq >/dev/null 2>&1; then
+      die "seed 需要 jq；macOS: brew install jq；ubuntu: apt-get install jq"
+    fi
     seed() {
       ns="$1"; key="$2"; value="$3"; format="${4:-json}"
+      body=$(jq -nc \
+        --arg v "$value" --arg fmt "$format" \
+        '{value: $v, format: $fmt, strategy: "FULL", change_reason: "initial seed from deploy.sh"}')
       curl -fsS -X PUT "${base}/${ns}/${key}" \
         -H "Content-Type: application/json" \
         -H "X-Actor: deploy.sh" \
-        -d "{\"value\":\"${value}\",\"format\":\"${format}\",\"strategy\":\"FULL\",\"change_reason\":\"initial seed from deploy.sh\"}" \
-        >/dev/null && ok "  ${ns}/${key} = ${value}"
+        -d "$body" \
+        >/dev/null && ok "  ${ns}/${key}"
     }
 
     info "── accounting-system ──"
@@ -123,6 +133,14 @@ case "$ACTION" in
     seed risk-manage "reliability.ipintel.open_duration"  '"15s"'
     seed risk-manage "reliability.mlscore.fail_threshold" "3" plain
     seed risk-manage "reliability.mlscore.open_duration"  '"30s"'
+    # rules.definitions：整个规则集（JSON 数组）作为单个 key。
+    # admin 在 config-center UI 直接改 → SDK OnChange 秒级热推到所有 risk-manage
+    # 副本，无需重启。每条规则的 mode/enabled/weight 都可线上调整。
+    seed risk-manage "rules.definitions" '[
+      {"id":"r_high_amount","name":"High Amount Review","type":"amount","decision":"REVIEW","enabled":true,"mode":"enforce","weight":40,"description":"金额 > 50000 触发人审"},
+      {"id":"r_velocity_5m","name":"5min Card Velocity","type":"velocity","decision":"DENY","enabled":true,"mode":"enforce","weight":60,"description":"5min 内同卡 >5 笔 直接拒绝"},
+      {"id":"r_country_blacklist","name":"Country Blacklist","type":"blacklist","decision":"DENY","enabled":false,"mode":"shadow","weight":80,"description":"高风险国家黑名单（默认 shadow，启用需 SOC 审批）"}
+    ]'
 
     info "── card-payment ──"
     seed card-payment "bulkhead.per_merchant_max" "200" plain

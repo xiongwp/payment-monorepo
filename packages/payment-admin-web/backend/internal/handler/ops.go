@@ -4,7 +4,9 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -19,36 +21,140 @@ func NewOpsHandler(d clients.Deps) *OpsHandler { return &OpsHandler{deps: d} }
 
 // ── 风控规则管理 ──────────────────────────────────────────────────
 
-// GET /api/ops/risk/rules — 列出所有风控规则。
+// GET /api/ops/risk/rules — 列出所有风控规则（只读监控）。
 //
-// 下游 risk-manage gRPC 不可用 → 返空 list + service_status 字段（页面不崩）。
-// 规则源真正的入口现在是 Config Center namespace=risk-manage / reconplatform。
+// 数据来源优先级：
+//  1. risk-manage gRPC ListRules（最权威，含 runtime mode / enabled 状态）
+//  2. config-center risk-manage/rules.definitions（规则定义源）— 在 (1) 失败
+//     或返空时兜底，让运营至少能看到「规则集应该是什么样的」
+//  3. 都拿不到 → 友好降级 hint，UI 弹横幅而不是红错
+//
+// 这样 risk-manage 容器没起 / etcd 没注册 / rules.definitions 还没 seed
+// 这三种 case 都不会让运营看到一个"什么都没有"的无解空白页。
 func (h *OpsHandler) ListRiskRules(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	resp, err := h.deps.Risk.ListRules(ctx, &riskv1.ListRulesRequest{})
-	if err != nil {
+	resp, grpcErr := h.deps.Risk.ListRules(ctx, &riskv1.ListRulesRequest{})
+
+	// gRPC 成功且非空 → 直接返
+	if grpcErr == nil && len(resp.GetRules()) > 0 {
+		items := make([]map[string]interface{}, 0, len(resp.GetRules()))
+		for _, rule := range resp.GetRules() {
+			items = append(items, map[string]interface{}{
+				"id":          rule.GetId(),
+				"name":        rule.GetName(),
+				"type":        rule.GetType(),
+				"enabled":     rule.GetEnabled(),
+				"description": rule.GetDescription(),
+				"config":      rule.GetConfigJson(),
+			})
+		}
 		writeJSON(w, map[string]interface{}{
-			"rules":          []any{},
-			"total":          0,
-			"service_status": "unavailable",
-			"service_error":  err.Error(),
-			"hint":           "规则改用 Config Center 管理：/admin/ns/risk-manage（reliability.* 阈值）+ /admin/ns/reconplatform（rules expr）",
+			"rules":          items,
+			"total":          len(items),
+			"service_status": "ok",
+			"source":         "risk-manage gRPC",
 		})
 		return
 	}
-	items := make([]map[string]interface{}, 0, len(resp.GetRules()))
-	for _, rule := range resp.GetRules() {
-		items = append(items, map[string]interface{}{
-			"id":          rule.GetId(),
-			"name":        rule.GetName(),
-			"type":        rule.GetType(),
-			"enabled":     rule.GetEnabled(),
-			"description": rule.GetDescription(),
-			"config":      rule.GetConfigJson(),
+
+	// gRPC 挂了 / 空 → 兜底从 config-center 读 rules.definitions
+	ccRules, ccErr := fetchRulesFromConfigCenter(r.Context())
+	if ccErr == nil && len(ccRules) > 0 {
+		status := "config_center_fallback"
+		hint := "risk-manage runtime 不可用 / 规则集为空；从 config-center " +
+			"namespace=risk-manage key=rules.definitions 兜底展示。改规则请在 " +
+			"Config Center 管理（http://localhost:9691/admin/ns/risk-manage）。"
+		if grpcErr == nil {
+			// risk-manage 在线但规则空（一般是 rules.definitions 还没 seed 到运行时）
+			hint = "risk-manage 在线但 runtime 规则集为空；展示来自 config-center 的规则定义；" +
+				"重启 risk-manage 让 SDK 拉到 rules.definitions 即可同步运行时状态。"
+		}
+		writeJSON(w, map[string]interface{}{
+			"rules":          ccRules,
+			"total":          len(ccRules),
+			"service_status": status,
+			"source":         "config-center risk-manage/rules.definitions",
+			"hint":           hint,
 		})
+		return
 	}
-	writeJSON(w, map[string]interface{}{"rules": items, "total": len(items), "service_status": "ok"})
+
+	// 两边都拿不到 → 友好降级
+	errMsg := ""
+	if grpcErr != nil {
+		errMsg = grpcErr.Error()
+	}
+	ccErrMsg := ""
+	if ccErr != nil {
+		ccErrMsg = ccErr.Error()
+	}
+	writeJSON(w, map[string]interface{}{
+		"rules":              []any{},
+		"total":              0,
+		"service_status":     "unavailable",
+		"service_error":      errMsg,
+		"config_center_error": ccErrMsg,
+		"hint": "risk-manage 与 config-center 都拿不到规则。先 seed config-center：" +
+			"bash packages/config-center/deploy.sh seed；再确认 risk-manage 容器健康。",
+	})
+}
+
+// fetchRulesFromConfigCenter 从 config-center 读 rules.definitions（JSON 数组）
+// 解析后转成 OpsCenter UI 用的字段集。失败返 (nil, err) 让 caller 降级。
+//
+// 走 HTTP API: GET /api/v1/configs/risk-manage/rules.definitions
+// 响应里 .value 是字符串（rules.definitions 整个 JSON 数组的 raw 文本）。
+//
+// 端点来自 CONFIG_CENTER_HTTP env，默认 http://config-center:9691（docker
+// 网内别名）/ http://localhost:9691（本地 dev）。
+func fetchRulesFromConfigCenter(ctx context.Context) ([]map[string]interface{}, error) {
+	base := os.Getenv("CONFIG_CENTER_HTTP")
+	if base == "" {
+		base = "http://config-center:9691"
+	}
+	url := base + "/api/v1/configs/risk-manage/rules.definitions"
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	cli := &http.Client{Timeout: 2 * time.Second}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, &configCenterError{status: resp.StatusCode}
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// config-center GET 响应：{"value": "<string>", "format": ..., ...}
+	var envelope struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Value == "" {
+		return nil, nil
+	}
+	// envelope.Value 是 rules.definitions 的 raw JSON 数组字符串
+	var rules []map[string]interface{}
+	if err := json.Unmarshal([]byte(envelope.Value), &rules); err != nil {
+		return nil, err
+	}
+	return rules, nil
+}
+
+type configCenterError struct{ status int }
+
+func (e *configCenterError) Error() string {
+	return "config-center HTTP " + http.StatusText(e.status)
 }
 
 // POST /api/ops/risk/reload — 热重载风控规则。
