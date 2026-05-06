@@ -5,8 +5,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"hash/fnv"
-	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -102,105 +102,67 @@ func (h *watcherHub) Close() { h.closed.Store(true) }
 
 // ─── strategy match helpers ─────────────────────────────────────────────
 
-// matchCanary StrategySpec 是 CanarySpec 的 JSON：{"percent":10,"target_instance_ids":["a","b"]}
+// CanarySpec admin 写 strategy=CANARY 时的 spec 反序列化目标。
 //
-//	percent > 0：用 fnv 哈希 instance_id mod 100 < percent 命中
-//	target_instance_ids 非空：包含 instance_id 时命中
-//	两者 OR，任一即放行
-func matchCanary(spec, instanceID string) bool {
-	if spec == "" {
+// percent: 0..100 — instance_id fnv64 mod 100 < percent 命中（稳定 hash，
+//          同 instance 在多个 canary 间命中关系稳定）
+// target_instance_ids: 显式名单，命中即放行（与 percent 并列 OR 关系）
+//
+// 同 namespace 多个并存的 CANARY 配置时：server 取最新一条匹配（priority 高优先），
+// 不命中则继续找；都不命中走兜底 active。
+type CanarySpec struct {
+	Percent           int      `json:"percent"`
+	TargetInstanceIds []string `json:"target_instance_ids"`
+	Priority          int      `json:"priority"`
+}
+
+// TargetedSpec strategy=TARGETED 时的 spec。严格白名单，不在内的 instance 不收。
+type TargetedSpec struct {
+	InstanceIds []string `json:"instance_ids"`
+}
+
+// matchCanary StrategySpec JSON ↔ CanarySpec → 命中判定。
+//
+// 解析失败 → 不命中（保守）。生产 admin 写入时会先 json.Unmarshal 校验过，
+// 这里再校一次防 DB 直改 / 旧 schema 漂移。
+func matchCanary(specJSON, instanceID string) bool {
+	if specJSON == "" {
 		return false
 	}
-	c := parseCanary(spec)
-	for _, id := range c.targetIDs {
+	var spec CanarySpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return false
+	}
+	for _, id := range spec.TargetInstanceIds {
 		if id == instanceID {
 			return true
 		}
 	}
-	if c.percent > 0 && c.percent <= 100 {
+	if spec.Percent > 0 && spec.Percent <= 100 {
 		h := fnv.New64a()
 		_, _ = h.Write([]byte(instanceID))
 		bucket := int(h.Sum64() % 100)
-		if bucket < c.percent {
+		if bucket < spec.Percent {
 			return true
 		}
 	}
 	return false
 }
 
-func matchTargeted(spec, instanceID string) bool {
-	if spec == "" {
+// matchTargeted strategy=TARGETED 严格白名单。
+func matchTargeted(specJSON, instanceID string) bool {
+	if specJSON == "" {
 		return false
 	}
-	t := parseTargeted(spec)
-	for _, id := range t.ids {
+	var spec TargetedSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return false
+	}
+	for _, id := range spec.InstanceIds {
 		if id == instanceID {
 			return true
 		}
 	}
 	return false
-}
-
-// 简化 JSON 解析（避免拉 encoding/json 大头到热路径）。spec 形态可控，
-// admin 写入时已校验。这里 lenient 解析，不抛 error 便于 hot path。
-type canarySpec struct {
-	percent   int
-	targetIDs []string
-}
-
-type targetedSpec struct {
-	ids []string
-}
-
-func parseCanary(s string) canarySpec {
-	out := canarySpec{}
-	// 极简解析：找 "percent": N, "target_instance_ids": ["a","b"]
-	if i := strings.Index(s, `"percent":`); i >= 0 {
-		out.percent = parseIntAfter(s[i+len(`"percent":`):])
-	}
-	if i := strings.Index(s, `"target_instance_ids":`); i >= 0 {
-		out.targetIDs = parseStringSliceAfter(s[i+len(`"target_instance_ids":`):])
-	}
-	return out
-}
-
-func parseTargeted(s string) targetedSpec {
-	if i := strings.Index(s, `"instance_ids":`); i >= 0 {
-		return targetedSpec{ids: parseStringSliceAfter(s[i+len(`"instance_ids":`):])}
-	}
-	return targetedSpec{}
-}
-
-func parseIntAfter(s string) int {
-	n := 0
-	started := false
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			n = n*10 + int(c-'0')
-			started = true
-		} else if started {
-			break
-		}
-	}
-	return n
-}
-
-func parseStringSliceAfter(s string) []string {
-	// 找 [ ... ]
-	start := strings.Index(s, "[")
-	end := strings.Index(s, "]")
-	if start < 0 || end < 0 || end <= start {
-		return nil
-	}
-	inner := s[start+1 : end]
-	out := []string{}
-	for _, part := range strings.Split(inner, ",") {
-		p := strings.TrimSpace(part)
-		p = strings.Trim(p, `"`)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
