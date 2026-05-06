@@ -470,12 +470,13 @@ func newBreakerRegistry(logger *zap.Logger) *resilience.Registry {
 	return reg
 }
 
-// newBulkhead 单 merchant 并发隔离器；默认 32 在飞 / merchant，
-// 可配 bulkhead.per_merchant_max 调（生产建议 16-64 之间，按业务峰值定）。
+// newBulkhead 单 merchant 并发隔离器；默认 256 在飞 / merchant，
+// 10K TPS 平台 / 100 merchant 时合理（见 docs/CAPACITY_10K_TPS.md）。
+// peak 商户在 config 调到 1024 即可。
 func newBulkhead(v *viper.Viper, logger *zap.Logger) *resilience.Bulkhead {
 	maxN := v.GetInt("bulkhead.per_merchant_max")
 	if maxN <= 0 {
-		maxN = 32
+		maxN = 256
 	}
 	metrics.BulkheadCapacity.Set(float64(maxN))
 	// reject 时 +1 metrics counter，Prometheus alerting 看 rate

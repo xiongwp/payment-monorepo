@@ -84,12 +84,18 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 10K TPS 容量：每 network adapter ~3s P50 RT 时在飞 ~3K 连接 / 5 networks ≈ 600
+	// per-network。MaxIdleConnsPerHost 拉到 200，MaxIdleConns 总池 1000。Idle timeout
+	// 90s 比卡组织 keepalive 长，avoid 频繁握手 / 会话票据失效。
 	tr := &http.Transport{
 		TLSClientConfig:     tlsCfg,
-		MaxIdleConns:        50,
-		MaxIdleConnsPerHost: 20,
+		MaxIdleConns:        1000,
+		MaxIdleConnsPerHost: 200,
+		MaxConnsPerHost:     500, // 硬上限防 SYN flood 把对端打垮
 		IdleConnTimeout:     90 * time.Second,
 		ForceAttemptHTTP2:   true,
+		// DisableCompression false：gzip body 减半带宽，对 KMS / Detokenize 等
+		// 大响应（rich JSON）显著省 NIC
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {

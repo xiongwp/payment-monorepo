@@ -12,6 +12,7 @@ package metrics
 
 import (
 	"net/http"
+	"net/http/pprof"
 	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -172,6 +173,18 @@ type ReadinessProbe func() error
 func StartServer(addr string, logger *zap.Logger, probe ...ReadinessProbe) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
+
+	// pprof：性能调试 / 容量规划必备。生产 metrics 端口走内网，无外暴；
+	// CPU / heap / goroutine / mutex / block profile 全开。
+	// 用法：
+	//   go tool pprof http://card-payment:9544/debug/pprof/profile?seconds=30  (CPU 30s)
+	//   go tool pprof http://card-payment:9544/debug/pprof/heap                (heap)
+	//   curl http://card-payment:9544/debug/pprof/goroutine?debug=1            (goroutine dump)
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		// liveness：只要进程没卡死就返 200。drain 也返 200（liveness != readiness）。
 		w.WriteHeader(http.StatusOK)

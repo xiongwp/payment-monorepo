@@ -35,10 +35,16 @@ type Bulkhead struct {
 }
 
 // NewBulkhead 构造。defaultMax = 单 merchant 并发上限。
-// 0 / 负数走 32 兜底（保护 prod 配置漏填）。
+//
+// 容量参考（10K 平台 TPS / 100 merchants 时）：
+//   - 平均: 100 在飞 / merchant
+//   - 99 分位: 300 / merchant（按帕累托 80/20 大商户峰值）
+// 默认 256 给 99% 商户够用，10% peak 商户配 file 调到 1024。
+//
+// 0 / 负数走 256 兜底（保护 prod 配置漏填）。
 func NewBulkhead(defaultMax int) *Bulkhead {
 	if defaultMax <= 0 {
-		defaultMax = 32
+		defaultMax = 256
 	}
 	return &Bulkhead{
 		defaultMax: defaultMax,
