@@ -14,15 +14,16 @@ CREATE TABLE IF NOT EXISTS `transaction_rule_shadow`         LIKE `transaction_r
 CREATE TABLE IF NOT EXISTS `hot_account_config_shadow`       LIKE `hot_account_config`;
 CREATE TABLE IF NOT EXISTS `buffer_account_config_shadow`    LIKE `buffer_account_config`;
 CREATE TABLE IF NOT EXISTS `service_instance_shadow`         LIKE `service_instance`;
-CREATE TABLE IF NOT EXISTS `system_config_shadow`            LIKE `system_config`;
+-- system_config / system_config_shadow 已删除（v2 迁到全平台 config-center
+-- 服务，namespace=accounting-system；shadow 流量同样消费 config-center key，
+-- 无需独立 _shadow 表）。
 
 -- ─── 字典 seed 复制：shadow 流量也要能查这些固定枚举 ──────────────────────
--- 业务字典（业务类型 / 账户类型 / 交易规则 / 系统配置）在主和影流量下语义一致，
+-- 业务字典（业务类型 / 账户类型 / 交易规则）在主和影流量下语义一致，
 -- 直接拷贝主表的 seed 即可；shadow 流量绝不修改这些字典。
 INSERT IGNORE INTO `account_business_type_info_shadow` SELECT * FROM `account_business_type_info`;
 INSERT IGNORE INTO `account_type_info_shadow`           SELECT * FROM `account_type_info`;
 INSERT IGNORE INTO `transaction_rule_shadow`            SELECT * FROM `transaction_rule`;
-INSERT IGNORE INTO `system_config_shadow`               SELECT * FROM `system_config`;
 INSERT IGNORE INTO `hot_account_config_shadow`          SELECT * FROM `hot_account_config`;
 INSERT IGNORE INTO `buffer_account_config_shadow`       SELECT * FROM `buffer_account_config`;
 
