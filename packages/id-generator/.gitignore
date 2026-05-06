@@ -1,0 +1,4 @@
+# 本地构建产物，不入仓
+id-server
+bin/
+*.test
