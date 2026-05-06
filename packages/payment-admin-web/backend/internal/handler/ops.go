@@ -70,7 +70,9 @@ func (h *OpsHandler) HealthOverview(w http.ResponseWriter, r *http.Request) {
 		name string
 		url  string
 	}{
-		// 容器 DNS + metrics port 上的 /healthz（含 DB ping 的服务会 503 表达"未就绪"）。
+		// **config-center 排第一**：业务服务都依赖它，它挂了页面所有热更新都失效
+		{"config-center", "http://config-center:9691/healthz"},
+		// 业务服务 metrics port /healthz（DB ping fail 时 503）
 		{"order-core", "http://order-core:9090/healthz"},
 		{"payment-core", "http://payment-core:9190/healthz"},
 		{"payment-channel", "http://payment-channel:9093/healthz"},
@@ -127,11 +129,23 @@ func (h *OpsHandler) WebhookStats(w http.ResponseWriter, r *http.Request) {
 
 // ── 系统配置概览 ──────────────────────────────────────────────────
 
-// GET /api/ops/config — 当前系统配置概览（脱敏）
+// GET /api/ops/config — 当前系统配置概览（脱敏）+ config-center 跳转入口。
+//
+// **统一配置入口**：所有动态配置（rate_limit / 风控阈值 / 熔断 / TTL 等）
+// 收口在 config-center；本接口只返指针页面，让前端 banner 跳转过去。
 func (h *OpsHandler) ConfigOverview(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]interface{}{
-		"services": []string{"order-core", "payment-core", "payment-channel", "kms-manage", "risk-manage"},
+		"config_center_url": "http://localhost:9691/admin/",
+		"config_center_note": "全平台 12 namespace 动态配置统一入口。改任一 key → SDK watch → " +
+			"集群所有副本秒级 OnChange 热更新。",
+		"services": []string{
+			"config-center", "order-core", "payment-core", "payment-channel",
+			"kms-manage", "risk-manage", "user-merchant-core", "accounting-system",
+			"card-center", "card-payment", "clearing-settlement", "reconplatform",
+			"api-gateway",
+		},
 		"ports": map[string]interface{}{
+			"config-center":   "HTTP:9691 (admin) gRPC:9690 metrics:9692",
 			"order-core":      "gRPC:9091",
 			"payment-core":    "gRPC:9090 metrics:9190",
 			"payment-channel": "gRPC:9092 webhook:9192 metrics:9093",
@@ -140,11 +154,13 @@ func (h *OpsHandler) ConfigOverview(w http.ResponseWriter, _ *http.Request) {
 			"admin-backend":   "HTTP:9190",
 		},
 		"features": map[string]bool{
-			"risk_screening":   true,
-			"circuit_breaker":  true,
-			"webhook_delivery": true,
-			"kms_encryption":   true,
-			"trace_id":         true,
+			"risk_screening":      true,
+			"circuit_breaker":     true,
+			"webhook_delivery":    true,
+			"kms_encryption":      true,
+			"trace_id":            true,
+			"config_center":       true,
+			"hot_reload_onchange": true,
 		},
 	})
 }
