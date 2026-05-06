@@ -1,0 +1,174 @@
+# Prometheus alerting rules — 整个支付平台 SRE on-call signals.
+#
+# 部署：扔到 prometheus-server rule_files 路径，AlertManager 路由到 PagerDuty / Slack。
+# 阈值刻意保守，宁可多报不漏报；调到合适的 noisy ↔ silent 平衡需要 1-2 周观察。
+#
+# 严重度约定：
+#   critical — 立即叫 oncall（钱 / 用户体验直接受损）
+#   warning  — 24h 内人工查（趋势 / 容量信号）
+#   info     — 仪表盘观察（容量预警 / flapping）
+
+groups:
+  # ─── 资金安全 ──────────────────────────────────────────
+  - name: funds_safety
+    interval: 30s
+    rules:
+      - alert: AcctOutboxLagHigh
+        expr: max(acct_outbox_lag_seconds) > 60
+        for: 2m
+        labels: { severity: critical, team: payments }
+        annotations:
+          summary: "accounting outbox lag > 60s 持续 2min"
+          description: "outbox dispatcher 落后或卡死，GL 入账延迟。看 `accounting_outbox_worker.Run` 日志。"
+          runbook: "1) 看 outbox FAILED 行  2) 看下游 accounting-system 是否 5xx  3) 必要时 reset claim_token 重发"
+
+      - alert: ChargePendingStuck
+        expr: increase(paycore_charge_total{result="pending"}[10m]) > 100
+            and on(adapter)
+            increase(paycore_charge_total{result="ok"}[10m]) == 0
+        for: 5m
+        labels: { severity: critical, team: payments }
+        annotations:
+          summary: "charge 全部 pending 且无成功，10min 累计 > 100 笔"
+          description: "卡组织 / 渠道挂了，但本地没收到 webhook。reconcile worker 应该会兜底，但量大时人工跟进。"
+
+      - alert: HardDeclineRateSpike
+        expr: |
+          (
+            sum by (network) (rate(paycard_decline_category_total{category="HARD"}[5m]))
+            /
+            (sum by (network) (rate(paycard_authorize_total[5m])) > 0)
+          ) > 0.05
+        for: 5m
+        labels: { severity: warning, team: payments }
+        annotations:
+          summary: "{{ $labels.network }} HARD decline 占比 > 5% 持续 5min"
+          description: "可能：(a) 攻击 / 盗卡试探  (b) 卡组织风控规则变了  (c) 我们的反欺诈错杀。看 audit_log 的 HARD 行 + risk-manage 黑名单候选队列。"
+
+      - alert: RefundFailureRateHigh
+        expr: |
+          (sum(rate(paycore_refund_total{result="error"}[10m]))
+            / sum(rate(paycore_refund_total[10m])))
+          > 0.02
+        for: 10m
+        labels: { severity: warning, team: payments }
+        annotations:
+          summary: "refund 失败率 > 2% 持续 10min"
+          description: "可能商户余额不足 / 渠道接口异常。看 refund_retry_worker 日志。"
+
+  # ─── 网络可用性 ──────────────────────────────────────
+  - name: network_availability
+    interval: 30s
+    rules:
+      - alert: CardNetworkCircuitOpen
+        expr: paycard_circuit_state > 0
+        for: 1m
+        labels: { severity: critical, team: payments }
+        annotations:
+          summary: "卡组织 {{ $labels.network }} 熔断器 OPEN"
+          description: "card-payment 在 fail-fast，等于这家卡组织流量 100% 拒绝。看 paycard_network_error_total / paycard_authorize_duration_seconds 找原因。"
+          runbook: "1) 看 card-payment 日志 'network HARD decline'  2) 必要时 ops curl /ops/circuit/reset?adapter={{ $labels.network }}"
+
+      - alert: CardNetworkCircuitFlapping
+        expr: |
+          rate(paycard_circuit_transitions_total{from="CLOSED",to="OPEN"}[15m]) > 0.005
+        for: 30m
+        labels: { severity: warning, team: payments }
+        annotations:
+          summary: "{{ $labels.network }} 熔断器抖动（15min 内 trip 多次）"
+          description: "可能阈值过敏感或卡组织间歇性故障。考虑放宽 ConsecutiveFailures。"
+
+      - alert: PaymentChannelUnavailable
+        expr: paycore_circuit_state > 0
+        for: 1m
+        labels: { severity: critical, team: payments }
+        annotations:
+          summary: "payment-channel adapter {{ $labels.adapter }} 熔断 OPEN"
+
+  # ─── 服务健康 ──────────────────────────────────────
+  - name: service_health
+    interval: 30s
+    rules:
+      - alert: ServiceDown
+        # 任何服务 /healthz 抓不到（kubelet probe 失败 / pod restart）
+        # up 是 prometheus 抓 target 内置指标
+        expr: up{job=~"payment-.*|card-.*|order-.*|user-merchant-.*|kms-.*|risk-.*|accounting-.*"} == 0
+        for: 2m
+        labels: { severity: critical, team: payments }
+        annotations:
+          summary: "{{ $labels.job }} ({{ $labels.instance }}) 抓不到指标 2min"
+
+      - alert: DependencyDown
+        expr: paycard_dependency_up == 0
+        for: 1m
+        labels: { severity: critical, team: payments }
+        annotations:
+          summary: "card-payment 下游依赖 {{ $labels.dependency }} 不可用"
+          description: "/readyz 已自动 503。K8s 应该已经摘流量。看下游服务自身。"
+
+      - alert: BulkheadSaturated
+        expr: paycard_bulkhead_active / paycard_bulkhead_capacity > 0.8
+        for: 3m
+        labels: { severity: warning, team: payments }
+        annotations:
+          summary: "card-payment bulkhead 利用率 > 80% 持续 3min"
+          description: "单 merchant 接近并发上限。可能：单租户突发 / 容量该扩。"
+
+      - alert: BulkheadRejecting
+        expr: rate(paycard_bulkhead_rejected_total[5m]) > 1
+        for: 5m
+        labels: { severity: warning, team: payments }
+        annotations:
+          summary: "card-payment bulkhead 持续拒绝 (> 1/s 5min)"
+          description: "单 merchant 死循环 / 攻击 / 容量不足。盯具体 merchant_id 排查。"
+
+  # ─── DB / 连接池 ──────────────────────────────────────
+  - name: database
+    interval: 30s
+    rules:
+      - alert: DBPoolExhausted
+        expr: |
+          sum by (instance) (paycore_db_pool_in_use_conns)
+            / sum by (instance) (paycore_db_pool_max_open_conns)
+          > 0.9
+        for: 3m
+        labels: { severity: critical, team: payments }
+        annotations:
+          summary: "DB 连接池 {{ $labels.instance }} 利用率 > 90% 持续 3min"
+          description: "任何写入都会排队。检查慢 SQL / 死锁 / 池配置。"
+
+      - alert: DBPoolWaitHigh
+        expr: rate(paycore_db_pool_wait_count[5m]) > 5
+        for: 5m
+        labels: { severity: warning, team: payments }
+        annotations:
+          summary: "DB 等待获取连接 > 5/s 持续 5min"
+
+  # ─── 审计 / 合规 ──────────────────────────────────────
+  - name: compliance
+    interval: 1m
+    rules:
+      - alert: AuditKafkaLag
+        expr: kafka_consumer_lag{topic="card-center.audit"} > 1000
+        for: 5m
+        labels: { severity: warning, team: compliance }
+        annotations:
+          summary: "audit Kafka topic 落后 > 1000 条"
+          description: "PCI Req 10.7 卸载式存档延迟。下游 sink 慢或挂。"
+
+      - alert: AuditChainBroken
+        # 自定义 metric: audit_log row_hash != sha256(prev_hash || canonical) 时报告
+        expr: increase(audit_chain_verify_failures_total[1h]) > 0
+        for: 1m
+        labels: { severity: critical, team: compliance }
+        annotations:
+          summary: "audit 链式签名校验失败"
+          description: "可能数据被篡改 / row 漏记。立即冻结 admin_audit_log 写入查."
+
+      - alert: KMSKeyAgeOver90Days
+        expr: kms_active_key_age_seconds > 7776000
+        for: 1h
+        labels: { severity: warning, team: compliance }
+        annotations:
+          summary: "KMS active key 已超 90 天 (PCI DSS 3.6.4)"
+          description: "需要触发 key rotation。看 docs/JWT 和 KMS rotation runbook。"
