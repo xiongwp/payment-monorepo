@@ -90,6 +90,7 @@ func (h *AdminHandler) listItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.render(w, "list_items", map[string]any{
+		"Page":      "list_items",
 		"Title":      "All Config Items",
 		"Q":          q,
 		"Subscriber": sub,
@@ -103,6 +104,7 @@ func (h *AdminHandler) newItem(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		h.render(w, "new_item", map[string]any{
+		"Page":      "new_item",
 			"Title": "New Config Item",
 			// 候选 subscriber 列表（也是 namespace 列表）
 			"Services": []string{
@@ -212,6 +214,7 @@ func (h *AdminHandler) index(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	h.render(w, "index", map[string]any{
+		"Page":      "index",
 		"Title":  "Config Center — 全平台动态配置统一入口",
 		"Groups": groups,
 	})
@@ -242,6 +245,7 @@ func (h *AdminHandler) listKeys(w http.ResponseWriter, r *http.Request, ns strin
 		return
 	}
 	h.render(w, "list_keys", map[string]any{
+		"Page":      "list_keys",
 		"Title":     "Namespace: " + ns,
 		"Namespace": ns,
 		"Items":     rows,
@@ -258,6 +262,7 @@ func (h *AdminHandler) keyDetail(w http.ResponseWriter, r *http.Request, ns, key
 	current, _ := h.svc.GetActiveAdmin(r.Context(), ns, key)
 	subs, _ := h.svc.GetSubscribers(r.Context(), ns, key)
 	h.render(w, "key_detail", map[string]any{
+		"Page":      "key_detail",
 		"Title":       ns + "/" + key,
 		"Namespace":   ns,
 		"Key":         key,
@@ -292,6 +297,7 @@ func (h *AdminHandler) diff(w http.ResponseWriter, r *http.Request, ns, key stri
 	}
 	lines := unifiedDiff(a.Value, b.Value)
 	h.render(w, "diff", map[string]any{
+		"Page":      "diff",
 		"Title":     "Diff " + ns + "/" + key,
 		"Namespace": ns,
 		"Key":       key,
@@ -369,6 +375,7 @@ func (h *AdminHandler) keyAction(w http.ResponseWriter, r *http.Request, ns, key
 func (h *AdminHandler) renderEditForm(w http.ResponseWriter, r *http.Request, ns, key string) {
 	cur, _ := h.svc.GetActiveAdmin(r.Context(), ns, key)
 	h.render(w, "edit", map[string]any{
+		"Page":      "edit",
 		"Title":     "Edit " + ns + "/" + key,
 		"Namespace": ns,
 		"Key":       key,
@@ -449,6 +456,7 @@ func (h *AdminHandler) audit(w http.ResponseWriter, r *http.Request) {
 	// 取最近 100 条 audit log
 	rows, _ := h.svc.RecentAudit(r.Context(), 100)
 	h.render(w, "audit", map[string]any{
+		"Page":      "audit",
 		"Title": "Audit Log",
 		"Rows":  rows,
 	})
@@ -784,28 +792,26 @@ const adminTemplates = `
 {{define "audit"}}{{template "layout" .}}{{end}}
 
 {{define "body"}}
-{{- /* body 按页面类型 dispatch；layout 调本块时根据 .Title 关键词分支 */ -}}
+{{- /* body 按 .Page 字段显式 dispatch；每个分支独立处理空数据 */ -}}
 
-{{if .Groups}}
-{{- /* 首页：全平台 12 namespace 按业务角色分组 */ -}}
+{{if eq .Page "index"}}
 <div class="alert alert-info">
   本系统是全平台所有服务的<strong>动态配置统一入口</strong>。
   改任一 key → SDK watch → 集群所有副本秒级 OnChange 热更新。
-  各业务服务原 <code>/admin/config</code> 端点已 410 Gone，请改用本页。
 </div>
 {{range .Groups}}
 <div class="card">
   <div class="card-head">{{.Title}}</div>
   <table>
-    <thead><tr><th>Namespace</th><th>主要配置项</th><th style="width:200px">动作</th></tr></thead>
+    <thead><tr><th>Namespace</th><th>主要配置项</th><th style="width:240px">动作</th></tr></thead>
     <tbody>
     {{range .Items}}
     <tr>
       <td><strong>{{.Name}}</strong></td>
       <td class="muted">{{.Note}}</td>
       <td>
-        <a href="/admin/ns/{{.Name}}">查看 keys</a> ·
-        <a href="/admin/items/new?ns={{.Name}}">新增 key</a>
+        <a class="btn btn-default" href="/admin/ns/{{.Name}}">查看 keys</a>
+        <a class="btn" href="/admin/items/new?ns={{.Name}}" style="margin-left:6px">+ 新增 key</a>
       </td>
     </tr>
     {{end}}
@@ -814,199 +820,249 @@ const adminTemplates = `
 </div>
 {{end}}
 
-{{else if .Items}}
-{{- /* list_keys：单 namespace 下所有 key */ -}}
-{{if .Namespace}}<p class="muted">Namespace: <b>{{.Namespace}}</b></p>{{end}}
-<p>
-  <a href="/admin/items/new?ns={{.Namespace}}">+ 新增 key</a> |
-  <a href="/admin/">返回首页</a>
-</p>
-<table>
-  <tr><th>Key</th><th>Active Version</th><th>Latest Version</th><th>Updated</th><th>动作</th></tr>
-  {{range .Items}}
-  <tr>
-    <td><a href="/admin/ns/{{$.Namespace}}/{{.KeyName}}">{{.KeyName}}</a></td>
-    <td>v{{.ActiveVersion}}</td>
-    <td>v{{.LatestVersion}}</td>
-    <td class="muted">{{formatTime .UpdatedAt}}</td>
-    <td>
-      <a href="/admin/ns/{{$.Namespace}}/{{.KeyName}}/edit">编辑</a>
-    </td>
-  </tr>
-  {{end}}
-</table>
-{{if eq (len .Items) 0}}
-<p class="muted">本 namespace 暂无 key。点 <a href="/admin/items/new?ns={{.Namespace}}">+ 新增 key</a> 写第一条。</p>
-{{end}}
-
-{{else if .Versions}}
-{{- /* key_detail：单 key 历史版本 + 当前 active */ -}}
-<p class="muted">
-  <a href="/admin/ns/{{.Namespace}}">← {{.Namespace}}</a> /
-  <b>{{.Key}}</b>
-</p>
-{{if .Current}}
-<h2>当前生效</h2>
-<table>
-  <tr><th>Version</th><td>v{{.Current.Version}}</td></tr>
-  <tr><th>Strategy</th><td><span class="badge b-{{.Current.Strategy | printf "%s" | toLower}}">{{.Current.Strategy}}</span></td></tr>
-  <tr><th>Format</th><td>{{.Current.Format}}</td></tr>
-  <tr><th>Effective</th><td>{{formatTime .Current.EffectiveAt}}</td></tr>
-  <tr><th>Expire</th><td>{{formatTime .Current.ExpireAt}}</td></tr>
-  <tr><th>Updated By</th><td>{{.Current.CreatedBy}}</td></tr>
-  <tr><th>Reason</th><td>{{.Current.ChangeReason}}</td></tr>
-  <tr><th>Value</th><td><pre>{{truncate .Current.Value 1024}}</pre></td></tr>
-</table>
-<p>
-  <a href="/admin/ns/{{.Namespace}}/{{.Key}}/edit">编辑（产新版本）</a>
-</p>
-{{end}}
-
-{{if .Subscribers}}
-<h3>订阅服务</h3>
-<p>{{range .Subscribers}}<span class="badge b-full">{{.}}</span> {{end}}</p>
-{{end}}
-
-<h2>历史版本</h2>
-<table>
-  <tr><th>Version</th><th>Strategy</th><th>Created By</th><th>Created At</th><th>Reason</th><th>动作</th></tr>
-  {{range .Versions}}
-  <tr>
-    <td>v{{.Version}}</td>
-    <td><span class="badge b-{{.Strategy | printf "%s" | toLower}}">{{.Strategy}}</span></td>
-    <td>{{.CreatedBy}}</td>
-    <td class="muted">{{formatTime .CreatedAt}}</td>
-    <td class="muted">{{truncate .ChangeReason 64}}</td>
-    <td>
-      {{if $.Current}}{{if ne .Version $.Current.Version}}
-      <form method="POST" action="/admin/ns/{{$.Namespace}}/{{$.Key}}/rollback" style="display:inline">
-        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-        <input type="hidden" name="to" value="{{.Version}}">
-        <input type="text" name="reason" placeholder="rollback 原因" style="width:120px;display:inline">
-        <button type="submit" onclick="return confirm('确认回滚到 v{{.Version}}？')">回滚</button>
-      </form>
-      <a href="/admin/ns/{{$.Namespace}}/{{$.Key}}/diff?from={{.Version}}&to={{$.Current.Version}}">diff</a>
-      {{end}}{{end}}
-    </td>
-  </tr>
-  {{end}}
-</table>
-
-{{else if .Lines}}
-{{- /* diff 页 */ -}}
-<p class="muted">
-  <a href="/admin/ns/{{.Namespace}}/{{.Key}}">← {{.Namespace}}/{{.Key}}</a> diff
-  v{{.From.Version}} → v{{.To.Version}}
-</p>
-<table>
-  <tr><th>old</th><th>new</th><th>kind</th><th>line</th></tr>
-  {{range .Lines}}
-  <tr>
-    <td class="muted">{{if .OldNum}}{{.OldNum}}{{end}}</td>
-    <td class="muted">{{if .NewNum}}{{.NewNum}}{{end}}</td>
-    <td><span class="badge b-{{.Kind}}">{{.Kind}}</span></td>
-    <td><pre>{{.Text}}</pre></td>
-  </tr>
-  {{end}}
-</table>
-
-{{else if .Services}}
-{{- /* new_item：新增配置 */ -}}
-<form method="POST" action="/admin/items/new">
-  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-  <div class="row"><label>Namespace</label>
-    <select name="namespace">
-      {{range .Services}}<option value="{{.}}">{{.}}</option>{{end}}
-    </select>
+{{else if eq .Page "list_keys"}}
+<div class="toolbar">
+  <a class="btn" href="/admin/items/new?ns={{.Namespace}}">+ 新增 key</a>
+  <a class="btn btn-default" href="/admin/">← 返回首页</a>
+</div>
+<div class="card">
+  <div class="card-head">{{.Namespace}} keys</div>
+  {{if eq (len .Items) 0}}
+  <div class="card-body">
+    <p class="muted">本 namespace 暂无 key。</p>
+    <a class="btn" href="/admin/items/new?ns={{.Namespace}}">+ 写第一条 key</a>
   </div>
-  <div class="row"><label>Key</label><input name="key" required placeholder="e.g. rate_limit.rps"></div>
-  <div class="row"><label>Format</label>
-    <select name="format">
-      <option value="json">json</option>
-      <option value="plain">plain</option>
-      <option value="yaml">yaml</option>
-    </select>
-  </div>
-  <div class="row"><label>Strategy</label>
-    <select name="strategy">
-      <option value="FULL">FULL（全量）</option>
-      <option value="CANARY">CANARY（灰度）</option>
-      <option value="TARGETED">TARGETED（白名单）</option>
-      <option value="SCHEDULED">SCHEDULED（按时生效）</option>
-    </select>
-  </div>
-  <div class="row"><label>Value</label><textarea name="value" rows="6" required></textarea></div>
-  <div class="row"><label>订阅服务（多选）</label>
-    {{range .Services}}<label style="display:inline;margin-right:12px"><input type="checkbox" name="subscribers" value="{{.}}" style="width:auto"> {{.}}</label>{{end}}
-  </div>
-  <div class="row"><label>Reason</label><input name="reason" placeholder="变更说明"></div>
-  <div class="row"><button type="submit">创建</button></div>
-</form>
-
-{{else if .Current}}
-{{- /* edit 页：单 key 的编辑表单（产新 version） */ -}}
-<p class="muted">
-  <a href="/admin/ns/{{.Namespace}}/{{.Key}}">← {{.Namespace}}/{{.Key}}</a> 编辑
-</p>
-<form method="POST" action="/admin/ns/{{.Namespace}}/{{.Key}}/put">
-  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-  <div class="row"><label>Format</label>
-    <select name="format">
-      <option value="json"{{if eq .Current.Format "json"}} selected{{end}}>json</option>
-      <option value="plain"{{if eq .Current.Format "plain"}} selected{{end}}>plain</option>
-      <option value="yaml"{{if eq .Current.Format "yaml"}} selected{{end}}>yaml</option>
-    </select>
-  </div>
-  <div class="row"><label>Strategy</label>
-    <select name="strategy">
-      <option value="FULL"{{if eq .Current.Strategy "FULL"}} selected{{end}}>FULL</option>
-      <option value="CANARY"{{if eq .Current.Strategy "CANARY"}} selected{{end}}>CANARY</option>
-      <option value="TARGETED"{{if eq .Current.Strategy "TARGETED"}} selected{{end}}>TARGETED</option>
-      <option value="SCHEDULED"{{if eq .Current.Strategy "SCHEDULED"}} selected{{end}}>SCHEDULED</option>
-    </select>
-  </div>
-  <div class="row"><label>Strategy Spec (JSON)</label><textarea name="strategy_spec" rows="3">{{.Current.StrategySpec}}</textarea></div>
-  <div class="row"><label>Effective at (RFC3339, 留空立即)</label><input name="effective_at" type="datetime-local"></div>
-  <div class="row"><label>Expire at (留空永不过期)</label><input name="expire_at" type="datetime-local"></div>
-  <div class="row"><label>Value</label><textarea name="value" rows="8" required>{{.Current.Value}}</textarea></div>
-  <div class="row"><label>Reason</label><input name="reason" required placeholder="变更说明（必填，进 audit log）"></div>
-  <div class="row"><button type="submit">提交（产生新版本）</button></div>
-</form>
-
-{{else if .Rows}}
-{{- /* list_items 全平台 + audit 共用 */ -}}
-{{if .Q}}<p class="muted">搜索: <b>{{.Q}}</b>{{if .Subscriber}} (sub={{.Subscriber}}){{end}}</p>{{end}}
-<form method="GET" style="margin-bottom:12px">
-  <input name="q" value="{{.Q}}" placeholder="按 key/namespace 模糊搜索" style="width:280px;display:inline">
-  <input name="sub" value="{{.Subscriber}}" placeholder="订阅服务过滤" style="width:200px;display:inline">
-  <button type="submit">搜</button>
-</form>
-<table>
-  {{- /* list_items rows are *ConfigItemView, audit rows are *ConfigAuditEntry — 字段不同分支 */ -}}
-  {{range .Rows}}
-    {{if .KeyName}}
-      {{- /* ConfigItemView */ -}}
-      <tr>
-        <td><a href="/admin/ns/{{.Namespace}}/{{.KeyName}}">{{.Namespace}} / {{.KeyName}}</a></td>
-        <td>v{{.ActiveVersion}}</td>
-        <td class="muted">{{formatTime .UpdatedAt}}</td>
-      </tr>
-    {{else}}
-      {{- /* ConfigAuditEntry */ -}}
-      <tr>
-        <td class="muted">{{formatTime .CreatedAt}}</td>
-        <td><span class="badge b-full">{{.Op}}</span></td>
-        <td><a href="/admin/ns/{{.Namespace}}/{{.KeyName}}">{{.Namespace}}/{{.KeyName}}</a></td>
-        <td>{{.Actor}}</td>
-        <td class="muted">{{truncate .ChangeReason 80}}</td>
-      </tr>
+  {{else}}
+  <table>
+    <thead><tr><th>Key</th><th style="width:120px">Active</th><th style="width:120px">Latest</th><th style="width:180px">Updated</th><th style="width:100px">动作</th></tr></thead>
+    <tbody>
+    {{range .Items}}
+    <tr>
+      <td><a href="/admin/ns/{{$.Namespace}}/{{.KeyName}}">{{.KeyName}}</a></td>
+      <td>v{{.ActiveVersion}}</td>
+      <td>v{{.LatestVersion}}</td>
+      <td class="muted">{{formatTime .UpdatedAt}}</td>
+      <td><a href="/admin/ns/{{$.Namespace}}/{{.KeyName}}/edit">编辑</a></td>
+    </tr>
     {{end}}
+    </tbody>
+  </table>
   {{end}}
-</table>
-{{if eq (len .Rows) 0}}<p class="muted">无数据</p>{{end}}
+</div>
+
+{{else if eq .Page "key_detail"}}
+<div class="toolbar">
+  <a class="btn" href="/admin/ns/{{.Namespace}}/{{.Key}}/edit">编辑（产新版本）</a>
+  <a class="btn btn-default" href="/admin/ns/{{.Namespace}}">← 返回 {{.Namespace}}</a>
+</div>
+{{if .Current}}
+<div class="card">
+  <div class="card-head">当前生效 v{{.Current.Version}}</div>
+  <div class="card-body">
+    <table>
+      <tr><th style="width:140px">Strategy</th><td><span class="badge b-{{.Current.Strategy}}">{{.Current.Strategy}}</span></td></tr>
+      <tr><th>Format</th><td>{{.Current.Format}}</td></tr>
+      <tr><th>Effective</th><td>{{formatTime .Current.EffectiveAt}}</td></tr>
+      <tr><th>Expire</th><td>{{formatTime .Current.ExpireAt}}</td></tr>
+      <tr><th>Updated By</th><td>{{.Current.CreatedBy}}</td></tr>
+      <tr><th>Reason</th><td class="muted">{{.Current.ChangeReason}}</td></tr>
+      <tr><th>Value</th><td><pre>{{truncate .Current.Value 2048}}</pre></td></tr>
+    </table>
+  </div>
+</div>
+{{end}}
+{{if .Subscribers}}
+<div class="card">
+  <div class="card-head">订阅服务</div>
+  <div class="card-body">{{range .Subscribers}}<span class="badge b-FULL">{{.}}</span> {{end}}</div>
+</div>
+{{end}}
+<div class="card">
+  <div class="card-head">历史版本</div>
+  {{if eq (len .Versions) 0}}
+  <div class="card-body"><p class="muted">无历史版本</p></div>
+  {{else}}
+  <table>
+    <thead><tr><th>Version</th><th>Strategy</th><th>Created By</th><th>Created At</th><th>Reason</th><th style="width:300px">动作</th></tr></thead>
+    <tbody>
+    {{range .Versions}}
+    <tr>
+      <td>v{{.Version}}</td>
+      <td><span class="badge b-{{.Strategy}}">{{.Strategy}}</span></td>
+      <td>{{.CreatedBy}}</td>
+      <td class="muted">{{formatTime .CreatedAt}}</td>
+      <td class="muted">{{truncate .ChangeReason 64}}</td>
+      <td>
+        {{if $.Current}}{{if ne .Version $.Current.Version}}
+        <form method="POST" action="/admin/ns/{{$.Namespace}}/{{$.Key}}/rollback" style="display:inline-flex;gap:4px;align-items:center">
+          <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+          <input type="hidden" name="to" value="{{.Version}}">
+          <input type="text" name="reason" placeholder="rollback 原因" style="width:140px">
+          <button class="btn btn-danger" type="submit" onclick="return confirm('确认回滚到 v{{.Version}}？')">回滚</button>
+        </form>
+        <a class="btn btn-default" href="/admin/ns/{{$.Namespace}}/{{$.Key}}/diff?from={{.Version}}&to={{$.Current.Version}}">diff</a>
+        {{end}}{{end}}
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+
+{{else if eq .Page "diff"}}
+<div class="toolbar">
+  <a class="btn btn-default" href="/admin/ns/{{.Namespace}}/{{.Key}}">← 返回 {{.Namespace}}/{{.Key}}</a>
+</div>
+<div class="card">
+  <div class="card-head">Diff v{{.From.Version}} → v{{.To.Version}}</div>
+  <table>
+    <thead><tr><th style="width:60px">old</th><th style="width:60px">new</th><th style="width:80px">kind</th><th>line</th></tr></thead>
+    <tbody>
+    {{range .Lines}}
+    <tr>
+      <td class="muted">{{if .OldNum}}{{.OldNum}}{{end}}</td>
+      <td class="muted">{{if .NewNum}}{{.NewNum}}{{end}}</td>
+      <td><span class="badge b-{{.Kind}}">{{.Kind}}</span></td>
+      <td><pre>{{.Text}}</pre></td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{else if eq .Page "edit"}}
+<div class="toolbar">
+  <a class="btn btn-default" href="/admin/ns/{{.Namespace}}/{{.Key}}">← 返回 {{.Namespace}}/{{.Key}}</a>
+</div>
+<div class="card">
+  <div class="card-head">编辑 {{.Namespace}}/{{.Key}}（提交后产新版本）</div>
+  <div class="card-body">
+    <form method="POST" action="/admin/ns/{{.Namespace}}/{{.Key}}/put">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <div class="row"><label>Format</label>
+        <select name="format">
+          <option value="json"{{if and .Current (eq .Current.Format "json")}} selected{{end}}>json</option>
+          <option value="plain"{{if and .Current (eq .Current.Format "plain")}} selected{{end}}>plain</option>
+          <option value="yaml"{{if and .Current (eq .Current.Format "yaml")}} selected{{end}}>yaml</option>
+        </select>
+      </div>
+      <div class="row"><label>Strategy（发布策略）</label>
+        <select name="strategy">
+          <option value="FULL"{{if and .Current (eq .Current.Strategy "FULL")}} selected{{end}}>FULL（全量推送）</option>
+          <option value="CANARY"{{if and .Current (eq .Current.Strategy "CANARY")}} selected{{end}}>CANARY（灰度）</option>
+          <option value="TARGETED"{{if and .Current (eq .Current.Strategy "TARGETED")}} selected{{end}}>TARGETED（白名单）</option>
+          <option value="SCHEDULED"{{if and .Current (eq .Current.Strategy "SCHEDULED")}} selected{{end}}>SCHEDULED（按时生效）</option>
+        </select>
+      </div>
+      <div class="row"><label>Strategy Spec (JSON，CANARY/TARGETED 用)</label><textarea name="strategy_spec" rows="2">{{if .Current}}{{.Current.StrategySpec}}{{end}}</textarea></div>
+      <div class="row"><label>Effective at（留空立即生效）</label><input name="effective_at" type="datetime-local"></div>
+      <div class="row"><label>Expire at（留空永不过期）</label><input name="expire_at" type="datetime-local"></div>
+      <div class="row"><label>Value</label><textarea name="value" rows="10" required>{{if .Current}}{{.Current.Value}}{{end}}</textarea></div>
+      <div class="row"><label>变更说明（必填，写入 audit log）</label><input name="reason" required></div>
+      <div class="row"><button class="btn" type="submit">提交（产新版本）</button></div>
+    </form>
+  </div>
+</div>
+
+{{else if eq .Page "new_item"}}
+<div class="toolbar">
+  <a class="btn btn-default" href="/admin/">← 返回首页</a>
+</div>
+<div class="card">
+  <div class="card-head">新增 Config Item</div>
+  <div class="card-body">
+    <form method="POST" action="/admin/items/new">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <div class="row"><label>Namespace</label>
+        <select name="namespace">
+          {{range .Services}}<option value="{{.}}">{{.}}</option>{{end}}
+        </select>
+      </div>
+      <div class="row"><label>Key</label><input name="key" required placeholder="e.g. rate_limit.rps"></div>
+      <div class="row"><label>Format</label>
+        <select name="format">
+          <option value="json">json</option>
+          <option value="plain">plain</option>
+          <option value="yaml">yaml</option>
+        </select>
+      </div>
+      <div class="row"><label>Strategy</label>
+        <select name="strategy">
+          <option value="FULL">FULL（全量）</option>
+          <option value="CANARY">CANARY（灰度）</option>
+          <option value="TARGETED">TARGETED（白名单）</option>
+          <option value="SCHEDULED">SCHEDULED（按时生效）</option>
+        </select>
+      </div>
+      <div class="row"><label>Value</label><textarea name="value" rows="6" required></textarea></div>
+      <div class="row"><label>订阅服务（多选 — 哪些 service 也需要这个 key）</label>
+        <div style="padding:8px 0">
+        {{range .Services}}<label style="display:inline-block;margin-right:14px;font-weight:normal"><input type="checkbox" name="subscribers" value="{{.}}" style="width:auto;margin-right:4px"> {{.}}</label>{{end}}
+        </div>
+      </div>
+      <div class="row"><label>变更说明</label><input name="reason" placeholder="为什么新增"></div>
+      <div class="row"><button class="btn" type="submit">创建</button></div>
+    </form>
+  </div>
+</div>
+
+{{else if eq .Page "list_items"}}
+<div class="card">
+  <div class="card-head">全平台 Config 检索</div>
+  <div class="card-body">
+    <form method="GET" class="toolbar">
+      <input name="q" value="{{.Q}}" placeholder="按 key/namespace 模糊搜" style="width:280px">
+      <input name="sub" value="{{.Subscriber}}" placeholder="订阅服务过滤" style="width:200px">
+      <button class="btn" type="submit">搜索</button>
+    </form>
+  </div>
+  {{if eq (len .Rows) 0}}
+  <div class="card-body"><p class="muted">无匹配结果</p></div>
+  {{else}}
+  <table>
+    <thead><tr><th>Namespace / Key</th><th style="width:100px">Active</th><th style="width:180px">Updated</th></tr></thead>
+    <tbody>
+    {{range .Rows}}
+    <tr>
+      <td><a href="/admin/ns/{{.Namespace}}/{{.KeyName}}">{{.Namespace}} / {{.KeyName}}</a></td>
+      <td>v{{.ActiveVersion}}</td>
+      <td class="muted">{{formatTime .UpdatedAt}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+
+{{else if eq .Page "audit"}}
+<div class="card">
+  <div class="card-head">审计日志（最近 100 条）</div>
+  {{if eq (len .Rows) 0}}
+  <div class="card-body"><p class="muted">无审计记录</p></div>
+  {{else}}
+  <table>
+    <thead><tr><th style="width:170px">时间</th><th style="width:100px">Op</th><th>Namespace / Key</th><th style="width:140px">Actor</th><th>Reason</th></tr></thead>
+    <tbody>
+    {{range .Rows}}
+    <tr>
+      <td class="muted">{{formatTime .CreatedAt}}</td>
+      <td><span class="badge b-FULL">{{.Op}}</span></td>
+      <td><a href="/admin/ns/{{.Namespace}}/{{.KeyName}}">{{.Namespace}} / {{.KeyName}}</a></td>
+      <td>{{.Actor}}</td>
+      <td class="muted">{{truncate .ChangeReason 80}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
 
 {{else}}
-<p class="muted">空页（路由没匹配到模板分支）</p>
+<div class="alert alert-info">
+  未知页面 (Page=<code>{{.Page}}</code>)。
+  <a href="/admin/">返回首页</a>
+</div>
 {{end}}
 {{end}}
 `
