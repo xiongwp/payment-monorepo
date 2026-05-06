@@ -225,31 +225,23 @@ CREATE TABLE IF NOT EXISTS `service_instance` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='accounting-system 服务实例注册表';
 
 -- ============================================
--- 系统配置表 (system_config)
--- 通用 key-value 配置中心：value 用 JSON 存储，可承载 string / number / array / object。
--- 读：服务启动时全量 load 进内存 + 60s 兜底轮询 + admin-web 改动后立即扇出 reload。
--- 写：admin-web /admin/config 端点，权限受 X-Admin-Token 保护。
+-- 系统配置（system_config）已删除（v2 迁到 config-center 服务）。
 --
--- value_type 是给前端编辑器的 hint，不是后端校验：
---   string / int / bool / json (任意结构)
+-- 历史：本表是 accounting-system 内置的山寨 key-value 配置中心，被
+--       SystemConfigService.GetXxx 当作 hot-path 读源，admin-web 改后
+--       走 /admin/reload/config 扇出。
+--
+-- 现状（v2）：
+--   - 全平台统一 config-center 服务（packages/config-center）已上线
+--   - 业务侧 SystemConfigService 现在 wrap configcenter SDK，namespace =
+--     "accounting-system"，key 名 1:1 保留
+--   - admin 写操作改走 config-center admin web /admin/ns/accounting-system
+--   - 历史 7 个种子 key 在首次部署 config-center 时由运维人工 seed：
+--       tcc_recovery.stuck_timeout_minutes  = 5
+--       outbox.poll_interval_ms             = 100
+--       outbox.batch_size                   = 500
+--       day_cut.chunk_size                  = 100000
+--       outbox_backpressure.high_threshold  = 5000
+--       outbox_backpressure.low_threshold   = 1000
+--       outbox_backpressure.shrink_ratio    = 0.5
 -- ============================================
-CREATE TABLE IF NOT EXISTS `system_config` (
-    `config_key`   VARCHAR(128) NOT NULL COMMENT '配置键，如 "tcc_recovery.stuck_timeout_minutes"',
-    `value_json`   JSON         NOT NULL COMMENT '值（JSON 编码，可表达 string/number/array/object）',
-    `value_type`   VARCHAR(16)  NOT NULL DEFAULT 'string' COMMENT '类型提示：string/int/bool/json',
-    `description`  VARCHAR(512) DEFAULT NULL COMMENT '说明，admin-web 编辑界面展示',
-    `updated_by`   VARCHAR(64)  DEFAULT NULL COMMENT '最近修改人（admin 用户）',
-    `updated_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    `created_at`   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (`config_key`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='系统通用 key-value 配置中心';
-
--- 初始化常用 keys（admin 可改、可加新）
-INSERT IGNORE INTO `system_config` (`config_key`, `value_json`, `value_type`, `description`) VALUES
-    ('tcc_recovery.stuck_timeout_minutes', '5',       'int',    'TRYING/CONFIRMING 多少分钟未更新视为悬挂，触发恢复'),
-    ('outbox.poll_interval_ms',            '100',     'int',    'OutboxWorker MySQLWriter 轮询间隔（毫秒）'),
-    ('outbox.batch_size',                  '500',     'int',    'OutboxWorker 单批最多消费多少条 REDIS_DONE'),
-    ('day_cut.chunk_size',                 '100000',  'int',    'Day-cut 单次 chunk 处理多少 tx-id'),
-    ('outbox_backpressure.high_threshold', '5000',    'int',    'Outbox pending 超过此值收缩 max_inflight'),
-    ('outbox_backpressure.low_threshold',  '1000',    'int',    'Outbox pending 低于此值恢复 max_inflight'),
-    ('outbox_backpressure.shrink_ratio',   '0.5',     'json',   '收缩到原 max_inflight 的比例 (0,1)');

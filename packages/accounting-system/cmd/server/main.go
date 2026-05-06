@@ -25,6 +25,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	promdto "github.com/prometheus/client_model/go"
 	"github.com/spf13/viper"
+	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/trace"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -70,7 +71,6 @@ func main() {
 				repository.NewBatchOrderRepository,
 				repository.NewBalanceBufferRepository,
 				repository.NewHotAccountRepository,
-				repository.NewSystemConfigRepository,
 				repository.NewBufferAccountRepository,
 				repository.NewAccountBusinessTypeRepository,
 				repository.NewServiceInstanceRepository,
@@ -84,6 +84,7 @@ func main() {
 		fx.Module("service",
 			fx.Decorate(func(l *logging.Loggers) *zap.Logger { return l.Service }),
 			fx.Provide(
+				NewConfigCenterClient,
 				service.NewAccountingService,
 				service.NewHotPathEnabler,
 				service.NewTccService,
@@ -1020,4 +1021,55 @@ func warmupHotAccounts(parentCtx context.Context, allowlist []string,
 		zap.Int64("failed", failed.Load()),
 		zap.Duration("duration", time.Since(start)),
 	)
+}
+
+// NewConfigCenterClient 启动期同步 Bind 全平台 config-center；失败 fail-fast。
+//
+// **替代**：原本 system_config 表 + 山寨 reload 机制；现在用 SDK 走 HTTP+SSE
+// 跟 packages/config-center 服务对接，本地 cache 双版本（active + pending）+
+// atomic.Pointer 零锁读。
+//
+// config-center 不可达：
+//   - dev: 只 warn，业务用 GetXxx default 兜底（service 层都接受 def 参数）
+//   - prod: 拒绝启动（防服务带空 cache 上线读 default 行为不符合预期）
+//
+// 配置（yaml 或 env）：
+//   configcenter.endpoint    = "http://config-center:9691"
+//   configcenter.namespace   = "accounting-system"
+//   configcenter.instance_id = HOSTNAME / POD_NAME
+func NewConfigCenterClient(v *viper.Viper, logger *zap.Logger) (*configcenter.Client, error) {
+	endpoint := v.GetString("configcenter.endpoint")
+	if endpoint == "" {
+		endpoint = "http://config-center:9691"
+	}
+	namespace := v.GetString("configcenter.namespace")
+	if namespace == "" {
+		namespace = "accounting-system"
+	}
+	instanceID := v.GetString("configcenter.instance_id")
+	if instanceID == "" {
+		instanceID, _ = os.Hostname()
+	}
+	rpc := configcenter.NewHTTPClient(endpoint, nil)
+	cli, err := configcenter.NewWithRPC(rpc, configcenter.Config{
+		Namespace:        namespace,
+		InstanceID:       instanceID,
+		ReconnectBackoff: 1 * time.Second,
+		InitTimeout:      10 * time.Second,
+		Logger:           logger,
+	})
+	if err != nil {
+		env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+		if env == "prod" || env == "production" {
+			return nil, fmt.Errorf("config-center init failed (prod fail-fast): %w", err)
+		}
+		logger.Warn("config-center init failed; dev mode degrades to all-defaults", zap.Error(err))
+		// dev：返一个 nil-cli wrapper；service 层 nil-check 走 def
+		return nil, nil
+	}
+	logger.Info("config-center connected",
+		zap.String("endpoint", endpoint),
+		zap.String("namespace", namespace),
+		zap.String("instance_id", instanceID))
+	return cli, nil
 }

@@ -50,10 +50,9 @@ type Server struct {
 	instanceRepo     repository.ServiceInstanceRepository
 	hotAccountRepo   repository.HotAccountRepository
 	ruleRepo         repository.TransactionRuleRepository // 用于 ListAccountTypes
-	sysConfigRepo    repository.SystemConfigRepository    // admin-web "系统配置"页
 	accountingSvc    service.AccountingService
 	dayCutSvc        service.DayCutService                // 用于 /admin/day-cut/resume
-	systemConfigSvc  service.SystemConfigService          // 系统通用 key-value 配置中心
+	systemConfigSvc  service.SystemConfigService          // wrap config-center SDK；保留 Reload 入口给 ConfigSyncWorker
 	tccArchiveWorker *service.TccArchiveWorker            // 支持 admin-web 触发立即归档
 	bufferedBalWk    *service.BufferedBalanceWorker       // 支持 /admin/buffered-balance/flush 立即 flush
 	pinger           HealthPinger                         // readiness DB ping，可选（nil = 仅检查 draining）
@@ -91,7 +90,6 @@ func NewServer(
 	instanceRepo repository.ServiceInstanceRepository,
 	hotAccountRepo repository.HotAccountRepository,
 	ruleRepo repository.TransactionRuleRepository,
-	sysConfigRepo repository.SystemConfigRepository,
 	accountingSvc service.AccountingService,
 	dayCutSvc service.DayCutService,
 	systemConfigSvc service.SystemConfigService,
@@ -129,7 +127,6 @@ func NewServer(
 		instanceRepo:     instanceRepo,
 		hotAccountRepo:   hotAccountRepo,
 		ruleRepo:         ruleRepo,
-		sysConfigRepo:    sysConfigRepo,
 		accountingSvc:    accountingSvc,
 		dayCutSvc:        dayCutSvc,
 		systemConfigSvc:  systemConfigSvc,
@@ -146,10 +143,10 @@ func NewServer(
 	mux.HandleFunc("/admin/reload/buffer-accounts", s.handleReloadBufferAccounts)
 	mux.HandleFunc("/admin/reload/hot-accounts", s.handleReloadHotAccounts)
 	mux.HandleFunc("/admin/reload/business-types", s.handleReloadBusinessTypes)  // 增加 business_type 后扇出触发
-	mux.HandleFunc("/admin/reload/config", s.handleReloadSystemConfig)           // 系统配置变更后扇出触发
+	mux.HandleFunc("/admin/reload/config", s.handleSystemConfigDeprecated)       // v2: 系统配置归 config-center；本端点 410 Gone
 	mux.HandleFunc("/admin/reload/transaction-rules", s.handleReloadTransactionRules) // 改完 transaction_rule / account_type_info 后扇出触发
-	mux.HandleFunc("/admin/config", s.handleSystemConfig)                        // GET 列出 / POST 新增或更新
-	mux.HandleFunc("/admin/config/", s.handleSystemConfigByKey)                  // DELETE /admin/config/{key}
+	mux.HandleFunc("/admin/config", s.handleSystemConfigDeprecated)              // v2: 410 Gone, 走 config-center
+	mux.HandleFunc("/admin/config/", s.handleSystemConfigDeprecated)             // v2: 410 Gone
 	mux.HandleFunc("/admin/hot-accounts/", s.handleHotAccountByID) // PUT/DELETE /{id}
 	mux.HandleFunc("/admin/hot-accounts", s.handleHotAccounts)     // GET/POST
 	// 系统内部账户管理（平台 / 中间 / 手续费 / 权益 / 中转）
@@ -747,86 +744,15 @@ func (s *Server) handleDayCutResume(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleSystemConfig 处理 /admin/config：
-//   GET  → 列出本实例 cache 里的所有配置（admin-web "系统配置" 列表展示）
-//   POST → upsert 单条配置 {config_key, value_json, value_type, description, updated_by}
+// handleSystemConfigDeprecated /admin/config /admin/config/* /admin/reload/config
 //
-// 注意：POST 只更新 DB + 本实例 cache。admin-web 端要随后调
-//       /admin/reload/config 扇出到所有 alive instances，确保集群一致。
-func (s *Server) handleSystemConfig(w http.ResponseWriter, r *http.Request) {
-	if s.systemConfigSvc == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "system config not wired"})
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		writeJSON(w, http.StatusOK, s.systemConfigSvc.ListAll())
-	case http.MethodPost:
-		var req struct {
-			ConfigKey   string `json:"config_key"`
-			ValueJSON   string `json:"value_json"`
-			ValueType   string `json:"value_type"`
-			Description string `json:"description"`
-			UpdatedBy   string `json:"updated_by"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
-			return
-		}
-		if err := s.systemConfigSvc.Upsert(r.Context(), req.ConfigKey, req.ValueJSON, req.ValueType, req.Description, req.UpdatedBy); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "upserted", "config_key": req.ConfigKey})
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-// handleSystemConfigByKey DELETE /admin/config/{key}
-func (s *Server) handleSystemConfigByKey(w http.ResponseWriter, r *http.Request) {
-	if s.systemConfigSvc == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "system config not wired"})
-		return
-	}
-	if r.Method != http.MethodDelete {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	key := strings.TrimPrefix(r.URL.Path, "/admin/config/")
-	if key == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "config_key required in path"})
-		return
-	}
-	deleted, err := s.systemConfigSvc.Delete(r.Context(), key)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": deleted, "config_key": key})
-}
-
-// handleReloadSystemConfig POST /admin/reload/config
-// admin-web 在 upsert / delete 后扇出到所有 alive instances 调此端点，让本实例从 DB
-// 重新 load 全表到内存 cache。
-func (s *Server) handleReloadSystemConfig(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.systemConfigSvc == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "system config not wired"})
-		return
-	}
-	count, err := s.systemConfigSvc.Reload(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"message":     "system_config reloaded",
-		"count":       count,
-		"instance_id": s.instanceID,
+// **v2 改造**：accounting-system 的 system_config 表 + 山寨 reload 已删除；
+// 所有写操作改走全平台 config-center 服务（packages/config-center）。本端点
+// 一律返 410 Gone + 引导。
+func (s *Server) handleSystemConfigDeprecated(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusGone, map[string]string{
+		"error": "system_config 已迁到 config-center；请走 PUT /api/v1/configs/accounting-system/<key> " +
+			"或 config-center admin web (/admin/ns/accounting-system)",
 	})
 }
 

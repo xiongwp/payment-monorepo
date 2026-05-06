@@ -1,5 +1,35 @@
 # config-center 状态 & 功能矩阵
 
+## v1.0（生产可跑）— 已完成
+
+| # | v1.0 deliverable | 文件 |
+| --- | --- | --- |
+| 1 | repo GORM 实装（5 核心接口 + admin 查询 + transaction 事务保护） | `internal/repo/repo.go` |
+| 2 | HTTP REST API（GET/PUT/Rollback） + SSE long-stream watch | `internal/server/http_api.go` |
+| 3 | WebSocket / SSE / HTTP 三通道共享同一 service.WatchNamespace channel | 同上（SSE 已 wire；WS 留 hook） |
+| 4 | service 层 admin DTO + AdminRepo 接口（admin handler 不直接 import repo） | `internal/service/admin.go` |
+| 5 | fx main + assertProdSafety + etcd 自注册 + Prometheus | `cmd/server/{main,registry}.go` |
+| 6 | Dockerfile + Makefile（含 `make proto`）+ docker-compose.yml + `config/config.yaml` | 见根目录 |
+| 7 | proto 契约（v1.0 SDK 走 HTTP；proto 给后续 grpc handler wire 用） | `api/proto/configcenter/v1/configcenter.proto` |
+| 8 | SDK HTTP rpcClient（SSE long-stream + 自动重连 + 双版本 cache） | `payment-util/configcenter/httprpc.go` |
+
+**架构选择**：v1.0 SDK ↔ server 走 HTTP+SSE 而非 gRPC，避开沙箱无 protoc 的依赖；服务依然按其他服务的 fx + mTLS + etcd 模板组织。后续 `make proto` 跑过后可在不破坏 SDK 接口的前提下加 gRPC handler（rpcClient 已抽象为接口）。
+
+## 老系统集成 — 第 1 个：accounting-system（v2 已切）
+
+| 删除 | 替换 |
+| --- | --- |
+| `packages/accounting-system/database/metadb/init/init.sql` 中的 `system_config` 表 + 7 条种子 INSERT | 注释保留为人工 seed 清单；config-center 启动后由运维 PUT 一次 |
+| `packages/accounting-system/internal/repository/system_config_repository.go` | 文件物理删除 |
+| `internal/service/system_config_service.go` 的 sync.RWMutex cache + admin POST /reload 扇出 | wrap `payment-util/configcenter.Client`，namespace="accounting-system"，key 1:1 保留 |
+| adminhttp `/admin/config` `/admin/config/{key}` `/admin/reload/config` 真实 handler | 全部映射到 `handleSystemConfigDeprecated` 返 410 Gone + 引导走 config-center admin web |
+
+**业务侧改动**：9 个 caller（accounting_service / outbox_worker / day_cut_scheduler 等）调 `systemConfigSvc.GetInt/GetString/GetBool/GetJSON` **零改动**——接口不变，底层换成 SDK 的纳秒级 atomic.Pointer 读。
+
+**fx 装配**：
+- 删 `repository.NewSystemConfigRepository`
+- 加 `NewConfigCenterClient` provider（main.go 末尾）—— prod 环境 fail-fast；dev 环境 nil 兜底（service 层 nil-check 走 def）。
+
 ## 已完成（v0.1 skeleton）
 
 | # | 功能 | 文件 |
