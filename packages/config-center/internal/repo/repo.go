@@ -149,6 +149,13 @@ func (r *Repo) PutVersion(ctx context.Context, in service.PutVersionInput) (int6
 		newVersion = latestVer + 1
 
 		// 2) 写新 version
+		// strategy_spec 是 MySQL 8 JSON 列，空字符串 "" 会被 MySQL 拒绝
+		// (Error 3140 'The document is empty')。FULL 策略不需要 spec → 空串 ""
+		// 时写 JSON null 字面量（合法 JSON、长度 4 字节）。
+		strategySpec := in.StrategySpec
+		if strategySpec == "" {
+			strategySpec = "null"
+		}
 		ver := &ConfigVersion{
 			Namespace:    in.Namespace,
 			KeyName:      in.Key,
@@ -158,7 +165,7 @@ func (r *Repo) PutVersion(ctx context.Context, in service.PutVersionInput) (int6
 			EffectiveAt:  in.EffectiveAt,
 			ExpireAt:     in.ExpireAt,
 			Strategy:     in.Strategy,
-			StrategySpec: in.StrategySpec,
+			StrategySpec: strategySpec,
 			CreatedBy:    in.Actor,
 			ChangeReason: in.ChangeReason,
 		}
@@ -266,6 +273,11 @@ func (r *Repo) Rollback(ctx context.Context, namespace, key string, toVersion in
 		newVersion = latestVer + 1
 
 		// 复制成新 version；effective_at 设 nil（立即生效）
+		// 同 PutVersion：strategy_spec 为 JSON 列，保证写入合法 JSON。
+		rollbackSpec := src.StrategySpec
+		if rollbackSpec == "" {
+			rollbackSpec = "null"
+		}
 		ver := &ConfigVersion{
 			Namespace:    namespace,
 			KeyName:      key,
@@ -275,7 +287,7 @@ func (r *Repo) Rollback(ctx context.Context, namespace, key string, toVersion in
 			EffectiveAt:  nil,
 			ExpireAt:     src.ExpireAt,
 			Strategy:     src.Strategy,
-			StrategySpec: src.StrategySpec,
+			StrategySpec: rollbackSpec,
 			CreatedBy:    actor,
 			ChangeReason: fmt.Sprintf("rollback to v%d: %s", toVersion, reason),
 		}
