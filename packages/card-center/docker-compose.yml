@@ -12,6 +12,12 @@ networks:
     name: card-internal
     driver: bridge
     internal: true
+  # 共享 payment-stack 网络（外部，跟 config-center 等其他业务栈共用）。
+  # card-center 服务自身需要双归属：默认 card-internal 跟 KMS / DB 通信，
+  # payment-stack 跟 config-center 拉动态配置。
+  payment-stack:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true
 
 x-mysql-base: &mysql-base
   image: mysql:8.0
@@ -54,6 +60,10 @@ services:
         - GITHUB_TOKEN
     image: card-center:latest
     container_name: card-center
+    # 双网络：card-internal 给 DB / KMS，payment-stack 给 config-center 等
+    networks:
+      - default
+      - payment-stack
     depends_on:
       card-meta:    { condition: service_healthy }
       card-shard-0: { condition: service_healthy }

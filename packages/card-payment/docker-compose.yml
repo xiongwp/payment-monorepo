@@ -12,6 +12,9 @@ networks:
   default:
     name: card-internal
     external: true   # 跟 card-center 共享同名 internal 网络
+  payment-stack:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
+    external: true   # 共享业务栈（连 config-center）
 
 x-mysql-base: &mysql-base
   image: mysql:8.0
@@ -55,6 +58,9 @@ services:
         - GITHUB_TOKEN
     image: card-payment:latest
     container_name: card-payment
+    networks:
+      - default
+      - payment-stack
     depends_on:
       cardpay-meta:    { condition: service_healthy }
       cardpay-shard-0: { condition: service_healthy }
