@@ -1,0 +1,52 @@
+# config-center base config（dev 默认）。生产用 config.docker.yaml 覆盖。
+#
+# 注意：本服务**自己**的所有运行时配置都从 yaml 读（DSN / 端口 / mTLS）；
+# 不能反过来从自己拉配置 — 否则启动期死锁。
+env: "dev"
+
+server:
+  # gRPC 端口（mTLS）。SDK 走 HTTP；保留 gRPC 便于未来 protoc 生成后接入。
+  grpc_port: 9690
+  # HTTP 端口（admin UI + SDK REST + SSE watch）；mTLS over HTTPS in prod
+  http_port: 9691
+
+metrics:
+  addr: ":9692"
+
+# mTLS 证书。dev 可选；prod 必填（含 admin HTTP 也要走 mTLS）。
+tls:
+  cert: ""
+  key: ""
+  client_ca: ""
+
+# admin 鉴权：caller 走 user-merchant-core IntrospectToken；启动期 endpoint。
+auth:
+  introspect_endpoint: "user-merchant-core:9090"
+  introspect_timeout: 2s
+  # 写操作必须 mTLS CN 在 allowlist；查询不强制（mTLS 已 gating）
+  admin_write_cn: ["payment-admin-web", "accounting-admin-web"]
+
+database:
+  meta:
+    name: config_center_meta
+    dsn:  ""              # prod 必填；dev 走 docker compose env 注入
+    max_open_conns: 30
+    max_idle_conns: 10
+    conn_max_lifetime: 3600
+
+# Kafka 跨副本 fan-out（多副本部署时启用；单副本留空 = 单实例模式）
+kafka:
+  brokers: []
+  topic: "config-center.events"
+  consumer_group_prefix: "config-center-bridge"
+
+# etcd 自注册（跟其他服务一致）
+registry:
+  endpoints: []                # ["etcd:2379"] for prod
+  service_name: "config-center"
+  ttl: 10s
+  advertise_host: ""           # 留空走 POD_IP / IP autodetect
+
+# 健康探针 / drain
+health:
+  drain_timeout: 30s

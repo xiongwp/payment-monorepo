@@ -1,0 +1,53 @@
+# config-center 联栈：1 个 meta MySQL + config-center 服务。
+#
+# 使用方式：
+#   cd packages/config-center
+#   docker compose up
+#
+# 加入主仓 monorepo 的 deploy.sh 时，由 deploy.sh 注入 monorepo 公共网络
+# （payment-internal）以便其他服务通过 etcd / DNS resolve "config-center"。
+
+version: "3.9"
+
+x-mysql-base: &mysql-base
+  image: mysql:8.0
+  command: ["mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+  environment:
+    MYSQL_ROOT_PASSWORD: ${CONFIG_DB_PASSWORD:-root}
+  healthcheck:
+    test: ["CMD", "mysqladmin", "ping", "-uroot", "-p${CONFIG_DB_PASSWORD:-root}", "--silent"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+
+services:
+  config-meta:
+    <<: *mysql-base
+    container_name: config-meta
+    ports:
+      - "127.0.0.1:13306:3306"
+    volumes:
+      - config-meta-data:/var/lib/mysql
+      - ./database/metadb/init/init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+
+  config-center:
+    image: config-center:dev
+    container_name: config-center
+    depends_on:
+      config-meta:
+        condition: service_healthy
+    ports:
+      - "9690:9690"   # gRPC
+      - "9691:9691"   # HTTP (admin + SDK REST + SSE)
+      - "9692:9692"   # /metrics
+    environment:
+      CFG_ENV: "dev"
+      CFG_DATABASE_META_DSN: "root:${CONFIG_DB_PASSWORD:-root}@tcp(config-meta:3306)/config_center_meta?charset=utf8mb4&parseTime=True&loc=Local"
+      CFG_SERVER_HTTP_PORT: "9691"
+      CFG_SERVER_GRPC_PORT: "9690"
+      CFG_METRICS_ADDR: ":9692"
+    volumes:
+      - ./config:/app/config:ro
+
+volumes:
+  config-meta-data:

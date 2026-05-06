@@ -20,11 +20,11 @@ package server
 
 import (
 	"context"
-	"errors"
 	"html/template"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -461,8 +461,19 @@ func validateCSRF(r *http.Request) bool {
 }
 
 func formatTime(t any) string {
-	// stub for template
-	return "" // 模板里如果有 time.Time 调这个；MVP 先返空
+	switch v := t.(type) {
+	case time.Time:
+		if v.IsZero() {
+			return "—"
+		}
+		return v.Format("2006-01-02 15:04:05")
+	case *time.Time:
+		if v == nil || v.IsZero() {
+			return "—"
+		}
+		return v.Format("2006-01-02 15:04:05")
+	}
+	return ""
 }
 func truncate(s string, n int) string {
 	if len(s) <= n {
@@ -471,13 +482,17 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-// parseRFC3339 admin form 里 datetime-local 提交的格式
-func parseRFC3339(s string) (t Time, err error) {
-	return Time{}, errors.New("not implemented in stub")
+// parseRFC3339 admin form 里 datetime-local 提交的格式（YYYY-MM-DDThh:mm 或完整 RFC3339）。
+func parseRFC3339(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	// HTML datetime-local 格式
+	if t, err := time.ParseInLocation("2006-01-02T15:04", s, time.Local); err == nil {
+		return t, nil
+	}
+	return time.Time{}, &time.ParseError{Layout: time.RFC3339, Value: s}
 }
-
-// Time stub avoids importing time in this MVP shell
-type Time struct{}
 
 // adminTemplates 所有 HTML 模板拼一起。生产建议拆 separate files + embed.FS。
 const adminTemplates = `

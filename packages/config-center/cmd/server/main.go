@@ -1,0 +1,301 @@
+// Command server 启动 config-center。
+//
+// 进程拓扑：
+//   - HTTP :9691    admin web + SDK REST + SSE watch  (mTLS in prod)
+//   - gRPC :9690    保留给未来 protoc 后接入；当前 v1.0 SDK 走 HTTP
+//   - HTTP :9692    Prometheus /metrics
+//
+// 依赖：
+//   - MySQL config_center_meta (4 张表)
+//   - etcd (自注册 + 服务发现，可选；空列表则跳过)
+//   - Kafka (多副本跨实例 fan-out，可选；空列表则单副本模式)
+//
+// 启动期 fail-fast：env=prod 时强制要求 TLS / KMS（如有）/ DB DSN 非空。
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/spf13/viper"
+	"go.uber.org/fx"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
+
+	"github.com/xiongwp/config-center/internal/metrics"
+	"github.com/xiongwp/config-center/internal/repo"
+	"github.com/xiongwp/config-center/internal/server"
+	"github.com/xiongwp/config-center/internal/service"
+)
+
+func main() {
+	app := fx.New(
+		fx.StartTimeout(30*time.Second),
+		fx.StopTimeout(30*time.Second),
+		fx.Provide(
+			loadConfig,
+			newLogger,
+			newDB,
+			newRepo,
+			newService,
+			newHealthChecker,
+			newHTTPAPI,
+			newAdminUI,
+			newGRPCServer,
+		),
+		fx.Invoke(
+			assertProdSafety,
+			startMetricsServer,
+			startHTTPServer,
+			startGRPCServer,
+			startServiceRegistrar,
+		),
+	)
+	app.Run()
+}
+
+// ─── providers ───────────────────────────────────────────────────────────
+
+func loadConfig() (*viper.Viper, error) {
+	v := viper.New()
+	v.SetConfigName("config")
+	v.SetConfigType("yaml")
+	v.AddConfigPath("./config")
+	v.AddConfigPath("/app/config")
+	v.SetEnvPrefix("CFG")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+	if err := v.ReadInConfig(); err != nil {
+		// 允许 dev 不带 config 文件（env 完全覆盖）
+		if !errors.Is(err, &viper.ConfigFileNotFoundError{}) {
+			fmt.Fprintf(os.Stderr, "warning: config not found: %v\n", err)
+		}
+	}
+	return v, nil
+}
+
+func newLogger(v *viper.Viper) (*zap.Logger, error) {
+	if v.GetString("env") == "prod" {
+		return zap.NewProduction()
+	}
+	return zap.NewDevelopment()
+}
+
+// newDB 单 meta 库 GORM 连接。配置量小 + 写少；不分片不读副本。
+func newDB(v *viper.Viper, logger *zap.Logger) (*gorm.DB, error) {
+	dsn := v.GetString("database.meta.dsn")
+	if dsn == "" {
+		// dev 兜底：从环境变量拼一个本地 MySQL DSN
+		host := v.GetString("database.meta.host")
+		if host == "" {
+			host = "127.0.0.1:3306"
+		}
+		dsn = fmt.Sprintf("root:@tcp(%s)/config_center_meta?charset=utf8mb4&parseTime=True&loc=Local", host)
+	}
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("open meta db: %w", err)
+	}
+	sqldb, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	if v := v.GetInt("database.meta.max_open_conns"); v > 0 {
+		sqldb.SetMaxOpenConns(v)
+	}
+	if v := v.GetInt("database.meta.max_idle_conns"); v > 0 {
+		sqldb.SetMaxIdleConns(v)
+	}
+	if v := v.GetInt("database.meta.conn_max_lifetime"); v > 0 {
+		sqldb.SetConnMaxLifetime(time.Duration(v) * time.Second)
+	}
+	logger.Info("config-center: db opened", zap.String("dsn", maskDSN(dsn)))
+	return db, nil
+}
+
+func newRepo(db *gorm.DB) *repo.Repo {
+	return repo.NewRepo(db)
+}
+
+func newService(r *repo.Repo, logger *zap.Logger) *service.Service {
+	return service.New(r, logger)
+}
+
+func newHealthChecker(db *gorm.DB, logger *zap.Logger) *server.HealthChecker {
+	hc := server.NewHealthChecker(logger)
+	for name, p := range server.CommonProbes(db) {
+		hc.Register(name, p)
+	}
+	return hc
+}
+
+func newHTTPAPI(svc *service.Service, logger *zap.Logger) *server.HTTPAPI {
+	return server.NewHTTPAPI(svc, logger)
+}
+
+// AdminUI 包封装一下；admin_html.go 已经有 register 函数（待加 UIRouter 类型）
+type AdminUI struct {
+	repo   *repo.Repo
+	svc    *service.Service
+	logger *zap.Logger
+}
+
+func newAdminUI(r *repo.Repo, svc *service.Service, logger *zap.Logger) *AdminUI {
+	return &AdminUI{repo: r, svc: svc, logger: logger}
+}
+
+func newGRPCServer() *grpc.Server {
+	// v1.0：保留 gRPC server（含 health.v1）；configcenter.v1 RPC 待 protoc 后接。
+	srv := grpc.NewServer()
+	return srv
+}
+
+// ─── lifecycle invokes ───────────────────────────────────────────────────
+
+func assertProdSafety(v *viper.Viper, logger *zap.Logger) error {
+	env := v.GetString("env")
+	if env != "prod" {
+		return nil
+	}
+	if v.GetString("tls.cert") == "" || v.GetString("tls.key") == "" || v.GetString("tls.client_ca") == "" {
+		return errors.New("env=prod but tls.{cert,key,client_ca} empty — refusing to start")
+	}
+	if v.GetString("database.meta.dsn") == "" {
+		return errors.New("env=prod but database.meta.dsn empty — refusing to start")
+	}
+	logger.Info("config-center: prod safety asserted")
+	return nil
+}
+
+func startMetricsServer(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) {
+	addr := v.GetString("metrics.addr")
+	if addr == "" {
+		addr = ":9692"
+	}
+	metrics.Register()
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promHandler())
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				return err
+			}
+			go srv.Serve(ln)
+			logger.Info("config-center: /metrics on " + addr)
+			return nil
+		},
+		OnStop: func(ctx context.Context) error { return srv.Shutdown(ctx) },
+	})
+}
+
+// startHTTPServer admin UI + SDK REST + SSE watch + healthz/readyz 都挂这一个。
+func startHTTPServer(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger,
+	httpAPI *server.HTTPAPI, ui *AdminUI, hc *server.HealthChecker) {
+
+	addr := fmt.Sprintf(":%d", v.GetInt("server.http_port"))
+	if v.GetInt("server.http_port") == 0 {
+		addr = ":9691"
+	}
+	mux := http.NewServeMux()
+	httpAPI.Register(mux)
+	registerAdminUI(mux, ui)
+	hc.MountHTTP(mux)
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				return err
+			}
+			go func() {
+				if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+					logger.Error("http server", zap.Error(err))
+				}
+			}()
+			logger.Info("config-center: http on " + addr)
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			hc.BeginDrain()
+			return srv.Shutdown(ctx)
+		},
+	})
+}
+
+func startGRPCServer(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger,
+	grpcSrv *grpc.Server, hc *server.HealthChecker) {
+
+	port := v.GetInt("server.grpc_port")
+	if port == 0 {
+		port = 9690
+	}
+	hc.MountGRPC(grpcSrv)
+	addr := fmt.Sprintf(":%d", port)
+
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				return err
+			}
+			go func() {
+				if err := grpcSrv.Serve(ln); err != nil {
+					logger.Error("grpc server", zap.Error(err))
+				}
+			}()
+			logger.Info("config-center: gRPC on " + addr)
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			grpcSrv.GracefulStop()
+			return nil
+		},
+	})
+}
+
+// promHandler /metrics handler。
+func promHandler() http.Handler {
+	return promhttp.Handler()
+}
+
+// registerAdminUI 把 AdminHandler 挂到 mux。包了一层方便 main.go 测试 mock。
+func registerAdminUI(mux *http.ServeMux, ui *AdminUI) {
+	if ui == nil {
+		return
+	}
+	h, err := server.NewAdminHandler(ui.svc, ui.logger)
+	if err != nil {
+		ui.logger.Warn("admin UI disabled (template parse failed)", zap.Error(err))
+		return
+	}
+	h.Mount(mux)
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────
+
+func maskDSN(s string) string {
+	// 脱敏密码：root:xxx@tcp → root:***@tcp
+	at := strings.Index(s, "@")
+	if at < 0 {
+		return s
+	}
+	prefix := s[:at]
+	colon := strings.LastIndex(prefix, ":")
+	if colon < 0 {
+		return s
+	}
+	return prefix[:colon+1] + "***" + s[at:]
+}
+

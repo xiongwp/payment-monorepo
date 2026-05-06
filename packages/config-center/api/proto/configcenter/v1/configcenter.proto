@@ -1,0 +1,121 @@
+// config-center gRPC 契约。v1.0 SDK 走 HTTP/SSE；本 .proto 留给后续 protoc
+// 生成 stub 后接入 gRPC handler（cmd/server/main.go newGRPCServer 里 wire）。
+//
+// 生成（Makefile target `make proto`）：
+//
+//	protoc --proto_path=api/proto \
+//	  --go_out=api/proto --go_opt=paths=source_relative \
+//	  --go-grpc_out=api/proto --go-grpc_opt=paths=source_relative \
+//	  api/proto/configcenter/v1/configcenter.proto
+
+syntax = "proto3";
+
+package configcenter.v1;
+
+option go_package = "github.com/xiongwp/config-center/api/proto/configcenter/v1;configcenterv1";
+
+import "google/protobuf/timestamp.proto";
+
+// ConfigCenter 配置中心 RPC。mTLS over gRPC（同 card-center / kms-manage 模板）。
+service ConfigCenter {
+  // GetConfig 单 key 取（命中策略 + 生效窗口）。
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+
+  // PutConfig admin 写新版本。
+  rpc PutConfig(PutConfigRequest) returns (PutConfigResponse);
+
+  // Rollback 回滚到指定 version（产新 version 号，保单调）。
+  rpc Rollback(RollbackRequest) returns (RollbackResponse);
+
+  // WatchNamespace server-stream：先 snapshot，后 realtime 增量。
+  // 客户端 SDK 用 since_version 重连续传。
+  rpc WatchNamespace(WatchRequest) returns (stream WatchEvent);
+
+  // ListVersions 单 key 历史版本（admin 详情页 + diff 用）。
+  rpc ListVersions(ListVersionsRequest) returns (ListVersionsResponse);
+}
+
+// ─── 共享 message ─────────────────────────────────────────────────────────
+
+enum ReleaseStrategy {
+  STRATEGY_UNSPECIFIED = 0;
+  FULL = 1;       // 全量推送（默认）
+  CANARY = 2;     // 灰度（按 instance_id hash + target list）
+  TARGETED = 3;   // 严格白名单（仅 instance_id 在 list 内才收）
+  SCHEDULED = 4;  // 按 effective_at 到点切换
+}
+
+enum EventType {
+  EVENT_UNKNOWN = 0;
+  EVENT_SNAPSHOT = 1;
+  EVENT_UPDATE   = 2;
+  EVENT_DELETE   = 3;
+}
+
+message ConfigValue {
+  string namespace = 1;
+  string key       = 2;
+  int64  version   = 3;
+  string value     = 4;
+  string format    = 5;  // json / yaml / plain
+
+  google.protobuf.Timestamp effective_at = 6; // null = 立即生效
+  google.protobuf.Timestamp expire_at    = 7; // null = 永不过期
+
+  ReleaseStrategy strategy = 8;
+  string strategy_spec     = 9; // CanarySpec / TargetedSpec JSON
+
+  string updated_by = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+// ─── RPC messages ─────────────────────────────────────────────────────────
+
+message GetConfigRequest {
+  string namespace   = 1;
+  string key         = 2;
+  string instance_id = 3; // server 据此判断 strategy 是否命中
+}
+message GetConfigResponse { ConfigValue config = 1; }
+
+message PutConfigRequest {
+  string namespace = 1;
+  string key       = 2;
+  string value     = 3;
+  string format    = 4;
+  google.protobuf.Timestamp effective_at = 5;
+  google.protobuf.Timestamp expire_at    = 6;
+  ReleaseStrategy strategy = 7;
+  string strategy_spec     = 8;
+  string actor             = 9;  // admin user id（mTLS CN 也可作 actor）
+  string change_reason     = 10;
+}
+message PutConfigResponse { int64 version = 1; }
+
+message RollbackRequest {
+  string namespace  = 1;
+  string key        = 2;
+  int64  to_version = 3;
+  string actor      = 4;
+  string reason     = 5;
+}
+message RollbackResponse { int64 version = 1; }
+
+message WatchRequest {
+  string namespace     = 1;
+  string instance_id   = 2;
+  // since_version > 0 → resume 模式，server 推 version > since 的增量；
+  // since_version = 0 → 全量 snapshot（含每 key 的 active + future SCHEDULED）
+  int64  since_version = 3;
+}
+message WatchEvent {
+  EventType   type   = 1;
+  ConfigValue config = 2;
+}
+
+message ListVersionsRequest {
+  string namespace = 1;
+  string key       = 2;
+  int32  limit     = 3; // 0 → 100，max 200
+}
+message ListVersionsResponse { repeated ConfigValue versions = 1; }

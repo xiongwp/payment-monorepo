@@ -127,18 +127,18 @@ func (s *HealthGRPCServer) Check(ctx context.Context, req *healthCheckRequest) (
 
 // RegisterHealthService stub - 真正的 grpc 接线在 main.go 直接用
 // google.golang.org/grpc/health 标准 server 包；这里留 hook 便于切换。
-//
-// 若想用标准 grpc/health 包：
-//
-//	import "google.golang.org/grpc/health"
-//	import healthpb "google.golang.org/grpc/health/grpc_health_v1"
-//	hsrv := health.NewServer()
-//	healthpb.RegisterHealthServer(grpcServer, hsrv)
-//	hsrv.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
-//
-//	// dependency probe goroutine：每 5s 检一次，flip status
-//	go func() { for { if probesAllOK { hsrv.SetServingStatus(..., SERVING) } else { ..., NOT_SERVING }; sleep 5s } }()
 func RegisterHealthService(s *grpc.Server, hc *HealthChecker) {
 	// 集成点：main.go 接入标准 grpc/health 包时 wire 这里。
 	// 本 v1 stub。
+}
+
+// MountHTTP 把 /healthz + /readyz 挂到 mux。main.go 启动期调一次。
+func (h *HealthChecker) MountHTTP(mux *http.ServeMux) {
+	mux.HandleFunc("/healthz", h.Liveness)
+	mux.HandleFunc("/readyz", h.Readiness)
+}
+
+// MountGRPC 接通 grpc.health.v1（v1.0 stub；caller 如需可换 google grpc/health）。
+func (h *HealthChecker) MountGRPC(s *grpc.Server) {
+	RegisterHealthService(s, h)
 }
