@@ -747,13 +747,22 @@ func newChargeExpireWorker(
 	reconcile *service.RefundReconcileService,
 	registry channel.PaymentChannelRegistry,
 	v *viper.Viper,
+	cli *configcenter.Client,
 	logger *zap.Logger,
 ) *service.ChargeExpireWorker {
+	interval := v.GetDuration("charge_expire_worker.interval")
+	limit := v.GetInt("charge_expire_worker.limit")
+	if cli != nil {
+		ctx := context.Background()
+		if d := cli.GetDuration(ctx, "charge_expire_worker.interval", interval); d > 0 {
+			interval = d
+		}
+		limit = cli.GetInt(ctx, "charge_expire_worker.limit", limit)
+	}
 	return service.NewChargeExpireWorker(
 		chargeRepo, piSvc,
 		reconcile, registry, v.GetString("reconcile_worker.channel_name"),
-		v.GetDuration("charge_expire_worker.interval"),
-		v.GetInt("charge_expire_worker.limit"),
+		interval, limit,
 		logger.Named("charge-expire"),
 	)
 }

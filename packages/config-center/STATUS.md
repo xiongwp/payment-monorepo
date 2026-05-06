@@ -15,7 +15,7 @@
 
 **架构选择**：v1.0 SDK ↔ server 走 HTTP+SSE 而非 gRPC，避开沙箱无 protoc 的依赖；服务依然按其他服务的 fx + mTLS + etcd 模板组织。后续 `make proto` 跑过后可在不破坏 SDK 接口的前提下加 gRPC handler（rpcClient 已抽象为接口）。
 
-## 全平台集成 — 11 个服务已接 SDK ✅
+## 全平台集成 — 12 个服务全部接入 SDK ✅
 
 | 服务 | namespace | 集成深度 | 删的旧物 |
 | --- | --- | --- | --- |
@@ -30,6 +30,7 @@
 | card-center | card-center | **深度** — newRESTServer 接 SDK 读 ratelimit.tokenize.* | yaml bootstrap 保留 |
 | kms-manage | kms-manage | **深度** — newServer 接 SDK 读 auth.allowed_client_ids + rate_limit.* | yaml bootstrap 保留 |
 | clearing-settlement | clearing-settlement | SDK 注入（业务接口少，按需扩） | yaml bootstrap 保留 |
+| reconplatform | reconplatform | **深度** — 规则全部从 config-center 拉 + OnChange 热更新 | hardcoded localhost / inline rules 删除；env vars 接管 |
 
 **集成深度说明**：
 - **深度** = 完成 yaml/DB 删除 + 业务代码改读 SDK + 热更新链路

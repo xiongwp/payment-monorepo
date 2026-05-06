@@ -157,7 +157,11 @@ case "$ACTION" in
     seed clearing-settlement "batch.window"  '"1h"'
     seed clearing-settlement "exception.threshold" "100" plain
 
-    ok "全平台 seed 完成；改任一 key 走 config-center admin web /admin/ns/<ns>"
+    info "── reconplatform ──"
+    # rules 是 map[string]string，key=rule_id，value=expr 表达式
+    seed reconplatform "rules" '{"r1":"order.amount == payment.amount","r2":"order.amount > 0"}'
+
+    ok "全平台 12 namespace seed 完成；改任一 key 走 config-center admin web /admin/ns/<ns>"
     ;;
   *)
     die "用法: $0 {up|down|restart|status|logs|wait|seed}"

@@ -6,7 +6,11 @@ require (
 	github.com/expr-lang/expr v1.17.8
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/twmb/franz-go v1.20.7
+	github.com/xiongwp/payment-util v0.0.0
+	go.uber.org/zap v1.27.0
 )
+
+replace github.com/xiongwp/payment-util => ../payment-util
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

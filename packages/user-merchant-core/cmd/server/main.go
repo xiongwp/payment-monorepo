@@ -527,18 +527,30 @@ func initOTel(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) error {
 
 // startRetentionSweeper 定时真删软删超期商户。合规默认 7 年；scan 间隔 24h。
 // retention.enabled=false 时跳过（CI / dev 环境通常关）。
-func startRetentionSweeper(lc fx.Lifecycle, r repo.MerchantRepository, v *viper.Viper, logger *zap.Logger) {
+//
+// config-center 优先：admin 改 namespace=user-merchant-core 下
+//   retention.duration / retention.interval 即时下发；本 worker 启动期 snapshot
+//   到 sweeper 内部，热更需重启（NewRetentionSweeper 当前没暴露 SetConfig）。
+func startRetentionSweeper(lc fx.Lifecycle, r repo.MerchantRepository, v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) {
 	if !v.GetBool("retention.enabled") {
 		return
 	}
-	sweeper := service.NewRetentionSweeper(r,
-		v.GetDuration("retention.duration"),
-		v.GetDuration("retention.interval"),
-		logger.Named("retention"))
-	ctx, cancel := context.WithCancel(context.Background())
+	duration := v.GetDuration("retention.duration")
+	interval := v.GetDuration("retention.interval")
+	if cli != nil {
+		ctx := context.Background()
+		if d := cli.GetDuration(ctx, "retention.duration", duration); d > 0 {
+			duration = d
+		}
+		if d := cli.GetDuration(ctx, "retention.interval", interval); d > 0 {
+			interval = d
+		}
+	}
+	sweeper := service.NewRetentionSweeper(r, duration, interval, logger.Named("retention"))
+	swCtx, cancel := context.WithCancel(context.Background())
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
-			go sweeper.Start(ctx)
+			go sweeper.Start(swCtx)
 			return nil
 		},
 		OnStop: func(_ context.Context) error {

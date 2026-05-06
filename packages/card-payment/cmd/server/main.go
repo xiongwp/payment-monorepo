@@ -77,7 +77,8 @@ func main() {
 //
 // disable 开关：reconcile.disable=true（dev / 排查用）。prod 不允许 disable，
 // assertProdSafety 拦不到这里就让 worker 自己 panic。
-func startReconcile(lc fx.Lifecycle, v *viper.Viper, repo processor.CardTransactionRepo,
+func startReconcile(lc fx.Lifecycle, v *viper.Viper, cli *configcenter.Client,
+	repo processor.CardTransactionRepo,
 	networks map[string]processor.Network, logger *zap.Logger) {
 	if v.GetBool("reconcile.disable") {
 		env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
@@ -93,14 +94,32 @@ func startReconcile(lc fx.Lifecycle, v *viper.Viper, repo processor.CardTransact
 		QueryTimeout: v.GetDuration("reconcile.query_timeout"),
 		CycleTimeout: v.GetDuration("reconcile.cycle_timeout"),
 	}
+	interval := v.GetDuration("reconcile.interval")
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	// config-center 覆盖：admin 改 namespace=card-payment 下
+	//   reconcile.{interval,limit_per_shard,stuck_age,query_timeout,cycle_timeout}
+	if cli != nil {
+		ctx0 := context.Background()
+		cfg.Limit = cli.GetInt(ctx0, "reconcile.limit_per_shard", cfg.Limit)
+		if d := cli.GetDuration(ctx0, "reconcile.stuck_age", cfg.StuckAge); d > 0 {
+			cfg.StuckAge = d
+		}
+		if d := cli.GetDuration(ctx0, "reconcile.query_timeout", cfg.QueryTimeout); d > 0 {
+			cfg.QueryTimeout = d
+		}
+		if d := cli.GetDuration(ctx0, "reconcile.cycle_timeout", cfg.CycleTimeout); d > 0 {
+			cfg.CycleTimeout = d
+		}
+		if d := cli.GetDuration(ctx0, "reconcile.interval", interval); d > 0 {
+			interval = d
+		}
+	}
 	w := reconcile.New(repo, networks, cfg, logger)
 	if w == nil {
 		logger.Warn("reconcile worker not started (nil repo or empty networks)")
 		return
-	}
-	interval := v.GetDuration("reconcile.interval")
-	if interval <= 0 {
-		interval = 30 * time.Second
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go w.Run(ctx, interval)

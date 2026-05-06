@@ -43,9 +43,9 @@ STACKS=(
   "payment-channel|"
   "risk-manage|"
   "clearing-settlement|"
-  "reconplatform|"
   "card-center|"
   "card-payment|"
+  "reconplatform|"
   "api-gateway|"
 )
 
