@@ -90,9 +90,9 @@ case "$ACTION" in
     die "wait 超时"
     ;;
   seed)
-    # 首次部署：seed 一组从老系统迁过来的 key
+    # 首次部署：seed 全平台默认 key（从老系统 yaml / DB 迁过来）。
+    # 之后业务服务启动期同步连 config-center 拉这些 key 进本地 cache。
     base="http://localhost:9691/api/v1/configs"
-    info "seed accounting-system 历史 key..."
     seed() {
       ns="$1"; key="$2"; value="$3"; format="${4:-json}"
       curl -fsS -X PUT "${base}/${ns}/${key}" \
@@ -101,6 +101,8 @@ case "$ACTION" in
         -d "{\"value\":\"${value}\",\"format\":\"${format}\",\"strategy\":\"FULL\",\"change_reason\":\"initial seed from deploy.sh\"}" \
         >/dev/null && ok "  ${ns}/${key} = ${value}"
     }
+
+    info "── accounting-system ──"
     seed accounting-system "tcc_recovery.stuck_timeout_minutes" "5" plain
     seed accounting-system "outbox.poll_interval_ms"            "100" plain
     seed accounting-system "outbox.batch_size"                  "500" plain
@@ -108,7 +110,54 @@ case "$ACTION" in
     seed accounting-system "outbox_backpressure.high_threshold" "5000" plain
     seed accounting-system "outbox_backpressure.low_threshold"  "1000" plain
     seed accounting-system "outbox_backpressure.shrink_ratio"   "0.5" plain
-    ok "seed 完成"
+
+    info "── api-gateway ──"
+    seed api-gateway "rate_limit" '{"ip_rps":100,"ip_burst":200,"merchant_rps":1000,"merchant_burst":2000}'
+
+    info "── payment-channel ──"
+    seed payment-channel "rate_limit.rps"   "2000" plain
+    seed payment-channel "rate_limit.burst" "4000" plain
+
+    info "── risk-manage ──"
+    seed risk-manage "reliability.ipintel.fail_threshold" "5" plain
+    seed risk-manage "reliability.ipintel.open_duration"  '"15s"'
+    seed risk-manage "reliability.mlscore.fail_threshold" "3" plain
+    seed risk-manage "reliability.mlscore.open_duration"  '"30s"'
+
+    info "── card-payment ──"
+    seed card-payment "bulkhead.per_merchant_max" "200" plain
+    seed card-payment "network.visa.timeout"      '"3s"'
+    seed card-payment "network.mastercard.timeout" '"3s"'
+    seed card-payment "reconcile.interval"        '"5m"'
+
+    info "── card-center ──"
+    seed card-center "tokenize.per_user_rps" "10" plain
+    seed card-center "session.ttl"           '"30m"'
+
+    info "── kms-manage ──"
+    seed kms-manage "rate_limit.rps" "500" plain
+
+    info "── order-core ──"
+    seed order-core "refund.max_amount_cents"   "1000000" plain
+    seed order-core "webhook.max_retries"       "10" plain
+    seed order-core "outbox.poll_interval_ms"   "100" plain
+    seed order-core "charge.expire_minutes"     "30" plain
+
+    info "── payment-core ──"
+    seed payment-core "routing.weights"         '{"stripe":50,"adyen":30,"paypal":20}'
+    seed payment-core "risk.fail_policy"        '"close"'
+
+    info "── user-merchant-core ──"
+    seed user-merchant-core "jwt.ttl"           '"1h"'
+    seed user-merchant-core "otp.code_length"   "6" plain
+    seed user-merchant-core "bcrypt.cost"       "12" plain
+    seed user-merchant-core "audit.retention_y" "7" plain
+
+    info "── clearing-settlement ──"
+    seed clearing-settlement "batch.window"  '"1h"'
+    seed clearing-settlement "exception.threshold" "100" plain
+
+    ok "全平台 seed 完成；改任一 key 走 config-center admin web /admin/ns/<ns>"
     ;;
   *)
     die "用法: $0 {up|down|restart|status|logs|wait|seed}"

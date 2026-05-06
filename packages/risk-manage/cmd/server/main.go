@@ -426,14 +426,17 @@ type breakerPair struct {
 	ml *reliability.Breaker
 }
 
-// newBreakers 从 viper 读熔断参数：
+// newBreakers 熔断参数；config-center 优先，yaml bootstrap 兜底。
 //
-//	reliability:
-//	  ipintel:  { fail_threshold: 5, open_duration: 15s }
-//	  mlscore:  { fail_threshold: 3, open_duration: 30s }
+// admin 改 namespace=risk-manage 下 key：
+//   reliability.ipintel.fail_threshold / open_duration
+//   reliability.mlscore.fail_threshold / open_duration
 //
-// 默认值见 reliability.Config.defaults。
-func newBreakers(v *viper.Viper) breakerPair {
+// 注意：Breaker 启动后参数是只读的（reliability.Config 没暴露 SetThreshold）；
+// 改阈值需要重启 pod 或在 reliability 包里加 SetConfig 方法做热更新。
+// 当前实现：启动期一次性读，admin 改后下次重启生效。
+func newBreakers(v *viper.Viper, cli *configcenter.Client) breakerPair {
+	ctx := context.Background()
 	read := func(key, name string, defThr int, defOpen time.Duration) *reliability.Breaker {
 		thr := v.GetInt(key + ".fail_threshold")
 		if thr <= 0 {
@@ -442,6 +445,13 @@ func newBreakers(v *viper.Viper) breakerPair {
 		open := v.GetDuration(key + ".open_duration")
 		if open <= 0 {
 			open = defOpen
+		}
+		// config-center 覆盖
+		if cli != nil {
+			thr = cli.GetInt(ctx, key+".fail_threshold", thr)
+			if d := cli.GetDuration(ctx, key+".open_duration", open); d > 0 {
+				open = d
+			}
 		}
 		return reliability.NewBreaker(reliability.Config{Name: name, FailThreshold: thr, OpenDuration: open})
 	}

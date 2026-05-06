@@ -477,17 +477,29 @@ func newPendingQueryWorker(reg channel.Registry, tx repo.AcquirerTxRepository, v
 
 // ─── server ───────────────────────────────────────────────────────────
 
-func newServer(svc *service.AcquirerService, v *viper.Viper, logger *zap.Logger) *server.Server {
+func newServer(svc *service.AcquirerService, v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) *server.Server {
 	tokens := map[string]string{}
 	for _, t := range v.GetStringSlice("auth.tokens") {
 		tokens[t] = "ok"
+	}
+	// rate_limit 走 config-center；不可达 → 用 yaml bootstrap 兜底。
+	// admin 改 namespace=payment-channel 的 rate_limit.rps / rate_limit.burst 实时推送。
+	rps := v.GetFloat64("rate_limit.rps")
+	burst := v.GetInt("rate_limit.burst")
+	if cli != nil {
+		if v := cli.GetFloat64(context.Background(), "rate_limit.rps", rps); v > 0 {
+			rps = v
+		}
+		if v := cli.GetInt(context.Background(), "rate_limit.burst", burst); v > 0 {
+			burst = v
+		}
 	}
 	return server.NewServer(server.Deps{
 		AcquirerSvc:          svc,
 		AuthTokens:           tokens,
 		AllowUnauthenticated: v.GetBool("auth.allow_unauthenticated"),
-		RateLimitRPS:         v.GetFloat64("rate_limit.rps"),
-		RateBurst:            v.GetInt("rate_limit.burst"),
+		RateLimitRPS:         rps,
+		RateBurst:            burst,
 		Logger:               logger,
 	})
 }
