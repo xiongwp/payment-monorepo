@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -56,6 +57,9 @@ func main() {
 		fx.Provide(
 			loadConfig,
 			newLogger,
+			// config-center: adapter timeouts / rate_limit / retry policy
+			// 等动态配置走这里。namespace="payment-channel"。
+			configcenter.FxProvider("payment-channel"),
 			newRouter,
 			newDBManager,
 			newIDGen,

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/fx"
@@ -46,6 +47,8 @@ func main() {
 		fx.Provide(
 			loadConfig,
 			newLogger,
+			newConfigCenterClient,
+			newRateLimitHub,
 			newServerConfig,
 			newUserMerchantConn,
 			newOrderCoreConn,
@@ -53,9 +56,99 @@ func main() {
 			newCardHandler,
 			newServer,
 		),
-		fx.Invoke(startServer, startMetrics),
+		fx.Invoke(bindRateLimitToConfigCenter, startServer, startMetrics),
 	)
 	app.Run()
+}
+
+// newConfigCenterClient 启动期同步连 config-center；prod 不可达 fail-fast。
+//
+// **替代**：旧版 rate_limit.* / cors / cookie 等动态配置块从 yaml 读；
+// 现在 yaml 只留 bootstrap 默认（启动期 config-center 不可达兜底）。
+func newConfigCenterClient(v *viper.Viper, logger *zap.Logger) (*configcenter.Client, error) {
+	endpoint := v.GetString("configcenter.endpoint")
+	if endpoint == "" {
+		endpoint = "http://config-center:9691"
+	}
+	namespace := v.GetString("configcenter.namespace")
+	if namespace == "" {
+		namespace = "api-gateway"
+	}
+	instanceID := v.GetString("configcenter.instance_id")
+	if instanceID == "" {
+		instanceID, _ = os.Hostname()
+	}
+	rpc := configcenter.NewHTTPClient(endpoint, nil)
+	cli, err := configcenter.NewWithRPC(rpc, configcenter.Config{
+		Namespace:        namespace,
+		InstanceID:       instanceID,
+		ReconnectBackoff: 1 * time.Second,
+		InitTimeout:      10 * time.Second,
+		Logger:           logger,
+	})
+	if err != nil {
+		env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+		if env == "prod" || env == "production" {
+			return nil, fmt.Errorf("config-center init failed (prod fail-fast): %w", err)
+		}
+		logger.Warn("config-center init failed; dev mode degrades to yaml bootstrap defaults", zap.Error(err))
+		return nil, nil
+	}
+	logger.Info("config-center connected",
+		zap.String("endpoint", endpoint),
+		zap.String("namespace", namespace),
+		zap.String("instance_id", instanceID))
+	return cli, nil
+}
+
+// newRateLimitHub 用 yaml bootstrap 值构造 hub。后续 bindRateLimitToConfigCenter
+// 把 config-center 的 rate_limit key 推送绑到 hub，运行时 SetLimit 热更新。
+func newRateLimitHub(v *viper.Viper, logger *zap.Logger) *server.RateLimitHub {
+	bootstrap := server.RateLimitParams{
+		IPRPS:         getIntDefault(v, "rate_limit.ip_rps", 100),
+		IPBurst:       getIntDefault(v, "rate_limit.ip_burst", 200),
+		MerchantRPS:   getIntDefault(v, "rate_limit.merchant_rps", 1000),
+		MerchantBurst: getIntDefault(v, "rate_limit.merchant_burst", 2000),
+	}
+	logger.Info("rate_limit bootstrap from yaml (will be overridden by config-center if connected)",
+		zap.Int("ip_rps", bootstrap.IPRPS),
+		zap.Int("merchant_rps", bootstrap.MerchantRPS))
+	return server.NewRateLimitHub(bootstrap, logger)
+}
+
+// bindRateLimitToConfigCenter 启动期 + watch 推送时把 config-center 的
+// "rate_limit" JSON key 解到 RateLimitParams 并热更新 hub。
+//
+// config-center 推荐 key（namespace=api-gateway）：
+//
+//	rate_limit  → {"ip_rps":100,"ip_burst":200,"merchant_rps":1000,"merchant_burst":2000}
+//
+// 改这一个 JSON key，集群所有 api-gateway 副本秒级同步。
+func bindRateLimitToConfigCenter(cli *configcenter.Client, hub *server.RateLimitHub, logger *zap.Logger) error {
+	if cli == nil {
+		// dev 没接 config-center；hub 用 yaml bootstrap 默认值
+		return nil
+	}
+	// 立即读一次（如果有）
+	var p server.RateLimitParams
+	if err := configcenter.GetJSON(cli, context.Background(), "rate_limit", &p); err == nil {
+		hub.ApplyParams(p)
+	} else {
+		logger.Info("config-center rate_limit key absent; using yaml bootstrap")
+	}
+	// 注册 OnChange 回调：admin PUT /api/v1/configs/api-gateway/rate_limit 后秒级触发
+	cli.OnChange("rate_limit", func(v *configcenter.ConfigValue) {
+		if v == nil || v.Value == "" {
+			return
+		}
+		var np server.RateLimitParams
+		if err := configcenter.GetJSON(cli, context.Background(), "rate_limit", &np); err != nil {
+			logger.Warn("rate_limit reload decode failed", zap.Error(err))
+			return
+		}
+		hub.ApplyParams(np)
+	})
+	return nil
 }
 
 // loadConfig 读 yaml + 环境变量。环境变量前缀 APIGW_，例如 APIGW_SERVER_HTTP_PORT=8080。
@@ -119,9 +212,14 @@ func assertProdSafety(v *viper.Viper) error {
 	if len(v.GetStringSlice("shadow.trusted_cidrs")) == 0 && strings.TrimSpace(v.GetString("shadow.trusted_header")) == "" {
 		return fmt.Errorf("PROD-SAFETY: shadow.trusted_cidrs or shadow.trusted_header must be configured in env=prod (otherwise any client can inject X-Shadow)")
 	}
-	// rate limit：公网入口必须配 per-IP 限流
-	if v.GetFloat64("rate_limit.per_ip.rps") <= 0 {
-		return fmt.Errorf("PROD-SAFETY: rate_limit.per_ip.rps must be > 0 in env=prod (recommend 50, public internet boundary)")
+	// rate limit：动态值由 config-center 推送（namespace=api-gateway, key=rate_limit）；
+	// yaml bootstrap 作 config-center 不可达兜底，必须 > 0 防裸奔。
+	if getIntDefault(v, "rate_limit.ip_rps", 0) <= 0 {
+		return fmt.Errorf("PROD-SAFETY: rate_limit.ip_rps bootstrap must be > 0 in env=prod (config-center 不可达兜底；推荐 50)")
+	}
+	// config-center endpoint 必须配（prod 不允许 yaml-only 模式）
+	if strings.TrimSpace(v.GetString("configcenter.endpoint")) == "" {
+		return fmt.Errorf("PROD-SAFETY: configcenter.endpoint must be configured in env=prod")
 	}
 	// 卡支付路径：env=prod 下卡服务 endpoint 必须显式开 / 关。开了就不能用 stub。
 	// 没显式开（cards.enabled 缺省 false）→ 跳过，CardHandler 会用 stub 直接报错（不会泄漏 PAN）。
@@ -147,7 +245,7 @@ func newLogger() (*zap.Logger, error) {
 }
 
 // newServerConfig 把 viper 字段铺平成 server.Config。优先读 ADMIN_HTTP_TOKEN env。
-func newServerConfig(v *viper.Viper) server.Config {
+func newServerConfig(v *viper.Viper, hub *server.RateLimitHub) server.Config {
 	adminToken := os.Getenv("ADMIN_HTTP_TOKEN")
 	if adminToken == "" {
 		adminToken = v.GetString("admin.token")
@@ -163,18 +261,11 @@ func newServerConfig(v *viper.Viper) server.Config {
 
 		AuthEnabled: v.GetBool("auth.enabled"),
 		// auth.api_keys 是 yaml map：apikey → merchant_id（server-trusted）
-		// 例：
-		//   auth:
-		//     api_keys:
-		//       sk_live_abc: "mch_001"
-		//       sk_live_def: "mch_002"
 		// merchant_id 留空则 per-merchant 限流退化到 per-IP（dev 兼容）。
 		AuthAPIKeys: v.GetStringMapString("auth.api_keys"),
 
-		IPRPS:         getIntDefault(v, "rate_limit.ip_rps", 100),
-		IPBurst:       getIntDefault(v, "rate_limit.ip_burst", 200),
-		MerchantRPS:   getIntDefault(v, "rate_limit.merchant_rps", 1000),
-		MerchantBurst: getIntDefault(v, "rate_limit.merchant_burst", 2000),
+		// rate_limit 静态字段已迁到 RateLimitHub（绑 config-center）。
+		RateLimitHub: hub,
 
 		AdminToken: adminToken,
 

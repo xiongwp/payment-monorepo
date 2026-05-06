@@ -37,12 +37,21 @@ auth:
   # 支持 KMS 密文格式：直接写 "kms:v1:<key_id>:..."，启动时透明解密。
   tokens: []
 
-# 限流（per-IP + per-merchant）
+# config-center —— 全平台动态配置中心。
+# 启动期同步拉一次 snapshot 到本地 cache；admin web 改后秒级 push 到所有副本。
+# endpoint 可通过 APIGW_CONFIGCENTER_ENDPOINT env 注入。
+configcenter:
+  endpoint: "http://config-center:9691"   # 共享 docker network payment-stack 容器 DNS
+  namespace: "api-gateway"
+  # instance_id 留空 → 用 HOSTNAME / POD_NAME（main.go 兜底）
+
+# 限流 bootstrap 默认值 —— config-center 不可达兜底用。
+# 真实运行参数由 config-center 推送（namespace=api-gateway, key=rate_limit, JSON）：
+#   {"ip_rps":100,"ip_burst":200,"merchant_rps":1000,"merchant_burst":2000}
+# admin web 改一次，集群所有副本秒级 SetLimit 热更新（保留 token bucket 状态）。
 rate_limit:
-  # per-IP token bucket 全局参数；超过返回 429
   ip_rps: 100
   ip_burst: 200
-  # per-merchant；merchant 信息从 X-Merchant-ID 头取
   merchant_rps: 1000
   merchant_burst: 2000
 

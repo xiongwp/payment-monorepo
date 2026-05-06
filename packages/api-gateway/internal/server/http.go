@@ -40,11 +40,11 @@ type Config struct {
 	// dev 期间没接 merchant 注册表时 value 可以填空字符串（限流退化到 per-IP）。
 	AuthAPIKeys map[string]string
 
-	// Rate limit
-	IPRPS         int
-	IPBurst       int
-	MerchantRPS   int
-	MerchantBurst int
+	// Rate limit hub —— 由 main.go 构造并 bind 到 config-center。
+	// 旧版 IPRPS/IPBurst/MerchantRPS/MerchantBurst 静态字段已删除；
+	// 限流参数现在由 config-center namespace=api-gateway 下的 key 动态推送，
+	// 通过 RateLimitHub.ApplyParams 在线 SetLimit（保留 token bucket 状态）。
+	RateLimitHub *RateLimitHub
 
 	// Admin token；空 = warn-only。
 	AdminToken string
@@ -112,7 +112,7 @@ func NewServer(cfg Config, logger *zap.Logger, registers ...MuxRegister) *Server
 	if cfg.AuthEnabled {
 		publicHandler = APIKeyMiddleware(cfg.AuthAPIKeys, logger)(publicHandler)
 	}
-	publicHandler = RateLimitMiddleware(cfg.IPRPS, cfg.IPBurst, cfg.MerchantRPS, cfg.MerchantBurst, logger)(publicHandler)
+	publicHandler = RateLimitMiddleware(cfg.RateLimitHub, logger)(publicHandler)
 	publicHandler = LoggingMiddleware(logger)(publicHandler)
 	publicHandler = RecoverMiddleware(logger)(publicHandler)
 

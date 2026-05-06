@@ -305,17 +305,45 @@ func isRateLimitExemptPath(p string) bool {
 
 // ─── rate limit ──────────────────────────────────────────────────────────────
 
-// RateLimitMiddleware 双层限流：per-IP（防匿名扫描） + per-merchant
-// （X-Merchant-ID 取值，防一个商户耗尽全局额度）。
-//
-// 实现：per_key_limiter 内部按 key 维护独立 rate.Limiter，惰性创建 + LRU 淘汰，
-// 防 map 无限增长。
-func RateLimitMiddleware(
-	ipRPS, ipBurst, merchantRPS, merchantBurst int,
-	logger *zap.Logger,
-) func(http.Handler) http.Handler {
-	ipLimiter := ratelimit.NewKeyed(rate.Limit(ipRPS), ipBurst)
-	mchLimiter := ratelimit.NewKeyed(rate.Limit(merchantRPS), merchantBurst)
+// RateLimitParams 双层限流参数；config-center 推送时整体替换。
+type RateLimitParams struct {
+	IPRPS         int
+	IPBurst       int
+	MerchantRPS   int
+	MerchantBurst int
+}
+
+// RateLimitHub 持有一组 Keyed limiter；config-center 推送变更时调
+// ApplyParams 在线热更新（保留已存在的子 limiter 状态，不丢 token bucket）。
+type RateLimitHub struct {
+	ipLim  *ratelimit.Keyed
+	mchLim *ratelimit.Keyed
+	logger *zap.Logger
+}
+
+// NewRateLimitHub 构造；initial 由 caller 提供（main.go 启动期从 config-center
+// 拉一次；不可达走 yaml bootstrap 默认值兜底）。
+func NewRateLimitHub(initial RateLimitParams, logger *zap.Logger) *RateLimitHub {
+	return &RateLimitHub{
+		ipLim:  ratelimit.NewKeyed(rate.Limit(initial.IPRPS), initial.IPBurst),
+		mchLim: ratelimit.NewKeyed(rate.Limit(initial.MerchantRPS), initial.MerchantBurst),
+		logger: logger,
+	}
+}
+
+// ApplyParams config-center watch 推送 / OnChange 回调里调；零拷贝热更新。
+func (h *RateLimitHub) ApplyParams(p RateLimitParams) {
+	h.ipLim.SetLimit(rate.Limit(p.IPRPS), p.IPBurst)
+	h.mchLim.SetLimit(rate.Limit(p.MerchantRPS), p.MerchantBurst)
+	if h.logger != nil {
+		h.logger.Info("rate_limit params hot-reloaded",
+			zap.Int("ip_rps", p.IPRPS), zap.Int("ip_burst", p.IPBurst),
+			zap.Int("mch_rps", p.MerchantRPS), zap.Int("mch_burst", p.MerchantBurst))
+	}
+}
+
+// RateLimitMiddleware 双层限流（per-IP + per-merchant），走 hub 接 config-center。
+func RateLimitMiddleware(hub *RateLimitHub, logger *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if isRateLimitExemptPath(r.URL.Path) {
@@ -323,7 +351,7 @@ func RateLimitMiddleware(
 				return
 			}
 			ip := clientIP(r)
-			if ipRPS > 0 && !ipLimiter.Allow(ip) {
+			if !hub.ipLim.Allow(ip) {
 				logger.Warn("rate limit hit",
 					zap.String("dim", "ip"),
 					zap.String("key", ip),
@@ -331,13 +359,10 @@ func RateLimitMiddleware(
 				http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
 				return
 			}
-			// per-merchant 限流：merchant_id 由 APIKeyMiddleware 在 token 校验
-			// 通过后注入 ctx（server-trusted）。攻击者无法通过 header 伪造，因为
-			// X-Merchant-ID 这个客户端 header 现在不再被这里读取。
-			// 匿名路径（health probe / signup 等）merchantIDFromContext 返空，
-			// 自动退化到 per-IP 限流。
-			if mch := merchantIDFromContext(r); mch != "" && merchantRPS > 0 {
-				if !mchLimiter.Allow(mch) {
+			// per-merchant：merchant_id 由 APIKeyMiddleware 在 token 校验后注入
+			// ctx（server-trusted）；匿名路径返空 → 退化 per-IP only。
+			if mch := merchantIDFromContext(r); mch != "" {
+				if !hub.mchLim.Allow(mch) {
 					logger.Warn("rate limit hit",
 						zap.String("dim", "merchant"),
 						zap.String("key", mch),

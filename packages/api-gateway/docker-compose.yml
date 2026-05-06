@@ -34,6 +34,10 @@ services:
       - "9090:9090"   # Prometheus metrics
     environment:
       APIGW_LOG_DEV: "false"
+      # config-center: 启动期同步拉一次 snapshot；rate_limit 等动态配置走这里。
+      # 容器 DNS 走共享 payment-stack 网络。
+      APIGW_CONFIGCENTER_ENDPOINT: "http://config-center:9691"
+      APIGW_CONFIGCENTER_NAMESPACE: "api-gateway"
 
 # BuildKit secret：从环境变量读取 GITHUB_TOKEN，不写入镜像层。
 secrets:

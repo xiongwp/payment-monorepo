@@ -81,3 +81,28 @@ func (k *Keyed) Len() int {
 	defer k.mu.RUnlock()
 	return len(k.limiters)
 }
+
+// SetLimit 在线热更新 rps + burst（config-center 推送后调）。
+//
+// 实现：先更新 k.rps/k.burst（影响后续新 key），再 walk 全部已存在的子 limiter
+// 调 SetLimit / SetBurst。锁内 O(N) 扫一次；N 通常 < 10K（活跃 IP / merchant 数）。
+//
+// 调用方不保证频繁调（admin 改一次配置才扇出一次），扫开销可接受。
+func (k *Keyed) SetLimit(rps rate.Limit, burst int) {
+	if burst <= 0 {
+		if rps > 0 {
+			burst = int(rps)
+		}
+		if burst < 1 {
+			burst = 1
+		}
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.rps = rps
+	k.burst = burst
+	for _, lim := range k.limiters {
+		lim.SetLimit(rps)
+		lim.SetBurst(burst)
+	}
+}

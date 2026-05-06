@@ -41,6 +41,9 @@ services:
       RISK_LOG_DEV: "false"
       # ── 服务发现（自注册到 etcd 让 payment-core 发现）──
       RISK_REGISTRY_ENDPOINTS: "etcd:2379"
+      # ── config-center：rule thresholds / fail-policy / circuit breaker 阈值动态推送
+      RISK_CONFIGCENTER_ENDPOINT: "http://config-center:9691"
+      RISK_CONFIGCENTER_NAMESPACE: "risk-manage"
       # 依赖系统通过 payment-admin-web/deploy/overrides/risk-manage.yml
       # 注入 (Redis/Kafka/CH/Nebula DSN)；本文件不包含 — 给单仓 dev 跑
 

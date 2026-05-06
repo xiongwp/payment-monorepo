@@ -83,6 +83,9 @@ services:
       # ── 服务发现 + 下游 KMS（payment-stack 内 DNS）──
       PAYCHAN_REGISTRY_ENDPOINTS: "etcd:2379"
       PAYCHAN_KMS_ENDPOINT: "kms-manage:9390"
+      # ── config-center：adapter timeouts / rate_limit / retry policy 动态推送
+      PAYCHAN_CONFIGCENTER_ENDPOINT: "http://config-center:9691"
+      PAYCHAN_CONFIGCENTER_NAMESPACE: "payment-channel"
     volumes:
       # viper 只认 config.yaml。把 docker 变体盖在它上面，避免容器装载本地开发
       # 的 127.0.0.1:3406-3416 端口映射。

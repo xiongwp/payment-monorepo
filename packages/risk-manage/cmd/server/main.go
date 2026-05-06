@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 	"github.com/spf13/viper"
+	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -72,6 +73,10 @@ func main() {
 		fx.Provide(
 			loadConfig,
 			newLogger,
+			// config-center 客户端：rule thresholds / fail-policy / circuit
+			// breaker 阈值等动态配置走这里。namespace="risk-manage"。
+			// prod 不可达 fail-fast；dev 返 nil 兜底。
+			configcenter.FxProvider("risk-manage"),
 			newCounter,
 			newBlacklist,
 			newEventBus,
