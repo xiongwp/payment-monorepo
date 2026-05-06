@@ -520,7 +520,6 @@ func startHTTPS(lc fx.Lifecycle, v *viper.Viper, rest *httpsauth.RESTServer, log
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	devNoTLS := v.GetBool("https.dev_no_tls")
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
 			logger.Info("card-center HTTPS REST listening",
