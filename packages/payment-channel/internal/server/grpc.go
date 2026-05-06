@@ -13,6 +13,7 @@ import (
 	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/keepalive"
@@ -31,9 +32,10 @@ type Server struct {
 
 	authTokens           map[string]string
 	allowUnauthenticated bool
-	rateLimitRPS         float64
-	rateBurst            int
-	logger               *zap.Logger
+	// rateLimiter 持有引用以支持 SetRateLimit 热更新（config-center OnChange 调）。
+	// nil = 不限流（dev / 测试）。
+	rateLimiter *rate.Limiter
+	logger      *zap.Logger
 }
 
 type Deps struct {
@@ -46,14 +48,45 @@ type Deps struct {
 }
 
 func NewServer(d Deps) *Server {
+	var lim *rate.Limiter
+	if d.RateLimitRPS > 0 {
+		burst := d.RateBurst
+		if burst <= 0 {
+			burst = int(d.RateLimitRPS)
+			if burst < 1 {
+				burst = 1
+			}
+		}
+		lim = rate.NewLimiter(rate.Limit(d.RateLimitRPS), burst)
+	}
 	return &Server{
 		svc:                  d.AcquirerSvc,
 		authTokens:           d.AuthTokens,
 		allowUnauthenticated: d.AllowUnauthenticated,
-		rateLimitRPS:         d.RateLimitRPS,
-		rateBurst:            d.RateBurst,
+		rateLimiter:          lim,
 		logger:               d.Logger,
 	}
+}
+
+// SetRateLimit 热更新 rps + burst（config-center OnChange 回调里调）。
+// rps <= 0 → 关限流（rateLimiter 设 nil）。
+func (s *Server) SetRateLimit(rps float64, burst int) {
+	if rps <= 0 {
+		s.rateLimiter = nil
+		return
+	}
+	if burst <= 0 {
+		burst = int(rps)
+		if burst < 1 {
+			burst = 1
+		}
+	}
+	if s.rateLimiter == nil {
+		s.rateLimiter = rate.NewLimiter(rate.Limit(rps), burst)
+		return
+	}
+	s.rateLimiter.SetLimit(rate.Limit(rps))
+	s.rateLimiter.SetBurst(burst)
 }
 
 // ListenAndServe 启动 gRPC。
@@ -76,7 +109,7 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 			// 压测流量绝不真打到外部渠道（GCash / Maya 等），返回 mock 结果。
 			shadow.UnaryServerInterceptor(),
 			MetricsInterceptor(),
-			RateLimitInterceptor(s.rateLimitRPS, s.rateBurst),
+			RateLimitInterceptor(s.rateLimiter),
 			AuthInterceptor(s.authTokens, s.allowUnauthenticated, s.logger),
 		))
 	channelv1.RegisterAcquirerServiceServer(srv, s)

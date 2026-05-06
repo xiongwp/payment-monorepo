@@ -29,9 +29,10 @@ type Server struct {
 	auth       map[string]string
 	allowedIDs ClientIdentityAllowList
 	tlsCfg     *tls.Config
-	rps        float64
-	burst      int
-	logger     *zap.Logger
+	// rateLimiter 持有引用方便 SetRateLimit 热更新（config-center OnChange 调）。
+	// nil = 不限流；rps <= 0 时构造为 nil。
+	rateLimiter *rate.Limiter
+	logger      *zap.Logger
 }
 
 // TLSPaths server 端 mTLS 配置。三个都必填才启用 mTLS；任一空 →
@@ -59,15 +60,45 @@ func NewServer(d Deps) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	var lim *rate.Limiter
+	if d.RateLimitRPS > 0 {
+		burst := d.RateBurst
+		if burst <= 0 {
+			burst = int(d.RateLimitRPS)
+			if burst < 1 {
+				burst = 1
+			}
+		}
+		lim = rate.NewLimiter(rate.Limit(d.RateLimitRPS), burst)
+	}
 	return &Server{
-		svc:        d.KMSSvc,
-		auth:       d.AuthTokens,
-		allowedIDs: NewClientIdentityAllowList(d.AllowedIDs),
-		tlsCfg:     tlsCfg,
-		rps:        d.RateLimitRPS,
-		burst:      d.RateBurst,
-		logger:     d.Logger,
+		svc:         d.KMSSvc,
+		auth:        d.AuthTokens,
+		allowedIDs:  NewClientIdentityAllowList(d.AllowedIDs),
+		tlsCfg:      tlsCfg,
+		rateLimiter: lim,
+		logger:      d.Logger,
 	}, nil
+}
+
+// SetRateLimit 热更新 rps + burst（config-center OnChange 回调里调）。
+func (s *Server) SetRateLimit(rps float64, burst int) {
+	if rps <= 0 {
+		s.rateLimiter = nil
+		return
+	}
+	if burst <= 0 {
+		burst = int(rps)
+		if burst < 1 {
+			burst = 1
+		}
+	}
+	if s.rateLimiter == nil {
+		s.rateLimiter = rate.NewLimiter(rate.Limit(rps), burst)
+		return
+	}
+	s.rateLimiter.SetLimit(rate.Limit(rps))
+	s.rateLimiter.SetBurst(burst)
 }
 
 // buildServerTLS 三件齐全 → 加载 cert + 信任 client CA + ClientAuth=Require。
@@ -123,7 +154,7 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 			trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
 			LoggingInterceptor(s.logger),
 			MetricsInterceptor(),
-			RateLimitInterceptor(s.rps, s.burst),
+			RateLimitInterceptor(s.rateLimiter),
 			ClientIdentityInterceptor(s.allowedIDs, s.logger),
 			AuthInterceptor(s.auth, s.logger),
 		),

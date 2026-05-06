@@ -481,14 +481,13 @@ func newServer(svc *service.AcquirerService, v *viper.Viper, cli *configcenter.C
 		tokens[t] = "ok"
 	}
 	// rate_limit 100% 走 config-center；config-center 不可达 → hardcoded safe default。
-	// admin /admin/ns/payment-channel/rate_limit.{rps,burst} 改后即时生效。
 	rps := 2000.0
 	burst := 4000
 	if cli != nil {
 		rps = cli.GetFloat64(context.Background(), "rate_limit.rps", rps)
 		burst = cli.GetInt(context.Background(), "rate_limit.burst", burst)
 	}
-	return server.NewServer(server.Deps{
+	srv := server.NewServer(server.Deps{
 		AcquirerSvc:          svc,
 		AuthTokens:           tokens,
 		AllowUnauthenticated: v.GetBool("auth.allow_unauthenticated"),
@@ -496,6 +495,19 @@ func newServer(svc *service.AcquirerService, v *viper.Viper, cli *configcenter.C
 		RateBurst:            burst,
 		Logger:               logger,
 	})
+	// OnChange 热更：admin 改 namespace=payment-channel 下 rate_limit.{rps,burst} 秒级生效
+	if cli != nil {
+		apply := func(_ *configcenter.ConfigValue) {
+			ctx := context.Background()
+			r := cli.GetFloat64(ctx, "rate_limit.rps", 2000.0)
+			b := cli.GetInt(ctx, "rate_limit.burst", 4000)
+			srv.SetRateLimit(r, b)
+			logger.Info("rate_limit hot-reloaded", zap.Float64("rps", r), zap.Int("burst", b))
+		}
+		cli.OnChange("rate_limit.rps", apply)
+		cli.OnChange("rate_limit.burst", apply)
+	}
+	return srv
 }
 
 func newWebhookHTTP(svc *service.WebhookService, logger *zap.Logger) *server.WebhookHTTPServer {

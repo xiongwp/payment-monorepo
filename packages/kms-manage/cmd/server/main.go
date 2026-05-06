@@ -171,7 +171,7 @@ func newServer(svc *service.KMSService, v *viper.Viper, cli *configcenter.Client
 		rps = cli.GetFloat64(ctx, "rate_limit.rps", rps)
 		burst = cli.GetInt(ctx, "rate_limit.burst", burst)
 	}
-	return server.NewServer(server.Deps{
+	srv, err := server.NewServer(server.Deps{
 		KMSSvc:     svc,
 		AuthTokens: tokens,
 		AllowedIDs: allowed,
@@ -184,6 +184,25 @@ func newServer(svc *service.KMSService, v *viper.Viper, cli *configcenter.Client
 		RateBurst:    burst,
 		Logger:       logger,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// OnChange 热更：admin 改 namespace=kms-manage 下 rate_limit.{rps,burst} 秒级生效。
+	// SAN whitelist (auth.allowed_client_ids) 是安全敏感字段，admin 应用 TARGETED
+	// 推；本服务这里只重启时刷新（不接 OnChange 防误改影响整个 mTLS 边界）。
+	if cli != nil {
+		apply := func(_ *configcenter.ConfigValue) {
+			ctx := context.Background()
+			r := cli.GetFloat64(ctx, "rate_limit.rps", 500.0)
+			b := cli.GetInt(ctx, "rate_limit.burst", 1000)
+			srv.SetRateLimit(r, b)
+			logger.Info("kms rate_limit hot-reloaded",
+				zap.Float64("rps", r), zap.Int("burst", b))
+		}
+		cli.OnChange("rate_limit.rps", apply)
+		cli.OnChange("rate_limit.burst", apply)
+	}
+	return srv, nil
 }
 
 func startGRPC(lc fx.Lifecycle, s *server.Server, v *viper.Viper, logger *zap.Logger) {

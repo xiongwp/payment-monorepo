@@ -198,19 +198,14 @@ func AuthInterceptor(validTokens map[string]string, logger *zap.Logger) grpc.Una
 	}
 }
 
-func RateLimitInterceptor(rps float64, burst int) grpc.UnaryServerInterceptor {
-	if rps <= 0 {
+// RateLimitInterceptor 拿一个外部 limiter（caller 持有引用方便 SetLimit 热更新）。
+// nil → 不限流；不再内部构造，方便 OnChange 走 Server.SetRateLimit。
+func RateLimitInterceptor(limiter *rate.Limiter) grpc.UnaryServerInterceptor {
+	if limiter == nil {
 		return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 			return handler(ctx, req)
 		}
 	}
-	if burst <= 0 {
-		burst = int(rps)
-		if burst < 1 {
-			burst = 1
-		}
-	}
-	limiter := rate.NewLimiter(rate.Limit(rps), burst)
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		if !limiter.Allow() {
 			return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
