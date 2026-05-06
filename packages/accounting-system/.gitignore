@@ -57,3 +57,4 @@ cmd/loadtest/loadtest
 /loadtest
 /batchtask
 /server
+redis-rebuild
