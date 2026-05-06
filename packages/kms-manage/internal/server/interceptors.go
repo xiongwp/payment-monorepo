@@ -13,7 +13,9 @@ import (
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -214,6 +216,94 @@ func RateLimitInterceptor(rps float64, burst int) grpc.UnaryServerInterceptor {
 			return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
 		}
 		return handler(ctx, req)
+	}
+}
+
+// ─── mTLS Client identity allowlist ───────────────────────────────────────
+//
+// **P0-4 纵深防御**：原 AuthInterceptor 只校 Bearer，bearer 泄漏 = KMS 全开。
+// 这层用 client cert 的 CN + SAN URI 作为身份依据：
+//   - 进程必须有 cert-manager 签的 client cert（私钥可被进程读但不能复制走）
+//   - cert 的 CN 或 SAN URI 必须命中白名单（典型："card-center.payment.local"）
+//   - SAN URI 形如 spiffe://payment.local/svc/card-center 优先于 CN
+//
+// AllowList 兼容三种 identity 写法（任意命中即通过）：
+//   1. Subject CommonName            (legacy: "card-center.payment.local")
+//   2. SAN DNS                       ("card-center.payment.local")
+//   3. SAN URI                       ("spiffe://payment.local/svc/card-center")
+//
+// dev 模式 allow 为空 → 不强制（仍会跑健康检查 / 反射）。prod 由
+// assertProdSafety 保证 allow 至少有 1 个条目。
+
+type ClientIdentityAllowList map[string]struct{}
+
+func NewClientIdentityAllowList(ids []string) ClientIdentityAllowList {
+	out := make(ClientIdentityAllowList, len(ids))
+	for _, s := range ids {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			out[s] = struct{}{}
+		}
+	}
+	return out
+}
+
+// peerIdentities 取出 peer cert 上所有可作为身份的字符串：CN / SAN DNS / SAN URI。
+// 顺序无关，外层逐个比对白名单。
+func peerIdentities(ctx context.Context) ([]string, string) {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return nil, ""
+	}
+	addr := p.Addr.String()
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok {
+		return nil, addr
+	}
+	if len(tlsInfo.State.PeerCertificates) == 0 {
+		return nil, addr
+	}
+	cert := tlsInfo.State.PeerCertificates[0]
+	out := make([]string, 0, 2+len(cert.DNSNames)+len(cert.URIs))
+	if cert.Subject.CommonName != "" {
+		out = append(out, cert.Subject.CommonName)
+	}
+	out = append(out, cert.DNSNames...)
+	for _, u := range cert.URIs {
+		out = append(out, u.String())
+	}
+	return out, addr
+}
+
+// ClientIdentityInterceptor 拒绝 cert SAN/CN 不在白名单的调用。
+// 空 allow → no-op；prod 必须非空（assertProdSafety 保证）。
+func ClientIdentityInterceptor(allow ClientIdentityAllowList, logger *zap.Logger) grpc.UnaryServerInterceptor {
+	skip := func(method string) bool {
+		return strings.HasPrefix(method, "/grpc.health.") ||
+			strings.HasPrefix(method, "/grpc.reflection.")
+	}
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		if len(allow) == 0 || skip(info.FullMethod) {
+			return handler(ctx, req)
+		}
+		ids, addr := peerIdentities(ctx)
+		if len(ids) == 0 {
+			logger.Warn("client identity rejected (no peer cert)",
+				zap.String("method", info.FullMethod),
+				zap.String("addr", addr))
+			return nil, status.Error(codes.Unauthenticated, "missing client cert identity")
+		}
+		for _, id := range ids {
+			if _, ok := allow[id]; ok {
+				return handler(ctx, req)
+			}
+		}
+		// 拒绝时记下 SAN（便于排查"调用方 cert 改了但白名单忘加"），但不带 token 等机密。
+		logger.Warn("client identity rejected (not in allowlist)",
+			zap.String("method", info.FullMethod),
+			zap.String("addr", addr),
+			zap.Strings("identities", ids))
+		return nil, status.Error(codes.PermissionDenied, "client identity not allowed")
 	}
 }
 

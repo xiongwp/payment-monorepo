@@ -36,6 +36,7 @@ import (
 	"github.com/xiongwp/card-center/internal/service"
 	"github.com/xiongwp/card-center/internal/sharding"
 	"github.com/xiongwp/card-center/internal/vault"
+	"github.com/xiongwp/payment-util/audit/kafkago"
 	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/payment-util/trace"
@@ -96,7 +97,8 @@ func loadConfig() (*viper.Viper, error) {
 		"kms.client_cert", "kms.client_key", "kms.server_ca",
 		"kms.bypass_hardened",
 		"tls.cert", "tls.key", "tls.client_ca",
-		"audit.kafka_brokers",
+		"audit.kafka_brokers", "audit.topic", "audit.kafka_acks",
+		"audit.kafka_write_timeout", "audit.kafka_batch_timeout", "audit.kafka_compression",
 		"database.meta.dsn", "database.meta.name",
 		"database.meta.max_open_conns", "database.meta.max_idle_conns", "database.meta.conn_max_lifetime",
 		// HTTPS 入口 + 用户登录态校验上游（mTLS gRPC 直连 user-merchant-core）
@@ -151,6 +153,9 @@ func assertProdSafety(v *viper.Viper) error {
 		len(splitCSV(v.GetString("kms.registry_endpoints"))) == 0 &&
 		len(v.GetStringSlice("kms.registry_endpoints")) == 0 {
 		return fmt.Errorf("PROD-SAFETY: kms.endpoint or kms.registry_endpoints must be configured")
+	}
+	if v.GetBool("kms.bypass_hardened") {
+		return fmt.Errorf("PROD-SAFETY: kms.bypass_hardened=true forbidden in env=prod (dev-only diagnostic flag)")
 	}
 	if len(v.GetStringSlice("audit.kafka_brokers")) == 0 {
 		return fmt.Errorf("PROD-SAFETY: audit.kafka_brokers must be configured (audit cannot be lost)")
@@ -323,15 +328,56 @@ func newPaymentTokenRepo(mgr *repo.Manager) repo.PaymentTokenRepo {
 	return repo.NewPaymentTokenRepo(mgr)
 }
 
-// newAuditEmitter 构造 audit emitter；Kafka producer 这里先注入 nil，
-// service 层只走 DB 落盘。生产引入 sarama / kafka-go 后这里替换。
-func newAuditEmitter(mgr *repo.Manager, v *viper.Viper, logger *zap.Logger) service.AuditEmitter {
+// newAuditEmitter 构造 audit emitter。
+//
+// 双写：Kafka producer (PCI Req 10 卸载存档) + audit_log DB (强一致 7 年留存)。
+// brokers 配上时 wire 真的 kafka-go 生产者；空时按环境决定行为：
+//   - dev: 退化 DB-only + warn
+//   - prod: fail-fast（PCI Req 10 不容许只 DB）
+func newAuditEmitter(lc fx.Lifecycle, mgr *repo.Manager, v *viper.Viper, logger *zap.Logger) (service.AuditEmitter, error) {
 	topic := v.GetString("audit.topic")
 	if topic == "" {
 		topic = "card-center.audit"
 	}
-	// TODO: 接 sarama 的 SyncProducer，实现 audit.KafkaProducer
-	return audit.New(nil, topic, mgr.Meta(), logger)
+	brokers := splitCSV(v.GetString("audit.kafka_brokers"))
+	if len(brokers) == 0 {
+		brokers = v.GetStringSlice("audit.kafka_brokers")
+	}
+	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+	isProd := env == "prod" || env == "production"
+
+	var producer audit.KafkaProducer
+	if len(brokers) > 0 {
+		p, err := kafkago.New(kafkago.Config{
+			Brokers:      brokers,
+			Acks:         v.GetString("audit.kafka_acks"),
+			WriteTimeout: v.GetDuration("audit.kafka_write_timeout"),
+			BatchTimeout: v.GetDuration("audit.kafka_batch_timeout"),
+			Compression:  v.GetString("audit.kafka_compression"),
+		}, logger)
+		if err != nil {
+			if isProd {
+				return nil, fmt.Errorf("PROD-SAFETY: audit kafka producer init: %w", err)
+			}
+			logger.Warn("audit kafka producer init failed, dev fallback DB-only", zap.Error(err))
+		} else {
+			producer = p
+			lc.Append(fx.Hook{
+				OnStop: func(_ context.Context) error { return p.Close() },
+			})
+			logger.Info("audit kafka producer wired",
+				zap.Strings("brokers", brokers),
+				zap.String("topic", topic))
+		}
+	}
+
+	if isProd && producer == nil {
+		return nil, fmt.Errorf("PROD-SAFETY: audit.kafka_brokers required in env=prod (PCI DSS Req 10 forbids DB-only audit)")
+	}
+	if producer == nil {
+		logger.Warn("audit emitter running DB-only (no Kafka brokers); dev mode acceptable")
+	}
+	return audit.New(producer, topic, mgr.Meta(), logger), nil
 }
 
 func newService(v *vault.Vault, sr repo.StoredCardRepo, pr repo.PaymentTokenRepo, ae service.AuditEmitter, logger *zap.Logger) *service.Service {
@@ -515,11 +561,11 @@ func newRESTServer(v *viper.Viper, svc *service.Service, vfy httpsauth.Verifier,
 	}
 	burst := v.GetInt("ratelimit.tokenize.burst")
 	if burst <= 0 {
-		burst = 5
+		burst = 10 // 一阵子内的并发空间，给 SDK 重试 + 单页多卡场景留 buffer
 	}
 	refill := v.GetDuration("ratelimit.tokenize.refill")
 	if refill <= 0 {
-		refill = 12 * time.Second // 5 / 分钟
+		refill = 2 * time.Second // 30 tokens / 分钟稳定速率（原 5/min 太严）
 	}
 	rl := httpsauth.NewMemoryBucket(burst, refill)
 	rl.Cleanup(10*time.Minute, time.Hour)

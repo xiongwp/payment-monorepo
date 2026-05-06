@@ -75,6 +75,10 @@ func loadConfig() (*viper.Viper, error) {
 //  1. auth.allow_unauthenticated 必须 false（任何人能解密 = 全平台密钥泄漏）
 //  2. auth.tokens 必须配（mesh 内服务凭 token 调本服务）
 //  3. keystore.dir 必须明确（默认 /var/lib/kms-manage/keys 但生产应显式声明）
+//  4. **mTLS 三件齐全**（P0-4）：tls.server_cert / tls.server_key / tls.client_ca
+//     不齐全 = 退化单向 TLS = 谁都能拿 PAN 加解密，PCI Req 4 / Req 8 不达标。
+//  5. **Client identity 白名单非空**（P0-4）：auth.allowed_client_ids 至少 1 项，
+//     防止 CA 误签的 cert 也能调 KMS。
 func assertProdSafety(v *viper.Viper) error {
 	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
 	if env != "prod" && env != "production" {
@@ -88,6 +92,14 @@ func assertProdSafety(v *viper.Viper) error {
 	}
 	if strings.TrimSpace(v.GetString("keystore.dir")) == "" {
 		return fmt.Errorf("PROD-SAFETY: KMS keystore.dir must be explicitly configured in env=prod (don't rely on default path)")
+	}
+	for _, k := range []string{"tls.server_cert", "tls.server_key", "tls.client_ca"} {
+		if strings.TrimSpace(v.GetString(k)) == "" {
+			return fmt.Errorf("PROD-SAFETY: KMS %s required in env=prod (mTLS mandatory; P0-4)", k)
+		}
+	}
+	if len(v.GetStringSlice("auth.allowed_client_ids")) == 0 {
+		return fmt.Errorf("PROD-SAFETY: KMS auth.allowed_client_ids must be non-empty in env=prod (at least one CN/SAN whitelisted; P0-4)")
 	}
 	return nil
 }
@@ -140,7 +152,7 @@ func newKMSSvc(s *keystore.Store, logger *zap.Logger) *service.KMSService {
 	return service.NewKMSService(s, logger)
 }
 
-func newServer(svc *service.KMSService, v *viper.Viper, logger *zap.Logger) *server.Server {
+func newServer(svc *service.KMSService, v *viper.Viper, logger *zap.Logger) (*server.Server, error) {
 	tokens := map[string]string{}
 	for _, t := range v.GetStringSlice("auth.tokens") {
 		tokens[t] = "ok"
@@ -148,6 +160,12 @@ func newServer(svc *service.KMSService, v *viper.Viper, logger *zap.Logger) *ser
 	return server.NewServer(server.Deps{
 		KMSSvc:       svc,
 		AuthTokens:   tokens,
+		AllowedIDs:   v.GetStringSlice("auth.allowed_client_ids"),
+		TLS: server.TLSPaths{
+			ServerCert: v.GetString("tls.server_cert"),
+			ServerKey:  v.GetString("tls.server_key"),
+			ClientCA:   v.GetString("tls.client_ca"),
+		},
 		RateLimitRPS: v.GetFloat64("rate_limit.rps"),
 		RateBurst:    v.GetInt("rate_limit.burst"),
 		Logger:       logger,

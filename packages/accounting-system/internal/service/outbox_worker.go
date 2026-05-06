@@ -32,6 +32,7 @@ import (
 	"github.com/accounting-system/internal/infrastructure/sharding"
 	"github.com/accounting-system/internal/metrics"
 	"github.com/accounting-system/internal/repository"
+	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -416,9 +417,13 @@ func (w *OutboxWorker) runRecovery(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := w.recoverStuckPending(ctx); err != nil {
-				w.logger.Error("outbox recovery error", zap.Error(err))
+			// trace.NewBackground：每次扫一拨 stuck PENDING 都新 trace_id +
+			// shadow=false 强制。outbox 写主账表，绝不能漏带 shadow flag。
+			tickCtx, cancel := trace.NewBackground(ctx, "outbox-recovery", w.logger, outboxRecoveryInterval)
+			if err := w.recoverStuckPending(tickCtx); err != nil {
+				trace.Logger(tickCtx, w.logger).Error("outbox recovery error", zap.Error(err))
 			}
+			cancel()
 		}
 	}
 }
@@ -518,16 +523,17 @@ func (w *OutboxWorker) runOrderRecovery(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			rCtx, cancel := context.WithTimeout(ctx, recoveryQueryTimeout)
-			affected, err := w.orderRepo.ResetStuckProcessing(rCtx, stuckProcessingThreshold)
+			// 每 tick 起 background ctx：trace_id 新生成 + shadow=false 强制。
+			tickCtx, cancel := trace.NewBackground(ctx, "order-recovery", w.logger, recoveryQueryTimeout)
+			affected, err := w.orderRepo.ResetStuckProcessing(tickCtx, stuckProcessingThreshold)
 			cancel()
 			if err != nil {
-				w.logger.Error("order recovery: reset stuck processing failed", zap.Error(err))
+				trace.Logger(tickCtx, w.logger).Error("order recovery: reset stuck processing failed", zap.Error(err))
 				continue
 			}
 			if affected > 0 {
 				metrics.RecoveryTotal.WithLabelValues("order_processing").Add(float64(affected))
-				w.logger.Warn("order recovery: reset stuck PROCESSING orders to FAILED",
+				trace.Logger(tickCtx, w.logger).Warn("order recovery: reset stuck PROCESSING orders to FAILED",
 					zap.Int64("count", affected))
 			}
 		}
@@ -546,13 +552,15 @@ func (w *OutboxWorker) runCleanup(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			affected, err := w.outboxRepo.DeleteOldDone(ctx, 7*24*time.Hour)
+			tickCtx, cancel := trace.NewBackground(ctx, "outbox-cleanup", w.logger, cleanupInterval)
+			affected, err := w.outboxRepo.DeleteOldDone(tickCtx, 7*24*time.Hour)
+			cancel()
 			if err != nil {
-				w.logger.Error("outbox cleanup: delete old done records failed", zap.Error(err))
+				trace.Logger(tickCtx, w.logger).Error("outbox cleanup: delete old done records failed", zap.Error(err))
 				continue
 			}
 			if affected > 0 {
-				w.logger.Info("outbox cleanup: deleted old MYSQL_DONE records",
+				trace.Logger(tickCtx, w.logger).Info("outbox cleanup: deleted old MYSQL_DONE records",
 					zap.Int64("count", affected))
 			}
 		}

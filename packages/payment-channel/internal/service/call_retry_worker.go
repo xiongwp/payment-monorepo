@@ -10,6 +10,7 @@ import (
 	"github.com/xiongwp/payment-channel/internal/channel"
 	"github.com/xiongwp/payment-channel/internal/domain"
 	"github.com/xiongwp/payment-channel/internal/repo"
+	"github.com/xiongwp/payment-util/trace"
 )
 
 // CallRetryWorker 扫 acquirer_tx 里 state=failed 且 next_retry_at<=now 的行，
@@ -40,9 +41,15 @@ func (w *CallRetryWorker) Start(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := w.Tick(ctx); err != nil {
-				w.logger.Warn("call retry tick failed", zap.Error(err))
+			// **关键**：每个 tick 用 trace.NewBackground 起 ctx：
+			//   - 新 trace_id 让单 cycle 在日志里聚成一条线
+			//   - shadow=false 强制：worker 跑主流量；继承的 parent 若漂移
+			//     shadow=true 会把重放写到 *_shadow 表 / 真渠道发不出去
+			tickCtx, cancel := trace.NewBackground(ctx, "call-retry-worker", w.logger, w.interval)
+			if err := w.Tick(tickCtx); err != nil {
+				trace.Logger(tickCtx, w.logger).Warn("call retry tick failed", zap.Error(err))
 			}
+			cancel()
 		}
 	}
 }

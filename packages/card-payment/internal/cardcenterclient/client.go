@@ -18,10 +18,13 @@ import (
 
 	"github.com/xiongwp/card-payment/internal/processor"
 	"github.com/xiongwp/payment-util/serviceregistry"
+
+	cardcenterv1 "github.com/xiongwp/card-center/api/proto/cardcenter/v1"
 )
 
 type Client struct {
 	conn    *grpc.ClientConn
+	api     cardcenterv1.CardCenterServiceClient
 	timeout time.Duration
 }
 
@@ -85,27 +88,37 @@ func New(cfg Config) (*Client, error) {
 	if t <= 0 {
 		t = 5 * time.Second
 	}
-	return &Client{conn: conn, timeout: t}, nil
+	return &Client{conn: conn, api: cardcenterv1.NewCardCenterServiceClient(conn), timeout: t}, nil
 }
 
 func (c *Client) Close() error { return c.conn.Close() }
 
 // Detokenize 实现 processor.CardCenter
 //
-// 注意：本函数返回的 Detokenized.PAN 是真实卡号。caller (processor.Authorize)
+// **注意：本函数返回的 Detokenized.PAN 是真实卡号**。caller (processor.Authorize)
 // 必须在 defer 里清栈，绝不能 log，绝不能存。
+//
+// caller="card-payment" 是 card-center service 层白名单校验项，其它 service 调
+// 会被审计 deny。pi_id 进 AAD 防止 token 跨 PI 错绑。
 func (c *Client) Detokenize(ctx context.Context, paymentToken, piID string) (*processor.Detokenized, error) {
 	cctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-
-	// TODO: 用 cardcenterv1.NewCardCenterClient(c.conn).Detokenize(cctx, &cardcenterv1.DetokenizeRequest{
-	//     PaymentToken: paymentToken, PiId: piID, Caller: "card-payment",
-	// })
-	// 然后把 resp.Pan 等映射到 processor.Detokenized 返回。
-	//
-	// 当前 stub：等 card-center 的 generated proto 在 vendor 里就绪后接通。
-	_ = cctx
-	return nil, errors.New("cardcenterclient: TODO wire cardcenterv1 generated stubs")
+	resp, err := c.api.Detokenize(cctx, &cardcenterv1.DetokenizeRequest{
+		PaymentToken: paymentToken,
+		PiId:         piID,
+		Caller:       "card-payment",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cardcenterclient Detokenize rpc: %w", err)
+	}
+	return &processor.Detokenized{
+		PAN:        resp.GetPan(),
+		ExpMonth:   int(resp.GetExpMonth()),
+		ExpYear:    int(resp.GetExpYear()),
+		HolderName: resp.GetHolderName(),
+		PIID:       piID,
+		// Amount/Currency 不来自 card-center —— processor 自己从 PI 填
+	}, nil
 }
 
 func buildTLS(cfg Config) (*tls.Config, error) {

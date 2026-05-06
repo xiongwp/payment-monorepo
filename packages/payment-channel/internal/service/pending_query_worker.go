@@ -11,6 +11,7 @@ import (
 	"github.com/xiongwp/payment-channel/internal/domain"
 	"github.com/xiongwp/payment-channel/internal/metrics"
 	"github.com/xiongwp/payment-channel/internal/repo"
+	"github.com/xiongwp/payment-util/trace"
 )
 
 // PendingQueryWorker 周期扫 acquirer_tx 里 state=unknown / state=pending（且
@@ -84,9 +85,12 @@ func (w *PendingQueryWorker) Start(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := w.Tick(ctx); err != nil {
-				w.logger.Warn("pending query tick failed", zap.Error(err))
+			// 每 tick 起 background ctx：trace_id 新生成 + shadow=false 强制。
+			tickCtx, cancel := trace.NewBackground(ctx, "pending-query-worker", w.logger, w.interval)
+			if err := w.Tick(tickCtx); err != nil {
+				trace.Logger(tickCtx, w.logger).Warn("pending query tick failed", zap.Error(err))
 			}
+			cancel()
 		}
 	}
 }

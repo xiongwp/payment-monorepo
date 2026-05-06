@@ -32,6 +32,7 @@ import (
 
 	"github.com/xiongwp/order-core/internal/metrics"
 	"github.com/xiongwp/order-core/internal/shadow"
+	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -230,6 +231,11 @@ func (detachedContext) Err() error                        { return nil }
 func (d detachedContext) Value(key interface{}) interface{} { return d.parent.Value(key) }
 
 // RunRetryWorker 后台 worker：轮询 pending + retry-ready，重发。
+//
+// 每个 tick 用 trace.NewBackground 重置 ctx：
+//   - 新 trace_id：单 cycle 在日志可聚合
+//   - **shadow=false 强制**：webhook 出站给商户是真请求，不能漏带 shadow=true
+//     把压测流量发到真商户回调地址。
 func (d *Dispatcher) RunRetryWorker(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -238,7 +244,9 @@ func (d *Dispatcher) RunRetryWorker(ctx context.Context, interval time.Duration)
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			d.processRetries(ctx)
+			tickCtx, cancel := trace.NewBackground(ctx, "webhook-retry-worker", d.logger, interval)
+			d.processRetries(tickCtx)
+			cancel()
 		}
 	}
 }

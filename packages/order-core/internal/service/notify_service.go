@@ -18,6 +18,7 @@ import (
 	"github.com/xiongwp/order-core/internal/idgen"
 	"github.com/xiongwp/order-core/internal/repo"
 	"github.com/xiongwp/order-core/internal/sharding"
+	"github.com/xiongwp/payment-util/trace"
 )
 
 // NotifyService 生成通知记录 + 按 ClientType 路由到合适的 Notifier 发送。
@@ -275,9 +276,13 @@ func (w *NotifyRetryWorker) Start(ctx context.Context) {
 	t := time.NewTicker(w.interval)
 	defer t.Stop()
 	run := func() {
-		list, err := w.repo.ListDue(ctx, time.Now().UTC(), w.limit)
+		// 每 tick 起 background ctx：trace_id 新生成 + shadow=false。
+		// notify retry 出站给商户 / 内部 service，不能漏带 shadow。
+		bgCtx, cancel := trace.NewBackground(ctx, "notify-retry-worker", w.logger, w.interval)
+		defer cancel()
+		list, err := w.repo.ListDue(bgCtx, time.Now().UTC(), w.limit)
 		if err != nil {
-			w.logger.Warn("notify list due failed", zap.Error(err))
+			trace.Logger(bgCtx, w.logger).Warn("notify list due failed", zap.Error(err))
 			return
 		}
 		if len(list) == 0 {
@@ -295,8 +300,8 @@ func (w *NotifyRetryWorker) Start(ctx context.Context) {
 			go func(n *domain.NotifyLog) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				if err := w.svc.Retry(ctx, n); err != nil {
-					w.logger.Debug("notify retry result", zap.String("id", n.ID), zap.Error(err))
+				if err := w.svc.Retry(bgCtx, n); err != nil {
+					trace.Logger(bgCtx, w.logger).Debug("notify retry result", zap.String("id", n.ID), zap.Error(err))
 				}
 			}(n)
 		}

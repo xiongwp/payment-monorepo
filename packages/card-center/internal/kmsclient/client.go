@@ -113,7 +113,8 @@ func New(cfg Config) (*Client, error) {
 	}
 	t := cfg.RPCTimeout
 	if t <= 0 {
-		t = 3 * time.Second
+		// 7s：HSM-backed KMS P99 一般 < 5s，留 2s 余量；3s 容易 false-fail
+		t = 7 * time.Second
 	}
 <<<<<<< HEAD
 	return &Client{

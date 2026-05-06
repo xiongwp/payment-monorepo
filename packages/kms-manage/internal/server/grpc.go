@@ -3,14 +3,19 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 
 	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
 	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
@@ -20,41 +25,89 @@ import (
 type Server struct {
 	kmsv1.UnimplementedKMSServiceServer
 
-	svc    *service.KMSService
-	auth   map[string]string
-	rps    float64
-	burst  int
-	logger *zap.Logger
+	svc        *service.KMSService
+	auth       map[string]string
+	allowedIDs ClientIdentityAllowList
+	tlsCfg     *tls.Config
+	rps        float64
+	burst      int
+	logger     *zap.Logger
+}
+
+// TLSPaths server 端 mTLS 配置。三个都必填才启用 mTLS；任一空 →
+// 走 insecure listener（dev / 本地开发）。
+type TLSPaths struct {
+	ServerCert string
+	ServerKey  string
+	ClientCA   string // 校验调用方 cert 用，必填启用 RequireAndVerifyClientCert
 }
 
 type Deps struct {
 	KMSSvc       *service.KMSService
 	AuthTokens   map[string]string
+	AllowedIDs   []string  // mTLS client cert CN / SAN 白名单
+	TLS          TLSPaths  // 三个都填 → mTLS-only listener
 	RateLimitRPS float64
 	RateBurst    int
 	Logger       *zap.Logger
 }
 
-func NewServer(d Deps) *Server {
-	return &Server{
-		svc:    d.KMSSvc,
-		auth:   d.AuthTokens,
-		rps:    d.RateLimitRPS,
-		burst:  d.RateBurst,
-		logger: d.Logger,
+// NewServer 装配 Server；TLS 路径任一缺省走 insecure（dev only）。
+// prod 路径要求三件齐全 + AllowedIDs 至少 1 项，由 main.go assertProdSafety 拦。
+func NewServer(d Deps) (*Server, error) {
+	tlsCfg, err := buildServerTLS(d.TLS)
+	if err != nil {
+		return nil, err
 	}
+	return &Server{
+		svc:        d.KMSSvc,
+		auth:       d.AuthTokens,
+		allowedIDs: NewClientIdentityAllowList(d.AllowedIDs),
+		tlsCfg:     tlsCfg,
+		rps:        d.RateLimitRPS,
+		burst:      d.RateBurst,
+		logger:     d.Logger,
+	}, nil
+}
+
+// buildServerTLS 三件齐全 → 加载 cert + 信任 client CA + ClientAuth=Require。
+// 任一空 → 返 nil 表示 insecure listener。
+func buildServerTLS(p TLSPaths) (*tls.Config, error) {
+	if p.ServerCert == "" || p.ServerKey == "" || p.ClientCA == "" {
+		return nil, nil
+	}
+	cert, err := tls.LoadX509KeyPair(p.ServerCert, p.ServerKey)
+	if err != nil {
+		return nil, fmt.Errorf("kms server keypair: %w", err)
+	}
+	pool := x509.NewCertPool()
+	caBytes, err := os.ReadFile(p.ClientCA)
+	if err != nil {
+		return nil, fmt.Errorf("kms client CA: %w", err)
+	}
+	if !pool.AppendCertsFromPEM(caBytes) {
+		return nil, errors.New("kms client CA: PEM parse failed")
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientCAs:    pool,
+		// **关键**：必须验证调用方 cert，否则 mTLS 退化为单向 TLS，纵深防御=0。
+		ClientAuth: tls.RequireAndVerifyClientCert,
+		MinVersion: tls.VersionTLS12,
+	}, nil
 }
 
 // ListenAndServe 开 gRPC 监听。ctx 关闭时 GracefulStop。
 //
-// **TODO(P1-5 长期，需要 ops 配合)**：升级到 mTLS / SPIFFE workload identity。
-// 当前 AuthInterceptor 只用静态 Bearer token，宿主机 / k8s pod 拿到 token 文件
-// 都能调 Decrypt / GenerateDataKey 解密任意业务密文。生产期目标：
-//   - server-side: 用 grpc.Creds(credentials.NewTLS(...)) 替代默认 insecure
-//   - client-side: 每个调用方 service 持自己的 client cert（cert-manager 自动续期）
-//   - AuthInterceptor 改读 peer.FromContext + tls.ConnectionState.PeerCertificates
-//     → 校验 cert 的 spiffe:// URI 与白名单的 service identity 匹配
-// 切换前需要先在 staging 跑通端到端 mTLS 链路，runbook 见 docs/KMS_MTLS.md。
+// **mTLS 双层鉴权（P0-4 完成）**：
+//
+//	层 1 — TLS 握手期：grpc.Creds(NewTLS) + ClientAuth=RequireAndVerifyClientCert
+//	         调用方没合法 client cert → 握手期就被踢，进不来 interceptor。
+//	层 2 — ClientIdentityInterceptor：cert 合法仍要 CN/SAN 命中白名单。
+//	         即使 CA 误签了一个 cert，没在 allowed_client_ids 里照样 deny。
+//	层 3 — AuthInterceptor (Bearer)：保留作 break-glass / 老客户兼容。
+//
+// 三层 AND，全过才放行 handler。
 func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -80,8 +133,15 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 			LoggingInterceptor(s.logger),
 			MetricsInterceptor(),
 			RateLimitInterceptor(s.rps, s.burst),
+			ClientIdentityInterceptor(s.allowedIDs, s.logger),
 			AuthInterceptor(s.auth, s.logger),
 		),
+	}
+	if s.tlsCfg != nil {
+		srvOpts = append(srvOpts, grpc.Creds(credentials.NewTLS(s.tlsCfg)))
+		s.logger.Info("kms-manage TLS enabled (mTLS RequireAndVerifyClientCert)")
+	} else {
+		s.logger.Warn("kms-manage running INSECURE (no TLS) — dev mode only")
 	}
 	srvOpts = append(srvOpts, serviceregistry.HardenedServerOptions()...)
 	srv := grpc.NewServer(srvOpts...)

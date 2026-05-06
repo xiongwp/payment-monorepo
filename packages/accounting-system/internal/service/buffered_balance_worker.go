@@ -35,6 +35,7 @@ import (
 	"github.com/accounting-system/internal/infrastructure/database"
 	"github.com/accounting-system/internal/infrastructure/sharding"
 	"github.com/accounting-system/internal/repository"
+	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -95,12 +96,17 @@ func (w *BufferedBalanceWorker) Wait() {
 }
 
 func (w *BufferedBalanceWorker) run(ctx context.Context) {
-	ticker := time.NewTicker(time.Duration(model.BufferFlushInterval) * time.Second)
+	interval := time.Duration(model.BufferFlushInterval) * time.Second
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			w.flushAll(ctx)
+			// trace.NewBackground 每 tick：trace_id 新发 + shadow=false。
+			// flushAll 写主账表，shadow 漂移会污染主表。
+			tickCtx, cancel := trace.NewBackground(ctx, "buffered-balance-flush", w.logger, interval)
+			w.flushAll(tickCtx)
+			cancel()
 		case <-w.stopCh:
 			return
 		case <-ctx.Done():
