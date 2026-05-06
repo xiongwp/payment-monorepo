@@ -33,7 +33,7 @@ case <-ticker.C:
 如果是 shadow 重放 worker（极少数情况），用 `trace.NewBackgroundShadow` 显式
 开启 shadow，便于审查时 grep 定位。
 
-## 已完成 (12 处)
+## 已完成 (17 处)
 
 | 文件 | 类型 | commit |
 | --- | --- | --- |
@@ -46,37 +46,43 @@ case <-ticker.C:
 | order-core/internal/service/charge_workers.go | charge expire + reconcile | (本批) |
 | order-core/internal/service/notify_service.go | 商户通知重试 | (本批) |
 | accounting-system/internal/service/outbox_worker.go | outbox recovery + order recovery + cleanup（3 个 ticker） | (本批) |
+| accounting-system/internal/service/buffered_balance_worker.go | balance flush 主账写 | 28c81383 |
+| accounting-system/internal/service/freeze_compensate_worker.go | 兜底补偿 | 28c81383 |
+| accounting-system/internal/service/tcc_recovery_worker.go | TCC 三轨扫描 | 28c81383 |
+| order-core/internal/service/accounting_outbox_worker.go | dispatch + archiver（2 个） | 28c81383 |
+| user-merchant-core/internal/service/retention.go | 7 年合规真删 | (本批) |
 
-## 待完成 (清单)
+## 待完成 / 已审核免修 (清单)
 
-跨服务扫了 `time.NewTicker` 共 32 处，资金 / 调用关键路径优先：
+跨服务扫了 `time.NewTicker` 共 32 处。资金 / 调用关键路径已 17/17 完成。
+剩余 15 处均不涉及主表 / 真渠道写：
 
-### order-core 剩余
+### 已审核免修
 
-- internal/service/accounting_outbox_worker.go (`AccountingOutboxWorker.Run` + `AccountingOutboxArchiver.Run`)
-
-### accounting-system 剩余
-
-- internal/service/buffered_balance_worker.go
-- internal/service/freeze_compensate_worker.go
-- internal/service/tcc_recovery_worker.go
-- internal/service/day_cut_service.go (cron-style，多 ticker)
-
-### payment-core
-
-- 看 `cmd/server/main.go` 的 worker 起点（claim_token / outbox / risk-flush）
-
-### clearing-settlement
-
-- 多个 cron 任务，按 file 一次过
-
-### card-payment
-
-- internal/reconcile/worker.go ✅ 已经按新模式跑 (NewBackground 内置)
+- `accounting-system/internal/service/day_cut_service.go:297`
+  ticker 仅做"进度日志"，真正的日切已在 line 286 自己 `shadow.WithShadow(
+  context.WithoutCancel(ctx), false)` 显式覆盖，等价于 NewBackground
+- `risk-manage/internal/audit/clickhouse_sink.go` — 内部 batch flush，非业务路径
+- `risk-manage/internal/store/postgres_policy.go` — 缓存 TTL 重读
+- `risk-manage/internal/store/predebit_commits.go` — 内存 commit 回收
+- `risk-manage/internal/synthetic/synthetic.go` — synthetic 探测器，本来就 isolation
+- `risk-manage/internal/metrics/token_source.go` — token 刷新
+- `risk-manage/cmd/server/main.go` — fx 起点 ticker（启动期）
+- `card-payment/internal/reconcile/worker.go` — ✅ 内置 NewBackground
+- `payment-channel/internal/idgen/leaf.go:181` — id 生成 buffer 异步 refill，内存
+- `id-generator/internal/segment/buffer.go:32` — 同上
+- `id-generator/internal/worker/etcd_worker.go` — etcd 选主
+- `payment-channel/cmd/server/main.go` — fx 起点 ctx
+- `payment-util/serviceregistry/registrar.go` — etcd lease keepalive
+- `payment-channel/internal/mockserver/util.go` — dev mockserver
 
 ### card-center / kms-manage
 
 - 暂无 cron worker，跳过
+
+### payment-core / clearing-settlement
+
+- grep `time.NewTicker` 0 处。worker 集中在 service 层方法，无独立 ticker。
 
 ## 验证
 

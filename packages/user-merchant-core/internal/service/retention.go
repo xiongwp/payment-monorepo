@@ -6,6 +6,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/xiongwp/payment-util/trace"
 	"github.com/xiongwp/user-merchant-core/internal/repo"
 )
 
@@ -33,17 +34,25 @@ func NewRetentionSweeper(r repo.MerchantRepository, retention, interval time.Dur
 }
 
 // Start 阻塞直到 ctx 取消。kill 路径：main 的 ctx 被 cancel。
+//
+// 每次 sweep 用 trace.NewBackground 起 ctx：retention 直接做"真删"，shadow
+// 漂移会把主表 7 年内的合规记录给删了，不可逆。强制 shadow=false 是保命线。
 func (s *RetentionSweeper) Start(ctx context.Context) {
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
+	runOnce := func() {
+		bgCtx, cancel := trace.NewBackground(ctx, "retention-sweeper", s.logger, s.interval)
+		defer cancel()
+		s.sweep(bgCtx)
+	}
 	// 启动立即跑一次；避免重启后第一次要等一整个 interval。
-	s.sweep(ctx)
+	runOnce()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.sweep(ctx)
+			runOnce()
 		}
 	}
 }
