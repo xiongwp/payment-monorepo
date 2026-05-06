@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/xiongwp/payment-util/mtls"
 	"github.com/xiongwp/payment-util/serviceregistry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -303,12 +304,36 @@ func envInt(name string, def int) int {
 // balancer "no children to pick from" 的红错（kms-manage / risk-manage 等
 // 容器还没起 / 起来但还没注册就常踩这个）。等 service 真注册了，下次 BFF
 // 重启会自动切回 etcd resolver 模式（也可挂热重载，目前先 boot-time 兜底）。
+//
+// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
+// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
+// 生产必须有证书，否则 panic。
 func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn {
+	// Load mTLS config; fail-fast in production if certs missing
+	mtlsCfg, err := mtls.LoadFromEnv()
+	if err != nil {
+		log.Fatalf("mtls config: %v", err)
+	}
+
+	var creds grpc.DialOption
+	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
+		// Dev/test mode: no mTLS certs configured
+		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
+	} else {
+		// mTLS mode: load credentials
+		tlsCreds, cerr := mtlsCfg.ClientCredentials()
+		if cerr != nil {
+			log.Fatalf("failed to load mTLS credentials for %s: %v", service, cerr)
+		}
+		creds = grpc.WithTransportCredentials(tlsCreds)
+	}
+
 	keepalive := grpc.WithKeepaliveParams(keepalive.ClientParameters{
 		Time:                30 * time.Second,
 		Timeout:             10 * time.Second,
 		PermitWithoutStream: true,
 	})
+
 	if len(registry) > 0 {
 		// 探测 etcd 上有没有 <service>/* 注册条目；2s 超时不挡 BFF 启动。
 		registered, err := serviceregistry.HasRegisteredInstances(registry, service, 2*time.Second)
@@ -319,7 +344,7 @@ func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn 
 			log.Printf("[bff] WARN %q etcd 无注册条目，降级直连 %s（待该服务起来并注册到 etcd 后重启 BFF 会自动切回 etcd resolver）",
 				service, fallbackAddr)
 			conn, derr := grpc.NewClient(fallbackAddr,
-				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				creds,
 				keepalive,
 				grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
 			)
@@ -329,7 +354,7 @@ func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn 
 			return conn
 		}
 		conn, err := serviceregistry.DialFromEndpoints(registry, service,
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			creds,
 			keepalive,
 		)
 		if err != nil {
@@ -339,7 +364,7 @@ func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn 
 		return conn
 	}
 	conn, err := grpc.NewClient(fallbackAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		creds,
 		keepalive,
 		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
 	)

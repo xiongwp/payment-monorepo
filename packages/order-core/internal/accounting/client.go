@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	"github.com/xiongwp/payment-util/mtls"
 	"github.com/xiongwp/payment-util/serviceregistry"
 
 	"github.com/xiongwp/order-core/internal/domain"
@@ -102,8 +103,23 @@ func New(cfg Config) (*Client, error) {
 	// outgoing metadata，让 accounting-system 端的 server interceptor 能拼成
 	// 跨服务一条 trace。
 	// round_robin 由 DialWithFallback 内部统一加（etcd / DNS 两条路都生效）。
+	// mTLS 条件接入
+	mtlsCfg, mtlsErr := mtls.LoadFromEnv()
+	if mtlsErr != nil {
+		return nil, fmt.Errorf("accounting: mtls config: %w", mtlsErr)
+	}
+	var creds grpc.DialOption
+	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
+		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
+	} else {
+		tlsCreds, cerr := mtlsCfg.ClientCredentials()
+		if cerr != nil {
+			return nil, fmt.Errorf("accounting: load mTLS creds: %w", cerr)
+		}
+		creds = grpc.WithTransportCredentials(tlsCreds)
+	}
 	conn, err := serviceregistry.DialWithFallback(cfg.RegistryEndpoints, service, cfg.Addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		creds,
 		// trace + shadow 都得透传到下游 accounting-system，让记账落到对应（主 / 影子）分区
 		grpc.WithChainUnaryInterceptor(
 			trace.UnaryClientInterceptor(),

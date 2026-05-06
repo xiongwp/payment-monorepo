@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 
 	channelv1 "github.com/xiongwp/payment-channel/api/proto/channel/v1"
+	"github.com/xiongwp/payment-util/mtls"
 	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/shadow"
 
@@ -76,8 +77,23 @@ func Dial(registry []string, endpoint string, rpcTimeout time.Duration) (Client,
 		return nil, fmt.Errorf("channelclient.Dial: endpoint and registry both empty")
 	}
 	const serviceName = "payment-channel"
+	// mTLS 条件接入
+	mtlsCfg, mtlsErr := mtls.LoadFromEnv()
+	if mtlsErr != nil {
+		return nil, fmt.Errorf("channelclient.Dial: mtls config: %w", mtlsErr)
+	}
+	var creds grpc.DialOption
+	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
+		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
+	} else {
+		tlsCreds, cerr := mtlsCfg.ClientCredentials()
+		if cerr != nil {
+			return nil, fmt.Errorf("channelclient.Dial: load mTLS creds: %w", cerr)
+		}
+		creds = grpc.WithTransportCredentials(tlsCreds)
+	}
 	conn, err := serviceregistry.DialWithFallback(registry, serviceName, endpoint,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		creds,
 		// trace + shadow 都需要透传到下游 payment-channel
 		grpc.WithChainUnaryInterceptor(
 			trace.UnaryClientInterceptor(),

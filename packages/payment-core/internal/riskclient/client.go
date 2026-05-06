@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 
 	riskv1 "github.com/xiongwp/risk-manage/api/proto/risk/v1"
+	"github.com/xiongwp/payment-util/mtls"
 	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/shadow"
 
@@ -120,8 +121,23 @@ func Dial(registry []string, endpoint string, rpcTimeout time.Duration) (Client,
 		return nil, fmt.Errorf("riskclient.Dial: endpoint and registry both empty")
 	}
 	const serviceName = "risk-manage"
+	// mTLS 条件接入：MTLS_SERVER_CERT/KEY/CA 配齐 → mTLS；缺配或 INSECURE_DIAL=1 → insecure（dev only）
+	mtlsCfg, mtlsErr := mtls.LoadFromEnv()
+	if mtlsErr != nil {
+		return nil, fmt.Errorf("riskclient.Dial: mtls config: %w", mtlsErr)
+	}
+	var creds grpc.DialOption
+	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
+		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
+	} else {
+		tlsCreds, cerr := mtlsCfg.ClientCredentials()
+		if cerr != nil {
+			return nil, fmt.Errorf("riskclient.Dial: load mTLS creds: %w", cerr)
+		}
+		creds = grpc.WithTransportCredentials(tlsCreds)
+	}
 	conn, err := serviceregistry.DialWithFallback(registry, serviceName, endpoint,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		creds,
 		// risk-manage 看到 x-shadow=1 会直接 ALLOW（短路放行），不消耗风控资源
 		grpc.WithChainUnaryInterceptor(
 			trace.UnaryClientInterceptor(),
