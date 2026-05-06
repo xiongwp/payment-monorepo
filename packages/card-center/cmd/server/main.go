@@ -131,6 +131,9 @@ func assertProdSafety(v *viper.Viper) error {
 	if strings.TrimSpace(v.GetString("kms.endpoint")) == "" {
 		return fmt.Errorf("PROD-SAFETY: kms.endpoint must be configured")
 	}
+	if v.GetBool("kms.bypass_hardened") {
+		return fmt.Errorf("PROD-SAFETY: kms.bypass_hardened=true forbidden in env=prod (dev-only diagnostic flag)")
+	}
 	if len(v.GetStringSlice("audit.kafka_brokers")) == 0 {
 		return fmt.Errorf("PROD-SAFETY: audit.kafka_brokers must be configured (audit cannot be lost)")
 	}
@@ -405,11 +408,11 @@ func newRESTServer(v *viper.Viper, svc *service.Service, vfy httpsauth.Verifier,
 	}
 	burst := v.GetInt("ratelimit.tokenize.burst")
 	if burst <= 0 {
-		burst = 5
+		burst = 10 // 一阵子内的并发空间，给 SDK 重试 + 单页多卡场景留 buffer
 	}
 	refill := v.GetDuration("ratelimit.tokenize.refill")
 	if refill <= 0 {
-		refill = 12 * time.Second // 5 / 分钟
+		refill = 2 * time.Second // 30 tokens / 分钟稳定速率（原 5/min 太严）
 	}
 	rl := httpsauth.NewMemoryBucket(burst, refill)
 	rl.Cleanup(10*time.Minute, time.Hour)
