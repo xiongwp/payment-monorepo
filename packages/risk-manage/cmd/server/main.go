@@ -190,7 +190,7 @@ func assertProdSafety(v *viper.Viper) error {
 	if enabledCount == 0 {
 		return fmt.Errorf("PROD-SAFETY: risk-manage 0 rules enabled in env=prod (risk control would be a no-op)")
 	}
-	return nil
+	return configcenter.AssertProdMandatory(v)
 }
 
 // mergeRulesByID 按 id 合并两组规则，base 同 id 优先；recipe 里没在 base 出现的
@@ -426,38 +426,49 @@ type breakerPair struct {
 	ml *reliability.Breaker
 }
 
-// newBreakers 熔断参数；config-center 优先，yaml bootstrap 兜底。
+// newBreakers 熔断参数；启动期 yaml bootstrap → SDK 覆盖 → 注册 OnChange 秒级热更。
 //
 // admin 改 namespace=risk-manage 下 key：
 //   reliability.ipintel.fail_threshold / open_duration
 //   reliability.mlscore.fail_threshold / open_duration
-//
-// 注意：Breaker 启动后参数是只读的（reliability.Config 没暴露 SetThreshold）；
-// 改阈值需要重启 pod 或在 reliability 包里加 SetConfig 方法做热更新。
-// 当前实现：启动期一次性读，admin 改后下次重启生效。
-func newBreakers(v *viper.Viper, cli *configcenter.Client) breakerPair {
+// 即时生效（Breaker.SetConfig 锁内整体替换）。
+func newBreakers(v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) breakerPair {
 	ctx := context.Background()
-	read := func(key, name string, defThr int, defOpen time.Duration) *reliability.Breaker {
-		thr := v.GetInt(key + ".fail_threshold")
+	build := func(yamlKey, name string, defThr int, defOpen time.Duration) *reliability.Breaker {
+		thr := v.GetInt(yamlKey + ".fail_threshold")
 		if thr <= 0 {
 			thr = defThr
 		}
-		open := v.GetDuration(key + ".open_duration")
+		open := v.GetDuration(yamlKey + ".open_duration")
 		if open <= 0 {
 			open = defOpen
 		}
-		// config-center 覆盖
 		if cli != nil {
-			thr = cli.GetInt(ctx, key+".fail_threshold", thr)
-			if d := cli.GetDuration(ctx, key+".open_duration", open); d > 0 {
+			thr = cli.GetInt(ctx, yamlKey+".fail_threshold", thr)
+			if d := cli.GetDuration(ctx, yamlKey+".open_duration", open); d > 0 {
 				open = d
 			}
 		}
-		return reliability.NewBreaker(reliability.Config{Name: name, FailThreshold: thr, OpenDuration: open})
+		br := reliability.NewBreaker(reliability.Config{Name: name, FailThreshold: thr, OpenDuration: open})
+		// OnChange 热更新
+		if cli != nil {
+			apply := func(_ *configcenter.ConfigValue) {
+				thr := cli.GetInt(ctx, yamlKey+".fail_threshold", defThr)
+				open := cli.GetDuration(ctx, yamlKey+".open_duration", defOpen)
+				br.SetConfig(reliability.Config{Name: name, FailThreshold: thr, OpenDuration: open})
+				logger.Info("breaker hot-reloaded",
+					zap.String("name", name),
+					zap.Int("fail_threshold", thr),
+					zap.Duration("open_duration", open))
+			}
+			cli.OnChange(yamlKey+".fail_threshold", apply)
+			cli.OnChange(yamlKey+".open_duration", apply)
+		}
+		return br
 	}
 	return breakerPair{
-		ip: read("reliability.ipintel", "ipintel", 5, 15*time.Second),
-		ml: read("reliability.mlscore", "mlscore", 3, 30*time.Second),
+		ip: build("reliability.ipintel", "ipintel", 5, 15*time.Second),
+		ml: build("reliability.mlscore", "mlscore", 3, 30*time.Second),
 	}
 }
 

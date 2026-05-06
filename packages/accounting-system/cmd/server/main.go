@@ -172,7 +172,8 @@ func assertProdSafety(v *viper.Viper) error {
 			}
 		}
 	}
-	return nil
+	// config-center 是全平台动态配置强依赖；prod 必填 endpoint。
+	return configcenter.AssertProdMandatory(v)
 }
 
 func NewDatabaseManager(v *viper.Viper, loggers *logging.Loggers, logger *zap.Logger) (*database.Manager, error) {

@@ -76,6 +76,28 @@ func NewBreaker(c Config) *Breaker {
 	return &Breaker{cfg: defaults(c), state: Closed}
 }
 
+// SetConfig 在线热更新熔断参数（config-center OnChange 回调里调）。
+//
+// 锁内整体替换 cfg；当前 state / consecFail / openedAt 保留。
+// 行为约定：
+//   - 调小 FailThreshold：下一次失败可能立即触发 Open（如 consecFail 已超新阈值）
+//   - 调大 OpenDuration：当前 Open 周期延长到新值
+//   - HalfOpenMax：下次进 HalfOpen 时生效
+func (b *Breaker) SetConfig(c Config) {
+	cfg := defaults(c)
+	cfg.Name = b.cfg.Name // admin 不该改 breaker 身份
+	b.mu.Lock()
+	b.cfg = cfg
+	b.mu.Unlock()
+}
+
+// CurrentConfig 当前生效配置（监控 / 单测用）。
+func (b *Breaker) CurrentConfig() Config {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cfg
+}
+
 // Allow 判断当前是否允许打下游。返回 false 表示该 fail-open / 跳过下游调用。
 // HalfOpen 模式下最多允许 cfg.HalfOpenMax 个并发探测；超出也返 false。
 func (b *Breaker) Allow() bool {

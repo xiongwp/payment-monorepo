@@ -150,7 +150,7 @@ func assertProdSafety(v *viper.Viper) error {
 	if strings.TrimSpace(v.GetString("accounting.endpoint")) == "" && len(v.GetStringSlice("registry.endpoints")) == 0 {
 		return fmt.Errorf("PROD-SAFETY: accounting.endpoint must be configured in env=prod")
 	}
-	return nil
+	return configcenter.AssertProdMandatory(v)
 }
 
 func newLogger() (*zap.Logger, error) {

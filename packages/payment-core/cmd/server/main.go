@@ -121,9 +121,9 @@ func assertProdSafety(v *viper.Viper) error {
 		return fmt.Errorf("PROD-SAFETY: rate_limit.rps must be > 0 in env=prod (recommend 2000)")
 	}
 	if v.GetInt("rate_limit.burst") <= 0 {
-		return fmt.Errorf("PROD-SAFETY: rate_limit.burst must be > 0 in env=prod (recommend 4000)")
+		return fmt.Errorf("PROD-SAFETY: rate_limit.burst bootstrap must be > 0 in env=prod (config-center 不可达兜底；recommend 4000)")
 	}
-	return nil
+	return configcenter.AssertProdMandatory(v)
 }
 
 func newLogger() (*zap.Logger, error) {
@@ -181,9 +181,8 @@ func newPaymentSvc(r *routing.Router, c channelclient.Client, risk riskclient.Cl
 	v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) *service.PaymentService {
 	svc := service.NewPaymentService(r, c, risk, logger)
 
-	// risk.fail_policy: "close" / "open"（config-center 优先 yaml 兜底）。
-	// admin 改 namespace=payment-core 下的 risk.fail_policy 即时生效（注：
-	// SetRiskFailClose 是启动期 snapshot；改 policy 需要重启）。
+	// risk.fail_policy: "close" / "open"。yaml bootstrap → SDK 启动期覆盖 →
+	// SDK OnChange 推送时秒级 SetRiskFailClose 热更新。
 	failClose := v.GetBool("risk.fail_close")
 	if cli != nil {
 		policy := cli.GetString(context.Background(), "risk.fail_policy", "")
@@ -194,13 +193,12 @@ func newPaymentSvc(r *routing.Router, c channelclient.Client, risk riskclient.Cl
 			failClose = false
 		}
 	}
+	svc.SetRiskFailClose(failClose)
 	if failClose {
-		svc.SetRiskFailClose(true)
 		logger.Info("risk fail-close mode ENABLED — risk outage will block all payments")
 	}
 
-	// 默认风控超时（兜底）。risk.rpc_timeout 是 client dial / unary 整体超时；
-	// 这里再加 per-call 上限，避免某次调用拖慢整个 Charge 路径。
+	// 默认风控超时（兜底）。
 	defaultTimeout := v.GetDuration("risk.default_timeout")
 	if cli != nil {
 		if d := cli.GetDuration(context.Background(), "risk.default_timeout", defaultTimeout); d > 0 {
@@ -210,6 +208,29 @@ func newPaymentSvc(r *routing.Router, c channelclient.Client, risk riskclient.Cl
 	if defaultTimeout > 0 {
 		svc.SetRiskTimeoutDefault(defaultTimeout)
 		logger.Info("risk default timeout set", zap.Duration("timeout", defaultTimeout))
+	}
+
+	// OnChange 热更新：admin 改 namespace=payment-core 下任一 key 后秒级生效。
+	if cli != nil {
+		cli.OnChange("risk.fail_policy", func(v *configcenter.ConfigValue) {
+			if v == nil {
+				return
+			}
+			switch v.Value {
+			case `"close"`, "close":
+				svc.SetRiskFailClose(true)
+				logger.Info("risk.fail_policy hot-reloaded → close")
+			case `"open"`, "open":
+				svc.SetRiskFailClose(false)
+				logger.Info("risk.fail_policy hot-reloaded → open")
+			}
+		})
+		cli.OnChange("risk.default_timeout", func(_ *configcenter.ConfigValue) {
+			if d := cli.GetDuration(context.Background(), "risk.default_timeout", 0); d > 0 {
+				svc.SetRiskTimeoutDefault(d)
+				logger.Info("risk.default_timeout hot-reloaded", zap.Duration("d", d))
+			}
+		})
 	}
 
 	// risk.merchant_timeout: { "<merchant_id>": "500ms", ... }

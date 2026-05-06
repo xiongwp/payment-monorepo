@@ -104,7 +104,7 @@ func assertProdSafety(v *viper.Viper) error {
 	if len(v.GetStringSlice("auth.allowed_client_ids")) == 0 {
 		return fmt.Errorf("PROD-SAFETY: KMS auth.allowed_client_ids must be non-empty in env=prod (at least one CN/SAN whitelisted; P0-4)")
 	}
-	return nil
+	return configcenter.AssertProdMandatory(v)
 }
 
 func newLogger() (*zap.Logger, error) {

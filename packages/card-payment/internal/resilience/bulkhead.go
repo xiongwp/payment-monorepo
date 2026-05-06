@@ -93,6 +93,23 @@ func (h *Bulkhead) Stats() (active, rejected int64, perMerchant int) {
 	return h.active.Load(), h.rejected.Load(), h.defaultMax
 }
 
+// SetCapacity 在线热更新 defaultMax。config-center 推送 bulkhead.per_merchant_max
+// 后 caller 调一次；新 capacity 立即对未来 Acquire 生效。
+//
+// 已存在的 merchant bucket 也被重建：在飞的 Release 仍会 bucketFor 拿到新 bucket，
+// 但 active counter 是单独的 atomic，不受影响；少量旧 token 在旧 bucket 让 GC 回收。
+//
+// admin 改 capacity 是稀有事件（小时级），短暂的 active 与 bucket 计数偏差可接受。
+func (h *Bulkhead) SetCapacity(newMax int) {
+	if newMax <= 0 {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.defaultMax = newMax
+	h.pool = make(map[string]chan struct{}) // 旧 bucket 让 GC 回收
+}
+
 // bucketFor 取或建 merchant 的 channel。读多写少 → RLock fast path。
 func (h *Bulkhead) bucketFor(merchantID string) chan struct{} {
 	h.mu.RLock()

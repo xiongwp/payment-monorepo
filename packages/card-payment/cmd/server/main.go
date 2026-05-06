@@ -307,7 +307,7 @@ func assertProdSafety(v *viper.Viper) error {
 			return fmt.Errorf("PROD-SAFETY: database.shard_%d.dsn required", i)
 		}
 	}
-	return nil
+	return configcenter.AssertProdMandatory(v)
 }
 
 func newLogger() (*zap.Logger, error) {
@@ -506,10 +506,20 @@ func newBulkhead(v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) *
 		maxN = cli.GetInt(context.Background(), "bulkhead.per_merchant_max", maxN)
 	}
 	metrics.BulkheadCapacity.Set(float64(maxN))
-	// reject 时 +1 metrics counter，Prometheus alerting 看 rate
 	resilience.OnRejectHook = func() { metrics.BulkheadRejectedTotal.Inc() }
 	logger.Info("bulkhead configured", zap.Int("per_merchant_max", maxN))
-	return resilience.NewBulkhead(maxN)
+	bh := resilience.NewBulkhead(maxN)
+	// OnChange 热更：admin 改 namespace=card-payment 下 bulkhead.per_merchant_max
+	// 后秒级 SetCapacity；旧 bucket 让 GC 回收。
+	if cli != nil {
+		cli.OnChange("bulkhead.per_merchant_max", func(_ *configcenter.ConfigValue) {
+			n := cli.GetInt(context.Background(), "bulkhead.per_merchant_max", 256)
+			bh.SetCapacity(n)
+			metrics.BulkheadCapacity.Set(float64(n))
+			logger.Info("bulkhead.per_merchant_max hot-reloaded", zap.Int("max", n))
+		})
+	}
+	return bh
 }
 
 func newProcessor(cc processor.CardCenter, networks map[string]processor.Network, repo processor.CardTransactionRepo, breakers *resilience.Registry, bulkhead *resilience.Bulkhead, logger *zap.Logger) *processor.Processor {

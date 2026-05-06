@@ -46,6 +46,27 @@ func FxProvider(defaultNamespace string) interface{} {
 	}
 }
 
+// AssertProdMandatory 在 env=prod / production 时校验 configcenter.endpoint 必填。
+//
+// 各服务的 assertProdSafety 末尾调一次：
+//
+//	if err := configcenter.AssertProdMandatory(v); err != nil {
+//	    return err
+//	}
+//
+// 这把 config-center 提升为生产级强依赖：无 endpoint → 启动失败，不允许
+// 服务带 yaml-only 配置上 prod。
+func AssertProdMandatory(v *viper.Viper) error {
+	env := strings.ToLower(strings.TrimSpace(v.GetString("env")))
+	if env != "prod" && env != "production" {
+		return nil
+	}
+	if strings.TrimSpace(v.GetString("configcenter.endpoint")) == "" {
+		return fmt.Errorf("PROD-SAFETY: configcenter.endpoint must be configured in env=prod (config-center 是全平台动态配置强依赖)")
+	}
+	return nil
+}
+
 // NewFromViper 从 viper 读 endpoint / namespace / instance_id 构造 Client。
 //
 // 不能用 fx 的服务（如 cmd/script）也可手动调本函数。

@@ -167,7 +167,7 @@ func assertProdSafety(v *viper.Viper) error {
 			}
 		}
 	}
-	return nil
+	return configcenter.AssertProdMandatory(v)
 }
 
 func newLogger() (*zap.Logger, error) {

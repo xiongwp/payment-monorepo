@@ -163,9 +163,9 @@ func assertProdSafety(v *viper.Viper) error {
 	}
 	// rate limit：per-merchant default rps 必须配
 	if v.GetFloat64("rate_limit.per_merchant.default_rps") <= 0 {
-		return fmt.Errorf("PROD-SAFETY: rate_limit.per_merchant.default_rps must be > 0 in env=prod (recommend 100)")
+		return fmt.Errorf("PROD-SAFETY: rate_limit.per_merchant.default_rps bootstrap must be > 0 in env=prod (config-center 不可达兜底；recommend 100)")
 	}
-	return nil
+	return configcenter.AssertProdMandatory(v)
 }
 
 func newLogger() (*zap.Logger, error) {

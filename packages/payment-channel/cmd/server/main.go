@@ -143,9 +143,9 @@ func assertProdSafety(v *viper.Viper) error {
 	}
 	// rate limit：prod 必须显式配
 	if v.GetFloat64("rate_limit.rps") <= 0 {
-		return fmt.Errorf("PROD-SAFETY: rate_limit.rps must be > 0 in env=prod (recommend 2000)")
+		return fmt.Errorf("PROD-SAFETY: rate_limit.rps bootstrap must be > 0 in env=prod (config-center 不可达兜底；recommend 2000)")
 	}
-	return nil
+	return configcenter.AssertProdMandatory(v)
 }
 
 func newLogger() (*zap.Logger, error) {
