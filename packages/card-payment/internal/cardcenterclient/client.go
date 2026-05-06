@@ -24,7 +24,7 @@ import (
 
 type Client struct {
 	conn    *grpc.ClientConn
-	api     cardcenterv1.CardCenterServiceClient
+	api     cardcenterv1.CardCenterClient
 	timeout time.Duration
 }
 
@@ -61,7 +61,7 @@ func New(cfg Config) (*Client, error) {
 	if t <= 0 {
 		t = 5 * time.Second
 	}
-	return &Client{conn: conn, api: cardcenterv1.NewCardCenterServiceClient(conn), timeout: t}, nil
+	return &Client{conn: conn, api: cardcenterv1.NewCardCenterClient(conn), timeout: t}, nil
 }
 
 func (c *Client) Close() error { return c.conn.Close() }
