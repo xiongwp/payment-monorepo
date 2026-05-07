@@ -1,8 +1,6 @@
 package ratelimit
 
 import (
-	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -119,14 +117,14 @@ func (m *MerchantLimiter) applyConfig(cfg *MerchantConfig) {
 // 用于在 interceptor 里快速查询每个 merchant 的真实限流参数（避免每次 Allow
 // 都查一遍 config）。
 type ConfiguredMerchantLimiter struct {
-	limiter  *MerchantLimiter
+	limiter   *MerchantLimiter
 	specCache *sync.Map // merchantID -> *LimitSpec（缓存最近查过的）
 }
 
 // NewConfiguredMerchantLimiter 构造。
 func NewConfiguredMerchantLimiter(limiter *MerchantLimiter) *ConfiguredMerchantLimiter {
 	return &ConfiguredMerchantLimiter{
-		limiter:    limiter,
+		limiter:   limiter,
 		specCache: &sync.Map{},
 	}
 }

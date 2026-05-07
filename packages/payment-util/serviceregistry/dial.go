@@ -140,3 +140,19 @@ func DialDirect(endpoint string, opts ...grpc.DialOption) (*grpc.ClientConn, err
 	fixed = append(fixed, opts...)
 	return grpc.NewClient(endpoint, fixed...)
 }
+
+// MTLSDialOptions 返回用于 mTLS 的标准 gRPC dial options。
+// 调用方应该添加 TransportCredentials 和任何服务特定的 options。
+//
+// 例如：
+//
+//	creds, err := mtls.Config{...}.ClientCredentials()
+//	if err != nil {
+//		log.Fatalf("creds: %v", err)
+//	}
+//	opts := serviceregistry.MTLSDialOptions()
+//	opts = append(opts, grpc.WithTransportCredentials(creds))
+//	conn, err := grpc.NewClient(target, opts...)
+func MTLSDialOptions() []grpc.DialOption {
+	return hardenedOptions()
+}

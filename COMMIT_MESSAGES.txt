@@ -1,0 +1,112 @@
+# Commit 1: mTLS Infrastructure Package
+
+Subject: feat(mtls): Add mTLS certificate management package
+
+Description:
+Implement payment-util/mtls package for production-grade mutual TLS support.
+
+Changes:
+- mtls/mtls.go: Config loader, TLS builders, credential factories
+- mtls/helpers.go: X.509 certificate parsing utilities
+- mtls/doc.go: Package documentation with usage examples
+- serviceregistry/dial.go: Add MTLSDialOptions() helper
+
+Features:
+- LoadFromEnv() loads certificate paths from MTLS_SERVER_CERT/KEY/CA_CERT
+- ServerTLSConfig() and ClientTLSConfig() for tls.Config building
+- ServerCredentials() and ClientCredentials() return gRPC credentials
+- Certificate expiration validation with fail-fast on expired certs
+- Production enforcement: missing certs cause startup panic
+- Development compatibility: INSECURE_DIAL=1 allows fallback in non-prod
+
+Environment Variables:
+- MTLS_SERVER_CERT: Path to server certificate (PEM format)
+- MTLS_SERVER_KEY: Path to server key (PEM format)
+- MTLS_CA_CERT: Path to CA certificate (PEM format)
+- ENVIRONMENT: Set to "prod"/"production" for strict enforcement
+- INSECURE_DIAL: Set to "1" to allow insecure mode (dev only)
+
+This addresses the critical audit finding: api-gateway ↔ user-merchant-core
+must use mTLS instead of insecure.NewCredentials().
+
+Ticket: P0-5
+---
+
+# Commit 2: mTLS Wire-Up in Production Services
+
+Subject: feat(mtls): Enable mTLS on all service-to-service gRPC dials
+
+Description:
+Integrate mTLS credentials into all production service-to-service connections.
+
+Modified Services:
+1. payment-admin-web/backend/cmd/server/main.go
+   - Updated mustDial() to load mTLS config
+   - Supports fallback to insecure in dev (INSECURE_DIAL=1)
+   - Dials: order-core, payment-core, kms-manage, risk-manage, user-merchant-core
+
+2. api-gateway/cmd/server/main.go
+   - Updated newUserMerchantConn() to use mTLS credentials
+   - Updated newOrderCoreConn() to use mTLS credentials
+   - Dials: user-merchant-core, order-core
+
+3. user-merchant-core/cmd/server/main.go
+   - Updated newRiskClient() with mTLS support, fallback to NoopRiskClient
+   - Updated newAccountingClient() with mTLS support, fallback to NoopClient
+   - Dials: risk-manage, accounting-system
+
+4. payment-core/internal/kmsclient/client.go
+   - Updated Dial() to load mTLS credentials before DialWithFallback
+   - Dials: kms-manage
+
+5. order-core/internal/channel/paymentcoreclient/client.go
+   - Updated Dial() to load mTLS credentials before DialWithFallback
+   - Dials: payment-core
+
+Behavior:
+- Production (ENVIRONMENT=prod): Startup panics if certificates missing
+- Development: Falls back to insecure mode if INSECURE_DIAL=1 or certs missing
+- All connections use hardened options (keepalive, round_robin, retry)
+
+Test/Example Code:
+- Remain unchanged: testhelper/server.go, cmd/grpc-client, internal/*_test.go
+- These are dev-only/test-only paths, insecure mode acceptable
+
+Deployment:
+- K8s: Mount certificate secrets in pod volumes
+- Set ENVIRONMENT=production in prod deployments
+- Ensure INSECURE_DIAL is unset in production
+
+Ticket: P0-5
+Documentation: MTLS_DEPLOYMENT.md
+---
+
+Additional Notes:
+
+Files Created:
+- packages/payment-util/mtls/mtls.go
+- packages/payment-util/mtls/helpers.go
+- packages/payment-util/mtls/doc.go
+- MTLS_DEPLOYMENT.md (comprehensive deployment guide)
+- MTLS_CHANGES_SUMMARY.md (implementation summary)
+
+Files Modified:
+- packages/payment-util/serviceregistry/dial.go (+MTLSDialOptions)
+- packages/payment-admin-web/backend/cmd/server/main.go
+- packages/api-gateway/cmd/server/main.go
+- packages/user-merchant-core/cmd/server/main.go
+- packages/payment-core/internal/kmsclient/client.go
+- packages/order-core/internal/channel/paymentcoreclient/client.go
+
+Production Impact:
+- 5 services updated for outbound mTLS
+- 0 services updated for inbound mTLS (Phase 2)
+- All connections now require valid certificates in production
+- Backward compatible in development (insecure fallback available)
+
+Future Work (Phase 2):
+- Enforce mTLS on gRPC server side (require valid client certs)
+- Load client CN whitelist from config-center per service
+- Add certificate rotation and auto-renewal
+- Export mTLS metrics to Prometheus
+- Add audit logging for certificate validation

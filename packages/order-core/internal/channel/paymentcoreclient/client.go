@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 
 	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
+	"github.com/xiongwp/payment-util/mtls"
 	"github.com/xiongwp/payment-util/serviceregistry"
 
 	"github.com/xiongwp/order-core/internal/channel"
@@ -34,13 +35,36 @@ type Client struct {
 //
 // registry 非空时走 etcd resolver（联栈多 pod 部署必走）；为空时退回 endpoint 直连
 // （单仓 dev / 单机 docker run）。两条路都用 round_robin LB。
+//
+// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
+// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
 func Dial(name string, registry []string, endpoint string, rpcTimeout time.Duration) (*Client, error) {
 	if rpcTimeout <= 0 {
 		rpcTimeout = 10 * time.Second
 	}
+
+	// Load mTLS config; fail-fast in production if certs missing
+	mtlsCfg, err := mtls.LoadFromEnv()
+	if err != nil {
+		return nil, err
+	}
+
+	var creds grpc.DialOption
+	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
+		// Dev/test mode: no mTLS certs configured
+		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
+	} else {
+		// mTLS mode: load credentials
+		tlsCreds, cerr := mtlsCfg.ClientCredentials()
+		if cerr != nil {
+			return nil, cerr
+		}
+		creds = grpc.WithTransportCredentials(tlsCreds)
+	}
+
 	const serviceName = "payment-core" // etcd 里 payment-core 的注册名
 	conn, err := serviceregistry.DialWithFallback(registry, serviceName, endpoint,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		creds,
 		// 入站 x-trace-id + x-shadow 都需要自动透传到 outgoing metadata；
 		// 用 ChainUnaryInterceptor 把两个 client interceptor 串起来。
 		grpc.WithChainUnaryInterceptor(

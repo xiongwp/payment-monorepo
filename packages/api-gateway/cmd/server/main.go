@@ -15,12 +15,12 @@ import (
 
 	"github.com/spf13/viper"
 	"github.com/xiongwp/payment-util/configcenter"
+	"github.com/xiongwp/payment-util/mtls"
 	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
 	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
@@ -341,6 +341,9 @@ type OrderCoreConn struct{ *grpc.ClientConn }
 // registry 非空 → etcd resolver（联栈多 pod 必走，因为容器去掉 container_name 后
 // "user-merchant-core" 跨 compose 项目 DNS 不可解析）；空 → 直连 endpoint。
 // 两条路都自动 round_robin LB 在多副本间均摊。
+//
+// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
+// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
 func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (UserMerchantConn, error) {
 	endpoint := v.GetString("user_merchant.endpoint")
 	registry := v.GetStringSlice("registry.endpoints")
@@ -348,8 +351,28 @@ func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (U
 		logger.Warn("user_merchant.endpoint and registry.endpoints both unset; signup/login pages will fail")
 		return UserMerchantConn{}, nil
 	}
+
+	// Load mTLS config; fail-fast in production if certs missing
+	mtlsCfg, err := mtls.LoadFromEnv()
+	if err != nil {
+		return UserMerchantConn{}, err
+	}
+
+	var creds grpc.DialOption
+	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
+		// Dev/test mode: no mTLS certs configured
+		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
+	} else {
+		// mTLS mode: load credentials
+		tlsCreds, cerr := mtlsCfg.ClientCredentials()
+		if cerr != nil {
+			return UserMerchantConn{}, fmt.Errorf("failed to load mTLS credentials for user-merchant-core: %w", cerr)
+		}
+		creds = grpc.WithTransportCredentials(tlsCreds)
+	}
+
 	conn, err := serviceregistry.DialWithFallback(registry, "user-merchant-core", endpoint,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		creds,
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
 		}),
@@ -364,6 +387,9 @@ func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (U
 }
 
 // newOrderCoreConn 拨号 order-core gRPC（用于卡支付 PI Create+Confirm）。空 → 跳过。
+//
+// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
+// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
 func newOrderCoreConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (OrderCoreConn, error) {
 	endpoint := v.GetString("order_core.endpoint")
 	registry := v.GetStringSlice("registry.endpoints")
@@ -371,8 +397,28 @@ func newOrderCoreConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (Orde
 		logger.Info("order_core.endpoint not set; card 支付提交会走 stub")
 		return OrderCoreConn{}, nil
 	}
+
+	// Load mTLS config; fail-fast in production if certs missing
+	mtlsCfg, err := mtls.LoadFromEnv()
+	if err != nil {
+		return OrderCoreConn{}, err
+	}
+
+	var creds grpc.DialOption
+	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
+		// Dev/test mode: no mTLS certs configured
+		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
+	} else {
+		// mTLS mode: load credentials
+		tlsCreds, cerr := mtlsCfg.ClientCredentials()
+		if cerr != nil {
+			return OrderCoreConn{}, fmt.Errorf("failed to load mTLS credentials for order-core: %w", cerr)
+		}
+		creds = grpc.WithTransportCredentials(tlsCreds)
+	}
+
 	conn, err := serviceregistry.DialWithFallback(registry, "order-core", endpoint,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		creds,
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
 		}),

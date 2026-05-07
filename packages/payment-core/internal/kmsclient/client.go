@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
+	"github.com/xiongwp/payment-util/mtls"
 	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/shadow"
 
@@ -52,13 +53,36 @@ type grpcClient struct {
 //
 // registry 非空 → etcd resolver（联栈多 pod 部署必走）；空 → 直连 endpoint（dev / 单仓）。
 // 两条路径都用 round_robin LB 在多副本间均摊。
+//
+// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
+// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
 func Dial(registry []string, endpoint, bearerToken string, rpcTimeout time.Duration) (Client, error) {
 	if rpcTimeout <= 0 {
 		rpcTimeout = 3 * time.Second
 	}
+
+	// Load mTLS config; fail-fast in production if certs missing
+	mtlsCfg, err := mtls.LoadFromEnv()
+	if err != nil {
+		return nil, err
+	}
+
+	var creds grpc.DialOption
+	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
+		// Dev/test mode: no mTLS certs configured
+		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
+	} else {
+		// mTLS mode: load credentials
+		tlsCreds, cerr := mtlsCfg.ClientCredentials()
+		if cerr != nil {
+			return nil, cerr
+		}
+		creds = grpc.WithTransportCredentials(tlsCreds)
+	}
+
 	const serviceName = "kms-manage"
 	conn, err := serviceregistry.DialWithFallback(registry, serviceName, endpoint,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		creds,
 		// trace + shadow 都透传到 kms-manage：kms 可对 shadow 流量返 mock 密文
 		// 或走影子路径（按 kms-manage 自身实现），这里负责标识。
 		grpc.WithChainUnaryInterceptor(
