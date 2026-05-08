@@ -67,10 +67,11 @@ COPY --from=builder /out/accounting-system    /app/accounting-system
 COPY --from=builder /out/accounting-batchtask /app/accounting-batchtask
 COPY --from=builder /src/accounting-system/config /app/config
 
-# batchtask cron 支持（service 不用，但占位无害）
-COPY deploy/cron/crontab           /etc/crontabs/root
-COPY deploy/cron/run-batchtask.sh  /app/run-batchtask.sh
-COPY deploy/cron/entrypoint.sh     /app/entrypoint.sh
+# batchtask cron 支持（service 不用，但占位无害）。
+# build context 是 packages/ 父目录，所以路径是 accounting-system/deploy/cron/...
+COPY accounting-system/deploy/cron/crontab           /etc/crontabs/root
+COPY accounting-system/deploy/cron/run-batchtask.sh  /app/run-batchtask.sh
+COPY accounting-system/deploy/cron/entrypoint.sh     /app/entrypoint.sh
 RUN chmod +x /app/accounting-system \
              /app/accounting-batchtask \
              /app/run-batchtask.sh \
