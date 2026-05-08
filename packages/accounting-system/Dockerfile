@@ -31,13 +31,18 @@ WORKDIR /src
 ENV GOFLAGS=-mod=mod
 ENV GOTOOLCHAIN=auto
 
-# 三个 sibling 各自 COPY 到 /src/<name>。--from=<additional_context_key> 让
-# BuildKit 直接把那个 context 的内容拷进来（context 必须有 go.mod 在根）。
+# 三个 sibling 各自 COPY 到 /src/<name>。
+#
+# 关键：用 '/.' 而不是 '.'。BuildKit 对 filesystem context 的路径解析有 quirk：
+#   COPY --from=name . /dest/   有时只拷部分（实测漏 go.mod）
+#   COPY --from=name /. /dest/  始终拷整个 context root（含所有 hidden / dot files）
+# `/.` 是最稳的写法，类似 Bash 里 `cp -a src/. dst/` 的语义。
+#
 # 不再 stage placeholder ——一旦 additional_contexts 没配，build 直接报
 # "failed to compute cache key: not found"，比静默走 placeholder 误导小。
-COPY --from=payment-util         . /src/payment-util/
-COPY --from=accounting-grpc-api  . /src/accounting-grpc-api/
-COPY --from=order-core           . /src/order-core/
+COPY --from=payment-util         /. /src/payment-util/
+COPY --from=accounting-grpc-api  /. /src/accounting-grpc-api/
+COPY --from=order-core           /. /src/order-core/
 
 # 这个仓自己的代码（outer compose 的 context 就是这个仓的根目录）
 COPY . /src/accounting-system
