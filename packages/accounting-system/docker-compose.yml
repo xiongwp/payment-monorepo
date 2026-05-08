@@ -276,17 +276,11 @@ services:
 
   accounting-service:
     build:
-      context: .
-      dockerfile: Dockerfile
-      # 优先用本地 monorepo 兄弟仓覆盖 Dockerfile 里的 placeholder stage。
-      # 仓在父目录 packages/ 下，所以路径是 ../<name>。
-      # additional_contexts 没设置时，Dockerfile 里 promote() 会 fallback 到 git clone。
-      additional_contexts:
-        payment-util:        ../payment-util
-        accounting-grpc-api: ../accounting-grpc-api
-        order-core:          ../order-core
-      secrets:
-        - GITHUB_TOKEN
+      # context 设到 packages/ 父目录，让所有 sibling 仓都在同一 build context 下。
+      # Dockerfile 里就能 'COPY payment-util / order-core / accounting-system'
+      # 直接拷进来，不依赖 BuildKit additional_contexts (实测 buggy)。
+      context:    ..
+      dockerfile: accounting-system/Dockerfile
     image: accounting-system:latest
     depends_on:
       mysql-0:

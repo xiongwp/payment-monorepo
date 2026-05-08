@@ -1,0 +1,23 @@
+# Build context = packages/ 时用本文件过滤上下文。每个 Dockerfile 只 COPY 它
+# 实际需要的 sibling 目录，但 BuildKit 仍会把整个 context 做成 tarball 传给
+# daemon（影响 build 启动延迟，10+ 服务时上下文 200MB+ 是常态）。
+# 用 .dockerignore 把无关 service 排除掉，单服务 build 上下文 <50MB。
+#
+# 默认全屏蔽，再 ! 显式放行需要的目录。这样新增 service 自动被屏蔽，需要
+# 显式开通；新增 service build 漏接入也容易发现。
+**
+
+# 一律放行四个 build 必需目录（accounting-system 自己 + 3 个 sibling）。
+# 其他 service 用到不同 sibling 时维护各自的 .dockerignore（每个 service 自己一份）。
+!accounting-system/**
+!payment-util/**
+!accounting-grpc-api/**
+!order-core/**
+
+# 总是排除 vendor / build 产物（即使 ! 放行了上层目录）
+**/vendor/
+**/bin/
+**/node_modules/
+**/.git/
+**/*.test
+**/*.tmp

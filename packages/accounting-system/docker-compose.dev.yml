@@ -30,12 +30,10 @@ services:
   # 应用服务：使用开发配置，依赖 mysql-metadata + 3个分库MySQL + Redis
   accounting-service:
     build:
-      context: .
-      dockerfile: Dockerfile
-      additional_contexts:
-        payment-util:        ../payment-util
-        accounting-grpc-api: ../accounting-grpc-api
-        order-core:          ../order-core
+      # 跟 docker-compose.yml 保持一致：context = packages/，避免 dev/prod 两份
+      # context 不一致引发的 build 行为分裂。
+      context:    ..
+      dockerfile: accounting-system/Dockerfile
     ports:
       - "50051:50051"   # gRPC
       - "8888:8888"     # HTTP admin（服务发现 + 热重载）

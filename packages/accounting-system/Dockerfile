@@ -1,26 +1,20 @@
 # ─── Stage 1: Build ───────────────────────────────────────────────────────────
 #
-# Sibling repos (payment-util / accounting-grpc-api / order-core) **必须** 通过
-# docker compose 的 additional_contexts 注入。Dockerfile 不再保留 placeholder
-# fallback —— 之前留 'FROM alpine AS xxx' 占位 stage 反而让 BuildKit 优先用
-# 缓存的 placeholder 结果（CACHED [order-core 2/2]）而忽略 additional_context
-# 的真实路径，导致 'Local order-core not provided' 死循环。
+# **Build context 必须是 packages/ 父目录**（不是 accounting-system/ 自身）。
+# docker-compose.yml 里设置：
 #
-# 现在的契约：build 时 additional_contexts 三个 key 必填；缺了直接 hard-fail。
+#   services.accounting-service.build:
+#     context:    ..                       # = packages/
+#     dockerfile: accounting-system/Dockerfile
 #
-#   docker-compose.yml:
-#     services.accounting-service.build:
-#       additional_contexts:
-#         payment-util:        ../payment-util
-#         accounting-grpc-api: ../accounting-grpc-api
-#         order-core:          ../order-core
-#
-# CI / 没有本地 sibling 的环境：先 git clone 三个 sibling 到 packages/ 再
-# docker compose build；不再支持 GITHUB_TOKEN 跑时拉取（对 monorepo 工作流
-# 几乎用不到，且增加 build 时间和失败面）。
-#
-# go.mod 里的 replace ../<sibling> 在容器内保持有效（COPY 后落到 /src/<sibling>，
-# 与 /src/accounting-system 同级，相对路径不变）。
+# 这样所有 sibling 仓 (payment-util / accounting-grpc-api / order-core /
+# accounting-system) 都在同一个 build context 下，普通 COPY 即可拷进来。
+# 不再依赖 BuildKit additional_contexts —— 那东西在 Docker Desktop 4.70 /
+# BuildKit 当前版本上对 filesystem context 解析有 bug：
+#   - COPY --from=ctx . /dst/     只拷部分（漏 go.mod）
+#   - COPY --from=ctx /. /dst/    同样漏
+#   - 加了 'FROM alpine AS ctx' placeholder 又会优先走 placeholder 缓存
+# 排查 1 整天后弃用，改最朴素的 monorepo 模式（all-in-one context）。
 
 FROM golang:1.25-alpine AS builder
 
@@ -31,21 +25,11 @@ WORKDIR /src
 ENV GOFLAGS=-mod=mod
 ENV GOTOOLCHAIN=auto
 
-# 三个 sibling 各自 COPY 到 /src/<name>。
-#
-# 关键：用 '/.' 而不是 '.'。BuildKit 对 filesystem context 的路径解析有 quirk：
-#   COPY --from=name . /dest/   有时只拷部分（实测漏 go.mod）
-#   COPY --from=name /. /dest/  始终拷整个 context root（含所有 hidden / dot files）
-# `/.` 是最稳的写法，类似 Bash 里 `cp -a src/. dst/` 的语义。
-#
-# 不再 stage placeholder ——一旦 additional_contexts 没配，build 直接报
-# "failed to compute cache key: not found"，比静默走 placeholder 误导小。
-COPY --from=payment-util         /. /src/payment-util/
-COPY --from=accounting-grpc-api  /. /src/accounting-grpc-api/
-COPY --from=order-core           /. /src/order-core/
-
-# 这个仓自己的代码（outer compose 的 context 就是这个仓的根目录）
-COPY . /src/accounting-system
+# build context 现在是 packages/。所有 sibling 都直接 COPY 进来：
+COPY payment-util         /src/payment-util/
+COPY accounting-grpc-api  /src/accounting-grpc-api/
+COPY order-core           /src/order-core/
+COPY accounting-system    /src/accounting-system/
 
 WORKDIR /src/accounting-system
 # GOPROXY 多源 + 重试：抗 sumdb / 单一 proxy 网络抖动 (storage.googleapis.com EOF 等)
