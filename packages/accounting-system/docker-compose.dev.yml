@@ -1,5 +1,3 @@
-version: '3.8'
-
 # ─── 开发环境覆盖配置 ──────────────────────────────────────────────────────────
 # 使用3个MySQL分库（减少资源占用），关闭 Kafka/etcd
 # 启动: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
@@ -37,6 +35,7 @@ services:
       additional_contexts:
         payment-util:        ../payment-util
         accounting-grpc-api: ../accounting-grpc-api
+        order-core:          ../order-core
     ports:
       - "50051:50051"   # gRPC
       - "8888:8888"     # HTTP admin（服务发现 + 热重载）
