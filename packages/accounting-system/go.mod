@@ -17,7 +17,6 @@ require (
 	github.com/redis/go-redis/v9 v9.4.0
 	github.com/stretchr/testify v1.11.1
 	github.com/xiongwp/accounting-grpc-api v0.1.0
-	github.com/xiongwp/order-core v0.0.0-00010101000000-000000000000
 	github.com/xiongwp/payment-util v0.0.1
 	go.etcd.io/etcd/client/v3 v3.5.21
 	golang.org/x/sync v0.20.0
@@ -89,7 +88,3 @@ replace github.com/xiongwp/accounting-grpc-api => ../accounting-grpc-api
 // payment-util 提供 trace + httpx + money 共享包；这里走同级 replace 拉本地副本。
 // 发布时改成具体 tag 即可。
 replace github.com/xiongwp/payment-util => ../payment-util
-
-// order-core 用于 P0-1 reconcile worker 反查 PI/Charge 状态修复 ledger 不一致；
-// 只用 api/proto/order/v1 包，不引服务端代码。
-replace github.com/xiongwp/order-core => ../order-core

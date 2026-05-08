@@ -27,12 +27,13 @@
 services:
   accounting-service:
     build:
-      # context = packages/ 父目录（从本 override 文件位置 packages/payment-admin-web/
-      # deploy/overrides/ 走 ../../.. 三层到 packages/）。Dockerfile 直接 COPY
-      # payment-util / accounting-grpc-api / order-core / accounting-system 4 个
-      # sibling，不依赖 BuildKit additional_contexts（实测 buggy）。
-      context:    ../../..
-      dockerfile: accounting-system/Dockerfile
+      context: ../../../accounting-system
+      dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:        ../../../payment-util
+        accounting-grpc-api: ../../../accounting-grpc-api
+      secrets:
+        - GITHUB_TOKEN
     image: accounting-system:local
     # 故意不写 container_name；scale=N 时会与现有名冲突。
     restart: unless-stopped

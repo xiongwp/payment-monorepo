@@ -68,21 +68,7 @@ ensure_config_center() {
 # ── 构建镜像 ──────────────────────────────────────────────────────────────────
 build_image() {
     info "构建应用镜像..."
-    # 不能用 docker compose build：compose v2 / bake 对 build.context='..' 的
-    # 处理有 bug，'transferring context' 永远只传 191B 元数据不传文件，导致
-    # COPY 全失败（"/payment-util": not found）。实测 docker 29.4.0 / Desktop
-    # 4.70 上稳定复现。绕开方案：直接 docker buildx build，packages/ 当 context。
-    #
-    # 改这里之后，docker-compose.yml 的 build: 段不再被实际使用（仅 image:
-    # 字段留着让 compose up 能匹配本地镜像）。CI 可以同样用本命令。
-    local pkg_dir
-    pkg_dir="$(cd "$(dirname "$0")/.." && pwd)"
-    docker buildx build \
-        -f "$pkg_dir/accounting-system/Dockerfile" \
-        -t accounting-system:latest \
-        --load \
-        "$pkg_dir" \
-        || error "镜像构建失败"
+    docker compose build accounting-service || error "镜像构建失败"
     success "镜像构建完成: accounting-system:latest"
 }
 

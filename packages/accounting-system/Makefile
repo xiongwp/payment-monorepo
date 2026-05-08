@@ -30,14 +30,7 @@ build-batchtask: ## 编译 accounting-batchtask binary
 
 docker-build: ## 构建 accounting-system Docker 镜像（含 service + batchtask 两个 binary）
 	@echo "Building Docker image $(IMAGE_NAME)..."
-	@# 直接走 docker buildx build，context = packages/。
-	@# compose v2 / bake 对 build.context='..' 处理有 bug（实测 191B context
-	@# 不传文件），改 buildx 直接调，最朴素也最稳。
-	@docker buildx build \
-		-f $(CURDIR)/Dockerfile \
-		-t $(IMAGE_NAME) \
-		--load \
-		$(CURDIR)/..
+	@docker compose build accounting-service
 	@echo "Done: $(IMAGE_NAME) (binaries: /app/accounting-system + /app/accounting-batchtask)"
 
 # 单 image 设计后 docker-build-all 等同于 docker-build；保留 alias 兼容旧脚本。

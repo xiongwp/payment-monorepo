@@ -1,20 +1,18 @@
 # ─── Stage 1: Build ───────────────────────────────────────────────────────────
 #
-# **Build context 必须是 packages/ 父目录**（不是 accounting-system/ 自身）。
-# docker-compose.yml 里设置：
+# Context = accounting-system/ 自身。兄弟仓通过 BuildKit additional_contexts
+# 注入到下面 placeholder stage 上：
 #
 #   services.accounting-service.build:
-#     context:    ..                       # = packages/
-#     dockerfile: accounting-system/Dockerfile
-#
-# 这样所有 sibling 仓 (payment-util / accounting-grpc-api / order-core /
-# accounting-system) 都在同一个 build context 下，普通 COPY 即可拷进来。
-# 不再依赖 BuildKit additional_contexts —— 那东西在 Docker Desktop 4.70 /
-# BuildKit 当前版本上对 filesystem context 解析有 bug：
-#   - COPY --from=ctx . /dst/     只拷部分（漏 go.mod）
-#   - COPY --from=ctx /. /dst/    同样漏
-#   - 加了 'FROM alpine AS ctx' placeholder 又会优先走 placeholder 缓存
-# 排查 1 整天后弃用，改最朴素的 monorepo 模式（all-in-one context）。
+#     additional_contexts:
+#       payment-util:        ../payment-util
+#       accounting-grpc-api: ../accounting-grpc-api
+
+FROM alpine:3.19 AS payment-util
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+
+FROM alpine:3.19 AS accounting-grpc-api
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS builder
 
@@ -25,11 +23,36 @@ WORKDIR /src
 ENV GOFLAGS=-mod=mod
 ENV GOTOOLCHAIN=auto
 
-# build context 现在是 packages/。所有 sibling 都直接 COPY 进来：
-COPY payment-util         /src/payment-util/
-COPY accounting-grpc-api  /src/accounting-grpc-api/
-COPY order-core           /src/order-core/
-COPY accounting-system    /src/accounting-system/
+ARG PAYMENT_UTIL_REF=main
+ARG ACCOUNTING_GRPC_API_REF=main
+
+COPY --from=payment-util         / /tmp/payment-util-staged/
+COPY --from=accounting-grpc-api  / /tmp/accounting-grpc-api-staged/
+
+RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
+    set -eu; \
+    promote() { \
+      name=$1; ref=$2; \
+      staged="/tmp/${name}-staged"; final="/src/${name}"; \
+      if [ -f "${staged}/go.mod" ]; then \
+        echo "→ Using local ${name}"; \
+        mkdir -p "${final}"; cp -a "${staged}/." "${final}/"; \
+      else \
+        TOKEN=""; \
+        [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
+        [ -z "$TOKEN" ] && { echo "ERROR: provide ../${name} or GITHUB_TOKEN" >&2; exit 1; }; \
+        url="https://x-access-token:${TOKEN}@github.com/xiongwp/${name}.git"; \
+        rm -rf "${final}"; \
+        git clone --depth=1 --branch "$ref" "$url" "$final" 2>/dev/null \
+          || git clone --depth=1 "$url" "$final"; \
+      fi; \
+      rm -rf "${staged}"; \
+    }; \
+    promote payment-util         "$PAYMENT_UTIL_REF"; \
+    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"
+
+# accounting-system 自己的代码（context = .）
+COPY . /src/accounting-system
 
 WORKDIR /src/accounting-system
 # GOPROXY 多源 + 重试：抗 sumdb / 单一 proxy 网络抖动 (storage.googleapis.com EOF 等)
@@ -68,10 +91,9 @@ COPY --from=builder /out/accounting-batchtask /app/accounting-batchtask
 COPY --from=builder /src/accounting-system/config /app/config
 
 # batchtask cron 支持（service 不用，但占位无害）。
-# build context 是 packages/ 父目录，所以路径是 accounting-system/deploy/cron/...
-COPY accounting-system/deploy/cron/crontab           /etc/crontabs/root
-COPY accounting-system/deploy/cron/run-batchtask.sh  /app/run-batchtask.sh
-COPY accounting-system/deploy/cron/entrypoint.sh     /app/entrypoint.sh
+COPY deploy/cron/crontab           /etc/crontabs/root
+COPY deploy/cron/run-batchtask.sh  /app/run-batchtask.sh
+COPY deploy/cron/entrypoint.sh     /app/entrypoint.sh
 RUN chmod +x /app/accounting-system \
              /app/accounting-batchtask \
              /app/run-batchtask.sh \

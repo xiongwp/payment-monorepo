@@ -276,11 +276,13 @@ services:
 
   accounting-service:
     build:
-      # context 设到 packages/ 父目录，让所有 sibling 仓都在同一 build context 下。
-      # Dockerfile 里就能 'COPY payment-util / order-core / accounting-system'
-      # 直接拷进来，不依赖 BuildKit additional_contexts (实测 buggy)。
-      context:    ..
-      dockerfile: accounting-system/Dockerfile
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        payment-util:        ../payment-util
+        accounting-grpc-api: ../accounting-grpc-api
+      secrets:
+        - GITHUB_TOKEN
     image: accounting-system:latest
     depends_on:
       mysql-0:
