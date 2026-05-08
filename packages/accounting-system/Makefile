@@ -30,7 +30,9 @@ build-batchtask: ## 编译 accounting-batchtask binary
 
 docker-build: ## 构建 accounting-system Docker 镜像（含 service + batchtask 两个 binary）
 	@echo "Building Docker image $(IMAGE_NAME)..."
-	@docker build -t $(IMAGE_NAME) .
+	@# 必须走 docker compose 而非 docker build，否则读不到 additional_contexts，
+	@# COPY --from=order-core / payment-util / accounting-grpc-api 全部拿 placeholder。
+	@docker compose build accounting-service
 	@echo "Done: $(IMAGE_NAME) (binaries: /app/accounting-system + /app/accounting-batchtask)"
 
 # 单 image 设计后 docker-build-all 等同于 docker-build；保留 alias 兼容旧脚本。

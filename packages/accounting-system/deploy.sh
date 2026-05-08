@@ -68,7 +68,11 @@ ensure_config_center() {
 # ── 构建镜像 ──────────────────────────────────────────────────────────────────
 build_image() {
     info "构建应用镜像..."
-    docker build -t accounting-system:latest . || error "镜像构建失败"
+    # 必须走 docker compose build，让 BuildKit 读 docker-compose.yml 里的
+    # additional_contexts 注入 ../payment-util / ../accounting-grpc-api / ../order-core
+    # 三个兄弟仓。直接 'docker build' 拿不到这些 context 会触发 git clone fallback
+    # 失败（Local order-core not provided + no GITHUB_TOKEN）。
+    docker compose build accounting-service || error "镜像构建失败"
     success "镜像构建完成: accounting-system:latest"
 }
 
