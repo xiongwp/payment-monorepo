@@ -1,37 +1,26 @@
 # ─── Stage 1: Build ───────────────────────────────────────────────────────────
 #
-# 优先使用本地兄弟仓（../payment-util 和 ../accounting-grpc-api），找不到才 git clone。
+# Sibling repos (payment-util / accounting-grpc-api / order-core) **必须** 通过
+# docker compose 的 additional_contexts 注入。Dockerfile 不再保留 placeholder
+# fallback —— 之前留 'FROM alpine AS xxx' 占位 stage 反而让 BuildKit 优先用
+# 缓存的 placeholder 结果（CACHED [order-core 2/2]）而忽略 additional_context
+# 的真实路径，导致 'Local order-core not provided' 死循环。
 #
-# 默认（推荐，本地开发）：docker-compose.yml 用 BuildKit 的 additional_contexts
-# 注入本地兄弟目录，覆盖下面的 placeholder stage：
+# 现在的契约：build 时 additional_contexts 三个 key 必填；缺了直接 hard-fail。
 #
-#   services.<svc>.build:
-#     additional_contexts:
-#       payment-util:         ../payment-util
-#       accounting-grpc-api:  ../accounting-grpc-api
+#   docker-compose.yml:
+#     services.accounting-service.build:
+#       additional_contexts:
+#         payment-util:        ../payment-util
+#         accounting-grpc-api: ../accounting-grpc-api
+#         order-core:          ../order-core
 #
-# 没有设置 additional_contexts（CI / 干净 checkout）时，placeholder 是空的，
-# builder 自动 git clone fallback（需要 BuildKit secret GITHUB_TOKEN）。
+# CI / 没有本地 sibling 的环境：先 git clone 三个 sibling 到 packages/ 再
+# docker compose build；不再支持 GITHUB_TOKEN 跑时拉取（对 monorepo 工作流
+# 几乎用不到，且增加 build 时间和失败面）。
 #
-# go.mod 里 `replace ../payment-util` 仍然生效 —— 不论本地还是 clone，
-# 两仓都放到 /src/payment-util 和 /src/accounting-grpc-api，和
-# /src/accounting-system 兄弟关系，相对路径吻合。
-
-# ─── Sibling source providers (overridden by additional_contexts) ─────────────
-# 这些 placeholder stage 的名字必须和 additional_contexts 的 key 一致。
-# 当 docker compose 设置 additional_contexts:payment-util=../payment-util 时，
-# 本 stage 被替换为本地目录的 build context，COPY --from=payment-util 拿到真实代码。
-# 没设置时，placeholder 没有 go.mod，触发 git clone fallback。
-FROM alpine:3.19 AS payment-util
-RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
-
-FROM alpine:3.19 AS accounting-grpc-api
-RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
-
-# order-core 由 P0-1 reconcile worker 引入：反查 PI/Charge 状态修复 ledger 不一致。
-# 只用 api/proto/order/v1 包，不引服务端代码。
-FROM alpine:3.19 AS order-core
-RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+# go.mod 里的 replace ../<sibling> 在容器内保持有效（COPY 后落到 /src/<sibling>，
+# 与 /src/accounting-system 同级，相对路径不变）。
 
 FROM golang:1.25-alpine AS builder
 
@@ -42,54 +31,13 @@ WORKDIR /src
 ENV GOFLAGS=-mod=mod
 ENV GOTOOLCHAIN=auto
 
-ARG PAYMENT_UTIL_REF=main
-ARG ACCOUNTING_GRPC_API_REF=main
-ARG ORDER_CORE_REF=main
-# Bumping SIBLING_CONTEXT_VER busts BuildKit cache for the COPY --from= lines below.
-# 必要：additional_contexts 切换（如新增 order-core）BuildKit 偶发不重算 COPY 的
-# cache key，导致还是拿到老的 placeholder。这一行 RUN 把 ARG 注入 layer hash，
-# bump 即失效；下面的 COPY 也连带重算。
-ARG SIBLING_CONTEXT_VER=3
-RUN echo "sibling-ctx ver=${SIBLING_CONTEXT_VER}"
-
-# Stage sibling sources：override 时拿到真实仓，否则拿到 placeholder（没 go.mod）。
-COPY --from=payment-util         / /tmp/payment-util-staged/
-COPY --from=accounting-grpc-api  / /tmp/accounting-grpc-api-staged/
-COPY --from=order-core           / /tmp/order-core-staged/
-
-# Promote：发现 go.mod 用本地，否则 git clone。
-RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
-    set -eu; \
-    promote() { \
-      name=$1; ref=$2; \
-      staged="/tmp/${name}-staged"; final="/src/${name}"; \
-      if [ -f "${staged}/go.mod" ]; then \
-        echo "→ Using local ${name} (additional_context override)"; \
-        mkdir -p "${final}"; \
-        cp -a "${staged}/." "${final}/"; \
-      else \
-        echo "→ Local ${name} not provided, git clone fallback (ref=${ref})"; \
-        TOKEN=""; \
-        [ -f /run/secrets/GITHUB_TOKEN ] && TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; \
-        if [ -z "$TOKEN" ]; then \
-          echo "" >&2; \
-          echo "ERROR: cannot fetch sibling repo '${name}'." >&2; \
-          echo "Either:" >&2; \
-          echo "  (1) Use docker compose build from monorepo (additional_contexts auto-set); OR" >&2; \
-          echo "  (2) Provide GITHUB_TOKEN: GITHUB_TOKEN=ghp_xxx docker compose build" >&2; \
-          exit 1; \
-        fi; \
-        auth="x-access-token:${TOKEN}@"; \
-        url="https://${auth}github.com/xiongwp/${name}.git"; \
-        rm -rf "${final}"; \
-        git clone --depth=1 --branch "$ref" "$url" "$final" 2>/dev/null \
-          || git clone --depth=1 "$url" "$final"; \
-      fi; \
-      rm -rf "${staged}"; \
-    }; \
-    promote payment-util         "$PAYMENT_UTIL_REF"; \
-    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"; \
-    promote order-core           "$ORDER_CORE_REF"
+# 三个 sibling 各自 COPY 到 /src/<name>。--from=<additional_context_key> 让
+# BuildKit 直接把那个 context 的内容拷进来（context 必须有 go.mod 在根）。
+# 不再 stage placeholder ——一旦 additional_contexts 没配，build 直接报
+# "failed to compute cache key: not found"，比静默走 placeholder 误导小。
+COPY --from=payment-util         . /src/payment-util/
+COPY --from=accounting-grpc-api  . /src/accounting-grpc-api/
+COPY --from=order-core           . /src/order-core/
 
 # 这个仓自己的代码（outer compose 的 context 就是这个仓的根目录）
 COPY . /src/accounting-system
