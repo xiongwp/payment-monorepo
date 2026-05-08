@@ -434,17 +434,16 @@ skipRiskDecision:
 		metrics.ChargeTotal.WithLabelValues(req.PaymentMethod, "probe", "unauthorized").Inc()
 	}
 	cb := s.breakers.Get(adapter)
-	primaryFailed := false
 	failReason := ""
 
 	if !isProbe && !cb.Allow() {
-		primaryFailed = true
 		failReason = "circuit_open"
 		s.logger.Warn("circuit breaker open, trying fallback",
 			zap.String("adapter", adapter), zap.String("pi_id", req.PaymentIntentID))
 		metrics.ChargeTotal.WithLabelValues(req.PaymentMethod, adapter, "circuit_open").Inc()
 
 		// P0-3：尝试 fallback 渠道
+		fromState := cb.State().String()
 		adapter, err = s.tryFallbackAdapter(ctx, adapter, req)
 		if err != nil {
 			// fallback 也失败，写 outbox 异步重试，返回 processing
@@ -456,7 +455,7 @@ skipRiskDecision:
 				FailureMessage: "primary adapter unavailable, enqueued for async retry",
 			}, nil
 		}
-		metrics.RoutingFallbackTotal.WithLabelValues(cb.State(), adapter).Inc()
+		metrics.RoutingFallbackTotal.WithLabelValues(fromState, adapter).Inc()
 		// fallback 成功继续路由到新 adapter
 	}
 
