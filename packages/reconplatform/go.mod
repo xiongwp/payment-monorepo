@@ -4,8 +4,10 @@ go 1.26
 
 require (
 	github.com/expr-lang/expr v1.17.8
+	github.com/go-sql-driver/mysql v1.8.1
 	github.com/prometheus/client_golang v1.19.1
 	github.com/redis/go-redis/v9 v9.18.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/twmb/franz-go v1.20.7
 	github.com/xiongwp/payment-util v0.0.0
 	go.uber.org/zap v1.27.0
