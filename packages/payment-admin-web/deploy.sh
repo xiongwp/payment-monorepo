@@ -400,6 +400,21 @@ cmd_up() {
         # card_* 库，确保 card-center / card-payment 容器一启动就连得上 DB。
         ensure_card_dbs
         ;;
+      accounting-system)
+        # accounting-system 用 build.context = packages/ 父目录的新方案；
+        # docker compose build (即 'up -d --build') 在这种 cross-package context
+        # 下有 bake bug：context tar 永远只传 191B 元数据不传文件，所有 COPY 失败。
+        # 解决：先用 docker buildx build 直接构建 image，然后 compose up 不带 --build。
+        info "  pre-build accounting-system:local (绕开 compose v2 bake bug)"
+        local pkg_dir
+        pkg_dir="$(cd "$(dirname "$0")/.." && pwd)"
+        docker buildx build \
+          -f "$pkg_dir/accounting-system/Dockerfile" \
+          -t accounting-system:local \
+          --load \
+          "$pkg_dir" \
+          || error "accounting-system pre-build 失败"
+        ;;
     esac
     local app
     app="$(app_service_of "$svc")"
@@ -407,6 +422,9 @@ cmd_up() {
     # 服务用 --scale name=N 起多副本（前提：override 已去 container_name + 用端口 range）。
     local scale_args
     scale_args="$(scale_args_of "$svc")"
+    # accounting-system 已经在 pre-build 钩子里构建好了，up 时不用 --build。
+    local build_flag="--build"
+    [[ "$svc" == "accounting-system" ]] && build_flag=""
     # shellcheck disable=SC2086
     # --force-recreate：override 文件里 volumes / env 有变化时保证容器重建。
     # 对 per-repo compose 只指定真应用 service 名，避免顺带把 11 个 MySQL 也拉起来。
@@ -416,10 +434,10 @@ cmd_up() {
       # ：override 文件改名 / scale 改了之后清掉历史孤儿容器，
       # 避免 "WARN: orphan containers" 一直刷屏。
       # shellcheck disable=SC2086
-      $COMPOSE $(compose_files "$svc") up -d --build --force-recreate  $scale_args $app
+      $COMPOSE $(compose_files "$svc") up -d $build_flag --force-recreate  $scale_args $app
     else
       # shellcheck disable=SC2086
-      $COMPOSE $(compose_files "$svc") up -d --build --force-recreate  $scale_args
+      $COMPOSE $(compose_files "$svc") up -d $build_flag --force-recreate  $scale_args
     fi
     case "$svc" in
       shared-db)
