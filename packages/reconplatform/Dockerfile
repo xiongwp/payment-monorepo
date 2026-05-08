@@ -60,6 +60,8 @@ RUN apk --no-cache add ca-certificates tzdata && \
 WORKDIR /app
 COPY --from=builder /out/reconplatform /app/reconplatform
 COPY --from=builder /out/recon-admin   /app/recon-admin
+# configs/cdc.sources.yaml — recon-admin 在 config-center 不可达 (dev) 时用作 fallback
+COPY --from=builder /src/reconplatform/configs /app/configs
 USER app
 EXPOSE 8080
 
