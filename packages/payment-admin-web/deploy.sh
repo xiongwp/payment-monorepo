@@ -78,6 +78,10 @@ compose_files() {
     card-center)          echo "-p card-center        -f $OVR/card-center.yml" ;;
     card-payment)         echo "-p card-payment       -f $OVR/card-payment.yml" ;;
     accounting-admin-web) echo "-p accounting-admin-web -f $ROOT/accounting-admin-web/docker-compose.yml -f $OVR/accounting-admin-web.yml" ;;
+    # reconplatform: 同 image 起 2 个容器 — engine (cmd/main.go expr 引擎) +
+    # admin (cmd/recon-admin/main.go CDC + 动态对账 web)。完全独立 override
+    # 不引 base compose（base 起独立 redis/kafka，联栈下复用 risk-stack 的）。
+    reconplatform)        echo "-p reconplatform      -f $OVR/reconplatform.yml" ;;
     payment-admin-web)    echo "-p payment-admin-web  -f $HERE/docker-compose.yml                     -f $OVR/payment-admin-web.yml" ;;
     *) fatal "unknown service: $1" ;;
   esac
@@ -95,7 +99,7 @@ compose_files() {
 #   risk-stack         risk-redis + risk-kafka + clickhouse + nebula + 监控（accounting 复用 risk-redis）
 #   accounting-system  accounting-service + accounting-batchtask（复用 shared-db + risk-redis）
 #   risk-manage / payment-channel / order-core / user-merchant-core / payment-core / api-gateway / *-admin-web
-ALL_SERVICES=(shared-db config-center kms-manage risk-stack accounting-system risk-manage payment-channel order-core user-merchant-core payment-core card-center card-payment api-gateway accounting-admin-web payment-admin-web)
+ALL_SERVICES=(shared-db config-center kms-manage risk-stack accounting-system risk-manage payment-channel order-core user-merchant-core payment-core card-center card-payment api-gateway reconplatform accounting-admin-web payment-admin-web)
 
 # scale_args_of 返回 --scale a=N --scale b=M ... 用来起多副本。前提：override
 # 文件里该 service 没有 container_name，端口用 range，否则会撞名 / 撞端口。
@@ -162,6 +166,8 @@ app_service_of() {
     api-gateway)        echo "api-gateway" ;;
     card-center)        echo "card-center" ;;
     card-payment)       echo "card-payment" ;;
+    # reconplatform: 同 image 跑 engine + admin 两个容器
+    reconplatform)      echo "reconplatform-engine reconplatform-admin" ;;
     accounting-admin-web) echo "accounting-admin-web" ;;
     payment-admin-web)  echo "" ;;   # 两个 app 都要起
     *) echo "" ;;
