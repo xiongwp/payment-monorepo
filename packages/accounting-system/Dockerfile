@@ -45,7 +45,12 @@ ENV GOTOOLCHAIN=auto
 ARG PAYMENT_UTIL_REF=main
 ARG ACCOUNTING_GRPC_API_REF=main
 ARG ORDER_CORE_REF=main
-ARG SIBLING_CONTEXT_VER=2
+# Bumping SIBLING_CONTEXT_VER busts BuildKit cache for the COPY --from= lines below.
+# 必要：additional_contexts 切换（如新增 order-core）BuildKit 偶发不重算 COPY 的
+# cache key，导致还是拿到老的 placeholder。这一行 RUN 把 ARG 注入 layer hash，
+# bump 即失效；下面的 COPY 也连带重算。
+ARG SIBLING_CONTEXT_VER=3
+RUN echo "sibling-ctx ver=${SIBLING_CONTEXT_VER}"
 
 # Stage sibling sources：override 时拿到真实仓，否则拿到 placeholder（没 go.mod）。
 COPY --from=payment-util         / /tmp/payment-util-staged/
