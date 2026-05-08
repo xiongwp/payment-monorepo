@@ -67,16 +67,16 @@ func NewRunner(src Source, pub *Publisher, sp SchemaProvider, logger *zap.Logger
 	}
 }
 
-// Run 阻塞直到 ctx 取消 / Stop / canal 出错。
+// Run 阻塞直到 ctx 取消 / Stop / 任一 canal 出错。
 //
-// 真实实现里：
+// 一个 Source 对应 N 个 binlog channel（每分片一个），每个 channel 一个独立
+// canal goroutine：
+//   - 独立 server-id（避免 MySQL 拒连）
+//   - 独立位点持久化（recon:cdc:pos:<svc>:<idx>）
+//   - 独立 enricher / filter 共享（同 service 业务语义一致）
 //
-//	1. 用 source 配置初始化 canal.NewCanal
-//	2. canal.SetEventHandler 挂自定义 handler，OnRow 里调 parseRow + publisher.Publish
-//	3. 上次保存的位点从 publisher.LoadPosition 拿；没记录就从 latest binlog 起跑
-//	4. Run() 阻塞订阅
-//
-// 当前为骨架：返回未实现错误，主进程降级跑（不影响其他服务部署）。
+// 任一 channel goroutine 异常 → log warn，但不退出整个 Runner（其他 shard 继续）。
+// 真正退出条件：ctx.Cancel 或 Stop()。
 func (r *Runner) Run(ctx context.Context) error {
 	r.mu.Lock()
 	if r.stopped {
@@ -85,33 +85,111 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	r.mu.Unlock()
 
-	r.logger.Info("cdc runner: start (skeleton; canal not yet wired)",
-		zap.String("addr", r.source.Addr),
+	if err := r.source.Normalize(); err != nil {
+		return fmt.Errorf("source normalize: %w", err)
+	}
+	channels := r.source.Channels()
+	r.logger.Info("cdc runner: starting channels",
+		zap.Int("channels", len(channels)),
 		zap.Int("tables", len(r.source.Tables)))
 
-	// 等到真集成 canal 之前，先做：
-	//   1. LoadPosition 验通
-	//   2. 周期 noop 心跳，让进程能起来不卡死
-	file, pos, gtid, ok := r.publisher.LoadPosition(ctx, r.source.Service)
-	if ok {
-		r.logger.Info("loaded last binlog position",
-			zap.String("file", file), zap.Uint32("pos", pos), zap.String("gtid", gtid))
-	} else {
-		r.logger.Info("no saved position; will start from latest binlog when canal is wired")
+	// 给所有 channel 共享同一个 handler 模板（enricher / filter 配置）；
+	// 每个 channel clone 一份，独立持有位点状态。
+	var wg sync.WaitGroup
+	for _, ch := range channels {
+		wg.Add(1)
+		go func(ch Channel) {
+			defer wg.Done()
+			r.runChannel(ctx, ch)
+		}(ch)
 	}
 
-	tick := time.NewTicker(30 * time.Second)
-	defer tick.Stop()
+	// 等所有 channel 退出 / ctx 取消
+	doneCh := make(chan struct{})
+	go func() { wg.Wait(); close(doneCh) }()
+
+	select {
+	case <-ctx.Done():
+		// 触发 stop 让所有 channel goroutine 退出
+		r.Stop()
+		<-doneCh
+		return ctx.Err()
+	case <-r.stopCh:
+		<-doneCh
+		return nil
+	case <-doneCh:
+		return errors.New("all canal channels exited")
+	}
+}
+
+// runChannel 单个 binlog channel 的 goroutine：连 canal + 重连退避。
+func (r *Runner) runChannel(ctx context.Context, ch Channel) {
+	logger := r.logger.With(zap.String("addr", ch.Addr), zap.Uint32("server_id", ch.ServerID))
+
+	// 单独 source（仅替换 ServerIDBase 让 newRealCanal 拿到对的 server_id）
+	chSource := r.source
+	chSource.ServerIDBase = ch.ServerID
+
+	backoff := time.Second
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return
 		case <-r.stopCh:
-			return nil
-		case <-tick.C:
-			r.logger.Debug("cdc runner: heartbeat (skeleton)")
+			return
+		default:
 		}
+
+		handler := newCanalHandler(chSource, r.publisher, r.schema, logger)
+		// TODO: 暴露 enricher / filter 注册接口给 Manager，再传到这里
+		c, err := newRealCanal(chSource, handler, ch.Addr)
+		if err != nil {
+			logger.Warn("canal init failed; retry", zap.Error(err), zap.Duration("backoff", backoff))
+			if !sleepOrCancel(ctx, r.stopCh, backoff) {
+				return
+			}
+			backoff = nextBackoff(backoff)
+			continue
+		}
+		r.mu.Lock()
+		r.canal = c // 用最后一个 channel 的 canal 占位，给 Stop() 关掉所有时用
+		r.mu.Unlock()
+
+		logger.Info("canal channel started")
+		err = c.Run() // 阻塞订阅
+		c.Close()
+		if err == nil {
+			return
+		}
+		logger.Warn("canal channel exited with error; reconnect", zap.Error(err))
+		if !sleepOrCancel(ctx, r.stopCh, backoff) {
+			return
+		}
+		backoff = nextBackoff(backoff)
 	}
+}
+
+// sleepOrCancel：带 ctx + stopCh 的可中断 sleep；返 false 表示被中断，应退出。
+func sleepOrCancel(ctx context.Context, stopCh chan struct{}, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-stopCh:
+		return false
+	}
+}
+
+// nextBackoff 指数退避，封顶 30s。
+func nextBackoff(cur time.Duration) time.Duration {
+	next := cur * 2
+	if next > 30*time.Second {
+		return 30 * time.Second
+	}
+	return next
 }
 
 // Stop 触发 graceful shutdown；Run 会在下个 select 周期返回。

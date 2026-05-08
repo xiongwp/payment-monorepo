@@ -24,15 +24,80 @@
 //	    ...
 package cdc
 
-// Source 一个 service 的 binlog 订阅源 + 关心的表 + 关心的列。
+import "fmt"
+
+// Source 一个 service 的 binlog 订阅配置。
+//
+// 一个 Service 可能有多个 MySQL 实例（10 分片），每个实例起一个独立 Canal
+// channel：
+//
+//   Addrs:        ["shard-0:3306", "shard-1:3306", ...]
+//   ServerIDBase: 1000   → shard-0 用 1000，shard-1 用 1001，...
+//
+// Schemas 一般和 Addrs 一一对应（shard-0 = order_core_db_0 等），但允许多对多
+// （某个 shard 实例可能同时托管多个 schema）。canal 内置 schema 过滤，所以
+// 我们传完整 Schemas 列表，canal 自己会忽略本实例没有的 schema。
 type Source struct {
-	Service  string `yaml:"service"`   // "order-core"
-	Addr     string `yaml:"addr"`      // "host:3306,host2:3306"  支持多分片实例
-	User     string `yaml:"user"`      // 用 REPLICATION CLIENT/SLAVE 权限的专用账号
-	Password string `yaml:"password"`  // 走 env 替换（${RECON_MYSQL_PASS}）
-	ServerID uint32 `yaml:"server_id"` // canal 用，全局唯一
-	Schemas  []string `yaml:"schemas"` // shard 库列表（可省略 → 自动发现）
-	Tables   map[string]TableConfig `yaml:"tables"`
+	Service       string                 `yaml:"service"`         // "order-core"
+	Addrs         []string               `yaml:"addrs"`           // ["shard-0:3306", "shard-1:3306", ...]
+	User          string                 `yaml:"user"`            // 用 REPLICATION CLIENT/SLAVE 权限的专用账号
+	Password      string                 `yaml:"password"`        // 走 env 替换（${RECON_MYSQL_PASS}）
+	ServerIDBase  uint32                 `yaml:"server_id_base"`  // 第 N 个 addr 用 base+N（必须全局唯一）
+	Schemas       []string               `yaml:"schemas"`         // shard 库列表（canal 用作过滤）
+	Tables        map[string]TableConfig `yaml:"tables"`
+
+	// 旧字段保留兼容（单 addr 场景）：YAML 仍可写 addr/server_id；
+	// 启动期 normalize 把它合并进 Addrs/ServerIDBase。
+	Addr     string `yaml:"addr,omitempty"`
+	ServerID uint32 `yaml:"server_id,omitempty"`
+}
+
+// Normalize 兼容老配置（单 addr）+ 校验：
+//   - Addr 非空 → 拼到 Addrs 头部
+//   - ServerID 非 0 → 当 ServerIDBase
+//   - Addrs 仍空 → 报错（caller fail-fast）
+func (s *Source) Normalize() error {
+	if s.Addr != "" {
+		s.Addrs = append([]string{s.Addr}, s.Addrs...)
+		s.Addr = ""
+	}
+	if s.ServerID != 0 && s.ServerIDBase == 0 {
+		s.ServerIDBase = s.ServerID
+	}
+	if len(s.Addrs) == 0 {
+		return fmt.Errorf("source %q: at least one addr required", s.Service)
+	}
+	if s.ServerIDBase == 0 {
+		return fmt.Errorf("source %q: server_id_base must be > 0", s.Service)
+	}
+	return nil
+}
+
+// Channels 把多 addr 展开成 N 个 binlog channel（每个用独立 server-id）。
+//
+// caller (Runner) 启动每个 channel：
+//
+//   for _, ch := range src.Channels() {
+//       go runOneCanal(ch.Addr, ch.ServerID, ...)
+//   }
+type Channel struct {
+	Service  string  // 服务名，所有 channel 共享
+	Addr     string  // 实例地址 "host:3306"
+	ServerID uint32  // canal 全局唯一 ID
+	Index    int     // 在 source.Addrs 中的索引（做日志 / metric 用）
+}
+
+func (s *Source) Channels() []Channel {
+	out := make([]Channel, 0, len(s.Addrs))
+	for i, a := range s.Addrs {
+		out = append(out, Channel{
+			Service:  s.Service,
+			Addr:     a,
+			ServerID: s.ServerIDBase + uint32(i),
+			Index:    i,
+		})
+	}
+	return out
 }
 
 // TableConfig 一张表的关心字段。

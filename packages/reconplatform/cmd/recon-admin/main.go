@@ -67,6 +67,15 @@ func main() {
 	scriptStore := script.NewStore(rdb)
 	loader := script.NewLoader()
 
+	// 真 yaegi 后端注入（替换默认 stub）。脚本可 import "recon" 用我们暴露的
+	// Context / Diff / Result / EventList。后续要扩展（注入业务自定义包）：
+	//   script.SetYaegiBackend(loader, custompack.Symbols)
+	script.SetYaegiBackend(loader)
+	if err := loader.EnsureYaegiAvailable(); err != nil {
+		logger.Fatal("yaegi probe failed", zap.Error(err))
+	}
+	logger.Info("yaegi backend wired")
+
 	// ─── TTL provider（每表过期时间，从 config-center 拉，OnChange 热更）──
 	ttl := cdc.NewTTLProvider()
 	// 真实场景下从 config-center key=cdc.ttl 拉 JSON map[string]string
