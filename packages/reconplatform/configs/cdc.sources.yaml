@@ -1,0 +1,180 @@
+# reconplatform CDC binlog 摄入配置（启动期 + OnChange 热更）。
+#
+# 推荐放 config-center key=reconplatform/cdc.sources（YAML / JSON 都行），
+# 这样不用重启 reconplatform-admin 即可调整摄入清单。
+#
+# 本文件是 dev 默认值；config-center 没配时进程兜底用本文件。
+#
+# ========== MySQL 前置（每个业务库一次性配置）==========
+#
+# 1) 开启 binlog ROW 格式（容器启动加 cmd 参数或 my.cnf）：
+#      [mysqld]
+#      log-bin=mysql-bin
+#      binlog_format=ROW
+#      binlog_row_image=FULL
+#      server-id=<unique-int>
+#      expire_logs_days=7
+#
+# 2) 创建专用账号（最小权限：REPLICATION SLAVE + REPLICATION CLIENT + SELECT）：
+#      CREATE USER 'recon_cdc'@'%' IDENTIFIED BY 'xxx';
+#      GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'recon_cdc'@'%';
+#      GRANT SELECT ON `order_core_db_%`.* TO 'recon_cdc'@'%';     -- meta sync
+#      GRANT SELECT ON `paychan_db`.*       TO 'recon_cdc'@'%';
+#      GRANT SELECT ON `accounting_db_%`.*  TO 'recon_cdc'@'%';
+#      FLUSH PRIVILEGES;
+#
+# 3) 防火墙开放 3306 给 reconplatform-admin 容器（payment-stack 网内即可）
+
+sources:
+
+  # ─── order-core ───────────────────────────────────────────────
+  # 10 库分片，CDC 订阅 10 个 endpoint（每分片一个 server_id）。
+  # 关心的表 + 索引列：
+  #   payment_intents   PK=id      idx=[merchant_id, customer_id, user_card_id]
+  #   charges           PK=id      idx=[pi_id, merchant_id]   ← pi_id 跨服务关联
+  #   refunds           PK=id      idx=[charge_id, pi_id, merchant_id]
+  #   webhook_outbox    PK=id      idx=[event_id, merchant_id]
+  - service: order-core
+    addrs:
+      - shared-shard-0:3306
+      - shared-shard-1:3306
+      - shared-shard-2:3306
+      - shared-shard-3:3306
+      - shared-shard-4:3306
+      - shared-shard-5:3306
+      - shared-shard-6:3306
+      - shared-shard-7:3306
+      - shared-shard-8:3306
+      - shared-shard-9:3306
+    user:     "${RECON_CDC_USER:-recon_cdc}"
+    password: "${RECON_CDC_PASS}"
+    server_id_base: 1000   # 第 N 个 endpoint 用 1000+N
+    schemas:
+      - order_core_db_0
+      - order_core_db_1
+      - order_core_db_2
+      - order_core_db_3
+      - order_core_db_4
+      - order_core_db_5
+      - order_core_db_6
+      - order_core_db_7
+      - order_core_db_8
+      - order_core_db_9
+    tables:
+      payment_intents:
+        pk: [id]
+        index_columns: [merchant_id, customer_id, user_card_id]
+        ignore_columns: [metadata]   # JSON 字段太大，跳过
+      charges:
+        pk: [id]
+        index_columns: [pi_id, merchant_id]
+      refunds:
+        pk: [id]
+        index_columns: [charge_id, pi_id, merchant_id]
+      webhook_outbox:
+        pk: [id]
+        index_columns: [event_id, merchant_id]
+        ignore_columns: [payload]    # webhook payload 可能很大
+
+  # ─── payment-channel ──────────────────────────────────────────
+  # 单库部署（按 channel 分表，不分库）。
+  # 关心的表：
+  #   card_charges      PK=id      idx=[pi_id, idempotency_key, adapter]
+  #   card_refunds      PK=id      idx=[charge_id, pi_id]
+  #   webhook_inbox     PK=id      idx=[adapter, event_id]
+  - service: payment-channel
+    addrs:
+      - shared-shard-0:3306        # paychan_db 共用 shard-0 实例
+    user:     "${RECON_CDC_USER:-recon_cdc}"
+    password: "${RECON_CDC_PASS}"
+    server_id_base: 2000
+    schemas:
+      - paychan_db
+    tables:
+      card_charges:
+        pk: [id]
+        index_columns: [pi_id, idempotency_key, adapter]
+      card_refunds:
+        pk: [id]
+        index_columns: [charge_id, pi_id]
+      webhook_inbox:
+        pk: [id]
+        index_columns: [adapter, event_id]
+        ignore_columns: [raw_body]
+
+  # ─── accounting-system ────────────────────────────────────────
+  # 10 库分片（按 user_id），每分片 100 表（按 user_id % 100 hash）。
+  # 关心的表：
+  #   account_transaction       PK=[id]  idx=[related_pi_id, user_id, business_type, transaction_id]
+  #                                       ← related_pi_id 跨服务关联到 order-core.pi_id
+  #   transaction_voucher       PK=[id]  idx=[transaction_id, user_id]
+  #   freeze_compensate_outbox  PK=[id]  idx=[transaction_id]
+  #   tcc_record                PK=[id]  idx=[transaction_id, user_id]
+  - service: accounting-system
+    addrs:
+      - shared-shard-0:3306
+      - shared-shard-1:3306
+      - shared-shard-2:3306
+      - shared-shard-3:3306
+      - shared-shard-4:3306
+      - shared-shard-5:3306
+      - shared-shard-6:3306
+      - shared-shard-7:3306
+      - shared-shard-8:3306
+      - shared-shard-9:3306
+    user:     "${RECON_CDC_USER:-recon_cdc}"
+    password: "${RECON_CDC_PASS}"
+    server_id_base: 3000
+    schemas:
+      - accounting_db_0
+      - accounting_db_1
+      - accounting_db_2
+      - accounting_db_3
+      - accounting_db_4
+      - accounting_db_5
+      - accounting_db_6
+      - accounting_db_7
+      - accounting_db_8
+      - accounting_db_9
+    tables:
+      account_transaction:
+        # 100 表 hash 在 schema 内：account_transaction_0 .. account_transaction_99
+        # canal 支持表名通配，patterns 比 tables 字段适合分表场景
+        table_pattern: "account_transaction_\\d+"
+        pk: [id]
+        index_columns: [related_pi_id, user_id, business_type, transaction_id]
+      transaction_voucher:
+        table_pattern: "transaction_voucher_\\d+"
+        pk: [id]
+        index_columns: [transaction_id, user_id]
+      freeze_compensate_outbox:
+        table_pattern: "freeze_compensate_outbox_\\d+"
+        pk: [id]
+        index_columns: [transaction_id]
+      tcc_record:
+        table_pattern: "tcc_record_\\d+"
+        pk: [id]
+        index_columns: [transaction_id, user_id]
+
+# ─── TTL 配置（每张表的 Redis 过期时间）────────────────────────
+# 单独一份 config-center key=reconplatform/cdc.ttl，按 4 级优先级匹配：
+#   default            → "30d"
+#   "*/audit_log"      → "365d"
+#   "*/outbox"         → "7d"
+#   <svc>/<table>      表级（最优先）
+#
+# 这里默认值仅供参考，正式生产从 config-center 拉。
+
+ttl:
+  default: "30d"
+  # 关键资金表保留长一点（合规 / 审计需要）
+  "order-core/payment_intents": "180d"
+  "order-core/charges":          "180d"
+  "order-core/refunds":          "180d"
+  "payment-channel/card_charges": "365d"
+  "payment-channel/card_refunds": "365d"
+  "accounting-system/account_transaction": "365d"
+  "accounting-system/transaction_voucher": "365d"
+  # 短生命周期数据
+  "*/outbox":     "7d"
+  "*/inbox":      "7d"

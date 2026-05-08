@@ -15,7 +15,23 @@
 x-mysql-base: &mysql-base
   image: mysql:8.0
   # 不传 --default-authentication-plugin：8.0.34+ 弃用、8.4 已删。
-  command: ["mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+  #
+  # binlog 相关参数（reconplatform CDC 订阅用）：
+  #   --log-bin              开启 binlog
+  #   --binlog-format=ROW    行级日志（DML 用）
+  #   --binlog-row-image=FULL 完整行数据，UPDATE 也带 before
+  #   --server-id=N          每实例必须唯一；用 entrypoint 的 SERVER_ID env 设
+  #   --binlog-expire-logs-seconds=604800  binlog 保留 7 天（防 disk 撑爆）
+  #
+  # server-id 由各 service override（meta=1, shard0=10, shard1=11, ..., shard9=19）。
+  command:
+    - mysqld
+    - --character-set-server=utf8mb4
+    - --collation-server=utf8mb4_unicode_ci
+    - --log-bin=mysql-bin
+    - --binlog-format=ROW
+    - --binlog-row-image=FULL
+    - --binlog-expire-logs-seconds=604800
   environment:
     MYSQL_ROOT_PASSWORD: password
   healthcheck:
@@ -29,11 +45,21 @@ services:
   # accounting-system 配置里写死 host=accounting_meta，通过 network alias 解析到这里。
   meta:
     <<: *mysql-base
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=604800
+      - --server-id=1
     container_name: shared-meta
     ports: ["3400:3306"]
     volumes:
       - meta-data:/var/lib/mysql
       - ./init/meta_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting_meta]
@@ -42,110 +68,210 @@ services:
   # accounting-system 配置里写死 host=accounting-mysql-N，靠 network alias 走到 shared-shard-N。
   shard0:
     <<: *mysql-base
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=604800
+      - --server-id=10
     container_name: shared-shard-0
     ports: ["3410:3306"]
     volumes:
       - shard0-data:/var/lib/mysql
       - ./init/0_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-0]
 
   shard1:
     <<: *mysql-base
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=604800
+      - --server-id=11
     container_name: shared-shard-1
     ports: ["3411:3306"]
     volumes:
       - shard1-data:/var/lib/mysql
       - ./init/1_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-1]
 
   shard2:
     <<: *mysql-base
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=604800
+      - --server-id=12
     container_name: shared-shard-2
     ports: ["3412:3306"]
     volumes:
       - shard2-data:/var/lib/mysql
       - ./init/2_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-2]
 
   shard3:
     <<: *mysql-base
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=604800
+      - --server-id=13
     container_name: shared-shard-3
     ports: ["3413:3306"]
     volumes:
       - shard3-data:/var/lib/mysql
       - ./init/3_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-3]
 
   shard4:
     <<: *mysql-base
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=604800
+      - --server-id=14
     container_name: shared-shard-4
     ports: ["3414:3306"]
     volumes:
       - shard4-data:/var/lib/mysql
       - ./init/4_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-4]
 
   shard5:
     <<: *mysql-base
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=604800
+      - --server-id=15
     container_name: shared-shard-5
     ports: ["3415:3306"]
     volumes:
       - shard5-data:/var/lib/mysql
       - ./init/5_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-5]
 
   shard6:
     <<: *mysql-base
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=604800
+      - --server-id=16
     container_name: shared-shard-6
     ports: ["3416:3306"]
     volumes:
       - shard6-data:/var/lib/mysql
       - ./init/6_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-6]
 
   shard7:
     <<: *mysql-base
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=604800
+      - --server-id=17
     container_name: shared-shard-7
     ports: ["3417:3306"]
     volumes:
       - shard7-data:/var/lib/mysql
       - ./init/7_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-7]
 
   shard8:
     <<: *mysql-base
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=604800
+      - --server-id=18
     container_name: shared-shard-8
     ports: ["3418:3306"]
     volumes:
       - shard8-data:/var/lib/mysql
       - ./init/8_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-8]
 
   shard9:
     <<: *mysql-base
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=604800
+      - --server-id=19
     container_name: shared-shard-9
     ports: ["3419:3306"]
     volumes:
       - shard9-data:/var/lib/mysql
       - ./init/9_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-9]
