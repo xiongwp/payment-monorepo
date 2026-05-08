@@ -134,10 +134,15 @@ func (h *canalHandler) OnXID(_ *replication.EventHeader, nextPos mysql.Position)
 	return nil
 }
 
-func (h *canalHandler) OnGTID(_ *replication.EventHeader, gtid mysql.BinlogGTIDEvent) error {
-	h.mu.Lock()
-	h.currentGTID = gtid.String()
-	h.mu.Unlock()
+// OnGTID 我们只用 binlog file+pos resume，不需要 GTID。这里 no-op 仅为
+// 满足 canal.EventHandler 接口（go-mysql v1.9.x BinlogGTIDEvent 字段在不同 minor
+// 版本间名字会变，硬编码风险大）。
+func (h *canalHandler) OnGTID(_ *replication.EventHeader, _ mysql.BinlogGTIDEvent) error {
+	return nil
+}
+
+// OnRowsQueryEvent canal v1.9.x 接口要求；我们不消费 ROW QUERY 事件（只关心 OnRow）。
+func (h *canalHandler) OnRowsQueryEvent(_ *replication.RowsQueryEvent) error {
 	return nil
 }
 

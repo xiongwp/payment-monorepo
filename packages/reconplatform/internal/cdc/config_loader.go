@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"os"
 
-	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
