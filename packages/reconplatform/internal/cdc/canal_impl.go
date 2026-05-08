@@ -75,10 +75,11 @@ type RowFilter interface {
 
 // canalHandler 实现 canal.EventHandler 接口，把 row event 转成 cdc.Event 并 publish。
 type canalHandler struct {
-	source    Source
-	publisher *Publisher
-	schema    SchemaProvider
-	logger    *zap.Logger
+	source     Source
+	channelIdx int // 在 source.Addrs 里的下标，给位点持久化用
+	publisher  *Publisher
+	schema     SchemaProvider
+	logger     *zap.Logger
 
 	enrichers []EventEnricher
 	filters   []RowFilter
@@ -90,12 +91,13 @@ type canalHandler struct {
 	lastFlushed time.Time
 }
 
-func newCanalHandler(src Source, pub *Publisher, sp SchemaProvider, logger *zap.Logger) *canalHandler {
+func newCanalHandler(src Source, channelIdx int, pub *Publisher, sp SchemaProvider, logger *zap.Logger) *canalHandler {
 	return &canalHandler{
-		source:    src,
-		publisher: pub,
-		schema:    sp,
-		logger:    logger,
+		source:     src,
+		channelIdx: channelIdx,
+		publisher:  pub,
+		schema:     sp,
+		logger:     logger,
 	}
 }
 
@@ -152,7 +154,7 @@ func (h *canalHandler) OnPosSynced(_ *replication.EventHeader, pos mysql.Positio
 	if flush {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		if err := h.publisher.SavePosition(ctx, h.source.Service, pos2.Name, pos2.Pos, gtid); err != nil {
+		if err := h.publisher.SaveChannelPosition(ctx, h.source.Service, h.channelIdx, pos2.Name, pos2.Pos, gtid); err != nil {
 			h.logger.Warn("save binlog position failed", zap.Error(err))
 		}
 	}
@@ -320,22 +322,26 @@ func inferPKFromCanalTable(t *schema.Table) []string {
 
 // ─── newRealCanal: 替换 canalLike stub 的真实实现 ───────────────
 
-// newRealCanal 由 Runner.Run 调用替换 stub。本文件 build 进 binary 时
-// canal 包真接进来；测试场景仍可用 stub。
-func newRealCanal(src Source, h *canalHandler, instanceAddr string) (canalLike, error) {
+// newRealCanal 由 Runner.Run 调用替换 stub。
+//
+// startFromFile / startFromPos / startFromGTID 三选一：
+//   - file/pos 都非空 → RunFrom(file, pos)
+//   - 都空 → canal.Run() 从 latest 起跑（首次启动）
+//   - GTID 留作未来扩展（多源 master / 切换实例时更稳）
+func newRealCanal(src Source, h *canalHandler, instanceAddr string,
+	startFromFile string, startFromPos uint32, _ string) (canalLike, error) {
 	cfg := canal.NewDefaultConfig()
 	cfg.Addr = instanceAddr
 	cfg.User = src.User
 	cfg.Password = src.Password
-	cfg.ServerID = src.ServerID
+	cfg.ServerID = src.ServerIDBase
 	cfg.Flavor = "mysql"
 	cfg.Charset = "utf8mb4"
 
-	// 只订阅指定 schema + table。canal 接受正则
+	// 只订阅指定 schema + table（canal 接受正则）
 	if len(src.Schemas) > 0 {
 		cfg.IncludeTableRegex = make([]string, 0, len(src.Schemas))
 		for _, s := range src.Schemas {
-			// 转成 canal 期望的 "schema\\.table" 格式
 			cfg.IncludeTableRegex = append(cfg.IncludeTableRegex, s+"\\..*")
 		}
 	}
@@ -345,19 +351,32 @@ func newRealCanal(src Source, h *canalHandler, instanceAddr string) (canalLike, 
 		return nil, fmt.Errorf("canal.NewCanal: %w", err)
 	}
 	c.SetEventHandler(h)
-	return &realCanal{c: c}, nil
+
+	rc := &realCanal{c: c}
+	if startFromFile != "" {
+		rc.startAt = mysql.Position{Name: startFromFile, Pos: startFromPos}
+	}
+	return rc, nil
 }
 
 // realCanal 把 *canal.Canal 包成我们的 canalLike 接口。
+//
+// 支持位点 resume：构造时传 RunFromPos，Run() 从该位点起跑（避免漏 binlog）。
+// 没有保存位点时（首次启动 / 位点丢失）从 latest 起跑（接受丢失启动前历史数据）。
 type realCanal struct {
-	c *canal.Canal
+	c       *canal.Canal
+	startAt mysql.Position // 空 → 从 latest 起跑
 }
 
-func (r *realCanal) Run() error  {
-	// canal 默认从 latest 起跑；要按 saved position 起跑用 RunFrom。
-	// MVP：先跑 latest，等运行稳定再加位点 resume（OnPosSynced 已在 SavePosition）。
+func (r *realCanal) Run() error {
+	if r.startAt.Name != "" {
+		// 从保存的位点 resume
+		return r.c.RunFrom(r.startAt)
+	}
+	// 首次：拿当前 master 位点起跑（避免一启动就拉所有历史 binlog）
 	return r.c.Run()
 }
+
 func (r *realCanal) Close() {
 	r.c.Close()
 }

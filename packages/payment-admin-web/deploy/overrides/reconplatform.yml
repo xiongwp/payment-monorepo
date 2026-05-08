@@ -20,6 +20,12 @@ services:
       # context 指向 reconplatform 自己的目录（默认 cmd/main.go）
       context: ../../../reconplatform
       dockerfile: Dockerfile
+      additional_contexts:
+        # 兄弟仓注入：reconplatform Dockerfile 里 COPY --from=payment-util
+        # 走 BuildKit additional_context 拿到本地 ../payment-util。
+        payment-util: ../../../payment-util
+      secrets:
+        - GITHUB_TOKEN
     image: reconplatform:local
     container_name: reconplatform-engine
     restart: unless-stopped
@@ -63,3 +69,8 @@ services:
 networks:
   payment-stack:
     external: true
+
+# BuildKit secret：Dockerfile 走 git clone fallback 时用（GITHUB_TOKEN env）。
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN

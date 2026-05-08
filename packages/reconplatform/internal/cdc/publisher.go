@@ -146,23 +146,48 @@ func (p *Publisher) PublishBatch(ctx context.Context, events []*Event) error {
 	return err
 }
 
-// SavePosition 持久化 binlog 位点。canal flush 周期调（每秒一次足够），
-// 不放进每条事件 pipeline，避免 fsync 风暴。
+// SavePosition 持久化某 service 的 binlog 位点（旧 API；单实例场景）。
+//
+// canal flush 周期调（每秒一次足够），不放进每条事件 pipeline，避免 fsync 风暴。
 func (p *Publisher) SavePosition(ctx context.Context, service, file string, pos uint32, gtid string) error {
-	key := "recon:cdc:pos:" + service
+	return p.SaveChannelPosition(ctx, service, 0, file, pos, gtid)
+}
+
+// SaveChannelPosition 持久化某 service 第 idx 个 channel 的位点（多分片场景）。
+//
+// 每分片独立位点，重启时各 channel 从自己的 saved pos 起跑。
+//
+//	recon:cdc:pos:order-core:0  shard-0 的位点
+//	recon:cdc:pos:order-core:1  shard-1
+//	...
+func (p *Publisher) SaveChannelPosition(ctx context.Context, service string, channelIdx int, file string, pos uint32, gtid string) error {
+	key := fmt.Sprintf("recon:cdc:pos:%s:%d", service, channelIdx)
 	return p.r.HSet(ctx, key, map[string]any{
-		"file":   file,
-		"pos":    pos,
-		"gtid":   gtid,
-		"saved":  time.Now().UnixMilli(),
+		"file":  file,
+		"pos":   pos,
+		"gtid":  gtid,
+		"saved": time.Now().UnixMilli(),
 	}).Err()
 }
 
-// LoadPosition 启动期读上次保存的位点（若返 false 表示没记录，从最新位点起跑）。
+// LoadPosition 旧 API（单实例场景，等价 LoadChannelPosition(_, _, 0, ...))。
 func (p *Publisher) LoadPosition(ctx context.Context, service string) (file string, pos uint32, gtid string, ok bool) {
-	key := "recon:cdc:pos:" + service
+	return p.LoadChannelPosition(ctx, service, 0)
+}
+
+// LoadChannelPosition 拿某 service 第 idx 个 channel 的保存位点。
+func (p *Publisher) LoadChannelPosition(ctx context.Context, service string, channelIdx int) (file string, pos uint32, gtid string, ok bool) {
+	// 优先读新 key (带 idx)；老的单实例 fallback 兼容旧数据
+	key := fmt.Sprintf("recon:cdc:pos:%s:%d", service, channelIdx)
 	m, err := p.r.HGetAll(ctx, key).Result()
 	if err != nil || len(m) == 0 {
+		// fallback 兼容老 key
+		if channelIdx == 0 {
+			oldKey := "recon:cdc:pos:" + service
+			m, _ = p.r.HGetAll(ctx, oldKey).Result()
+		}
+	}
+	if len(m) == 0 {
 		return "", 0, "", false
 	}
 	file = m["file"]

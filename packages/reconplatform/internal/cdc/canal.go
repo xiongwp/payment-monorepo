@@ -24,6 +24,7 @@ import (
 // Runner 单服务的 binlog 摄入循环。Start 启动后阻塞，Stop 触发 graceful shutdown。
 //
 //	r := NewRunner(source, publisher, schemaProvider, logger)
+//	r.AddEnricher(myEnricher)
 //	go r.Run(ctx)
 //	... shutdown:
 //	r.Stop()
@@ -33,6 +34,11 @@ type Runner struct {
 	schema    SchemaProvider
 	logger    *zap.Logger
 
+	// 扩展点：每条事件 publish 前过 enricher / filter 链。
+	// 由 Manager 在 spawn Runner 之前 inject。
+	enrichers []EventEnricher
+	filters   []RowFilter
+
 	mu       sync.Mutex
 	canal    canalLike // 真实是 *canal.Canal；测试可注入 stub
 	stopCh   chan struct{}
@@ -41,6 +47,10 @@ type Runner struct {
 	// 上次 flush 位点的时间，避免每条事件都 fsync
 	lastPosFlush time.Time
 }
+
+// AddEnricher / AddFilter 给 Runner 注册扩展点。在 Run 之前调即可。
+func (r *Runner) AddEnricher(e EventEnricher) { r.enrichers = append(r.enrichers, e) }
+func (r *Runner) AddFilter(f RowFilter)       { r.filters = append(r.filters, f) }
 
 // canalLike canal.Canal 的子集接口，便于测试 / 延迟引入真实依赖。
 type canalLike interface {
@@ -140,9 +150,28 @@ func (r *Runner) runChannel(ctx context.Context, ch Channel) {
 		default:
 		}
 
-		handler := newCanalHandler(chSource, r.publisher, r.schema, logger)
-		// TODO: 暴露 enricher / filter 注册接口给 Manager，再传到这里
-		c, err := newRealCanal(chSource, handler, ch.Addr)
+		handler := newCanalHandler(chSource, ch.Index, r.publisher, r.schema, logger)
+		// 注入 Manager 配的 enricher / filter
+		for _, enr := range r.enrichers {
+			handler.AddEnricher(enr)
+		}
+		for _, f := range r.filters {
+			handler.AddFilter(f)
+		}
+
+		// 拿保存的位点，从 resume 起跑（避免漏 binlog）。位点 key 加 channel
+		// index 后缀，区分同 service 的不同 shard。
+		posCtx, posCancel := context.WithTimeout(ctx, 2*time.Second)
+		file, pos, gtid, _ := r.publisher.LoadChannelPosition(posCtx, ch.Service, ch.Index)
+		posCancel()
+		if file != "" {
+			logger.Info("resume from saved binlog position",
+				zap.String("file", file), zap.Uint32("pos", pos))
+		} else {
+			logger.Info("no saved position; start from latest")
+		}
+
+		c, err := newRealCanal(chSource, handler, ch.Addr, file, pos, gtid)
 		if err != nil {
 			logger.Warn("canal init failed; retry", zap.Error(err), zap.Duration("backoff", backoff))
 			if !sleepOrCancel(ctx, r.stopCh, backoff) {
@@ -223,10 +252,22 @@ func (r *Runner) flushPositionThrottled(ctx context.Context, file string, pos ui
 }
 
 // Manager 一份 sources 配置 → N 个 Runner，统一管理生命周期。
+//
+// Manager 持有"全局" enricher / filter 链：每个 Runner spawn 时都注入。
+// 想给单个服务挂特定 enricher 就直接 AddEnricher 到 Runner（拿不到 Runner
+// 的场景：暴露 OnRunnerSpawn hook，下面的 PerServiceEnrichers）。
 type Manager struct {
 	publisher *Publisher
 	schema    SchemaProvider
 	logger    *zap.Logger
+
+	// 全局扩展点：所有 Runner 共享
+	enrichers []EventEnricher
+	filters   []RowFilter
+
+	// 服务级扩展点：只挂到指定 service 的 Runner（map[svc]→list）
+	perServiceEnrichers map[string][]EventEnricher
+	perServiceFilters   map[string][]RowFilter
 
 	mu      sync.Mutex
 	runners map[string]*Runner // svc → runner
@@ -239,11 +280,41 @@ func NewManager(pub *Publisher, sp SchemaProvider, logger *zap.Logger) *Manager 
 		logger = zap.NewNop()
 	}
 	return &Manager{
-		publisher: pub,
-		schema:    sp,
-		logger:    logger,
-		runners:   make(map[string]*Runner),
+		publisher:           pub,
+		schema:              sp,
+		logger:              logger,
+		runners:             make(map[string]*Runner),
+		perServiceEnrichers: make(map[string][]EventEnricher),
+		perServiceFilters:   make(map[string][]RowFilter),
 	}
+}
+
+// AddGlobalEnricher 加一个对所有 service 都生效的 enricher。
+func (m *Manager) AddGlobalEnricher(e EventEnricher) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.enrichers = append(m.enrichers, e)
+}
+
+// AddGlobalFilter 加一个对所有 service 都生效的 filter。
+func (m *Manager) AddGlobalFilter(f RowFilter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.filters = append(m.filters, f)
+}
+
+// AddServiceEnricher 加一个仅对指定 service 生效的 enricher。
+func (m *Manager) AddServiceEnricher(service string, e EventEnricher) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.perServiceEnrichers[service] = append(m.perServiceEnrichers[service], e)
+}
+
+// AddServiceFilter 加一个仅对指定 service 生效的 filter。
+func (m *Manager) AddServiceFilter(service string, f RowFilter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.perServiceFilters[service] = append(m.perServiceFilters[service], f)
 }
 
 // Reload diff 当前 runners vs 新 sources：
@@ -275,6 +346,19 @@ func (m *Manager) Reload(ctx context.Context, sources []Source) {
 			old.Stop()
 		}
 		r := NewRunner(src, m.publisher, m.schema, m.logger)
+		// 注入全局 + 服务级 enricher / filter
+		for _, enr := range m.enrichers {
+			r.AddEnricher(enr)
+		}
+		for _, f := range m.filters {
+			r.AddFilter(f)
+		}
+		for _, enr := range m.perServiceEnrichers[svc] {
+			r.AddEnricher(enr)
+		}
+		for _, f := range m.perServiceFilters[svc] {
+			r.AddFilter(f)
+		}
 		m.runners[svc] = r
 		m.wg.Add(1)
 		go func(r *Runner, svc string) {
