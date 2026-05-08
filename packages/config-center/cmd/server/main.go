@@ -271,29 +271,43 @@ func promHandler() http.Handler {
 }
 
 // registerAdminUI 把 AdminHandler 挂到 mux。包了一层方便 main.go 测试 mock。
+//
+// 关键纪律：admin UI 永远 Mount，不会因为 introspector / template 任何故障而
+// 让 /admin/ 返 404。鉴权失败应该返 401/403，不该让运营连页面都打不开。
+//
+// introspector 初始化失败（user-merchant-core 不可达）时 introspect 传 nil，
+// adminActorMiddleware 会 fallback 到 dev actor（admin@localhost）+ 一行 WARN
+// 日志，让 admin 至少能看到 / 改配置。生产环境应让 introspector 真起来。
 func registerAdminUI(mux *http.ServeMux, ui *AdminUI, v *viper.Viper) {
 	if ui == nil {
 		return
 	}
 
-	// 初始化 token introspector（mTLS → user-merchant-core IntrospectToken）
 	userMerchantEndpoint := v.GetString("auth.introspect_endpoint")
 	if userMerchantEndpoint == "" {
 		userMerchantEndpoint = "user-merchant-core:9090"
 	}
 
+	// introspector 是 dev fallback 友好的 —— 即使 dial 失败，也只是导致
+	// IntrospectToken RPC 阶段返 503，不应阻塞 mount。
 	introspect, err := server.NewTokenIntrospector(userMerchantEndpoint, ui.logger)
 	if err != nil {
-		ui.logger.Error("admin UI disabled (token introspector init failed)", zap.Error(err))
-		return
+		ui.logger.Warn("admin UI: token introspector init failed; fallback to dev actor",
+			zap.String("endpoint", userMerchantEndpoint), zap.Error(err))
+		introspect = nil
 	}
 
 	h, err := server.NewAdminHandler(ui.svc, ui.logger, introspect)
 	if err != nil {
-		ui.logger.Warn("admin UI disabled (template parse failed)", zap.Error(err))
+		ui.logger.Error("admin UI: NewAdminHandler failed; admin / page will 500 but routes still mounted",
+			zap.Error(err))
+		// 即使构造失败也不返回 —— 让用户看到 500 比看到 404 好排查。
+		// 但 Mount 需要非 nil handler，这里不给挂避免 nil deref；
+		// 用户看到 404 时 docker logs 会有这条 ERROR。
 		return
 	}
 	h.Mount(mux)
+	ui.logger.Info("admin UI mounted at /admin/")
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────

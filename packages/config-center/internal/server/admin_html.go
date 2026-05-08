@@ -246,6 +246,21 @@ func (h *AdminHandler) adminActorMiddleware(next http.HandlerFunc) http.HandlerF
 			return
 		}
 
+		// introspector 没起来（user-merchant-core 不可达）→ 同 dev bypass，
+		// 用 admin@localhost actor 直接放行 + 一行 WARN。让 admin UI 在
+		// 联栈尚未完全起来时也能看 / 改配置；prod 必须配好 introspector。
+		if h.introspect == nil {
+			actor := os.Getenv("CONFIG_CENTER_DEV_ACTOR")
+			if actor == "" {
+				actor = "admin@localhost"
+			}
+			h.logger.Warn("admin: introspector unavailable, fallback to dev actor",
+				zap.String("actor", actor))
+			ctx := WithActor(r.Context(), actor)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
 		// 读 token（cookie 优先）
 		token := ""
 		if c, err := r.Cookie("admin_session"); err == nil {
