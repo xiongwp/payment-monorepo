@@ -238,9 +238,15 @@ func newChannelRegistry(v *viper.Viper, logger *zap.Logger) channel.PaymentChann
 			zap.String("endpoint", endpoint), zap.Error(err))
 	}
 	reg.Register("payment-core", cli)
+	// e2e / dev / 集成测试通道：不论生产模式与否，始终注册一个 mock channel
+	// 在 "payment-core-mock" 名下。e2e-accounting 等工具用它跑 webhook 路径
+	// 时不会撞到真 payment-core 的 ParseWebhook（它只认真渠道 webhook 格式）。
+	// 生产业务调用永远走 "payment-core" 真 channel，互不影响。
+	reg.Register("payment-core-mock", service.NewMockPaymentCoreChannel())
 	logger.Info("channel registry: real payment-core registered",
 		zap.String("endpoint", endpoint),
 		zap.Duration("rpc_timeout", timeout))
+	logger.Info("channel registry: payment-core-mock also registered (for e2e/dev webhook ingest)")
 	return reg
 }
 

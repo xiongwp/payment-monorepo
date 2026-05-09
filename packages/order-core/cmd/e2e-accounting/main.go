@@ -241,9 +241,13 @@ func main() {
 			eventID, pi.GetId(), chargeID, chargeID)
 		cctx3, cancel3 := context.WithTimeout(ctx, *timeout)
 		defer cancel3()
+		// 故意用 "payment-core-mock" 而不是 "payment-core" — 后者在生产
+		// 模式下是真 gRPC client，ParseWebhook 会调真 payment-core RPC，
+		// 不认 e2e 的 form 格式 body 报 Internal。order-core newChannelRegistry
+		// 永远额外注册一个 mock 在这个名字下供 e2e/dev 用。
 		_, err = wkCli.Ingest(cctx3, &orderv1.IngestWebhookRequest{
 			Direction:   orderv1.WebhookDirection_WEBHOOK_DIRECTION_CHANNEL,
-			ChannelName: "payment-core",
+			ChannelName: "payment-core-mock",
 			Body:        []byte(body),
 		})
 		if err != nil {
