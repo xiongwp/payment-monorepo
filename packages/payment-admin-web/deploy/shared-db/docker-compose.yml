@@ -59,7 +59,6 @@ services:
     volumes:
       - meta-data:/var/lib/mysql
       - ./init/meta_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
-      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting_meta]
@@ -82,7 +81,6 @@ services:
     volumes:
       - shard0-data:/var/lib/mysql
       - ./init/0_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
-      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-0]
@@ -103,7 +101,6 @@ services:
     volumes:
       - shard1-data:/var/lib/mysql
       - ./init/1_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
-      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-1]
@@ -124,7 +121,6 @@ services:
     volumes:
       - shard2-data:/var/lib/mysql
       - ./init/2_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
-      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-2]
@@ -145,7 +141,6 @@ services:
     volumes:
       - shard3-data:/var/lib/mysql
       - ./init/3_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
-      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-3]
@@ -166,7 +161,6 @@ services:
     volumes:
       - shard4-data:/var/lib/mysql
       - ./init/4_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
-      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-4]
@@ -187,7 +181,6 @@ services:
     volumes:
       - shard5-data:/var/lib/mysql
       - ./init/5_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
-      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-5]
@@ -208,7 +201,6 @@ services:
     volumes:
       - shard6-data:/var/lib/mysql
       - ./init/6_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
-      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-6]
@@ -229,7 +221,6 @@ services:
     volumes:
       - shard7-data:/var/lib/mysql
       - ./init/7_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
-      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-7]
@@ -250,7 +241,6 @@ services:
     volumes:
       - shard8-data:/var/lib/mysql
       - ./init/8_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
-      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-8]
@@ -271,7 +261,6 @@ services:
     volumes:
       - shard9-data:/var/lib/mysql
       - ./init/9_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
-      - ./init/zz_recon_cdc_user.sql:/docker-entrypoint-initdb.d/zz_recon_cdc_user.sql:ro
     networks:
       payment-stack:
         aliases: [accounting-mysql-9]
