@@ -180,32 +180,53 @@ type RetryQueue interface {
 	MarkSuccess(ctx context.Context, taskID string) error
 }
 
-// RetryWorker 后台 worker：定期从队列取任务重试
-type RetryWorker struct {
-	queue   RetryQueue
-	router  *Router
-	fallback *FallbackRouter
-	client  interface{} // payment-channel client，实际类型由上游注入
-	scheduler *RetryScheduler
-	logger  *zap.Logger
-	ticker  *time.Ticker
-	stopCh  chan struct{}
+// RetryExecutor 由 service.PaymentService 实现，避免 routing → service 循环依赖。
+//
+//	返回:
+//	  done=true  → 终态（成功 / 永久失败 / 无可用 fallback）。worker 调 MarkSuccess 删队列。
+//	  done=false → 还要再试。worker 调 MarkRetry 推下一次时间。
+//	  errMsg     → 写到 task.last_error_msg 给运营 / 排查。
+//
+// 与 service.Charge 的差异：
+//
+//	(1) 用 task.IdempotencyKey 作 charge key（与原首发一致），payment-channel 侧
+//	    UNIQUE(adapter, idempotency_key) 保证重放安全 — 即使重试在原始 charge 已
+//	    成功之后才到达，DB 也只会记 1 条。
+//	(2) 不再过 risk.Screen — 风控决策已在首发时做过，复用即可。
+//	(3) 用 fallback chain 里下一个可用 adapter；自身 adapter 重 retry 没意义
+//	    （首发熔断/不可达，30s 内大概率仍坏）。
+type RetryExecutor interface {
+	Execute(ctx context.Context, task *RetryTask) (done bool, errMsg string)
 }
 
-// NewRetryWorker 创建后台 worker
+// RetryWorker 后台 worker：定期从队列取任务重试
+type RetryWorker struct {
+	queue     RetryQueue
+	router    *Router
+	fallback  *FallbackRouter
+	executor  RetryExecutor
+	scheduler *RetryScheduler
+	logger    *zap.Logger
+	ticker    *time.Ticker
+	stopCh    chan struct{}
+}
+
+// NewRetryWorker 创建后台 worker。executor 注入 PaymentService（实现 RetryExecutor）。
 func NewRetryWorker(
 	queue RetryQueue,
 	router *Router,
 	fallback *FallbackRouter,
+	executor RetryExecutor,
 	logger *zap.Logger,
 ) *RetryWorker {
 	return &RetryWorker{
 		queue:     queue,
 		router:    router,
 		fallback:  fallback,
+		executor:  executor,
 		scheduler: &RetryScheduler{},
 		logger:    logger,
-		ticker:    time.NewTicker(30 * time.Second), // 每 30s 轮一次队列
+		ticker:    time.NewTicker(30 * time.Second),
 		stopCh:    make(chan struct{}),
 	}
 }
@@ -245,57 +266,45 @@ func (rw *RetryWorker) pollAndRetry(ctx context.Context) {
 	}
 }
 
-// retryTask 重试单个任务
-// TODO: 实现具体的重试逻辑（调 payment-channel client）
+// retryTask 重试单个任务。
+//
+// 三种结局：
+//
+//	(a) executor 缺省（启动期未注入）→ 仅推下一次重试，写日志（保留行为，不丢任务）
+//	(b) executor.Execute(done=true)  → MarkSuccess（终态：成功 / 永久失败 / 无可用 fallback）
+//	(c) executor.Execute(done=false) → MarkRetry，按 attempt+1 计算下次时间
 func (rw *RetryWorker) retryTask(ctx context.Context, task *RetryTask) {
-	// 1. 从 fallback config 取 chain（如果有的话）
-	chain := rw.fallback.GetFallbackChain(task.FailedAdapter, FallbackInput{
-		Country:       task.Country,
-		PaymentMethod: task.PaymentMethod,
-		BIN:           task.BIN,
-		Currency:      task.Currency,
-	})
-
-	// 2. 尝试 chain 里的下一个 adapter（跳过已失败的）
-	var nextAdapter string
-	for _, adapter := range chain {
-		if adapter != task.FailedAdapter {
-			nextAdapter = adapter
-			break
+	if rw.executor == nil {
+		// 兜底：没注入 executor 时只推下次时间。生产应启动期 fail-fast 防御
+		// （NewRetryWorker 接受 nil 是为兼容旧代码 / 单元测试）。
+		if rw.logger != nil {
+			rw.logger.Warn("retry executor not configured; deferring task",
+				zap.String("pi_id", task.PaymentIntentID))
 		}
+		_ = rw.queue.MarkRetry(ctx, task.ID, task.Attempt+1,
+			rw.scheduler.NextRetryTime(task.Attempt+1),
+			"executor not configured")
+		return
 	}
 
-	// 3. 如果找不到 next adapter（无 fallback），标记失败回滚
-	if nextAdapter == "" {
+	done, errMsg := rw.executor.Execute(ctx, task)
+	if done {
 		if rw.logger != nil {
-			rw.logger.Error("retry task exhausted: no fallback chain",
+			rw.logger.Info("retry task done",
 				zap.String("pi_id", task.PaymentIntentID),
-				zap.String("adapter", task.FailedAdapter),
-			)
+				zap.String("err", errMsg))
 		}
-		// TODO: 调 order-core 回调告知交易失败
 		_ = rw.queue.MarkSuccess(ctx, task.ID)
 		return
 	}
 
-	// 4. 调 payment-channel Charge（用原 idempotency_key）
-	// TODO: 这里需要实际调用 payment-channel client
-	// resp, err := rw.client.Charge(ctx, ...)
-
-	// 模拟逻辑示例（实际需注入真实 client）
+	nextAttempt := task.Attempt + 1
+	_ = rw.queue.MarkRetry(ctx, task.ID, nextAttempt,
+		rw.scheduler.NextRetryTime(nextAttempt), errMsg)
 	if rw.logger != nil {
-		rw.logger.Info("retry task executing",
+		rw.logger.Info("retry task scheduled",
 			zap.String("pi_id", task.PaymentIntentID),
-			zap.String("from_adapter", task.FailedAdapter),
-			zap.String("to_adapter", nextAdapter),
-			zap.Int("attempt", task.Attempt),
-		)
+			zap.Int("attempt", nextAttempt),
+			zap.String("last_err", errMsg))
 	}
-
-	// 5. 重试逻辑
-	// - 成功 → MarkSuccess 删队列
-	// - 继续失败 → MarkRetry 更新下次时间
-	_ = rw.queue.MarkRetry(ctx, task.ID, task.Attempt+1,
-		rw.scheduler.NextRetryTime(task.Attempt+1),
-		"retrying with fallback adapter")
 }

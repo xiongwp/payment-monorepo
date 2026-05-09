@@ -52,7 +52,7 @@ func main() {
 			newWebhookSvc,
 			newServer,
 		),
-		fx.Invoke(startGRPC, startMetricsHTTP, startAdminHTTP, startServiceRegistrar),
+		fx.Invoke(startGRPC, startMetricsHTTP, startAdminHTTP, startServiceRegistrar, startRetryWorker),
 	)
 	app.Run()
 }
@@ -315,6 +315,55 @@ func startGRPC(lc fx.Lifecycle, s *server.Server, v *viper.Viper, logger *zap.Lo
 			return nil
 		},
 		OnStop: func(_ context.Context) error { cancel(); return nil },
+	})
+}
+
+// startRetryWorker 把内存版 RetryQueue 接到 PaymentService，并启 goroutine 轮询。
+//
+// 当前用 MemoryRetryQueue（进程内）：
+//   - 简单可用，单实例下完整闭环
+//   - 进程重启会丢失 in-flight retry 任务（首发已在 outbox 表里，不会真丢钱：
+//     payment-channel 侧 UNIQUE(idempotency_key) 让首发的最终结果可由 reconplatform
+//     对账兜底）
+//   - 多实例下重试会重复执行 — 由 idempotency_key 保证不重复扣款
+//
+// 生产 P1 改造：换 routing.DBRetryQueue（落 outbox 表 + 行锁 claim）。
+//
+// fallback 配置走 config-center 热更新，key="payment-core/routing.fallback"。
+func startRetryWorker(lc fx.Lifecycle, svc *service.PaymentService, cli *configcenter.Client, logger *zap.Logger) {
+	queue := routing.NewMemoryRetryQueue()
+	svc.SetRetryQueue(queue)
+
+	// 接入 fallback 配置 hot reload
+	if cli != nil {
+		// 启动期初始化一次（取不到 = config-center 还没下发，OnChange 会兜底）。
+		if cv, err := cli.Get(context.Background(), "routing.fallback"); err == nil && cv != nil && cv.Value != "" {
+			if uerr := svc.FallbackRouter().UpdateConfig([]byte(cv.Value)); uerr != nil {
+				logger.Warn("initial fallback config load failed", zap.Error(uerr))
+			}
+		}
+		cli.OnChange("routing.fallback", func(v *configcenter.ConfigValue) {
+			if v == nil {
+				return
+			}
+			if err := svc.FallbackRouter().UpdateConfig([]byte(v.Value)); err != nil {
+				logger.Warn("fallback config hot reload failed", zap.Error(err))
+			}
+		})
+	}
+
+	worker := routing.NewRetryWorker(queue, nil /* router unused */, svc.FallbackRouter(), svc, logger)
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			worker.Start(ctx)
+			logger.Info("retry worker started (in-memory queue, 30s tick)")
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			worker.Stop()
+			logger.Info("retry worker stopped")
+			return nil
+		},
 	})
 }
 

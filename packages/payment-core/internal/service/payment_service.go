@@ -124,6 +124,21 @@ func NewPaymentService(r *routing.Router, c channelclient.Client, risk riskclien
 	}
 }
 
+// SetRetryQueue 注入 retry queue 实现。
+//
+// 不在 ctor 里强制要求是为兼容历史调用方（多处单元测试 / dev binary 没有 outbox 表）。
+// 生产 main.go 应该启动期注入 DBRetryQueue / MemoryRetryQueue 并立即起 RetryWorker。
+//
+// nil 等同关闭重试 — enqueueRetry 会 noop 并打 warn。
+func (s *PaymentService) SetRetryQueue(q routing.RetryQueue) {
+	s.retryQueue = q
+}
+
+// FallbackRouter 把内部 FallbackRouter 暴给 main.go 用 OnChange 热更 fallback 配置。
+func (s *PaymentService) FallbackRouter() *routing.FallbackRouter {
+	return s.fallback
+}
+
 // SetRiskReviewStepUp 切换 verdict=REVIEW 时的处理策略。
 //   - enabled=false（默认）：REVIEW 等同 ALLOW 继续路由
 //   - enabled=true + payment_method 在 methods 里：返回 requires_action(three_d_secure)
@@ -924,4 +939,103 @@ func (s *PaymentService) enqueueRetry(ctx context.Context, req *channel.PaymentR
 		s.logger.Error("enqueue retry task failed",
 			zap.String("pi_id", req.PaymentIntentID), zap.Error(err))
 	}
+}
+
+// Execute 实现 routing.RetryExecutor。
+//
+// 由 routing.RetryWorker 周期调用，复用首发时的 idempotency_key 安全重放。
+// 风控决策不再二次执行（首发已过 risk.Screen），熔断状态实时取。
+//
+// 终态判定：
+//
+//	(1) 找到可用 fallback adapter 且 Charge 成功（result=succeeded / processing /
+//	    requires_action）→ done=true。
+//	(2) chain 用尽且都不可用 → done=true，errMsg="no_fallback_available"。
+//	    上层 RetryWorker 调 MarkSuccess 删队列。生产应同步通知 order-core 把 PI
+//	    标 failed（reason=channel_unavailable），让用户看到明确失败而不是永远 pending。
+//	(3) Charge 临时失败（unavailable / 5xx）→ done=false，让 worker 推下次。
+//	(4) attempt 超限（>= len(Backoffs)）→ done=true，errMsg="exhausted"。
+//	    避免任务无限存活占 outbox 行。
+func (s *PaymentService) Execute(ctx context.Context, task *routing.RetryTask) (done bool, errMsg string) {
+	// (4) 超过最大重试次数 → 终态
+	if task.Attempt >= len(routing.Backoffs) {
+		s.logger.Warn("retry task exhausted (max attempts reached)",
+			zap.String("pi_id", task.PaymentIntentID),
+			zap.Int("attempt", task.Attempt))
+		metrics.ChargeTotal.WithLabelValues(task.PaymentMethod, task.FailedAdapter, "retry_exhausted").Inc()
+		return true, "exhausted"
+	}
+
+	// 取 fallback chain，跳过已失败的 adapter，找下一个 cb.Allow + IsEnabled 的。
+	chain := s.fallback.GetFallbackChain(task.FailedAdapter, routing.FallbackInput{
+		Country:       task.Country,
+		PaymentMethod: task.PaymentMethod,
+		BIN:           task.BIN,
+		Currency:      task.Currency,
+	})
+	var nextAdapter string
+	for _, a := range chain {
+		if a == task.FailedAdapter {
+			continue
+		}
+		cb := s.breakers.Get(a)
+		if !cb.Allow() {
+			continue
+		}
+		if !s.channelOps.IsEnabled(a) {
+			continue
+		}
+		nextAdapter = a
+		break
+	}
+
+	// (2) 没可用 fallback → 终态
+	if nextAdapter == "" {
+		s.logger.Warn("retry task: no available fallback adapter",
+			zap.String("pi_id", task.PaymentIntentID),
+			zap.String("failed_adapter", task.FailedAdapter))
+		metrics.ChargeTotal.WithLabelValues(task.PaymentMethod, task.FailedAdapter, "no_fallback").Inc()
+		// TODO（出本会话之外）：通知 order-core 把 PI 置 failed。
+		// 当前依赖 order-core 自身的 Query 对账兜底（payment-channel 侧
+		// UNIQUE(idempotency_key) 保证状态一致）。
+		return true, "no_fallback_available"
+	}
+
+	// 调 channel client；用任务里保留的 IdempotencyKey 重放安全。
+	in := &channelv1.ChargeRequest{
+		Adapter:        nextAdapter,
+		PiId:           task.PaymentIntentID,
+		IdempotencyKey: task.IdempotencyKey,
+		Amount:         task.Amount,
+		Currency:       task.Currency,
+		Metadata:       task.Metadata,
+	}
+	resp, err := s.client.Charge(ctx, in)
+	cb := s.breakers.Get(nextAdapter)
+
+	// (3) 网络层错误：临时失败，让 worker 推下次。
+	if err != nil {
+		cb.RecordFailure()
+		metrics.ChargeTotal.WithLabelValues(task.PaymentMethod, nextAdapter, "retry_error").Inc()
+		s.logger.Warn("retry charge transport error",
+			zap.String("pi_id", task.PaymentIntentID),
+			zap.String("adapter", nextAdapter),
+			zap.Error(err))
+		return false, fmt.Sprintf("transport_error: %v", err)
+	}
+
+	result := resp.GetResult()
+	if resp.GetFailureCode() == "channel_unavailable" {
+		cb.RecordFailure()
+		metrics.ChargeTotal.WithLabelValues(task.PaymentMethod, nextAdapter, "retry_unavailable").Inc()
+		return false, "channel_unavailable"
+	}
+	cb.RecordSuccess()
+	metrics.ChargeTotal.WithLabelValues(task.PaymentMethod, nextAdapter, "retry_"+result).Inc()
+	s.logger.Info("retry charge succeeded",
+		zap.String("pi_id", task.PaymentIntentID),
+		zap.String("from_adapter", task.FailedAdapter),
+		zap.String("to_adapter", nextAdapter),
+		zap.String("result", result))
+	return true, ""
 }
