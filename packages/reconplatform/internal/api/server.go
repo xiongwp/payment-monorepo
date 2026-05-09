@@ -71,6 +71,7 @@ func New(loader *script.Loader, scriptDB *script.Store, searcher *store.Searcher
 func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/scripts", s.scriptsRoot)
 	mux.HandleFunc("/api/v1/scripts/", s.scriptsByID)
+	mux.HandleFunc("/api/v1/script/symbols", s.scriptSymbols)
 	mux.HandleFunc("/api/v1/search", s.search)
 	mux.HandleFunc("/api/v1/meta/tables", s.metaTables)
 	mux.HandleFunc("/api/v1/meta/schema/", s.metaSchema)
@@ -78,6 +79,29 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/cdc/status", s.cdcStatus)
 	mux.HandleFunc("/admin/", s.editorHTML)
 	mux.HandleFunc("/admin", s.editorHTML)
+}
+
+// scriptSymbols GET /api/v1/script/symbols
+//
+// 返完整的 Starlark 脚本环境符号清单：
+//
+//   - modules：所有 builtin / 动态注册的 host 包（脚本里 load("@<name>") 引入）
+//   - ctx：def check(ctx) 里 ctx 对象上可用的属性 / 方法
+//   - event：单个 event 对象的属性 / 方法
+//   - event_list：events.find() 返回的列表对象的属性 / 方法
+//
+// admin web 的 Monaco completionItemProvider 调本端点拿这份 schema，
+// 写脚本时 ctx. / event. / load("@") 处自动弹出补齐。
+//
+// 实现：每次请求重新 collect — engine 是只增不减的，反射开销小（典型 < 1ms）。
+// 如果 RegisterModule 频繁可加 cache，按需。
+func (s *Server) scriptSymbols(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	syms := script.CollectSymbols(s.loader.Engine())
+	writeJSON(w, http.StatusOK, syms)
 }
 
 // ─── /api/v1/scripts ─────────────────────────────────────────────

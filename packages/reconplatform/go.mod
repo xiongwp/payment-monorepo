@@ -8,8 +8,8 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/traefik/yaegi v0.16.1
 	github.com/twmb/franz-go v1.20.7
+	go.starlark.net v0.0.0-20240725214946-42030a7cedce
 	github.com/xiongwp/payment-util v0.0.0
 	go.uber.org/zap v1.27.0
 	gopkg.in/yaml.v3 v3.0.1

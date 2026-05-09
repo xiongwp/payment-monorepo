@@ -76,16 +76,14 @@ func main() {
 
 	searcher := store.NewSearcher(rdb)
 	scriptStore := script.NewStore(rdb)
-	loader := script.NewLoader()
-
-	// 真 yaegi 后端注入（替换默认 stub）。脚本可 import "recon" 用我们暴露的
-	// Context / Diff / Result / EventList。后续要扩展（注入业务自定义包）：
-	//   script.SetYaegiBackend(loader, custompack.Symbols)
-	script.SetYaegiBackend(loader)
-	if err := loader.EnsureYaegiAvailable(); err != nil {
-		logger.Fatal("yaegi probe failed", zap.Error(err))
-	}
-	logger.Info("yaegi backend wired")
+	// Starlark 引擎默认带 json / time / math / strings / regex / recon 6 个 builtin
+	// module，脚本通过 load("@<module>", "func") 引入。
+	// 运行时往 engine 上 RegisterModule(name, dict) 可以动态加新 host 包，
+	// admin web /api/v1/script/symbols 端点会自动反映新加包，前端补齐立即识别。
+	scriptEngine := script.NewEngine(0)
+	loader := script.NewLoader(scriptEngine)
+	logger.Info("starlark engine wired",
+		zap.Strings("builtin_modules", scriptEngine.ModuleNames()))
 
 	// ─── config-center client（prod fail-fast；dev 不可达 → nil 走 yaml fallback）──
 	ccCli := newConfigCenterClient(logger)

@@ -1,16 +1,14 @@
-// Package script 定义对账脚本的运行时 API（Context + Diff + Result）。
+// Package script 定义 Starlark 对账脚本的运行时 API（Context + Diff + Result）。
 //
 // 设计原则：
-//   - 暴露给脚本作者的接口尽量"业务化"——他们关心的是 order_id / pi_id /
-//     transaction_id 这些业务 key，不是 Redis key 长啥样。
-//   - 重 helper（Find / FindAll / Int / Str）放 EventList / Event 上，让
-//     脚本可以链式调用：
-//        events := ctx.GetByIndex("pi_id", piID)
-//        order := events.Find("order-core", "payment_intents")
-//        if order.Int("amount") != events.Find("...").Int("amount") { ... }
-//   - Result 结构尽量简单：脚本只关心 AddDiff(type, key, detail)。
+//   - 暴露给脚本作者的接口尽量"业务化" — 关心的是 order_id / pi_id /
+//     transaction_id 这些业务 key，不是 Redis key 长啥样
+//   - 重 helper（find / int / str）放 EventList / Event 上，让脚本可链式调用
+//   - 输出风格：def check(ctx) → return list[dict]
+//     脚本不用 ctx.add_diff(...) 副作用（虽然 Context 上仍保留这接口给老 yaegi 兼容）
 //
-// 运行时由 yaegi 解释器把脚本源码加载进来，调用 Check(ctx) 函数。
+// 运行时由 starlark_engine.go 的 Engine 把脚本源码编译 + 调 check(ctx)。
+
 package script
 
 import (
@@ -22,33 +20,27 @@ import (
 	"reconcile-system/internal/store"
 )
 
-// Context 单次脚本运行的上下文。脚本通过它访问数据 + 记录 diff。
+// Context 单次脚本运行的上下文。脚本通过 starlark_api.go 的 wrapContext 暴露给脚本侧。
 //
 // 不要把 Context 长期持有；每次 Run 时由 engine 构造新的实例。
 type Context struct {
 	// 内部依赖
 	searcher *store.Searcher
 	logger   Logger
-	sqlDBs   map[string]*sqlDBInternal // service/shard → DB（advanced API）
 
 	// 调用环境
 	Ctx       context.Context // Go context（含 deadline / trace_id）
 	StartedAt time.Time
 
 	// 给脚本读的元信息
-	Now    time.Time // 脚本开始执行时的 wall clock；脚本里所有"今天"判断都用这个
+	Now    time.Time         // 脚本开始执行时的 wall clock；脚本里所有"今天"判断都用这个
 	Params map[string]string // 调用方传的参数（cron / 手动触发可填）
-	Logger Logger // 暴露给脚本（脚本里 ctx.Logger.Info(...) 使用）
 
-	// 累计 diff（输出）
-	mu      sync.Mutex
-	diffs   []Diff
-	stats   Stats
+	// 累计 diff（输出，老风格 ctx.add_diff 兼容；新风格 def check return list 走 engine）
+	mu    sync.Mutex
+	diffs []Diff
+	stats Stats
 }
-
-// sqlDBInternal 跟 api_advanced.go 的 SQLDB 配套。
-// 让 advanced API 能访问 sqlDBs 而不破坏 Context 字段大小写。
-type sqlDBInternal = SQLDB
 
 // Logger 给脚本用的日志接口（默认包 zap，但脚本侧只看到 Info / Warn / Error 三个方法）。
 type Logger interface {
@@ -65,7 +57,6 @@ func NewContext(ctx context.Context, searcher *store.Searcher, logger Logger, pa
 	return &Context{
 		searcher:  searcher,
 		logger:    logger,
-		Logger:    logger, // 同步导出给脚本
 		Ctx:       ctx,
 		StartedAt: time.Now(),
 		Now:       time.Now(),
@@ -73,19 +64,17 @@ func NewContext(ctx context.Context, searcher *store.Searcher, logger Logger, pa
 	}
 }
 
-// ─── 数据访问 API（脚本主要用这些）──────────────────────────────
+// ─── 数据访问 API（脚本主要用这些） ──────────────────────────────
 
 // GetByIndex 用业务 key 跨服务关联：返回所有引用 (idxName, value) 的事件。
 //
-// 例：events := ctx.GetByIndex("pi_id", "pi_xxx")
-//     order := events.Find("order-core", "payment_intents")
-//     txn   := events.Find("accounting-system", "account_transaction")
-//     chg   := events.Find("payment-channel", "card_charges")
+// 脚本里通过 starlark wrapper：events = ctx.get_by_index("pi_id", "pi_xxx")
+// 然后 events.find("order-core", "payment_intents") / events.find("...") 等等。
 func (c *Context) GetByIndex(idxName, value string) store.EventList {
 	c.stats.IndexLookups++
 	out, err := c.searcher.SearchByIndex(c.Ctx, idxName, value)
 	if err != nil {
-		c.logger.Warn("GetByIndex failed", "idx", idxName, "value", value, "err", err.Error())
+		c.logger.Warn("get_by_index failed", "idx", idxName, "value", value, "err", err.Error())
 		c.stats.RedisErrors++
 		return nil
 	}
@@ -97,7 +86,7 @@ func (c *Context) Get(service, table, pk string) *store.Event {
 	c.stats.PointLookups++
 	e, err := c.searcher.GetEvent(c.Ctx, service, table, pk)
 	if err != nil {
-		c.logger.Warn("Get failed", "svc", service, "table", table, "pk", pk, "err", err.Error())
+		c.logger.Warn("get failed", "svc", service, "table", table, "pk", pk, "err", err.Error())
 		c.stats.RedisErrors++
 		return nil
 	}
@@ -106,51 +95,36 @@ func (c *Context) Get(service, table, pk string) *store.Event {
 
 // ScanIndex 列出某 idxName 下所有 value（带前缀过滤）。
 //
-// 例：piIDs := ctx.ScanIndex("pi_id", "pi_", 1000)
-// 适合"扫最近 N 条"这种全表对账场景；prefix 留空 = 扫所有。
+// 脚本里：pi_ids = ctx.scan_index("pi_id", "pi_", 1000)
+// 适合"扫最近 N 条"全表对账场景；prefix 留空 = 扫所有。
 func (c *Context) ScanIndex(idxName, prefix string, limit int) []string {
 	c.stats.Scans++
 	out, err := c.searcher.ScanIndex(c.Ctx, idxName, prefix, limit)
 	if err != nil {
-		c.logger.Warn("ScanIndex failed", "idx", idxName, "err", err.Error())
+		c.logger.Warn("scan_index failed", "idx", idxName, "err", err.Error())
 		c.stats.RedisErrors++
 		return nil
 	}
 	return out
 }
 
-// Schema 拿表的列定义（脚本里动态决定取哪个列时用，不常见）。
-func (c *Context) Schema(service, table string) string {
-	s, err := c.searcher.GetSchema(c.Ctx, service, table)
-	if err != nil {
-		return ""
-	}
-	return s
-}
-
-// ─── Diff 输出 API ────────────────────────────────────────────
+// ─── Diff 输出 API（兼容 yaegi 老风格 ctx.add_diff） ──────────────
 
 // Diff 一条对账差异。Type 是脚本作者自定义的分类 tag（"missing" / "amount_mismatch" 等）。
 type Diff struct {
 	Type   string `json:"type"`
-	Key    string `json:"key"`             // 关联的业务 key（pi_id / order_id / ...）
-	Want   any    `json:"want,omitempty"`  // 期望值
-	Got    any    `json:"got,omitempty"`   // 实际值
+	Key    string `json:"key"`              // 关联的业务 key（pi_id / order_id / ...）
+	Want   any    `json:"want,omitempty"`   // 期望值
+	Got    any    `json:"got,omitempty"`    // 实际值
 	Detail any    `json:"detail,omitempty"` // 任意附加信息
 }
 
-// AddDiff 累计一条 diff。脚本里反复调，最后由 engine 收集到 Result。
+// AddDiff 累计一条 diff。Starlark 新风格脚本通过 return list 输出，
+// 这个 API 留给少数副作用风格脚本兼容（不推荐）。
 func (c *Context) AddDiff(diffType, key string, detail any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.diffs = append(c.diffs, Diff{Type: diffType, Key: key, Detail: detail})
-}
-
-// AddCompare 对比类 diff 的快捷方式：amount 不一致等场景。
-func (c *Context) AddCompare(diffType, key string, want, got any) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.diffs = append(c.diffs, Diff{Type: diffType, Key: key, Want: want, Got: got})
 }
 
 // Diffs 返回所有累计的 diff（engine 调）。
@@ -164,12 +138,12 @@ func (c *Context) Diffs() []Diff {
 
 // Stats 内部计数（运行结束后写到 result 给 SLO / debug 用）。
 type Stats struct {
-	IndexLookups int `json:"index_lookups"`
-	PointLookups int `json:"point_lookups"`
-	Scans        int `json:"scans"`
-	RedisErrors  int `json:"redis_errors"`
-	SQLQueries   int `json:"sql_queries"`
-	HTTPCalls    int `json:"http_calls"`
+	IndexLookups int   `json:"index_lookups"`
+	PointLookups int   `json:"point_lookups"`
+	Scans        int   `json:"scans"`
+	RedisErrors  int   `json:"redis_errors"`
+	HTTPCalls    int   `json:"http_calls"`
+	ExecMillis   int64 `json:"exec_ms"`
 }
 
 // GetStats 拿当前累计统计（engine 调）。
@@ -194,19 +168,6 @@ type Result struct {
 	TriggeredBy string    `json:"triggered_by"` // "manual" / "cron" / "stream:<svc>:<table>"
 }
 
-// ─── time helpers ──────────────────────────────────────────────
-
-// Last24Hours 给脚本作者用的 helper（"我要扫最近 24h"）。
-// 返一个 (since, until) 对，脚本可以用来过滤 ctx.Now / event.Timestamp。
-func Last24Hours(now time.Time) (since, until time.Time) {
-	return now.Add(-24 * time.Hour), now
-}
-
-// LastNHours 同上，但指定 N。
-func LastNHours(now time.Time, n int) (since, until time.Time) {
-	return now.Add(time.Duration(-n) * time.Hour), now
-}
-
 // ─── helpers ────────────────────────────────────────────────────
 
 type noopLogger struct{}
@@ -215,7 +176,7 @@ func (noopLogger) Info(string, ...any)  {}
 func (noopLogger) Warn(string, ...any)  {}
 func (noopLogger) Error(string, ...any) {}
 
-// formatKV 把 ["k1","v1","k2","v2"] 拼成 "k1=v1 k2=v2"，给 stdout / 脚本 dump 看。
+// formatKV 留给将来若需要 grpc-style key=val log 拼接。
 func formatKV(kv []any) string {
 	if len(kv) == 0 {
 		return ""
@@ -229,3 +190,5 @@ func formatKV(kv []any) string {
 	}
 	return out
 }
+
+var _ = formatKV
