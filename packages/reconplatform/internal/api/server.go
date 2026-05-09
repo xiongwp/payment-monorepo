@@ -71,6 +71,7 @@ func New(loader *script.Loader, scriptDB *script.Store, searcher *store.Searcher
 func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/scripts", s.scriptsRoot)
 	mux.HandleFunc("/api/v1/scripts/", s.scriptsByID)
+	mux.HandleFunc("/api/v1/scripts/_dry_run", s.scriptDryRun)
 	mux.HandleFunc("/api/v1/script/symbols", s.scriptSymbols)
 	mux.HandleFunc("/api/v1/search", s.search)
 	mux.HandleFunc("/api/v1/meta/tables", s.metaTables)
@@ -79,6 +80,46 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/cdc/status", s.cdcStatus)
 	mux.HandleFunc("/admin/", s.editorHTML)
 	mux.HandleFunc("/admin", s.editorHTML)
+}
+
+// scriptDryRun POST /api/v1/scripts/_dry_run
+//
+// Body: { code: string, params?: map[string]string }
+//
+// 编译 + 执行 code（不保存到 Redis、不写历史结果），同步返 Result。
+//
+// 用途：admin web 编辑器 "Dry Run" 按钮 — 运营写完脚本，先试跑
+// 看 diff 输出是否符合预期，再决定保存 + 上线。
+//
+// 安全：5 分钟硬超时；脚本受 Starlark MaxExecutionSteps 上限保护；
+// dry-run 调用 ctx.scan_index / get_by_index 走真 Redis（读取只读，
+// 不会写到业务侧），可选未来加 sample_only flag 限定扫描行数。
+func (s *Server) scriptDryRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Code   string            `json:"code"`
+		Params map[string]string `json:"params"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(body.Code) == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("empty code"))
+		return
+	}
+	runCtx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	if body.Params == nil {
+		body.Params = map[string]string{}
+	}
+	body.Params["dry_run"] = "true"
+	sctx := script.NewContext(runCtx, s.searcher, s.zapAdapter(), body.Params)
+	res := s.loader.RunCode(sctx, "_dryrun", body.Code, "dry_run:"+actorOrUnknown(r))
+	writeJSON(w, http.StatusOK, res)
 }
 
 // scriptSymbols GET /api/v1/script/symbols
@@ -222,11 +263,14 @@ func (s *Server) scriptsByID(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := s.loader.Validate(body.Code); err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
-			return
+		// ValidateWithLint 同时返编译错 + lint issues。
+		// admin web 编辑器侧栏 marker 用 issues；ok 标志只看编译错。
+		compileErr, issues := s.loader.ValidateWithLint(body.Code)
+		resp := map[string]any{"ok": compileErr == nil, "issues": issues}
+		if compileErr != nil {
+			resp["error"] = compileErr.Error()
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		writeJSON(w, http.StatusOK, resp)
 
 	case action == "run" && r.Method == http.MethodPost:
 		// 同步运行；返完整 Result。

@@ -91,6 +91,8 @@ func (s *Store) SaveDef(ctx context.Context, id, name, code, schedule string, tr
 	if _, err := pipe.Exec(ctx); err != nil {
 		return 0, err
 	}
+	// 多实例热刷：Pub/Sub 广播让其他副本拉新版本。失败不阻塞返回。
+	s.PublishReload(ctx, id, "save", updatedBy, newVer)
 	return newVer, nil
 }
 
@@ -245,8 +247,12 @@ func (s *Store) DeleteDef(ctx context.Context, id, deletedBy string) error {
 	})
 	pipe.RPush(ctx, "recon:script:audit", auditEntry)
 	pipe.LTrim(ctx, "recon:script:audit", -1000, -1)
-	_, err := pipe.Exec(ctx)
-	return err
+	if _, err := pipe.Exec(ctx); err != nil {
+		return err
+	}
+	// 多实例热刷：通知其他副本卸载该脚本。
+	s.PublishReload(ctx, id, "delete", deletedBy, 0)
+	return nil
 }
 
 // SaveResult 写一次运行结果。

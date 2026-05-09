@@ -149,6 +149,13 @@ func main() {
 		}
 	}()
 
+	// ─── Reload watcher（多实例热刷 via Redis Pub/Sub）─────────
+	// admin 在副本 A 保存脚本 → store.PublishReload 广播 → 所有副本的
+	// watcher 收到事件 → 从 Redis 拉最新代码 → loader.Upsert，无需重启。
+	reloadWatcher := script.NewReloadWatcher(rdb, scriptStore, loader, logger)
+	go reloadWatcher.Run(ctx)
+	logger.Info("script reload watcher started")
+
 	// ─── HTTP server（admin web + API + metrics）──────────────
 	mux := http.NewServeMux()
 	apiSrv := api.New(loader, scriptStore, searcher, cdcMgr, logger)

@@ -96,6 +96,21 @@ const editorHTMLContent = `<!doctype html>
   .stat { background: #f3f4f6; padding: 8px; border-radius: 4px; }
   .stat .label { font-size: 10px; color: #6b7280; text-transform: uppercase; }
   .stat .value { font-size: 16px; font-weight: 500; color: #111827; }
+  /* version history modal */
+  .history-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; z-index: 110; }
+  .history-modal.open { display: flex; }
+  .history-modal-inner { background: #fff; border-radius: 8px; max-width: 1400px; max-height: 90vh; width: 95%; height: 85vh; margin: auto; padding: 16px; overflow: hidden; display: flex; flex-direction: column; }
+  .history-header { display: flex; align-items: center; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid #e5e7eb; }
+  .history-header h2 { font-size: 16px; flex: 1; }
+  .history-header .close-btn { background: #6b7280; color: #fff; border: 0; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
+  .history-body { display: grid; grid-template-columns: 220px 1fr; gap: 12px; flex: 1; min-height: 0; padding-top: 12px; }
+  .history-versions { overflow: auto; border: 1px solid #e5e7eb; border-radius: 4px; }
+  .history-versions .ver { padding: 10px 12px; cursor: pointer; border-bottom: 1px solid #f3f4f6; }
+  .history-versions .ver:hover { background: #f3f4f6; }
+  .history-versions .ver.active { background: #e0f2fe; border-left: 3px solid #1677ff; }
+  .history-versions .ver .num { font-weight: 500; }
+  .history-versions .ver .meta { font-size: 11px; color: #6b7280; margin-top: 2px; }
+  .history-diff { border: 1px solid #e5e7eb; border-radius: 4px; overflow: hidden; }
 </style>
 </head>
 <body>
@@ -103,7 +118,9 @@ const editorHTMLContent = `<!doctype html>
   <h1>reconplatform · 对账脚本</h1>
   <div class="nav">
     <button class="secondary" id="btnValidate">语法检查 (Cmd+K)</button>
-    <button id="btnRun">试运行 (Cmd+R)</button>
+    <button class="secondary" id="btnDryRun">Dry Run (Cmd+D)</button>
+    <button class="secondary" id="btnHistory">历史版本</button>
+    <button id="btnRun">运行已保存版本 (Cmd+R)</button>
     <button id="btnSave">保存 (Cmd+S)</button>
   </div>
 </header>
@@ -145,6 +162,21 @@ const editorHTMLContent = `<!doctype html>
     </div>
     <div id="tabMeta" style="display:none" class="meta-browser">
       <div id="tableList"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 历史版本 diff modal -->
+<div class="history-modal" id="historyModal">
+  <div class="history-modal-inner">
+    <div class="history-header">
+      <h2>版本历史 — <span id="historyTitle"></span></h2>
+      <span style="color:#6b7280;font-size:12px">左：选中历史版本　→　右：当前编辑器代码</span>
+      <button class="close-btn" id="btnCloseHistory">关闭</button>
+    </div>
+    <div class="history-body">
+      <div class="history-versions" id="historyList"></div>
+      <div class="history-diff" id="historyDiff"></div>
     </div>
   </div>
 </div>
@@ -257,8 +289,34 @@ async function newScript() {
 async function validate() {
   const code = editorValue.get();
   const r = await apiPost(currentID ? '/api/v1/scripts/' + currentID + '/validate' : '/api/v1/scripts/_validate', { code });
-  if (r.ok) status('✓ 语法 OK', 'ok');
-  else      status('✗ ' + (r.error || JSON.stringify(r)), 'error');
+  // 把后端 lint issues 转 monaco markers，左侧栏直接显示
+  applyLintMarkers(r.issues || []);
+  if (r.ok) {
+    const warns = (r.issues || []).filter(i => i.severity !== 'info').length;
+    status(warns ? '✓ 语法 OK · ' + warns + ' 条 lint 提示' : '✓ 语法 OK', 'ok');
+  } else {
+    status('✗ ' + (r.error || JSON.stringify(r)), 'error');
+  }
+}
+
+// applyLintMarkers 把后端 LintIssue 转 monaco IMarkerData 显示在编辑器左侧栏。
+//   error → 红，warn → 黄，info → 蓝
+function applyLintMarkers(issues) {
+  if (!editor || !window.monaco) return;
+  const sevMap = {
+    error: monaco.MarkerSeverity.Error,
+    warn:  monaco.MarkerSeverity.Warning,
+    info:  monaco.MarkerSeverity.Info,
+  };
+  const markers = issues.map(i => ({
+    severity: sevMap[i.severity] || monaco.MarkerSeverity.Info,
+    message:  '[' + i.code + '] ' + i.message,
+    startLineNumber: i.line || 1,
+    startColumn:     i.col || 1,
+    endLineNumber:   i.line || 1,
+    endColumn:       (i.col || 1) + (i.snippet ? i.snippet.length : 1),
+  }));
+  monaco.editor.setModelMarkers(editor.getModel(), 'recon-lint', markers);
 }
 
 async function save() {
@@ -284,6 +342,22 @@ async function runScript() {
   if (r.error) { status('运行失败: ' + r.error, 'error'); return; }
   showResultModal(r);
   status(r.status === 'success' ? '✓ 运行成功，差异 ' + (r.diffs||[]).length + ' 条' : '✗ ' + r.error, r.status === 'success' ? 'ok' : 'error');
+}
+
+// dryRun: 把编辑器当前未保存代码丢给 /scripts/_dry_run，不写 Redis 不污染历史。
+// 用途：写完一段先看 diff 输出符不符合预期，再决定保存。
+async function dryRun() {
+  const code = editorValue.get();
+  if (!code.trim()) { status('编辑器为空', 'error'); return; }
+  status('Dry Run 中…');
+  const r = await apiPost('/api/v1/scripts/_dry_run', { code });
+  if (r.error && !r.status) { status('Dry Run 失败: ' + r.error, 'error'); return; }
+  showResultModal({ ...r, scriptID: '_dryrun' });
+  if (r.status === 'success') {
+    status('✓ Dry Run 完成，差异 ' + (r.diffs||[]).length + ' 条 (未保存)', 'ok');
+  } else {
+    status('✗ Dry Run: ' + (r.error || ''), 'error');
+  }
 }
 
 function showResultModal(r) {
@@ -376,13 +450,104 @@ document.querySelectorAll('.right-tabs button').forEach(b => b.onclick = () => {
 document.getElementById('btnNew').onclick = newScript;
 document.getElementById('btnSave').onclick = save;
 document.getElementById('btnRun').onclick = runScript;
+document.getElementById('btnDryRun').onclick = dryRun;
 document.getElementById('btnValidate').onclick = validate;
 document.getElementById('btnSearch').onclick = searchEvents;
+document.getElementById('btnHistory').onclick = openHistory;
+document.getElementById('btnCloseHistory').onclick = () => {
+  document.getElementById('historyModal').classList.remove('open');
+  if (diffEditor) { diffEditor.dispose(); diffEditor = null; }
+};
+
+// ─── 版本历史 + diff view ────────────────────────────────────
+//
+// 复用后端已有端点：
+//   GET /api/v1/scripts/:id/versions    返 [{version, saved_at, updated_by}]
+//   GET /api/v1/scripts/:id/versions/:n 返 {version, code, ...}
+//
+// 用 monaco.editor.createDiffEditor 双栏对比：
+//   左 = 选中的历史版本     右 = 当前编辑器代码（live；用户没保存的改动也能看出来）
+let diffEditor = null;            // monaco diff editor 实例
+let historyVersions = [];          // 缓存当前脚本的版本列表
+
+async function openHistory() {
+  if (!currentID) { status('请先选中或保存一个脚本', 'error'); return; }
+  document.getElementById('historyTitle').textContent = currentID;
+  const modal = document.getElementById('historyModal');
+  modal.classList.add('open');
+
+  try {
+    const r = await api('/api/v1/scripts/' + currentID + '/versions');
+    historyVersions = r.versions || [];
+  } catch (e) {
+    historyVersions = [];
+  }
+  renderVersionList();
+  // 默认选最新历史版本（list[0]）vs 当前编辑器
+  if (historyVersions.length > 0) {
+    selectVersion(historyVersions[0].version);
+  } else {
+    document.getElementById('historyDiff').innerHTML =
+      '<p style="padding:20px;color:#6b7280;text-align:center">暂无历史版本（首次保存后才会有）</p>';
+  }
+}
+
+function renderVersionList() {
+  const list = document.getElementById('historyList');
+  if (!historyVersions.length) {
+    list.innerHTML = '<p style="padding:12px;color:#6b7280">无历史版本</p>';
+    return;
+  }
+  list.innerHTML = historyVersions.map(v =>
+    '<div class="ver" data-ver="' + v.version + '">' +
+    '<div class="num">v' + v.version + '</div>' +
+    '<div class="meta">' + (v.updated_by || '?') + ' · ' +
+    (v.saved_at ? new Date(v.saved_at).toLocaleString() : '') + '</div></div>'
+  ).join('');
+  list.querySelectorAll('.ver').forEach(el => {
+    el.onclick = () => selectVersion(parseInt(el.dataset.ver, 10));
+  });
+}
+
+async function selectVersion(ver) {
+  // 高亮选中
+  document.querySelectorAll('.history-versions .ver').forEach(el => {
+    el.classList.toggle('active', parseInt(el.dataset.ver, 10) === ver);
+  });
+  // 拉版本详情
+  let oldCode = '';
+  try {
+    const r = await api('/api/v1/scripts/' + currentID + '/versions/' + ver);
+    oldCode = r.code || r.Code || '';
+  } catch (e) {
+    oldCode = '// 拉取版本失败: ' + e;
+  }
+  // 当前编辑器代码（live）作为对照
+  const newCode = editorValue.get();
+  // 销毁前一个 diff editor 防内存泄漏
+  if (diffEditor) { diffEditor.dispose(); diffEditor = null; }
+  // 起新 diff editor
+  diffEditor = monaco.editor.createDiffEditor(document.getElementById('historyDiff'), {
+    language: 'python',
+    theme: 'vs',
+    fontSize: 12,
+    automaticLayout: true,
+    renderSideBySide: true,
+    readOnly: true,
+    originalEditable: false,
+    minimap: { enabled: false },
+  });
+  diffEditor.setModel({
+    original: monaco.editor.createModel(oldCode, 'python'),
+    modified: monaco.editor.createModel(newCode, 'python'),
+  });
+}
 
 document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); save(); }
   if ((e.metaKey || e.ctrlKey) && e.key === 'r') { e.preventDefault(); runScript(); }
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); validate(); }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'd') { e.preventDefault(); dryRun(); }
 });
 
 // ─── Monaco 初始化 + Starlark 自动补齐 ────────────────────────────────
@@ -411,6 +576,85 @@ require(['vs/editor/editor.main'], async function () {
   // python tokenizer 的 def / for / if / dict / list / 字符串 / 注释规则
   // 都对得上。未来若需要更精细（区分 Starlark 不允许的 class / yield 等），
   // 再注册独立 Monarch tokens provider。
+  // ── hover provider ────────────────────────────────────────
+  // 把 /symbols 端点的 type 注释做成光标悬停弹窗。
+  //
+  //   ctx       → "recon.Context"
+  //   ctx.now   → "string (RFC3339)"
+  //   ctx.scan_index → "method (idx_name, prefix='', limit=1000) → list[str]"
+  //   load("@json", "encode") 中的 encode → "builtin_function_or_method"
+  monaco.languages.registerHoverProvider('python', {
+    provideHover: (model, position) => {
+      const word = model.getWordAtPosition(position);
+      if (!word) return null;
+      const lineText = model.getLineContent(position.lineNumber);
+      const before = lineText.slice(0, word.startColumn - 1);
+
+      // 1) ctx.<word> → 找 ctx symbol
+      if (/\bctx\.$/.test(before)) {
+        const sym = (symbolsCache.ctx || []).find(c => c.name === word.word);
+        if (sym) return makeHover(sym, 'ctx');
+      }
+
+      // 2) word 本身就是 ctx
+      if (word.word === 'ctx') {
+        return { range: rangeOfWord(word, position), contents: [
+          { value: '**ctx** — `recon.Context`' },
+          { value: '当前对账脚本运行的上下文。属性：' + (symbolsCache.ctx || []).map(s => '`' + s.name + '`').join(', ') },
+        ]};
+      }
+
+      // 3) 启发式 var.<word>：events / event 类对象
+      const varDot = /(\w+)\.$/.exec(before);
+      if (varDot) {
+        const v = varDot[1];
+        let pool = null, ownerType = '';
+        if (v === 'events' || v.endsWith('_events')) {
+          pool = symbolsCache.event_list || []; ownerType = 'recon.EventList';
+        } else if (v === 'event' || ['order', 'txn', 'chg', 'pi', 'charge', 'transaction'].indexOf(v) >= 0) {
+          pool = symbolsCache.event || []; ownerType = 'recon.Event';
+        }
+        if (pool) {
+          const sym = pool.find(s => s.name === word.word);
+          if (sym) return makeHover(sym, ownerType);
+        }
+      }
+
+      // 4) load("@<word>") → 模块名提示
+      if (/load\s*\(\s*"@$/.test(before)) {
+        const mod = (symbolsCache.modules || []).find(m => m.name === word.word);
+        if (mod) {
+          return { range: rangeOfWord(word, position), contents: [
+            { value: '**module @' + mod.name + '** — ' + (mod.members || []).length + ' 个成员' },
+            { value: (mod.members || []).map(m => '- `' + m.name + '` (' + m.type + ')').join('\n') },
+          ]};
+        }
+      }
+
+      // 5) load("@mod", "<word>") → module 成员
+      const loadMember = /load\s*\(\s*"@([a-zA-Z0-9_]+)"\s*,\s*"$/.exec(before);
+      if (loadMember) {
+        const mod = (symbolsCache.modules || []).find(m => m.name === loadMember[1]);
+        if (mod) {
+          const sym = (mod.members || []).find(s => s.name === word.word);
+          if (sym) return makeHover(sym, '@' + mod.name);
+        }
+      }
+      return null;
+    },
+  });
+  function rangeOfWord(word, pos) {
+    return new monaco.Range(pos.lineNumber, word.startColumn, pos.lineNumber, word.endColumn);
+  }
+  function makeHover(sym, owner) {
+    return {
+      // 不传 range → monaco 用当前 word 自动算高亮
+      contents: [
+        { value: '**' + sym.name + '** — `' + sym.type + '`' + (owner ? '  \n_owner: `' + owner + '`_' : '') },
+      ],
+    };
+  }
+
   // ── completion provider ───────────────────────────────────
   monaco.languages.registerCompletionItemProvider('python', {
     triggerCharacters: ['.', '"', '@', '('],
