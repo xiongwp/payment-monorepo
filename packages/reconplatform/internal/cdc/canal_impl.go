@@ -343,6 +343,13 @@ func newRealCanal(src Source, h *canalHandler, instanceAddr string,
 	cfg.Flavor = "mysql"
 	cfg.Charset = "utf8mb4"
 
+	// 跳过 mysqldump 全量快照：reconplatform 只需要追 binlog 实时事件，
+	// 不需要历史数据回灌（启动时位点为空 = 从 latest 起跑）。
+	// 不关掉的话 canal.NewCanal 会期望 mysqldump 在 PATH，Alpine
+	// 镜像不带这个二进制，error: 'mysqldump' executable file not found in $PATH。
+	// 设空字符串显式禁 dump，纯订 binlog 模式。
+	cfg.Dump.ExecutionPath = ""
+
 	// 只订阅指定 schema + table（canal 接受正则）
 	if len(src.Schemas) > 0 {
 		cfg.IncludeTableRegex = make([]string, 0, len(src.Schemas))
