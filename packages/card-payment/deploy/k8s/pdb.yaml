@@ -1,0 +1,10 @@
+# PDB: card-payment Authorize 是关键资金路径，要求滚动 / drain 期间至少 3 个 ready。
+# 比通用服务高一档（2→3），因为单 pod 并发 ~256 in-flight authorize，
+# 一次 evict 损 1/N 容量；3 是 PCI-scope 服务最低高可用门槛（多 AZ 1 故障）。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: card-payment
+spec:
+  minAvailable: 3
+  selector: { matchLabels: { app: card-payment } }

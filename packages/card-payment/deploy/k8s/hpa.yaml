@@ -1,0 +1,55 @@
+# HPA: card-payment Authorize 路径扩容策略。
+#
+# 容量分析（参考 docs/CAPACITY_10K_TPS.md §2.3）：
+#   - 每 Authorize 调 KMS Decrypt + 卡组织网络 RTT ~1s
+#   - bulkhead per-merchant 256 并发 → 头部 merchant 单实例 ~256 在飞
+#   - 10K TPS × 1s avg = 10K 在飞 → 至少 ~40 实例（10K / 256）
+#
+# 关键指标：
+#   - paycard_authorize_duration_seconds P99 < 5s SLO
+#   - paycard_bulkhead_active / paycard_bulkhead_capacity > 80% 触发扩容
+#   - 卡组织 latency P99 是外部依赖（不可控），扩 pod 不影响这部分
+#
+# 安全：每实例 250m CPU 起步可承载 ~250 in-flight authorize；超过 80% bulkhead
+# 应该立刻扩容防 ResourceExhausted。
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: card-payment
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: card-payment
+  minReplicas: 5    # 卡支付走 PCI 链路，多 AZ + 起步给足，避免冷启抖动
+  maxReplicas: 50
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600   # 10min 防抖：authorize 是关键资金路径，
+                                         # 不允许频繁缩容引起 in-flight 中断
+      policies:
+        - { type: Percent, value: 25, periodSeconds: 60 }   # 每分钟最多缩 25%
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - { type: Percent, value: 100, periodSeconds: 30 }
+        - { type: Pods,    value: 5,   periodSeconds: 30 }
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 65 }   # 65% 留 35% 余量
+                                                                # 给 fraud screen / KMS Decrypt 突发
+    - type: Resource
+      resource:
+        name: memory
+        target: { type: Utilization, averageUtilization: 80 }
+    # bulkhead 饱和度：饱和 > 80% 时扩容。需要 prometheus-adapter 注册：
+    # paycard_bulkhead_active / paycard_bulkhead_capacity → ratio
+    # - type: Pods
+    #   pods:
+    #     metric:
+    #       name: paycard_bulkhead_saturation_ratio
+    #     target:
+    #       type: AverageValue
+    #       averageValue: "0.8"

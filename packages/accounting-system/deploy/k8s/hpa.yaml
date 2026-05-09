@@ -1,0 +1,57 @@
+# HPA: accounting-system 复式记账核心扩容策略。
+#
+# 容量分析：
+#   - 单实例可支撑 ~5K booking/sec（试算余额需串行 + outbox 写入）
+#   - 10K TPS 需要 ≥3 实例 + 并发 day-cut worker
+#   - 不全等于无状态扩容：BufferedBalanceWorker 是 leader-only（etcd 选主），
+#     从节点缩容不影响吞吐
+#
+# 关键指标：
+#   - accounting_inflight_bookings 是先行指标
+#   - accounting_db_pool_in_use_conns / max 反映 DB 端饱和度
+#   - accounting_outbox_pending_records 持续 > 10 触发告警
+#
+# 注意：accounting 写 path 频繁触碰 hot row（user 主账户 row lock），
+# 单纯堆 pod 不一定线性扩；需要监控 deadlock_retry_exhausted。
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: accounting-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: accounting-system
+  minReplicas: 3
+  maxReplicas: 20   # 受 DB 连接池上限约束（每 pod ~ 30 conn × 20 = 600）
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies:
+        - { type: Percent, value: 25, periodSeconds: 60 }
+    scaleUp:
+      stabilizationWindowSeconds: 60   # 60s 防 outbox lag 短瞬尖峰误扩
+      policies:
+        - { type: Percent, value: 50, periodSeconds: 30 }
+        - { type: Pods,    value: 3,   periodSeconds: 30 }
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+    - type: Resource
+      resource:
+        name: memory
+        target: { type: Utilization, averageUtilization: 80 }
+    # outbox pending 持续高（> 10）作为前导指标 — 写延迟在堆积。
+    # - type: Object
+    #   object:
+    #     metric:
+    #       name: accounting_outbox_pending_records
+    #     describedObject:
+    #       apiVersion: apps/v1
+    #       kind: Deployment
+    #       name: accounting-system
+    #     target:
+    #       type: Value
+    #       value: "20"   # 平均 pending > 20 → 扩容

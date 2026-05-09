@@ -1,0 +1,9 @@
+# PDB: card-center 触碰 PAN 明文 + 维护审计哈希链，drain 必须有继位副本接 prev_hash。
+# minAvailable: 3 与 card-payment 对齐（PCI scope 服务最低高可用门槛）。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: card-center
+spec:
+  minAvailable: 3
+  selector: { matchLabels: { app: card-center } }

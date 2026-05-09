@@ -1,0 +1,10 @@
+# PDB: api-gateway 滚动 / drain 期间至少 2 个 ready 副本。
+# 配合 deployment 的 maxUnavailable=0 + maxSurge=1 滚动策略。
+# 入口服务被 evict 时影响整个平台，给 minAvailable: 2 保 50% 容量底线。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-gateway
+spec:
+  minAvailable: 2
+  selector: { matchLabels: { app: api-gateway } }

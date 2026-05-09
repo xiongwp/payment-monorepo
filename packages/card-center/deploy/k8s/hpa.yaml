@@ -1,0 +1,49 @@
+# HPA: card-center 扩容策略。
+#
+# 容量分析：
+#   - card-center 是 PCI vault 单跳路径核心，负责 Tokenize / Detokenize
+#   - 调 kms-manage 解密 PAN -> KMS HSM 是关键依赖
+#   - 加 Redis cache 后单实例 Decrypt 可承载 ~3K ops/sec（80% 命中）
+#
+# 安全：card-center 触碰 PAN 明文，缩容必须 drain → 不允许 in-flight Decrypt
+# 中断（KMS 调用 + 审计链一致性）。
+#
+# minReplicas: 5（PCI scope 服务高可用要求；3 节点 1 故障还能扛 50% 流量）
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: card-center
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: card-center
+  minReplicas: 5
+  maxReplicas: 30
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies:
+        - { type: Percent, value: 20, periodSeconds: 60 }   # 缩容慢 — 避免审计链 prev_hash 重续抖动
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - { type: Percent, value: 100, periodSeconds: 30 }
+        - { type: Pods,    value: 4,   periodSeconds: 30 }
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 65 }
+    - type: Resource
+      resource:
+        name: memory
+        target: { type: Utilization, averageUtilization: 80 }
+    # KMS RPC P99 latency 可作为先行指标（HSM 接近饱和时延迟翘起来）
+    # - type: Pods
+    #   pods:
+    #     metric:
+    #       name: paycard_kms_rpc_duration_seconds_p99
+    #     target:
+    #       type: AverageValue
+    #       averageValue: "0.5"  # 500ms 触发扩容

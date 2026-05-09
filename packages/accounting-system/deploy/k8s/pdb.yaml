@@ -1,0 +1,9 @@
+# PDB: accounting-system 复式记账核心，BufferedBalanceWorker 是 leader-only。
+# minAvailable: 2 保多 AZ 失败容忍，leader 失活后能秒级重选（etcd lease）。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: accounting-system
+spec:
+  minAvailable: 2
+  selector: { matchLabels: { app: accounting-system } }
