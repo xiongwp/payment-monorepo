@@ -2,12 +2,20 @@
 #
 # v2 升级：原 demo（hardcoded localhost）改为读 RECON_* 环境变量 + config-center
 # 拉规则。共享 payment-stack 网络让 reconplatform 容器能 DNS 解析 config-center。
-version: "3.8"
+#
+# version: "3.8" 在新 compose 已 obsolete，去掉避免 warning。
 
 networks:
   default:
     name: ${SHARED_DB_NETWORK:-payment-stack}
     external: true
+
+# BuildKit secret：Dockerfile 里 git clone fallback 用 GITHUB_TOKEN（私仓兜底）。
+# 没有 GITHUB_TOKEN host env 时本字段 required: false 让 build 不报错；
+# 有公仓或本地 additional_contexts 注入时也不需要 token，secret 留空即可。
+secrets:
+  GITHUB_TOKEN:
+    environment: GITHUB_TOKEN
 
 services:
   recon-kafka:
