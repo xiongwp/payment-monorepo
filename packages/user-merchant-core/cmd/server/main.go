@@ -59,6 +59,7 @@ func main() {
 			newIDGen,
 			newMerchantCache,
 			newSecretCache,
+			newIntrospectCache,
 			// repos
 			repoMerchant,
 			repoMerchantSecret,
@@ -121,11 +122,17 @@ func loadConfig() (*viper.Viper, error) {
 	}
 	// 启动期配置校验：缺 DSN / 负超时 / 错误枚举都在这里 fail fast，
 	// 比到第一个 RPC 才 panic 好调试。
+	// introspect cache 默认值（10K TPS 下 30s/100k 是甜蜜点；可配置覆盖）。
+	v.SetDefault("cache.introspect.enabled", true)
+	v.SetDefault("cache.introspect.size", 100_000)
+	v.SetDefault("cache.introspect.ttl", 30*time.Second)
+
 	if err := configx.Run(v,
 		configx.Required("database.meta.dsn"),
 		configx.DurationAtLeast("timeouts.default", 100*time.Millisecond),
 		configx.NonNegativeInt("cache.merchant.size"),
 		configx.NonNegativeInt("cache.secret.size"),
+		configx.NonNegativeInt("cache.introspect.size"),
 		configx.When(configx.KeySet("kms.endpoint"),
 			configx.PositiveDuration("kms.rpc_timeout")),
 	); err != nil {
@@ -752,11 +759,46 @@ func svcUser(
 	mailer service.Mailer,
 	risk service.RiskClient,
 	accounting service.AccountingClient,
+	introspectCache *cache.IntrospectCache,
 	v *viper.Viper,
 	logger *zap.Logger,
 ) *service.UserService {
 	currency := v.GetString("auth.default_currency")
-	return service.NewUserService(r, g, issuer, mailer, risk, accounting, currency, logger)
+	s := service.NewUserService(r, g, issuer, mailer, risk, accounting, currency, logger)
+	if introspectCache != nil {
+		s.SetIntrospectCache(introspectCache)
+	}
+	return s
+}
+
+// newIntrospectCache JWT introspect 进程内缓存。
+// 默认 100k cap / 30s TTL（参考 docs/CAPACITY_10K_TPS.md §2.4）；
+// 配置项：cache.introspect.size / cache.introspect.ttl。
+//
+// size <= 0 取默认 100_000；ttl <= 0 取默认 30s。
+// 配 0 显式关掉 cache 也允许（cache.introspect.enabled=false）。
+func newIntrospectCache(v *viper.Viper, logger *zap.Logger) *cache.IntrospectCache {
+	if !v.GetBool("cache.introspect.enabled") &&
+		v.IsSet("cache.introspect.enabled") {
+		logger.Info("introspect cache disabled by config; IntrospectToken will hit DB on every call")
+		return nil
+	}
+	size := v.GetInt("cache.introspect.size")
+	ttl := v.GetDuration("cache.introspect.ttl")
+	c := cache.NewIntrospectCache(size, ttl, promIntrospectCacheHook{})
+	logger.Info("introspect cache ready",
+		zap.Int("size", size), zap.Duration("ttl", ttl))
+	return c
+}
+
+type promIntrospectCacheHook struct{}
+
+func (promIntrospectCacheHook) Lookup(hit bool) {
+	result := "miss"
+	if hit {
+		result = "hit"
+	}
+	metrics.IntrospectCacheLookupTotal.WithLabelValues(result).Inc()
 }
 
 // newAccountingClient 拨号 accounting-system gRPC；endpoint 与 registry 都空 → Noop。

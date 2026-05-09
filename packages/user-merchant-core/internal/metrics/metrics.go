@@ -53,6 +53,16 @@ var MerchantSecretPlaintextCacheLookupTotal = prometheus.NewCounterVec(prometheu
 	Help: "Merchant secret plaintext cache lookups by result (hit/miss)",
 }, []string{"result"})
 
+// IntrospectCacheLookupTotal IntrospectToken 进程内缓存命中情况。
+// 期望命中率 90%+ 才算真省 DB；< 70% 表示 TTL 太短或 cap 太小。
+//
+// 关联告警：cache hit rate < 70% 持续 15min → P2（容量告警），
+// 见 deploy/alertmanager/payment-rules.yml。
+var IntrospectCacheLookupTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "user_merchant_introspect_cache_lookup_total",
+	Help: "IntrospectToken cache lookups by result (hit/miss)",
+}, []string{"result"})
+
 // KMSRPCTotal / KMSRPCDuration 追踪每次调 kms-manage 的成功率和耗时；
 // 线上 kms-manage 抖动会直接影响 Put/BulkGetPlaintext 的 p99，必须可观测。
 var KMSRPCTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -90,6 +100,7 @@ func Register() {
 		MerchantCacheLookupTotal,
 		MerchantCacheSize,
 		MerchantSecretPlaintextCacheLookupTotal,
+		IntrospectCacheLookupTotal,
 		KMSRPCTotal,
 		KMSRPCDuration,
 		GRPCRequestTotal,
