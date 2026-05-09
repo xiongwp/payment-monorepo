@@ -4,7 +4,7 @@ package api
 //
 // 三栏布局：
 //   - 左：脚本列表（CRUD）
-//   - 中：CodeMirror Go 编辑器（语法高亮 + autocomplete from /api/v1/meta）
+//   - 中：Monaco editor（Starlark 语法高亮 + 自动补齐）
 //   - 右：实时搜索面板（输入 pi_id=xxx 立即返跨服务关联事件）
 //
 // 顶部工具条：
@@ -13,13 +13,24 @@ package api
 //   - 保存（PUT /scripts/<id>）
 //   - 历史结果（GET /scripts/<id>/results）
 //
-// 资源全部用 CDN（codemirror 6 + alpine.js）让单进程二进制不带前端构建链。
+// 自动补齐由 /api/v1/script/symbols 端点驱动：
+//   - load("@<TAB>          → 已注册的所有 module
+//   - load("@json", "<TAB>  → 该 module 的成员
+//   - ctx.<TAB>             → ctx 对象上的属性 / 方法
+//   - .find(/.int(/.str(    → 配套提示参数
+//
+// engine.RegisterModule 动态加新包后，编辑器下次加载会立刻识别（/symbols 反射）。
+//
+// 资源全部用 CDN（Monaco editor），单进程二进制不带前端构建链。
 const editorHTMLContent = `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>reconplatform · 对账脚本编辑器</title>
+<!-- Monaco editor: AMD loader 拉 0.46 (LTS-ish)。版本固定，避免 CDN 兜底劣化。-->
+<link rel="stylesheet" data-name="vs/editor/editor.main"
+      href="https://cdn.jsdelivr.net/npm/monaco-editor@0.46.0/min/vs/editor/editor.main.css">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 13px; color: #1f2937; background: #f3f4f6; }
@@ -114,28 +125,7 @@ const editorHTMLContent = `<!doctype html>
       <label>事件触发:</label>
       <input class="cron" id="metaTriggers" placeholder='["svc:table"]' style="width:200px">
     </div>
-    <textarea class="code" id="codeEditor" placeholder="// 在此处编写对账脚本
-//
-// package main
-//
-// import (
-//     &quot;fmt&quot;
-//     &quot;recon&quot;
-// )
-//
-// func Check(ctx *recon.Context) (*recon.Result, error) {
-//     piIDs := ctx.ScanIndex(&quot;pi_id&quot;, &quot;&quot;, 1000)
-//     for _, pi := range piIDs {
-//         events := ctx.GetByIndex(&quot;pi_id&quot;, pi)
-//         order := events.Find(&quot;order-core&quot;, &quot;payment_intents&quot;)
-//         chg   := events.Find(&quot;payment-channel&quot;, &quot;card_charges&quot;)
-//         if order.Int(&quot;amount&quot;) != chg.Int(&quot;amount&quot;) {
-//             ctx.AddCompare(&quot;amount_mismatch&quot;, pi, order.Int(&quot;amount&quot;), chg.Int(&quot;amount&quot;))
-//         }
-//     }
-//     return &amp;recon.Result{}, nil
-// }
-"></textarea>
+    <div class="code" id="editorRoot" style="flex:1;width:100%;background:#fafafa;"></div>
     <div class="status-bar" id="statusBar">就绪</div>
   </div>
 
@@ -169,7 +159,11 @@ const editorHTMLContent = `<!doctype html>
   </div>
 </div>
 
+<!-- Monaco AMD loader：用 require() 加载 vs/editor/editor.main 后才能 monaco.* -->
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.46.0/min/vs/loader.js"></script>
 <script>
+require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.46.0/min/vs' } });
+
 const api = path => fetch(path).then(r => r.json());
 const apiPost = (path, body) => fetch(path, {
   method:'POST', headers:{'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined,
@@ -180,6 +174,43 @@ const apiPut  = (path, body) => fetch(path, {
 const apiDel  = path => fetch(path, {method:'DELETE'}).then(r => r.json());
 
 let currentID = null;
+let editor = null;            // monaco editor 实例
+let symbolsCache = null;       // /api/v1/script/symbols 返回的 schema
+const editorReady = new Promise(resolve => { window._editorResolve = resolve; });
+
+// editorValue: 统一抽象 monaco.getValue / setValue，避免每处都 if(editor)
+const editorValue = {
+  get: () => editor ? editor.getValue() : '',
+  set: (v) => { if (editor) editor.setValue(v || ''); },
+};
+
+// 默认 starter Starlark 脚本（新建脚本时填充）
+const starterStarlark = ` + "`" + `# 对账脚本入口：def check(ctx) → return [diff, ...]
+#
+# 引入包：
+#   load("@json", "encode", "decode")
+#   load("@time", "now", "parse_time")
+#   load("@strings", "split", "to_lower")
+#   load("@regex", "match")
+#   load("@recon", "last_n_hours")
+
+def check(ctx):
+    diffs = []
+    pi_ids = ctx.scan_index("pi_id", "", 1000)
+    for pi in pi_ids:
+        events = ctx.get_by_index("pi_id", pi)
+        order = events.find("order-core", "payment_intents")
+        chg = events.find("payment-channel", "card_charges")
+        if order and chg and order.int("amount") != chg.int("amount"):
+            diffs.append({
+                "type": "amount_mismatch",
+                "key": pi,
+                "want": order.int("amount"),
+                "got": chg.int("amount"),
+            })
+    ctx.log_info("done", "scanned", len(pi_ids), "diffs", len(diffs))
+    return diffs
+` + "`" + `;
 
 function status(msg, kind='') {
   const el = document.getElementById('statusBar');
@@ -206,23 +237,25 @@ async function selectScript(id) {
   document.getElementById('metaName').value = r.Name || '';
   document.getElementById('metaSchedule').value = r.Schedule || '';
   document.getElementById('metaTriggers').value = JSON.stringify(r.Triggers || []);
-  document.getElementById('codeEditor').value = r.Code || '';
+  await editorReady;
+  editorValue.set(r.Code || '');
   status('已加载 ' + id, 'ok');
   loadScripts();
 }
 
-function newScript() {
+async function newScript() {
   currentID = null;
   document.getElementById('metaName').value = '';
   document.getElementById('metaSchedule').value = '';
   document.getElementById('metaTriggers').value = '[]';
-  document.getElementById('codeEditor').value = 'package main\n\nimport (\n    "fmt"\n    "recon"\n)\n\nfunc Check(ctx *recon.Context) (*recon.Result, error) {\n    fmt.Println("hello recon")\n    return &recon.Result{}, nil\n}\n';
+  await editorReady;
+  editorValue.set(starterStarlark);
   status('新脚本（未保存）');
   loadScripts();
 }
 
 async function validate() {
-  const code = document.getElementById('codeEditor').value;
+  const code = editorValue.get();
   const r = await apiPost(currentID ? '/api/v1/scripts/' + currentID + '/validate' : '/api/v1/scripts/_validate', { code });
   if (r.ok) status('✓ 语法 OK', 'ok');
   else      status('✗ ' + (r.error || JSON.stringify(r)), 'error');
@@ -231,7 +264,7 @@ async function validate() {
 async function save() {
   const body = {
     name: document.getElementById('metaName').value,
-    code: document.getElementById('codeEditor').value,
+    code: editorValue.get(),
     schedule: document.getElementById('metaSchedule').value,
     triggers: JSON.parse(document.getElementById('metaTriggers').value || '[]'),
   };
@@ -350,6 +383,151 @@ document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); save(); }
   if ((e.metaKey || e.ctrlKey) && e.key === 'r') { e.preventDefault(); runScript(); }
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); validate(); }
+});
+
+// ─── Monaco 初始化 + Starlark 自动补齐 ────────────────────────────────
+//
+// Starlark 是 Python 子集，直接复用 monaco 内置 'python' 语言做语法高亮 +
+// 缩进自动跟。补齐通过 completionItemProvider 调 /api/v1/script/symbols
+// 拿 schema：
+//
+//   - load("@<TAB>          → modules
+//   - load("@<mod>", "<TAB> → 该 module 的 members
+//   - ctx.<TAB>             → ctx 上的属性 / 方法
+//   - .find( / .int(        → events / event 的方法
+//
+// engine.RegisterModule 后下次 ctrl+r 重载页面立即识别（symbolsCache 重新拉）。
+
+require(['vs/editor/editor.main'], async function () {
+  // 拉一次 symbols，给 completion 用
+  try {
+    symbolsCache = await api('/api/v1/script/symbols');
+  } catch (e) {
+    console.warn('symbols load failed', e);
+    symbolsCache = { modules: [], ctx: [], event: [], event_list: [] };
+  }
+
+  // 直接复用 monaco 内置 'python' 做语法高亮；Starlark 是 Python 子集，
+  // python tokenizer 的 def / for / if / dict / list / 字符串 / 注释规则
+  // 都对得上。未来若需要更精细（区分 Starlark 不允许的 class / yield 等），
+  // 再注册独立 Monarch tokens provider。
+  // ── completion provider ───────────────────────────────────
+  monaco.languages.registerCompletionItemProvider('python', {
+    triggerCharacters: ['.', '"', '@', '('],
+    provideCompletionItems: (model, position) => {
+      const lineText = model.getLineContent(position.lineNumber).slice(0, position.column - 1);
+      const word = model.getWordUntilPosition(position);
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn,
+      };
+      const Kind = monaco.languages.CompletionItemKind;
+      const kindFor = t => {
+        if (!t) return Kind.Property;
+        if (t.indexOf('method') === 0 || t.indexOf('function') >= 0) return Kind.Method;
+        return Kind.Property;
+      };
+
+      // 1) load("@<prefix>  → modules
+      let m = /load\s*\(\s*"@([a-zA-Z0-9_]*)$/.exec(lineText);
+      if (m) {
+        return {
+          suggestions: (symbolsCache.modules || []).map(mod => ({
+            label: mod.name,
+            kind: Kind.Module,
+            insertText: mod.name,
+            detail: 'module',
+            documentation: (mod.members || []).map(x => x.name).join(', '),
+            range,
+          })),
+        };
+      }
+
+      // 2) load("@json", "<prefix>  → members of that module
+      m = /load\s*\(\s*"@([a-zA-Z0-9_]+)"\s*,\s*"([a-zA-Z0-9_]*)$/.exec(lineText);
+      if (m) {
+        const mod = (symbolsCache.modules || []).find(x => x.name === m[1]);
+        if (!mod) return { suggestions: [] };
+        return {
+          suggestions: (mod.members || []).map(s => ({
+            label: s.name,
+            kind: kindFor(s.type),
+            insertText: s.name,
+            detail: s.type,
+            range,
+          })),
+        };
+      }
+
+      // 3) ctx.<prefix>  → ctx 属性 / 方法
+      if (/\bctx\.\w*$/.test(lineText)) {
+        return {
+          suggestions: (symbolsCache.ctx || []).map(c => ({
+            label: c.name,
+            kind: kindFor(c.type),
+            insertText: c.name,
+            detail: c.type,
+            range,
+          })),
+        };
+      }
+
+      // 4) <var>.<prefix> 启发式：var 名是 events / event 时给对应清单。
+      // 实际项目可以做得更聪明（解析赋值 events = ctx.get_by_index 链），
+      // 但 95% 的脚本里变量名就叫 events / event / order / chg / txn。
+      const varDot = /(\w+)\.\w*$/.exec(lineText);
+      if (varDot) {
+        const v = varDot[1];
+        let pool = null;
+        if (v === 'events' || v.endsWith('_events')) {
+          pool = symbolsCache.event_list || [];
+        } else if (v === 'event' || ['order', 'txn', 'chg', 'pi', 'charge', 'transaction'].indexOf(v) >= 0) {
+          pool = symbolsCache.event || [];
+        }
+        if (pool) {
+          return {
+            suggestions: pool.map(s => ({
+              label: s.name,
+              kind: kindFor(s.type),
+              insertText: s.name,
+              detail: s.type,
+              range,
+            })),
+          };
+        }
+      }
+
+      // 默认无补齐 → monaco 走自带 keyword 补齐
+      return { suggestions: [] };
+    },
+  });
+
+  // ── 创建 editor 实例 ───────────────────────────────────────
+  editor = monaco.editor.create(document.getElementById('editorRoot'), {
+    value: starterStarlark,
+    language: 'python',          // Starlark = Python 子集，复用高亮规则
+    theme: 'vs',                  // 浅色主题；想暗色改 'vs-dark'
+    fontSize: 13,
+    automaticLayout: true,        // 容器尺寸变 → editor 自适应
+    minimap: { enabled: false },
+    scrollBeyondLastLine: false,
+    tabSize: 4,
+    insertSpaces: true,
+    renderWhitespace: 'boundary',
+    smoothScrolling: true,
+    wordWrap: 'off',
+    fixedOverflowWidgets: true,   // 补齐弹窗 z-index 跟 modal 不打架
+  });
+
+  // 快捷键：Cmd+S 保存 / Cmd+R 运行 / Cmd+K 校验
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, save);
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyR, runScript);
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, validate);
+
+  window._editorResolve();
+  status('编辑器就绪 · ' + ((symbolsCache.modules || []).length) + ' 个模块可补齐', 'ok');
 });
 
 loadScripts();
