@@ -42,6 +42,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	grpcreflection "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	grpcreflectionv1 "google.golang.org/grpc/reflection/grpc_reflection_v1"
+	"google.golang.org/grpc/status"
 
 	"github.com/xiongwp/payment-util/serviceregistry"
 
@@ -66,7 +67,7 @@ type btInfo struct {
 
 func main() {
 	var (
-		grpcAddr = flag.String("addr", "127.0.0.1:9091", "order-core gRPC 地址（host 模式直接拨；in-network 模式见 -etcd）")
+		grpcAddr = flag.String("addr", "127.0.0.1:9090", "order-core gRPC 地址（host 模式直接拨；in-network 模式见 -etcd）")
 		etcdEnd  = flag.String("etcd", "", "etcd endpoints 逗号分隔，例如 'etcd:2379'。设了就走 etcd resolver 解析 order-core（in-network e2e；宿主机模式留空，走 -addr + docker 自动发现）")
 		mch      = flag.String("mch", "mch_e2e", "mch_id")
 		customer = flag.String("customer", "cus_100000042", "customer_id；accounting-system 要求 user_id ∈ [100000000, 899999999]（<1亿是平台账户保留段），parseOwnerID 只认 pure-digit 或 prefix_digits，空串走商户侧")
@@ -76,7 +77,7 @@ func main() {
 		country  = flag.String("country", "PH", "国家码；会通过 PI.metadata.country 透传到 payment-core 路由")
 		btFlag   = flag.Int("business_type", 0, "渠道应收 business_type_id；0 时按 pm 自动从 /admin/business-types 查")
 		btCode   = flag.String("business_type_code", "", "渠道应收 business_type_code，例如 GCASH_RECEIVABLE；空串时用 {pm}_RECEIVABLE")
-		timeout  = flag.Duration("timeout", 10*time.Second, "单次 RPC 超时")
+		timeout  = flag.Duration("timeout", 30*time.Second, "单次 RPC 超时（Confirm 链路冷启偶尔过 10s，给到 30s 兜底）")
 		shadowFl = flag.Bool("shadow", false, "shadow=1 — e2e 走影子表 + 影子 fleet user_id 段（[9e9, 9.01e9)）。默认 false 跑主流量 e2e")
 	)
 	flag.Parse()
@@ -188,6 +189,40 @@ func main() {
 		Id: pi.GetId(), PaymentMethod: *pm,
 	})
 	if err != nil {
+		// Confirm 失败时立即查 PI 当前状态做链路诊断 — 不同 status 提示不同症状：
+		//   CREATED                       → Confirm RPC 没进 handler（order-core 网络/拥塞）
+		//   PROCESSING                    → 进入了，正在调 payment-core，但下游某跳挂了
+		//   REQUIRES_PAYMENT_METHOD/FAIL  → 业务侧校验失败，看 detail
+		//   SUCCEEDED                     → handler 跑完但响应路径丢了（极少见）
+		diagCtx, diagCancel := context.WithTimeout(ctx, 5*time.Second)
+		piNow, getErr := piCli.Retrieve(diagCtx, &orderv1.RetrievePaymentIntentRequest{Id: pi.GetId()})
+		diagCancel()
+		fmt.Fprintf(os.Stderr, "─────── Confirm diagnose ───────\n")
+		fmt.Fprintf(os.Stderr, "  pi_id     = %s\n", pi.GetId())
+		fmt.Fprintf(os.Stderr, "  err       = %v\n", err)
+		st, _ := status.FromError(err)
+		fmt.Fprintf(os.Stderr, "  grpc_code = %s\n", st.Code())
+		if getErr != nil {
+			fmt.Fprintf(os.Stderr, "  pi_status = <无法读取: %v>\n", getErr)
+		} else {
+			fmt.Fprintf(os.Stderr, "  pi_status = %s\n", piNow.GetPaymentIntent().GetStatus())
+		}
+		switch {
+		case getErr != nil:
+			fmt.Fprintf(os.Stderr, "  hint      = order-core 自身可能挂了；docker logs <order-core-name>\n")
+		case piNow.GetPaymentIntent().GetStatus() == orderv1.PaymentIntentStatus_PAYMENT_INTENT_STATUS_CREATED:
+			fmt.Fprintf(os.Stderr, "  hint      = PI 仍 CREATED，Confirm RPC 没进入 order-core handler；\n"+
+				"              检查 order-core ↔ payment-core 网络（payment-stack 网络是否同 namespace）\n")
+		case piNow.GetPaymentIntent().GetStatus() == orderv1.PaymentIntentStatus_PAYMENT_INTENT_STATUS_PROCESSING:
+			fmt.Fprintf(os.Stderr, "  hint      = PI 进入 PROCESSING 但同步响应没回；典型：\n"+
+				"              (1) payment-core → payment-channel adapter 慢/熔断\n"+
+				"              (2) risk-manage 不可达且 fail_policy=close\n"+
+				"              (3) accounting-system Booking 锁等待\n"+
+				"              抓 order-core / payment-core 日志最近 60s grep -E 'charge|risk|circuit|deadline'\n")
+		default:
+			fmt.Fprintf(os.Stderr, "  hint      = 看 status 文档；可能是业务校验失败\n")
+		}
+		fmt.Fprintf(os.Stderr, "────────────────────────────────\n")
 		die("Confirm: %v", err)
 	}
 	fmt.Printf("[confirm] pi_id=%s status=%s\n",
