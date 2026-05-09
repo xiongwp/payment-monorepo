@@ -678,6 +678,47 @@ const (
 	accountIDCurrencyMax    int64 = 999       // 3 位（ISO 4217 上限）
 )
 
+// V2 layout —— 1000 shard 升级（reshard SOP Phase 1）。
+//
+// 设计目标：与 V1 完全前向兼容（V1 ID 继续走 V1 解码），并在 int64 内为
+// V2 留出独立编码空间。
+//
+// V2 layout（payload 在 [0, 1e18) 之内，与 V1 不重叠）：
+//
+//	seq           bit 1-7   (7 位)  → 乘数 1
+//	business      bit 8-11  (4 位)  → 乘数 1e7
+//	globalTblIdx  bit 12-14 (3 位)  → 乘数 1e11   ← UPGRADED 2→3 位 (max 999)
+//	accountType   bit 15    (1 位)  → 乘数 1e14   ← compressed 2→1 位 (max 9 已足)
+//	currency      bit 16-18 (3 位)  → 乘数 1e15
+//
+// 高位 flag（与 V1 共存）：
+//
+//	bit 19  → 偏移 1e18  shadow flag        (V1 / V2 共用)
+//	bit 20  → 偏移 2e18  layout version=2  (NEW: V1 = 0, V2 = 1)
+//
+// V2 编码值范围:
+//
+//	V2 main:   accountID ∈ [2e18, 3e18)  // version=1, shadow=0
+//	V2 shadow: accountID ∈ [3e18, 4e18)  // version=1, shadow=1
+//
+// V1 同样占 [0, 2e18)，所以 4e18 是 V2 上限，距 int64 max (9.22e18) 充足余量。
+//
+// **accountType 压缩** 1→1 位：当前所有 AccountType 常量值都在 [1, 9]，1 位足够。
+// 任何新加 AccountType 必须 ≤ 9 才能用 V2 编码（V1 仍支持 0-99）。
+const (
+	accountIDV2BusinessMul    int64 = 10_000_000                // 1e7
+	accountIDV2GlobalTblMul   int64 = 100_000_000_000           // 1e11
+	accountIDV2AccountTypeMul int64 = 100_000_000_000_000       // 1e14
+	accountIDV2CurrencyMul    int64 = 1_000_000_000_000_000     // 1e15
+	accountIDV2VersionMul     int64 = 2_000_000_000_000_000_000 // 2e18 (V2 marker)
+
+	accountIDV2SeqMax         int64 = 9_999_999 // 7 位 (10M per combo)
+	accountIDV2BusinessMax    int64 = 9_999     // 4 位
+	accountIDV2GlobalTblMax   int64 = 999       // 3 位 (1000 shard 上限)
+	accountIDV2AccountTypeMax int64 = 9         // 1 位
+	accountIDV2CurrencyMax    int64 = 999       // 3 位
+)
+
 // AccountID layout 字段类型常量（与 accounting-system AccountType 字典对齐）。
 const (
 	AccountTypeUSER             = 1 // 用户主账户
@@ -729,14 +770,88 @@ func EncodeAccountID(ctx context.Context, currency, accountType, globalTableIdx,
 	return id, nil
 }
 
+// AccountIDLayoutVersion 根据 account_id 数值识别 layout 版本。
+//
+//	返回 1 → V1 (现役)
+//	返回 2 → V2 (1000-shard 升级，bit 20 = 1)
+//
+// 探测规则：accountID >= 2e18 即 V2，否则 V1。读取性能 O(1)。
+func AccountIDLayoutVersion(accountID int64) int {
+	if accountID >= accountIDV2VersionMul {
+		return 2
+	}
+	return 1
+}
+
+// EncodeAccountIDV2 V2 编码：与 EncodeAccountID 同语义，但 globalTblIdx 支持
+// 0-999（V1 是 0-99），accountType 限制 0-9（V1 是 0-99，V2 压缩 1 位让出 globalTblIdx）。
+//
+// **使用前置条件**：
+//   1. 调用方已经把 globalTblIdx 路由到 V2 路由器（10×100 layout，0-999）
+//   2. accountType ≤ 9（当前所有 AccountType 常量都符合）
+//   3. CurrentLayoutVersion = LayoutV2（写入端协调好才能产生 V2 ID）
+//
+// **不做的事**：
+//   - 不自动转换 V1 → V2 (历史 ID 数据迁移走单独的 reshard worker)
+//   - 不校验 router 是否真的是 V2 (caller 责任)
+func EncodeAccountIDV2(ctx context.Context, currency, accountType, globalTableIdx, businessType int, seq int64) (int64, error) {
+	if currency < 0 || int64(currency) > accountIDV2CurrencyMax {
+		return 0, fmt.Errorf("V2 currency %d out of range [0, %d]", currency, accountIDV2CurrencyMax)
+	}
+	if accountType < 0 || int64(accountType) > accountIDV2AccountTypeMax {
+		return 0, fmt.Errorf("V2 account_type %d out of range [0, %d] (V2 layout 1-digit limit; V1 supports 0-99)",
+			accountType, accountIDV2AccountTypeMax)
+	}
+	if globalTableIdx < 0 || int64(globalTableIdx) > accountIDV2GlobalTblMax {
+		return 0, fmt.Errorf("V2 global_table_idx %d out of range [0, %d]", globalTableIdx, accountIDV2GlobalTblMax)
+	}
+	if businessType < 0 || int64(businessType) > accountIDV2BusinessMax {
+		return 0, fmt.Errorf("V2 business_type %d out of range [0, %d]", businessType, accountIDV2BusinessMax)
+	}
+	if seq <= 0 || seq > accountIDV2SeqMax {
+		return 0, fmt.Errorf("V2 seq %d out of range [1, %d]", seq, accountIDV2SeqMax)
+	}
+	id := seq +
+		int64(businessType)*accountIDV2BusinessMul +
+		int64(globalTableIdx)*accountIDV2GlobalTblMul +
+		int64(accountType)*accountIDV2AccountTypeMul +
+		int64(currency)*accountIDV2CurrencyMul
+	if IsShadow(ctx) {
+		id += accountIDShadowMul
+	}
+	id += accountIDV2VersionMul // V2 marker
+	return id, nil
+}
+
 // DecodeAccountID 从 layout-编码的 account_id 解出 5 个字段。
+// 自动按 V1/V2 layout 版本分发。
+//
 // 不需要 ctx；纯数值解析（也可独立用于跨服务回包）。
 func DecodeAccountID(accountID int64) (isShadow bool, currency, accountType, globalTableIdx, businessType int, seq int64) {
+	version := AccountIDLayoutVersion(accountID)
+	// 剥离 version 标志位
+	if version == 2 {
+		accountID -= accountIDV2VersionMul
+	}
+	// 剥离 shadow 标志位
 	if accountID >= accountIDShadowMul {
 		isShadow = true
 		accountID -= accountIDShadowMul
 	}
-	// 从高位到低位逐段除模（与 EncodeAccountID 的乘数对应）
+	if version == 2 {
+		// V2 layout
+		currency = int(accountID / accountIDV2CurrencyMul)
+		accountID %= accountIDV2CurrencyMul
+		accountType = int(accountID / accountIDV2AccountTypeMul)
+		accountID %= accountIDV2AccountTypeMul
+		globalTableIdx = int(accountID / accountIDV2GlobalTblMul)
+		accountID %= accountIDV2GlobalTblMul
+		businessType = int(accountID / accountIDV2BusinessMul)
+		accountID %= accountIDV2BusinessMul
+		seq = accountID
+		return
+	}
+	// V1 layout (legacy)
 	currency = int(accountID / accountIDCurrencyMul)
 	accountID %= accountIDCurrencyMul
 	accountType = int(accountID / accountIDAccountTypeMul)
@@ -749,31 +864,62 @@ func DecodeAccountID(accountID int64) (isShadow bool, currency, accountType, glo
 	return
 }
 
-// AccountIDGlobalTableIdx 直接从 account_id 拿 globalTblIdx（0-99）。
+// AccountIDGlobalTableIdx 直接从 account_id 拿 globalTblIdx，自动按 layout 版本分发。
+//
+//	V1 → 0-99   (2 位)
+//	V2 → 0-999  (3 位)
+//
 // 比 DecodeAccountID 便宜：纯位段除模，不解其他字段。
 func AccountIDGlobalTableIdx(accountID int64) int {
+	version := AccountIDLayoutVersion(accountID)
+	if version == 2 {
+		accountID -= accountIDV2VersionMul
+		if accountID >= accountIDShadowMul {
+			accountID -= accountIDShadowMul
+		}
+		accountID %= accountIDV2AccountTypeMul
+		return int(accountID / accountIDV2GlobalTblMul)
+	}
 	if accountID >= accountIDShadowMul {
 		accountID -= accountIDShadowMul
 	}
-	accountID %= accountIDAccountTypeMul // 去掉 currency/accountType 高位
+	accountID %= accountIDAccountTypeMul
 	return int(accountID / accountIDGlobalTblMul)
 }
 
-// AccountIDDBIndex 给 sharding router 用：从 account_id 直接算 dbIdx (0-9)。
-// 当前 layout: dbCount=10, tablePerDB=10, globalTblIdx ∈ [0, 99]，dbIdx = globalTblIdx / 10。
+// AccountIDDBIndex 给 sharding router 用：从 account_id 算 dbIdx。
+//
+//	V1: dbCount=10, tablePerDB=10, globalTblIdx ∈ [0, 99]   → dbIdx = globalTbl / 10
+//	V2: dbCount=10, tablePerDB=100, globalTblIdx ∈ [0, 999] → dbIdx = globalTbl / 100
+//
+// **注意**：V2 router 的 (dbCount, tablePerDB) 必须严格匹配 (10, 100) — 见
+// accounting-system/internal/infrastructure/sharding/router_v2.go ShardDBCountV2 / ShardTablePerDBV2。
 func AccountIDDBIndex(accountID int64) int {
-	return AccountIDGlobalTableIdx(accountID) / 10
+	gtbl := AccountIDGlobalTableIdx(accountID)
+	if AccountIDLayoutVersion(accountID) == 2 {
+		return gtbl / 100 // V2 tablePerDB = 100
+	}
+	return gtbl / 10 // V1 tablePerDB = 10
 }
 
-// AccountIDTableIndex 给 sharding router 用：返回 globalTblIdx (0-99)，与表名后缀一一对应。
+// AccountIDTableIndex 给 sharding router 用：返回 globalTblIdx，与表名后缀对应。
+//
+//	V1 → 0-99   (表名后缀 "_NN")
+//	V2 → 0-999  (表名后缀 "_NN_NNN" by RouterV2.TableName)
 func AccountIDTableIndex(accountID int64) int {
 	return AccountIDGlobalTableIdx(accountID)
 }
 
-// IsShadowAccountIDLayout 用 layout 高位（bit 19）判断 shadow。
-// 与简单段版本 IsShadowAccountID 互补；新代码用本函数。
+// IsShadowAccountIDLayout 自动按 V1/V2 layout 取 shadow flag (bit 19)。
+//
+// 实现：(accountID / 1e18) % 2 — 在 V1/V2 上均成立：
+//
+//	V1 main:   accountID < 1e18              → 0 % 2 = 0 → false ✓
+//	V1 shadow: accountID ∈ [1e18, 2e18)      → 1 % 2 = 1 → true  ✓
+//	V2 main:   accountID ∈ [2e18, 3e18)      → 2 % 2 = 0 → false ✓
+//	V2 shadow: accountID ∈ [3e18, 4e18)      → 3 % 2 = 1 → true  ✓
 func IsShadowAccountIDLayout(accountID int64) bool {
-	return accountID >= accountIDShadowMul
+	return (accountID/accountIDShadowMul)%2 == 1
 }
 
 // ValidateAccountIDLayout 双向校验 layout-编码的 account_id 与 ctx 段一致：
