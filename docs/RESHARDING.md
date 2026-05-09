@@ -103,3 +103,31 @@ reshard 启动前 **必须**先完成下面所有项：
 - Fleet user_id 通过 `FleetUserID(ctx, channel, shard)` 多维分配，避免单维拍扁
 
 未来 reshard 频率目标：**至少 5 年一次**（不是 5 个月一次）。
+
+---
+
+## 6. 当前代码侧基线（2026-05-09）
+
+RouterV2 layout 的代码地基已经在 `packages/order-core/internal/sharding/` 落地：
+
+- `router_v2.go`：`RouterV2` 实现 `<prefix>_v2_<db:02d><tbl:03d>_<seq>`
+  编码，支持 100 db × 1000 tbl = 100,000 shard，远超下次 reshard 触发线。
+- `router_dispatch.go`：`RouteByPrefixedIDDual(v1, v2, id)` 自动按 ID 字符串
+  探测 layout 版本并分发给对应 router。`FormatIDForCurrentLayout` 跟随
+  全局 `CurrentLayoutVersion` 切换写入 layout（默认 V1，cutover 改 V2）。
+- `LayoutVersionOfID(id)`：依据 `_v2_` 字面标记 → dual-read 期间所有 repo
+  都用它选择路由器。
+
+未启用 dual-read（`v2 == nil`）时仍兼容、不 panic：V2 ID 兜底走 V1 hash，
+同时在 dispatcher 返 layout=V2 让调用方 emit metric 触告警，提示 SOP 推进。
+
+要真正切到 V2 还需补：
+
+1. `accounting-system` / `card-center` / `payment-channel` / `card-payment` 的同形
+   实现（当前仅 order-core 落地）。
+2. payment-util/shadow/identity.go 的 `EncodeAccountID` 升级到带 layout-version
+   高位 — 见上方 Phase 1。
+3. 数据迁移 worker（Phase 3 双写）— 仍待开发。
+
+但第 (1)/(2) 步骤是机械工作，无新设计点；这次先把 order-core 这条最常用路径
+夯实，让其他服务可以照搬。
