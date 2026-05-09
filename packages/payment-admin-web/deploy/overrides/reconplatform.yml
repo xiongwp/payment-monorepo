@@ -27,6 +27,7 @@ services:
       secrets:
         - GITHUB_TOKEN
     image: reconplatform:local
+    pull_policy: never
     container_name: reconplatform-engine
     restart: unless-stopped
     environment:
@@ -41,6 +42,10 @@ services:
       # 从 config-center 拉规则（OnChange 热更）；prod 必须可达
       - RECON_CONFIGCENTER_ENDPOINT=http://config-center:9691
       - RECON_ENV=${RECON_ENV:-dev}
+      # engine 不跑 CDC，但保留同名 env 让 image 共享一份 sanity（本地 dev 把
+      # admin 和 engine env 对齐，避免后续把 cdc 集成进 engine 时再补一遍）
+      - RECON_CDC_USER=${RECON_CDC_USER:-recon_cdc}
+      - RECON_CDC_PASS=${RECON_CDC_PASS:-recon_cdc_pwd}
     networks:
       - payment-stack
 
@@ -48,6 +53,7 @@ services:
     # 共用同一 image；用不同的 entrypoint / command 跑新二进制。
     # CDC/scheduler/admin web 需要的依赖：Redis（事件存储 + 索引 + 脚本持久化）
     image: reconplatform:local
+    pull_policy: never            # 这个 tag 永远是本地 build，没 registry
     container_name: reconplatform-admin
     restart: unless-stopped
     # 覆盖默认 CMD，跑 recon-admin binary（cmd/recon-admin/main.go）
@@ -63,6 +69,11 @@ services:
       - RECON_HTTP_PORT=8080
       - RECON_CONFIGCENTER_ENDPOINT=http://config-center:9691
       - RECON_ENV=${RECON_ENV:-dev}
+      # CDC 用 MySQL 账号 — 必须在所有 shared-shard-* + shared-meta 里 GRANT
+      # REPLICATION SLAVE, REPLICATION CLIENT, SELECT 权限。
+      # configs/cdc.sources.yaml 里 user/password 字段读这两个 env。
+      - RECON_CDC_USER=${RECON_CDC_USER:-recon_cdc}
+      - RECON_CDC_PASS=${RECON_CDC_PASS:-recon_cdc_pwd}
     networks:
       - payment-stack
 
