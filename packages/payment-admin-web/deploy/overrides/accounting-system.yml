@@ -56,6 +56,12 @@ services:
     # TCC Recovery Worker 写入与原 booking 不一致的 cut_date → 试算不平）。
     # 改服务代码后只需 `docker compose build accounting-service`，本服务自动同步。
     image: accounting-system:local
+    # pull_policy: never 防 compose up 时去仓库拉 accounting-system:local
+    # （这个 tag 永远是本地 build 出来的，不在任何 registry）。
+    # 没这行的话，accounting-service 的 build step 和 batchtask 的隐式 pull
+    # 会并行触发，前者还没 build 完后者就 pull 失败 → 报
+    # "pull access denied for accounting-system"。
+    pull_policy: never
     # 故意不写 container_name：scale=2 由 compose 自动加 -1/-2 后缀。
     # 多副本下每个 task type 通过 etcd leader election 卡单实例真跑（cmd/batchtask/main.go
     # runDaemon 走 serviceregistry.RunLeaderLoop），cron 不会并行。

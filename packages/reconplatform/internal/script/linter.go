@@ -261,29 +261,137 @@ func callDisplay(n *syntax.CallExpr) string {
 	return "<call>"
 }
 
-// nameUsedInBody 简单 grep：判断 body 里是否引用了 name 标识符。
-func nameUsedInBody(stmts []syntax.Stmt, name string) bool {
-	used := false
-	syntax.Walk(blockNode(stmts), func(n syntax.Node) bool {
-		if id, ok := n.(*syntax.Ident); ok && id.Name == name {
-			used = true
-			return false
+// walkReturns 递归遍历 body 找所有 ReturnStmt，回调访问。
+// 不递归进 nested DefStmt（嵌套 def 的 return 跟外层 def 无关）。
+func walkReturns(stmts []syntax.Stmt, visit func(*syntax.ReturnStmt)) {
+	for _, s := range stmts {
+		switch n := s.(type) {
+		case *syntax.ReturnStmt:
+			visit(n)
+		case *syntax.IfStmt:
+			walkReturns(n.True, visit)
+			walkReturns(n.False, visit)
+		case *syntax.ForStmt:
+			walkReturns(n.Body, visit)
+		case *syntax.WhileStmt:
+			walkReturns(n.Body, visit)
 		}
-		return true
-	})
-	return used
+	}
 }
 
-// blockNode 把 []Stmt 包装成 syntax.Node 让 Walk 能进入。
-type blockNode []syntax.Stmt
-
-func (b blockNode) Span() (start, end syntax.Position) {
-	if len(b) == 0 {
-		return
+// nameUsedInBody 简单 grep：判断 body 里是否引用了 name 标识符。
+//
+// 不用 syntax.Walk 是因为 starlark.Node 接口比 Span() + AllocComments() 还有
+// 一堆方法，自己实现 blockNode 不划算。手写递归直接、清楚、零依赖。
+func nameUsedInBody(stmts []syntax.Stmt, name string) bool {
+	for _, s := range stmts {
+		if stmtRefsName(s, name) {
+			return true
+		}
 	}
-	s, _ := b[0].Span()
-	_, e := b[len(b)-1].Span()
-	return s, e
+	return false
+}
+
+func stmtRefsName(s syntax.Stmt, name string) bool {
+	switch n := s.(type) {
+	case *syntax.AssignStmt:
+		return exprRefsName(n.LHS, name) || exprRefsName(n.RHS, name)
+	case *syntax.ExprStmt:
+		return exprRefsName(n.X, name)
+	case *syntax.IfStmt:
+		if exprRefsName(n.Cond, name) {
+			return true
+		}
+		return nameUsedInBody(n.True, name) || nameUsedInBody(n.False, name)
+	case *syntax.ForStmt:
+		if exprRefsName(n.Vars, name) || exprRefsName(n.X, name) {
+			return true
+		}
+		return nameUsedInBody(n.Body, name)
+	case *syntax.WhileStmt:
+		return exprRefsName(n.Cond, name) || nameUsedInBody(n.Body, name)
+	case *syntax.ReturnStmt:
+		return n.Result != nil && exprRefsName(n.Result, name)
+	case *syntax.DefStmt:
+		return nameUsedInBody(n.Body, name)
+	case *syntax.LoadStmt:
+		// load(...) 不大可能引用 ctx，但保险起见跳过
+		return false
+	}
+	return false
+}
+
+func exprRefsName(e syntax.Expr, name string) bool {
+	if e == nil {
+		return false
+	}
+	switch n := e.(type) {
+	case *syntax.Ident:
+		return n.Name == name
+	case *syntax.DotExpr:
+		return exprRefsName(n.X, name)
+	case *syntax.IndexExpr:
+		return exprRefsName(n.X, name) || exprRefsName(n.Y, name)
+	case *syntax.CallExpr:
+		if exprRefsName(n.Fn, name) {
+			return true
+		}
+		for _, a := range n.Args {
+			if exprRefsName(a, name) {
+				return true
+			}
+		}
+	case *syntax.BinaryExpr:
+		return exprRefsName(n.X, name) || exprRefsName(n.Y, name)
+	case *syntax.UnaryExpr:
+		return exprRefsName(n.X, name)
+	case *syntax.ParenExpr:
+		return exprRefsName(n.X, name)
+	case *syntax.ListExpr:
+		for _, x := range n.List {
+			if exprRefsName(x, name) {
+				return true
+			}
+		}
+	case *syntax.TupleExpr:
+		for _, x := range n.List {
+			if exprRefsName(x, name) {
+				return true
+			}
+		}
+	case *syntax.DictExpr:
+		for _, ent := range n.List {
+			if kv, ok := ent.(*syntax.DictEntry); ok {
+				if exprRefsName(kv.Key, name) || exprRefsName(kv.Value, name) {
+					return true
+				}
+			}
+		}
+	case *syntax.SliceExpr:
+		return exprRefsName(n.X, name) || exprRefsName(n.Lo, name) ||
+			exprRefsName(n.Hi, name) || exprRefsName(n.Step, name)
+	case *syntax.Comprehension:
+		if exprRefsName(n.Body, name) {
+			return true
+		}
+		for _, c := range n.Clauses {
+			switch cl := c.(type) {
+			case *syntax.ForClause:
+				if exprRefsName(cl.X, name) || exprRefsName(cl.Vars, name) {
+					return true
+				}
+			case *syntax.IfClause:
+				if exprRefsName(cl.Cond, name) {
+					return true
+				}
+			}
+		}
+	case *syntax.LambdaExpr:
+		return nameUsedInBody([]syntax.Stmt{&syntax.ReturnStmt{Result: n.Body}}, name)
+	case *syntax.CondExpr:
+		return exprRefsName(n.Cond, name) || exprRefsName(n.True, name) || exprRefsName(n.False, name)
+	}
+	return false
 }
 
 // checkReturnIsList E002：找所有 return 语句，必须 return list/comprehension。
@@ -302,17 +410,13 @@ func (b blockNode) Span() (start, end syntax.Position) {
 //   - return x, y      (tuple — 99% 是写错了)
 func checkReturnIsList(stmts []syntax.Stmt, l *linter) {
 	hasReturn := false
-	syntax.Walk(blockNode(stmts), func(n syntax.Node) bool {
-		ret, ok := n.(*syntax.ReturnStmt)
-		if !ok {
-			return true
-		}
+	walkReturns(stmts, func(ret *syntax.ReturnStmt) {
 		hasReturn = true
 		if ret.Result == nil {
 			l.emit("E002", SeverityError,
 				"check() must return a list of diffs; bare 'return' returns None",
 				ret.Return)
-			return true
+			return
 		}
 		switch r := ret.Result.(type) {
 		case *syntax.ListExpr, *syntax.Comprehension:
@@ -332,7 +436,6 @@ func checkReturnIsList(stmts []syntax.Stmt, l *linter) {
 				"check() must return a list of diffs, got literal value",
 				ret.Return)
 		}
-		return true
 	})
 	if !hasReturn {
 		// 没 return 等于隐式 return None

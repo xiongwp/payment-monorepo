@@ -32,7 +32,18 @@ services:
       - "9000"
 
   reconplatform:
+    # 自动 build（历史依赖运维手动 docker build 一遍，每次变更要外部脚本同步）。
+    # 现在 docker compose up --build 一行起栈；image tag 显式 :latest 历史保持一致。
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        payment-util: ../payment-util
+      secrets:
+        - GITHUB_TOKEN
     image: reconplatform:latest
+    # pull_policy: never 防 compose up 误从 registry 拉（这个 tag 永远本地 build 的）。
+    pull_policy: never
     container_name: reconplatform
     depends_on:
       - recon-kafka

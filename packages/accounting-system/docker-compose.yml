@@ -341,6 +341,10 @@ services:
     # 同 cut_date → 试算不平衡）。修服务代码后只需 `docker compose build
     # accounting-service`，batchtask 自动同步。
     image: accounting-system:latest
+    # 防 compose up 时跑去 registry 拉 accounting-system:latest（这个 tag
+    # 永远是本地 build 的，不在 hub）。没这行的话 service 还在 build 时
+    # batchtask 会并行尝试 pull → "pull access denied"。
+    pull_policy: never
     container_name: accounting-batchtask
     depends_on:
       accounting-service:

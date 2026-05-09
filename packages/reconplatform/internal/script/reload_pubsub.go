@@ -152,22 +152,14 @@ func (w *ReloadWatcher) handleMessage(ctx context.Context, payload string) {
 			zap.String("script_id", evt.ScriptID),
 			zap.String("by", evt.By))
 	default: // save / 默认按更新处理
-		def, err := w.store.GetDef(ctx, evt.ScriptID)
+		def, err := w.store.LoadDef(ctx, evt.ScriptID)
 		if err != nil || def == nil {
-			w.log.Warn("reload watcher: GetDef failed",
+			w.log.Warn("reload watcher: LoadDef failed",
 				zap.String("script_id", evt.ScriptID), zap.Error(err))
 			return
 		}
-		s := &Script{
-			ID:        def.ID,
-			Name:      def.Name,
-			Code:      def.Code,
-			UpdatedAt: def.UpdatedAt,
-			UpdatedBy: def.UpdatedBy,
-			Schedule:  def.Schedule,
-			Triggers:  def.Triggers,
-		}
-		if err := w.loader.Upsert(evt.ScriptID, s); err != nil {
+		// LoadDef 直接返 *Script；hot reload 期 loader.Upsert 会重新编译。
+		if err := w.loader.Upsert(evt.ScriptID, def); err != nil {
 			w.log.Warn("reload watcher: Upsert failed (kept old version)",
 				zap.String("script_id", evt.ScriptID), zap.Error(err))
 			return

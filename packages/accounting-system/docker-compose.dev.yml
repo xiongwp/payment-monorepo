@@ -61,6 +61,8 @@ services:
   # 与 accounting-service 共享同一 image，避免独立 build 导致的版本漂移。
   accounting-batchtask:
     image: accounting-system:latest
+    # 防 compose up 误拉 registry（image 永远是 service 本地 build 出来的）。
+    pull_policy: never
     user: root
     entrypoint: ["/app/entrypoint.sh"]
     command: []

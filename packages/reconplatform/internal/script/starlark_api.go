@@ -233,7 +233,7 @@ func (e *starlarkEvent) String() string {
 }
 func (e *starlarkEvent) Type() string         { return "recon.Event" }
 func (e *starlarkEvent) Freeze()              {}
-func (e *starlarkEvent) Truth() starlark.Bool { return starlark.Bool(e.inner != nil && !e.inner.IsZero()) }
+func (e *starlarkEvent) Truth() starlark.Bool { return starlark.Bool(e.inner != nil && !e.inner.IsEmpty()) }
 func (e *starlarkEvent) Hash() (uint32, error) {
 	if e.inner == nil {
 		return 0, nil
@@ -266,10 +266,13 @@ func (e *starlarkEvent) Attr(name string) (starlark.Value, error) {
 	case "get":
 		return starlark.NewBuiltin("Event.get", e.getCol), nil
 	case "data":
-		// 把 raw 列字典原样返
-		d := starlark.NewDict(len(e.inner.Cols))
-		for k, v := range e.inner.Cols {
-			_ = d.SetKey(starlark.String(k), starlark.String(v))
+		// 把 raw 列字典原样返。store.Event 的 column data 在 Before/After（After 优先）
+		// 通过 Row() 取，类型是 map[string]any（来自 binlog 解析）。脚本侧需要
+		// 任意类型 → starlark value 转换，复用 goToStarlark。
+		row := e.inner.Row()
+		d := starlark.NewDict(len(row))
+		for k, v := range row {
+			_ = d.SetKey(starlark.String(k), goToStarlark(v))
 		}
 		return d, nil
 	}
@@ -298,8 +301,10 @@ func (e *starlarkEvent) getCol(_ *starlark.Thread, _ *starlark.Builtin, args sta
 	if err := starlark.UnpackArgs("get", args, nil, "col", &col, "default?", &def); err != nil {
 		return nil, err
 	}
-	if v, ok := e.inner.Cols[col]; ok {
-		return starlark.String(v), nil
+	// store.Event 没有 Cols 字段；列数据在 Before/After（任一非空）。复用 .Row()。
+	if v, ok := e.inner.Row()[col]; ok && v != nil {
+		// 任意类型转 starlark；string/int/float 都自然映射
+		return goToStarlark(v), nil
 	}
 	return starlark.String(def), nil
 }
