@@ -17,9 +17,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
+
+// expandEnvShellLike 替代 os.ExpandEnv：兼容 bash 风格 ${VAR:-default}。
+//
+// os.ExpandEnv 只认 ${VAR}，遇到 ${VAR:-default} 会把整个 "VAR:-default" 当
+// 变量名找，肯定找不到 → 替换成空字符串 → recon_cdc 用户密码全空 → 数据库
+// access denied 1045。
+//
+// 本函数支持：
+//
+//	${VAR}              os.Getenv(VAR)（不存在返空）
+//	${VAR:-default}     不存在或为空 → "default"，否则 os.Getenv(VAR)
+//	$VAR                同 ${VAR}（保留 os.ExpandEnv 行为）
+var bashEnvPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
+
+func expandEnvShellLike(s string) string {
+	// 先处理 ${VAR:-default} 形式，剩下的 $VAR / ${VAR} 交给 os.ExpandEnv
+	s = bashEnvPattern.ReplaceAllStringFunc(s, func(match string) string {
+		groups := bashEnvPattern.FindStringSubmatch(match)
+		name := groups[1]
+		def := groups[2] // 可能为空（无 :- 段）
+		val := os.Getenv(name)
+		if val == "" {
+			return def
+		}
+		return val
+	})
+	return os.ExpandEnv(s)
+}
 
 // SourcesAndTTL 一份完整的 CDC 配置快照。
 type SourcesAndTTL struct {
@@ -42,8 +71,8 @@ func LoadFromFile(path string) (*SourcesAndTTL, error) {
 			return nil, fmt.Errorf("source[%d] %q: %w", i, out.Sources[i].Service, err)
 		}
 		// env 替换 ${VAR} —— 简化：只对 password 做（其他字段一般是字面量）
-		out.Sources[i].Password = os.ExpandEnv(out.Sources[i].Password)
-		out.Sources[i].User = os.ExpandEnv(out.Sources[i].User)
+		out.Sources[i].Password = expandEnvShellLike(out.Sources[i].Password)
+		out.Sources[i].User = expandEnvShellLike(out.Sources[i].User)
 	}
 	return &out, nil
 }
@@ -86,8 +115,8 @@ func LoadFromConfigCenter(ctx context.Context, cli ConfigCenterClient) (*Sources
 		if err := out.Sources[i].Normalize(); err != nil {
 			return nil, fmt.Errorf("source[%d] %q: %w", i, out.Sources[i].Service, err)
 		}
-		out.Sources[i].Password = os.ExpandEnv(out.Sources[i].Password)
-		out.Sources[i].User = os.ExpandEnv(out.Sources[i].User)
+		out.Sources[i].Password = expandEnvShellLike(out.Sources[i].Password)
+		out.Sources[i].User = expandEnvShellLike(out.Sources[i].User)
 	}
 	return out, nil
 }

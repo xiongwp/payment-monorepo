@@ -57,3 +57,8 @@ services:
       RECON_KAFKA_CONSUMER_GROUP: "reconplatform"
       # config-center: 规则全部从 namespace=reconplatform 下 key="rules" 拉（JSON map[string]string）
       RECON_CONFIGCENTER_ENDPOINT: "http://config-center:9691"
+      # CDC 用 MySQL 账号 — 必须在 shared-shard-* / shared-meta 里 GRANT
+      # REPLICATION SLAVE, REPLICATION CLIENT, SELECT 权限。
+      # configs/cdc.sources.yaml 里 user/password 字段就是读这两个 env。
+      RECON_CDC_USER: ${RECON_CDC_USER:-recon_cdc}
+      RECON_CDC_PASS: ${RECON_CDC_PASS:-recon_cdc_pwd}
