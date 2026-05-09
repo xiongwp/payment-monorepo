@@ -599,8 +599,8 @@ require(['vs/editor/editor.main'], async function () {
       // 2) word 本身就是 ctx
       if (word.word === 'ctx') {
         return { range: rangeOfWord(word, position), contents: [
-          { value: '**ctx** — `recon.Context`' },
-          { value: '当前对账脚本运行的上下文。属性：' + (symbolsCache.ctx || []).map(s => '`' + s.name + '`').join(', ') },
+          { value: '**ctx** — *recon.Context*' },
+          { value: '当前对账脚本运行的上下文。属性：' + (symbolsCache.ctx || []).map(s => s.name).join(', ') },
         ]};
       }
 
@@ -626,7 +626,7 @@ require(['vs/editor/editor.main'], async function () {
         if (mod) {
           return { range: rangeOfWord(word, position), contents: [
             { value: '**module @' + mod.name + '** — ' + (mod.members || []).length + ' 个成员' },
-            { value: (mod.members || []).map(m => '- `' + m.name + '` (' + m.type + ')').join('\n') },
+            { value: (mod.members || []).map(m => '- ' + m.name + ' (' + m.type + ')').join('\n') },
           ]};
         }
       }
@@ -650,7 +650,7 @@ require(['vs/editor/editor.main'], async function () {
     return {
       // 不传 range → monaco 用当前 word 自动算高亮
       contents: [
-        { value: '**' + sym.name + '** — `' + sym.type + '`' + (owner ? '  \n_owner: `' + owner + '`_' : '') },
+        { value: '**' + sym.name + '** — *' + sym.type + '*' + (owner ? '  \n_owner: ' + owner + '_' : '') },
       ],
     };
   }
