@@ -388,6 +388,17 @@ func (d *Dispatcher) tryDeliver(parent context.Context, id int64, url, secret st
 	req.Header.Set("X-Event-Type", "")
 	req.Header.Set("X-Signature", fmt.Sprintf("t=%s,v1=%s", ts, sig))
 	req.Header.Set("User-Agent", "PaymentGateway-Webhook/1.0")
+	// X-Trace-ID 把当前 ctx 上的 trace_id 透传到商户侧。
+	// 故障排查时商户报"webhook 收不到"，他们带着 X-Trace-ID 回到我们后台
+	// 一查全链路（api-gateway → order-core → webhook）就明朗，不用按
+	// event_id 反向 grep N 个服务的日志。
+	if tid := trace.FromContext(parent); tid != "" {
+		req.Header.Set("X-Trace-ID", tid)
+	}
+	// X-Webhook-Delivery-ID 让商户按 (event_id, delivery_id) 做更细去重。
+	// 同一事件历史 retry 多次时 delivery_id 不变（=DB 行 id），event_id 相同，
+	// 所以这个 header 是给商户审计 / 客服使用的 1:1 反查锚点。
+	req.Header.Set("X-Webhook-Delivery-ID", strconv.FormatInt(id, 10))
 
 	deliveryStart := time.Now()
 	resp, err := d.h.Do(req)
