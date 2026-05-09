@@ -49,6 +49,19 @@ var ReviewQueueDepth = prometheus.NewGauge(prometheus.GaugeOpts{
 	Help: "Number of pending review items waiting for human decision",
 })
 
+// ReviewQueueOldestPendingAgeSeconds 当前 pending 队列里最早一条的年龄（秒）。
+//
+// 跟 ReviewQueueDepth 互补：
+//   - depth=10 但 oldest=2min  -> 正常吞吐
+//   - depth=10 但 oldest=2h    -> 处理停摆 / SLA 已破
+//
+// 由 cmd/server 后台 goroutine 周期采样（与 ReviewQueueDepth 同 tick）。
+// 没有 pending 时设为 0。
+var ReviewQueueOldestPendingAgeSeconds = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "risk_review_queue_oldest_pending_age_seconds",
+	Help: "Age (seconds) of the oldest pending review item; 0 if empty",
+})
+
 // OutcomeTotal 反馈来源 × is_fraud 计数。算 ML precision/recall 的输入。
 var OutcomeTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "risk_outcome_total",
@@ -170,7 +183,8 @@ var MLScoreDriftMeanPct = prometheus.NewGauge(prometheus.GaugeOpts{
 // RegisterCommercial 在 Register() 之外注册商业化指标。Register() 是 sync.Once，
 // 这里独立 init 让没接入商业 sink 的部署也能跑（虽然指标只是 Collector 注册）。
 func init() {
-	prometheus.MustRegister(VerdictTotal, RiskScore, ReviewQueueDepth, OutcomeTotal,
+	prometheus.MustRegister(VerdictTotal, RiskScore, ReviewQueueDepth,
+		ReviewQueueOldestPendingAgeSeconds, OutcomeTotal,
 		OutcomeLagSeconds, OutcomeCoverageRatio, OutcomeCoverageWindow,
 		RuleLastHitAge, RulePrecision, RuleROI,
 		CounterCacheHit, CounterCacheMiss, CounterCacheSize,

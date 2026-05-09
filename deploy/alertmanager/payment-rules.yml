@@ -146,10 +146,17 @@ groups:
             Scale merchant limit or increase total bulkhead capacity.
 
       # KMS cache hitrate < 70% → info (early scaling signal)
-      # TODO: kms_cache_hits / kms_cache_total metrics to be implemented in P0-7-followup
+      # 实际指标是 kms_cache_total{layer,result}，hit 比上 (hit+miss) 是命中率。
       - alert: KMSCacheHitRateLow
         expr: |
-          (sum(rate(kms_cache_hits_total[5m])) / sum(rate(kms_cache_requests_total[5m]))) < 0.7
+          (
+            sum(rate(kms_cache_total{layer="redis",result="hit"}[5m]))
+            /
+            (
+              sum(rate(kms_cache_total{layer="redis",result="hit"}[5m]))
+              + sum(rate(kms_cache_total{layer="redis",result="miss"}[5m]))
+            )
+          ) < 0.7
         for: 15m
         labels:
           severity: info
@@ -159,6 +166,45 @@ groups:
           description: |
             Cache efficiency < 70%; more HSM hits than expected.
             Monitor for increased KMS latency; plan key expansion.
+
+      # KMS cache backend 错误率 (Redis 不可达 / 解密失败) > 0.5% → warning
+      # 缓存层故障会让所有 Decrypt 落到 HSM，单实例 ~500 ops/sec 上限会被打穿。
+      - alert: KMSCacheBackendErrorRateHigh
+        expr: |
+          (
+            sum(rate(kms_cache_total{layer="redis",result=~"error|corrupted|decrypt_fail"}[5m]))
+            / sum(rate(kms_cache_total{layer="redis"}[5m]))
+          ) > 0.005
+        for: 5m
+        labels:
+          severity: warning
+          domain: capacity
+        annotations:
+          summary: "KMS cache backend error rate: {{ $value | humanizePercentage }}"
+          description: |
+            Redis 缓存后端错误 > 0.5%（连接断 / 解密失败）。
+            后果：HSM 直接承压，Decrypt P99 上扬，Authorize 链上容量收缩。
+            排查：Redis 实例健康、节点切主、ephemeral_key 漂移。
+
+      # IntrospectToken 进程内缓存命中率 < 70% → info
+      # 命中率低 = TTL 太短 / cap 太小 / 长尾 token 太多。
+      # 典型 70-90%；< 70% 时 user_session DB SELECT 接近 cap-no-cache 的状况。
+      - alert: IntrospectCacheHitRateLow
+        expr: |
+          (
+            sum(rate(user_merchant_introspect_cache_lookup_total{result="hit"}[5m]))
+            / sum(rate(user_merchant_introspect_cache_lookup_total[5m]))
+          ) < 0.7
+        for: 15m
+        labels:
+          severity: info
+          domain: capacity
+        annotations:
+          summary: "IntrospectToken cache hit rate: {{ $value | humanizePercentage }}"
+          description: |
+            进程内 introspect 缓存命中率 < 70%。
+            排查 cache.introspect.size / ttl 配置；典型 100k / 30s。
+            user_session 表 SELECT QPS 会接近 no-cache 状态，单 shard 容量受限。
 
       # Single shard QPS > 5000 → warning (reshard planning)
       # TODO: Waiting for per-shard request rate metric; placeholder query
@@ -197,8 +243,10 @@ groups:
             Success rate < 90%. Possible card network issues, configuration drift.
             Check: adapter error logs, circuit state, card org decline rate.
 
-      # 3DS challenge rate deviation from 7d baseline ±50% → warning
-      # TODO: paycard_3ds_challenge_rate metric awaiting implementation
+      # 3DS challenge rate 偏离 7d 基线 ±50% → warning
+      # 注：paycard_3ds_challenge_total 暂未在 card-payment 中暴露；
+      # rate(no_such_metric) 评估为空向量，alert 不会误触发。
+      # 后续 card-payment 接 3DS 后会自然生效。
       - alert: ThreeDSChallengeRateAnomaly
         expr: |
           abs(
@@ -215,20 +263,20 @@ groups:
             3DS challenge rate ±50% vs 7d baseline.
             Possible: card issuer rule change, fraud spike, gateway config drift.
 
-      # Risk review queue p95 age > 30min → warning
-      # TODO: risk_review_queue_age_seconds metric awaiting implementation
-      - alert: RiskReviewQueueAgePHigh
-        expr: |
-          histogram_quantile(0.95, sum(rate(risk_review_queue_age_seconds_bucket[5m])) by (le)) > 1800
+      # Risk review 队列最早 pending 项停留超 30min → warning
+      # 直接用 gauge（cmd/server 5s 采样），不需要 histogram；语义比分位更直接。
+      - alert: RiskReviewQueueOldestPendingAgeHigh
+        expr: risk_review_queue_oldest_pending_age_seconds > 1800
         for: 15m
         labels:
           severity: warning
           domain: business
         annotations:
-          summary: "Risk review queue p95 age: {{ $value | humanizeDuration }}"
+          summary: "Risk review oldest pending age: {{ $value | humanizeDuration }}"
           description: |
-            Pending manual reviews piling up. Risk analysts overwhelmed.
-            Check: review_pending_count, rule hit rate, override ratio.
+            队列里最早一条 pending 已等待 > 30min。
+            排查：value 班分析师在线情况、rule precision 突变、ML drift。
+            参考面板：risk_review_queue_depth + risk_outcome_lag_seconds。
 
       # Payment routing fallback rate > 5% → warning (adapter degradation)
       - alert: PaymentRoutingFallbackHigh

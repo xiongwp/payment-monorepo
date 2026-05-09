@@ -307,6 +307,28 @@ func (s *PGReviewStore) CountByStatus(status review.Status) int {
 	return n
 }
 
+// OldestPendingAge 走 risk_review_status_created 索引，O(log N)。
+// 队列空 → 返 0。错误（DB 抖动）也返 0，避免 metric 瞎抖；同时由 OutcomeLag /
+// 健康检查路径独立反馈数据库问题。
+func (s *PGReviewStore) OldestPendingAge(now time.Time) time.Duration {
+	var createdAt time.Time
+	err := s.pool.QueryRow(context.Background(),
+		`SELECT created_at FROM risk_review
+		  WHERE status = 'pending'
+		  ORDER BY created_at ASC LIMIT 1`).Scan(&createdAt)
+	if err != nil {
+		return 0
+	}
+	if createdAt.IsZero() {
+		return 0
+	}
+	d := now.Sub(createdAt)
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
 func (s *PGReviewStore) ListByAssignee(actor string, statuses []review.Status, limit int) []*review.Item {
 	if limit <= 0 {
 		limit = 100

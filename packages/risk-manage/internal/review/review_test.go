@@ -228,3 +228,69 @@ func TestMemStore_OverdueSLA(t *testing.T) {
 		t.Fatalf("only b should be overdue post-decide, got %+v", overdue)
 	}
 }
+
+// TestMemStore_OldestPendingAge 覆盖 4 个 case：
+//   1. 空队列 -> 0
+//   2. 全是 decided -> 0（pending 为空）
+//   3. 多个 pending，挑 CreatedAt 最早的
+//   4. 已 Decide 不参与（即使 CreatedAt 最早）
+func TestMemStore_OldestPendingAge(t *testing.T) {
+	now := time.Now().UTC()
+	s := NewMemStore()
+
+	// (1) 空队列
+	if d := s.OldestPendingAge(now); d != 0 {
+		t.Fatalf("empty queue should return 0, got %v", d)
+	}
+
+	// 加 3 条 pending，时间分别 -10min / -5min / -1min
+	push := func(id string, ago time.Duration, status Status) {
+		it := mkItem(id, status)
+		it.CreatedAt = now.Add(-ago)
+		_ = s.Push(it)
+	}
+	push("oldest", 10*time.Minute, "")
+	push("middle", 5*time.Minute, "")
+	push("newest", 1*time.Minute, "")
+
+	d := s.OldestPendingAge(now)
+	if d < 9*time.Minute || d > 11*time.Minute {
+		t.Fatalf("expected ~10min, got %v", d)
+	}
+
+	// (4) 把 oldest decide 掉 → 最早 pending 应该是 middle (5min)
+	if _, err := s.Decide("oldest", ActionApprove, "ops", "ok"); err != nil {
+		t.Fatal(err)
+	}
+	d = s.OldestPendingAge(now)
+	if d < 4*time.Minute || d > 6*time.Minute {
+		t.Fatalf("after deciding oldest, expected ~5min, got %v", d)
+	}
+
+	// (2) 全部 decide 掉 → 0
+	_, _ = s.Decide("middle", ActionApprove, "ops", "ok")
+	_, _ = s.Decide("newest", ActionReject, "ops", "fraud")
+	if d := s.OldestPendingAge(now); d != 0 {
+		t.Fatalf("all decided should return 0, got %v", d)
+	}
+}
+
+// TestMemStore_OldestPendingAge_NegativeClock 时钟漂移防御：
+// CreatedAt 在 now 之后（系统时钟回拨）时返回 0，不返负数。
+func TestMemStore_OldestPendingAge_NegativeClock(t *testing.T) {
+	now := time.Now().UTC()
+	s := NewMemStore()
+
+	it := mkItem("future", "")
+	it.CreatedAt = now.Add(1 * time.Hour)
+	if err := s.Push(it); err != nil {
+		t.Fatal(err)
+	}
+
+	if d := s.OldestPendingAge(now); d != 0 {
+		t.Fatalf("CreatedAt > now should clamp to 0, got %v", d)
+	}
+}
+
+// 静态接口断言：MemStore 必须实现完整的 Store。改 interface 时编译期失败。
+var _ Store = (*MemStore)(nil)

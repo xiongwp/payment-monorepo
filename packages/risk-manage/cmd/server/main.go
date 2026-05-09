@@ -1210,13 +1210,17 @@ func startMetricsHTTP(
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
 			metrics.StartServerWithAuth(addr, logger, probe, auditQ, sessionReg, adminAuth)
-			// Review queue depth gauge：5s poll
+			// Review queue depth + oldest-pending-age gauge：5s poll
+			// 两个 gauge 一起更新，oncall alert 可以同时看「积压量 + 最早一条等多久」。
+			// CountByStatus 是 O(1)（pg index_only_scan）/ O(N)（mem），
+			// OldestPendingAge 是 O(log N)（pg index 取首行）/ O(N) (mem)。
 			if reviewQ != nil {
 				go func() {
 					t := time.NewTicker(5 * time.Second)
 					defer t.Stop()
 					for range t.C {
 						metrics.ReviewQueueDepth.Set(float64(reviewQ.CountByStatus(review.StatusPending)))
+						metrics.ReviewQueueOldestPendingAgeSeconds.Set(reviewQ.OldestPendingAge(time.Now()).Seconds())
 					}
 				}()
 			}

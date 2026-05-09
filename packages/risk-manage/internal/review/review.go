@@ -91,6 +91,11 @@ type Store interface {
 	Get(id string) *Item
 	// CountByStatus 给 SLO 监控 / queue depth gauge 用。status="" 返总数。
 	CountByStatus(status Status) int
+	// OldestPendingAge 返回当前 pending 队列里"最早 CreatedAt"的年龄。
+	// 没有 pending 项时返回 0。给 oncall alert 用："队列堆积超过 X 分钟"。
+	// 单次扫描 O(N)；建议由 cmd/server 后台 goroutine 周期采样到 gauge，
+	// 不要每次请求都调（生产 N 可能上千）。
+	OldestPendingAge(now time.Time) time.Duration
 	// Claim 把 pending 抢占为 in_review，记录 analyst id。重复 claim 同 actor
 	// 视为幂等（不报错），不同 actor 抢已 claim → ErrAlreadyClaimed。
 	Claim(id, actor string) (*Item, error)
@@ -382,4 +387,28 @@ func (m *MemStore) CountByStatus(status Status) int {
 		}
 	}
 	return n
+}
+
+// OldestPendingAge 扫描 in-memory 全表，挑 status==pending 的 CreatedAt 最小值。
+// 没有 pending 返回 0。生产 N≤几千足够 O(N) 扫；超大量级请用 PGReviewStore（走索引）。
+func (m *MemStore) OldestPendingAge(now time.Time) time.Duration {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var oldest time.Time
+	for _, it := range m.items {
+		if it.Status != StatusPending {
+			continue
+		}
+		if oldest.IsZero() || it.CreatedAt.Before(oldest) {
+			oldest = it.CreatedAt
+		}
+	}
+	if oldest.IsZero() {
+		return 0
+	}
+	d := now.Sub(oldest)
+	if d < 0 {
+		return 0
+	}
+	return d
 }
