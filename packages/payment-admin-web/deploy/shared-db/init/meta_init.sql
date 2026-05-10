@@ -801,21 +801,3 @@ INSERT IGNORE INTO `leaf_alloc_shadow` (`biz_tag`, `max_id`, `step`, `descriptio
     ('accounting.tcc',            1000000000000000001, 100000, 'Shadow tcc id (entity layout high bit = shadow)'),
     ('accounting.batch_order',    1000000000000000001, 100000, 'Shadow batch order id'),
     ('accounting.account',        90000000000,         100000, 'Shadow account_id (high bit 1 in 19-digit account layout)');
-
--- ============================================================================
--- recon_cdc 账号：reconplatform 用 canal 订 binlog 做 CDC。
--- ============================================================================
--- 内联在 meta_init.sql / N_init.sql 末尾（而不是独立 zz_recon_cdc_user.sql 文件）
--- 是因为 docker compose volume mount 单文件不存在时会自动创空目录占位，
--- mysqld init 跑那个空目录会报 'Can't initialize batch_readline'。内联到
--- 已有的 init.sql 里没这个风险——文件一定存在。
---
--- mysql 8.0 默认 caching_sha2_password；go-mysql/canal v1.9 不支持，
--- 必须显式 mysql_native_password。
---
--- 密码 recon_cdc_pwd 要跟 reconplatform compose 的 RECON_CDC_PASS env 对齐。
-CREATE USER IF NOT EXISTS 'recon_cdc'@'%' IDENTIFIED WITH mysql_native_password BY 'recon_cdc_pwd';
-ALTER USER 'recon_cdc'@'%' IDENTIFIED WITH mysql_native_password BY 'recon_cdc_pwd';
-GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'recon_cdc'@'%';
-GRANT SELECT ON *.* TO 'recon_cdc'@'%';
-FLUSH PRIVILEGES;

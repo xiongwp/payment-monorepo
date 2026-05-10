@@ -5,12 +5,13 @@ go 1.26
 require (
 	github.com/expr-lang/expr v1.17.8
 	github.com/go-mysql-org/go-mysql v1.9.1
+	github.com/go-sql-driver/mysql v1.8.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/twmb/franz-go v1.20.7
-	go.starlark.net v0.0.0-20240725214946-42030a7cedce
 	github.com/xiongwp/payment-util v0.0.0
+	go.starlark.net v0.0.0-20240725214946-42030a7cedce
 	go.uber.org/zap v1.27.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -18,6 +19,7 @@ require (
 replace github.com/xiongwp/payment-util => ../payment-util
 
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/BurntSushi/toml v1.3.2 // indirect
 	github.com/Masterminds/semver v1.5.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -25,7 +27,6 @@ require (
 	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
-	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
