@@ -6,13 +6,13 @@
 def check(ctx):
     diffs = []
     succeeded = ctx.get_by_index("status", "succeeded")
-    for pi in succeeded.find("order-core", "payment_intent"):
+    for pi in succeeded.find_all("order-core", "payment_intent"):
         if not pi.get("id"):
             continue
         # 累加 accounting 里的 transaction.amount，related_pi_id 关联
         txs = ctx.get_by_index("related_pi_id", pi["id"])
         total = 0
-        for tx in txs.find("accounting-system", "account_transaction"):
+        for tx in txs.find_all("accounting-system", "account_transaction"):
             # signed amount: debit/credit 通过 business_type 判方向
             total += int(tx.get("amount", 0))
         diff = total - int(pi.get("amount", 0))

@@ -19,7 +19,7 @@ def check(ctx):
     for pi in pis:
         pi_status = pi.get("status", "")
         charges = ctx.get_by_index("pi_id", pi.get("id", ""))
-        for ch in charges.find("payment-channel", "acquirer_tx"):
+        for ch in charges.find_all("payment-channel", "acquirer_tx"):
             ch_status = ch.get("status", "")
             combo = (pi_status, ch_status)
             if combo in INVALID_COMBOS:

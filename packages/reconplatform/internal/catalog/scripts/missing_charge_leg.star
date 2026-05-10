@@ -6,13 +6,13 @@ def check(ctx):
     diffs = []
     cutoff_ms = ctx.now_ms - {{.min_age_min}} * 60 * 1000
     pis = ctx.get_by_index("status", "succeeded")
-    for pi in pis.find("order-core", "payment_intent"):
+    for pi in pis.find_all("order-core", "payment_intent"):
         # 太新的 PI 跳过（可能 charge 还在路上）
         if int(pi.get("updated_at_ms", 0)) > cutoff_ms:
             continue
         # 找对应 charge_id（通过 pi_id 索引）
         charges = ctx.get_by_index("pi_id", pi["id"])
-        ch_count = len(charges.find("payment-channel", "acquirer_tx"))
+        ch_count = len(charges.find_all("payment-channel", "acquirer_tx"))
         if ch_count == 0:
             diffs.append({
                 "type": "missing_charge_leg",
