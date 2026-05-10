@@ -50,16 +50,17 @@ sources:
     password: "${RECON_CDC_PASS:-recon_cdc_pwd}"
     server_id_base: 1000   # 第 N 个 endpoint 用 1000+N
     schemas:
-      - order_core_db_0
-      - order_core_db_1
-      - order_core_db_2
-      - order_core_db_3
-      - order_core_db_4
-      - order_core_db_5
-      - order_core_db_6
-      - order_core_db_7
-      - order_core_db_8
-      - order_core_db_9
+      # NOTE: 实际 init SQL 建的库叫 order_db_N（不是 order_core_db_N）
+      - order_db_0
+      - order_db_1
+      - order_db_2
+      - order_db_3
+      - order_db_4
+      - order_db_5
+      - order_db_6
+      - order_db_7
+      - order_db_8
+      - order_db_9
     tables:
       payment_intents:
         pk: [id]
@@ -84,12 +85,31 @@ sources:
   #   webhook_inbox     PK=id      idx=[adapter, event_id]
   - service: payment-channel
     addrs:
-      - shared-shard-0:3306        # paychan_db 共用 shard-0 实例
+      - shared-shard-0:3306
+      - shared-shard-1:3306
+      - shared-shard-2:3306
+      - shared-shard-3:3306
+      - shared-shard-4:3306
+      - shared-shard-5:3306
+      - shared-shard-6:3306
+      - shared-shard-7:3306
+      - shared-shard-8:3306
+      - shared-shard-9:3306
     user:     "${RECON_CDC_USER:-recon_cdc}"
     password: "${RECON_CDC_PASS:-recon_cdc_pwd}"
     server_id_base: 2000
     schemas:
-      - paychan_db
+      # NOTE: paychan 也是 10 库分片 paychan_db_N（init SQL 在每个 shard 里建）
+      - paychan_db_0
+      - paychan_db_1
+      - paychan_db_2
+      - paychan_db_3
+      - paychan_db_4
+      - paychan_db_5
+      - paychan_db_6
+      - paychan_db_7
+      - paychan_db_8
+      - paychan_db_9
     tables:
       card_charges:
         pk: [id]
