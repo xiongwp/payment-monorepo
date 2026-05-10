@@ -172,14 +172,14 @@ func (im *Importer) Run(ctx context.Context) (int, error) {
 		}
 		// 2. 走 cdc.Publisher 同款路径写 Redis（recon:event:external:{name}:{pk}）
 		ev := &cdc.Event{
-			Service: "external",
-			Schema:  im.src.Name,
-			Table:   im.src.Name,
-			PK:      pk,
-			Op:      cdc.OpInsert,
-			After:   row,
-			Indexes: extractIndexes(row, im.src.Schema.IndexColumns),
-			Ts:      time.Now().UnixMilli(),
+			Service:   "external",
+			Schema:    im.src.Name,
+			Table:     im.src.Name,
+			PK:        pk,
+			Op:        cdc.OpInsert,
+			After:     row,
+			Indexes:   extractIndexes(row, im.src.Schema.IndexColumns),
+			Timestamp: time.Now().UTC(),
 		}
 		if err := im.publishOne(ctx, ev); err != nil {
 			im.log.Warn("publish row failed",
@@ -224,7 +224,7 @@ func (im *Importer) publishOne(ctx context.Context, ev *cdc.Event) error {
 			"table": ev.Schema,
 			"pk":    ev.PK,
 			"op":    "INSERT",
-			"ts":    ev.Ts,
+			"ts":    ev.Timestamp.UnixMilli(),
 		},
 	}
 	pipe.XAdd(ctx, streamArgs)
