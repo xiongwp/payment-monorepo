@@ -133,12 +133,15 @@ func (s *Store) CreateOpen(ctx context.Context, d Diff) error {
 	pipe.Set(ctx, key, body, 90*24*time.Hour) // 90d TTL，防 Redis 暴涨
 	pipe.ZAdd(ctx, "recon:diff:by_state:"+string(StateOpen),
 		redis.Z{Score: float64(now.UnixMilli()), Member: d.ID})
-	pipe.RPush(ctx, "recon:diff:audit:"+d.ID, mustJSON(AuditEntry{
+	if _, err := pipe.Exec(ctx); err != nil {
+		return err
+	}
+	// 审计 entry 走 hash chain（pushAudit 内部读上一条算 chain_hash）；
+	// 不能塞进 pipeline，因为要先读 LIndex。
+	return s.pushAudit(ctx, d.ID, AuditEntry{
 		From: "", To: StateOpen, By: "system", At: now,
 		Note: "first detection",
-	}))
-	_, err = pipe.Exec(ctx)
-	return err
+	})
 }
 
 // Transition 改 diff 状态（admin web 调）。
@@ -178,11 +181,12 @@ func (s *Store) Transition(ctx context.Context, diffID string, to State, by, not
 	pipe.ZRem(ctx, "recon:diff:by_state:"+string(prev), diffID)
 	pipe.ZAdd(ctx, "recon:diff:by_state:"+string(to),
 		redis.Z{Score: float64(now.UnixMilli()), Member: diffID})
-	pipe.RPush(ctx, "recon:diff:audit:"+diffID, mustJSON(AuditEntry{
+	if _, err := pipe.Exec(ctx); err != nil {
+		return err
+	}
+	return s.pushAudit(ctx, diffID, AuditEntry{
 		From: prev, To: to, By: by, At: now, Note: note,
-	}))
-	_, err = pipe.Exec(ctx)
-	return err
+	})
 }
 
 // Get 取一条 diff 当前状态 + 详情。

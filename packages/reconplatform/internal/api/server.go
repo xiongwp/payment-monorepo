@@ -38,6 +38,8 @@ import (
 
 	"reconcile-system/internal/cdc"
 	"reconcile-system/internal/diffstate"
+	"reconcile-system/internal/dsl"
+	"reconcile-system/internal/graph"
 	"reconcile-system/internal/notifier"
 	"reconcile-system/internal/script"
 	"reconcile-system/internal/store"
@@ -102,8 +104,92 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/admin/dlq", s.dlqList)
 	mux.HandleFunc("/api/v1/admin/dlq/", s.dlqByID)
 	mux.HandleFunc("/api/v1/scripts/_batch_run", s.scriptBatchRun)
+	// Graph view（跨服务事件关联图）
+	mux.HandleFunc("/api/v1/graph", s.graphView)
+	// DSL 模板（运营选模板填参生成 Starlark）
+	mux.HandleFunc("/api/v1/dsl/templates", s.dslTemplates)
+	mux.HandleFunc("/api/v1/dsl/render", s.dslRender)
 	mux.HandleFunc("/admin/", s.editorHTML)
 	mux.HandleFunc("/admin", s.editorHTML)
+}
+
+// graphView GET /api/v1/graph?index=pi_id&value=pi_xxx[&depth=3&max_nodes=200]
+//
+// 从 (idx_name, value) 出发 BFS 拉所有关联事件 + 边，admin web 用
+// cytoscape.js 画跨服务 DAG。运营查"这笔 PI 链路全貌"用。
+func (s *Server) graphView(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	q := r.URL.Query()
+	idxName := q.Get("index")
+	value := q.Get("value")
+	if idxName == "" || value == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("index and value required"))
+		return
+	}
+	depth := 3
+	if v := q.Get("depth"); v != "" {
+		fmt.Sscanf(v, "%d", &depth)
+	}
+	maxNodes := 200
+	if v := q.Get("max_nodes"); v != "" {
+		fmt.Sscanf(v, "%d", &maxNodes)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	res, err := graph.New(s.searcher).WithLimits(depth, maxNodes).Build(ctx, idxName, value)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.logger.Info("graph view built",
+		zap.String("seed_idx", idxName), zap.String("seed_val", value),
+		zap.Int("nodes", res.Stats.Nodes), zap.Int("edges", res.Stats.Edges),
+		zap.Bool("truncated", res.Stats.Truncated))
+	writeJSON(w, http.StatusOK, res)
+}
+
+// dslTemplates GET /api/v1/dsl/templates  — 列内置模板（admin web 模板选择器）
+func (s *Server) dslTemplates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"templates": dsl.All()})
+}
+
+// dslRender POST /api/v1/dsl/render  — 模板 + 参数 → Starlark 代码
+//
+// Body: {template_id: "amount_match", params: {idx_name: "pi_id", ...}}
+//
+// 返：{code: "def check(ctx): ..."}
+//
+// admin web 拿到 code 后塞进 Monaco editor，用户预览 / 微调 / 直接保存。
+// 保存走标准 /scripts CRUD 流程。
+func (s *Server) dslRender(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		TemplateID string            `json:"template_id"`
+		Params     map[string]string `json:"params"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	code, err := dsl.Render(body.TemplateID, body.Params)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code":        code,
+		"template_id": body.TemplateID,
+	})
 }
 
 // ─── /api/v1/diffs[/...] 处置工作流 ─────────────────────────────────────
@@ -181,6 +267,25 @@ func (s *Server) diffsByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"audit": log})
+	case action == "audit/chain" && r.Method == http.MethodGet:
+		// 完整链（含 chain_hash），合规审计员看
+		log, err := s.diffStore.AuditWithChain(r.Context(), id)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"audit": log})
+	case action == "audit/verify" && r.Method == http.MethodGet:
+		// 跑一遍 hash 链校验，合规月度审计 / 异常告警时调
+		ok, badIdx, err := s.diffStore.VerifyChain(r.Context(), id)
+		resp := map[string]any{"ok": ok, "diff_id": id}
+		if err != nil {
+			resp["error"] = err.Error()
+		}
+		if !ok {
+			resp["bad_index"] = badIdx
+		}
+		writeJSON(w, http.StatusOK, resp)
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
