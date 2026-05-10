@@ -914,7 +914,7 @@ function renderGraphCytoscape(g) {
     elements.push({
       data: {
         id: n.id,
-        label: n.svc + '\\n' + n.table + '\\n' + n.pk,
+        label: n.svc + '\n' + n.table + '\n' + n.pk,
         color: svcColor[n.svc],
         title: JSON.stringify(n.data, null, 2),
       },
@@ -957,7 +957,7 @@ function renderGraphCytoscape(g) {
   });
   cyInstance.on('tap', 'node', evt => {
     const n = evt.target.data();
-    alert(n.id + '\\n\\n' + n.title);
+    alert(n.id + '\n\n' + n.title);
   });
 }
 
@@ -1001,8 +1001,8 @@ function selectTemplate(id) {
     if (f.hint) html += '<div class="field"><span></span><span class="hint">' + f.hint + '</span></div>';
   });
   html += '<div class="footer">' +
-    '<button onclick="renderTemplate(\\'' + id + '\\')">生成代码 → 编辑器</button>' +
-    '<button class="secondary" onclick="closeModal(\\'dslModal\\')">取消</button></div>';
+    '<button onclick="renderTemplate(\'' + id + '\')">生成代码 → 编辑器</button>' +
+    '<button class="secondary" onclick="closeModal(\'dslModal\')">取消</button></div>';
   form.innerHTML = html;
 }
 
@@ -1158,7 +1158,7 @@ function renderDiffsTable(r) {
       '<td>' + (d.key || '') + '</td>' +
       '<td>' + (upd ? upd.toISOString().slice(0,19).replace('T',' ') : '') + '</td>' +
       '<td>' + (tid
-        ? '<button class="jaeger-btn" onclick="jumpJaeger(\\'' + d.id + '\\')">🔍 Jaeger</button>'
+        ? '<button class="jaeger-btn" onclick="jumpJaeger(\'' + d.id + '\')">🔍 Jaeger</button>'
         : '<button class="jaeger-btn" disabled title="此 diff 无 trace_id">🔍 Jaeger</button>') +
       '</td>' +
       '</tr>';
