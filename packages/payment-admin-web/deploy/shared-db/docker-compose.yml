@@ -61,7 +61,8 @@ services:
       - ./init/meta_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
     networks:
       payment-stack:
-        aliases: [accounting_meta]
+        # shared-meta：reconplatform CDC 用；accounting_meta：accounting-system 用。
+        aliases: [shared-meta, accounting_meta]
 
   # shared-shard-N 同时承担 paychan_db_N / order_db_N / accounting_db_N。
   # accounting-system 配置里写死 host=accounting-mysql-N，靠 network alias 走到 shared-shard-N。
@@ -83,7 +84,7 @@ services:
       - ./init/0_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
     networks:
       payment-stack:
-        aliases: [accounting-mysql-0]
+        aliases: [shared-shard-0, accounting-mysql-0]
 
   shard1:
     <<: *mysql-base
@@ -103,7 +104,7 @@ services:
       - ./init/1_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
     networks:
       payment-stack:
-        aliases: [accounting-mysql-1]
+        aliases: [shared-shard-1, accounting-mysql-1]
 
   shard2:
     <<: *mysql-base
@@ -123,7 +124,7 @@ services:
       - ./init/2_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
     networks:
       payment-stack:
-        aliases: [accounting-mysql-2]
+        aliases: [shared-shard-2, accounting-mysql-2]
 
   shard3:
     <<: *mysql-base
@@ -143,7 +144,7 @@ services:
       - ./init/3_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
     networks:
       payment-stack:
-        aliases: [accounting-mysql-3]
+        aliases: [shared-shard-3, accounting-mysql-3]
 
   shard4:
     <<: *mysql-base
@@ -163,7 +164,7 @@ services:
       - ./init/4_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
     networks:
       payment-stack:
-        aliases: [accounting-mysql-4]
+        aliases: [shared-shard-4, accounting-mysql-4]
 
   shard5:
     <<: *mysql-base
@@ -183,7 +184,7 @@ services:
       - ./init/5_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
     networks:
       payment-stack:
-        aliases: [accounting-mysql-5]
+        aliases: [shared-shard-5, accounting-mysql-5]
 
   shard6:
     <<: *mysql-base
@@ -203,7 +204,7 @@ services:
       - ./init/6_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
     networks:
       payment-stack:
-        aliases: [accounting-mysql-6]
+        aliases: [shared-shard-6, accounting-mysql-6]
 
   shard7:
     <<: *mysql-base
@@ -223,7 +224,7 @@ services:
       - ./init/7_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
     networks:
       payment-stack:
-        aliases: [accounting-mysql-7]
+        aliases: [shared-shard-7, accounting-mysql-7]
 
   shard8:
     <<: *mysql-base
@@ -243,7 +244,7 @@ services:
       - ./init/8_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
     networks:
       payment-stack:
-        aliases: [accounting-mysql-8]
+        aliases: [shared-shard-8, accounting-mysql-8]
 
   shard9:
     <<: *mysql-base
@@ -263,7 +264,7 @@ services:
       - ./init/9_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
     networks:
       payment-stack:
-        aliases: [accounting-mysql-9]
+        aliases: [shared-shard-9, accounting-mysql-9]
 
 networks:
   payment-stack:
