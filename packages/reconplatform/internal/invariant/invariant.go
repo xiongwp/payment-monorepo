@@ -20,11 +20,11 @@
 //	      B:
 //	        service: accounting-system
 //	        table: account_transaction
-#         amount_column: amount
-#         filter: ""               # 全收
-#         group_by: related_pi_id  # 按 PI 关联拉取
+//	        amount_column: amount
+//	        filter: ""                  # 全收
+//	        group_by: related_pi_id     # 按 PI 关联拉取
 //	    tolerance_minor: 0
-//	    skew_direction: any         # any/positive/negative
+//	    skew_direction: any             # any/positive/negative
 //
 // Engine 跑：
 //   1. 拉 sources.A 全集（按 group_by 字段做 dict[group_key]→ amount_sum）
