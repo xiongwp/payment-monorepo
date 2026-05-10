@@ -37,11 +37,18 @@ type Script struct {
 	compiled *CompiledScript
 }
 
+// PostRunHook 脚本运行结束后的回调（main.go 注 notifier + diffstate.CreateOpen）。
+//
+// 不让 script 包直接 import notifier / diffstate（会反向依赖），用 interface
+// 让 caller 注入。Hook 失败不阻塞 Run 主流程，仅 log。
+type PostRunHook func(ctx *Context, result *Result)
+
 // Loader 管理一组已加载的 Starlark 脚本。线程安全。
 type Loader struct {
-	mu      sync.RWMutex
-	scripts map[string]*Script
-	engine  *Engine
+	mu        sync.RWMutex
+	scripts   map[string]*Script
+	engine    *Engine
+	postHooks []PostRunHook
 }
 
 // NewLoader 构造 Loader。engine 默认是 NewEngine(0) — 用 maxSteps 默认值。
@@ -59,6 +66,22 @@ func NewLoader(e *Engine) *Loader {
 
 // Engine 暴露给 caller（main.go）做动态 RegisterModule / 调 /symbols 端点。
 func (l *Loader) Engine() *Engine { return l.engine }
+
+// AddPostRunHook 注册脚本运行结束后的回调。多次调可叠加多个 hook。
+//
+// 典型 caller (main.go)：
+//
+//	loader.AddPostRunHook(func(ctx *script.Context, r *script.Result) {
+//	    // 1) diffs 落 diffstate（每条 diff 用 IDFor 算稳定 ID）
+//	    for i, d := range r.Diffs { diffstateStore.CreateOpen(...) }
+//	    // 2) 通过 dispatcher 分发告警（含 dedup 抑制）
+//	    notifier.Dispatch(ctx.Ctx, &notifier.RunResult{...})
+//	})
+func (l *Loader) AddPostRunHook(h PostRunHook) {
+	l.mu.Lock()
+	l.postHooks = append(l.postHooks, h)
+	l.mu.Unlock()
+}
 
 // Add 加载新脚本（id 不能已存在）。
 func (l *Loader) Add(id string, s *Script) error {
@@ -208,10 +231,34 @@ func (l *Loader) Run(ctx *Context, scriptID, trigger string) *Result {
 	if err != nil {
 		r.Status = "error"
 		r.Error = err.Error()
-		return r
+	} else {
+		r.Status = "success"
 	}
-	r.Status = "success"
+	// post-run hooks (notifier dispatch / diffstate.CreateOpen 等)
+	// 任何 hook panic 都不能拖死 Run；defer recover 兜底。
+	l.runPostHooks(ctx, r)
 	return r
+}
+
+// runPostHooks 顺序调所有注册的 hook；panic 各自隔离不影响其他。
+func (l *Loader) runPostHooks(ctx *Context, r *Result) {
+	l.mu.RLock()
+	hooks := make([]PostRunHook, len(l.postHooks))
+	copy(hooks, l.postHooks)
+	l.mu.RUnlock()
+	for _, h := range hooks {
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					if ctx != nil && ctx.logger != nil {
+						ctx.logger.Warn("post-run hook panic",
+							"script_id", r.ScriptID, "recover", fmt.Sprintf("%v", rec))
+					}
+				}
+			}()
+			h(ctx, r)
+		}()
+	}
 }
 
 // RunCode 临时编译 + 执行任意脚本代码，不写 loader / scripts 表 / 历史结果。

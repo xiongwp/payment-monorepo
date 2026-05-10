@@ -37,17 +37,22 @@ import (
 	"go.uber.org/zap"
 
 	"reconcile-system/internal/cdc"
+	"reconcile-system/internal/diffstate"
+	"reconcile-system/internal/notifier"
 	"reconcile-system/internal/script"
 	"reconcile-system/internal/store"
 )
 
 // Server admin web HTTP 入口。
 type Server struct {
-	loader   *script.Loader
-	scriptDB *script.Store
-	searcher *store.Searcher
-	cdcMgr   *cdc.Manager
-	logger   *zap.Logger
+	loader     *script.Loader
+	scriptDB   *script.Store
+	searcher   *store.Searcher
+	cdcMgr     *cdc.Manager
+	logger     *zap.Logger
+	diffStore  *diffstate.Store     // optional：处置工作流端点用
+	dlq        *notifier.RedisDLQ    // optional：DLQ 端点用
+	dispatcher *notifier.Dispatcher  // optional：DLQ replay 用
 }
 
 // New 构造。
@@ -64,6 +69,19 @@ func New(loader *script.Loader, scriptDB *script.Store, searcher *store.Searcher
 	}
 }
 
+// WithDiffStore 注入处置工作流的 store；返 self 链式调用。caller 不调 = 端点 503。
+func (s *Server) WithDiffStore(d *diffstate.Store) *Server {
+	s.diffStore = d
+	return s
+}
+
+// WithDLQ 注入 DLQ + dispatcher（replay 时要用）；caller 不调 = DLQ 端点 503。
+func (s *Server) WithDLQ(q *notifier.RedisDLQ, dispatcher *notifier.Dispatcher) *Server {
+	s.dlq = q
+	s.dispatcher = dispatcher
+	return s
+}
+
 // Mount 注册路由到调用方提供的 mux。
 //
 // 注意：这是 admin 入口，调用方应在外层包一道 auth middleware（同
@@ -78,8 +96,189 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/meta/schema/", s.metaSchema)
 	mux.HandleFunc("/api/v1/meta/idx_keys", s.metaIdxKeys)
 	mux.HandleFunc("/api/v1/cdc/status", s.cdcStatus)
+	// 处置工作流 / DLQ / batch trigger（WithDiffStore / WithDLQ 注入后才生效）
+	mux.HandleFunc("/api/v1/diffs", s.diffsList)
+	mux.HandleFunc("/api/v1/diffs/", s.diffsByID)
+	mux.HandleFunc("/api/v1/admin/dlq", s.dlqList)
+	mux.HandleFunc("/api/v1/admin/dlq/", s.dlqByID)
+	mux.HandleFunc("/api/v1/scripts/_batch_run", s.scriptBatchRun)
 	mux.HandleFunc("/admin/", s.editorHTML)
 	mux.HandleFunc("/admin", s.editorHTML)
+}
+
+// ─── /api/v1/diffs[/...] 处置工作流 ─────────────────────────────────────
+
+// diffsList GET /api/v1/diffs?state=open[&limit=100]
+//
+// 列出指定状态的 diff（admin web 值班看 "open 待办"）。
+func (s *Server) diffsList(w http.ResponseWriter, r *http.Request) {
+	if s.diffStore == nil {
+		http.Error(w, "diff store not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	state := diffstate.State(r.URL.Query().Get("state"))
+	if state == "" {
+		state = diffstate.StateOpen
+	}
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		fmt.Sscanf(v, "%d", &limit)
+	}
+	out, err := s.diffStore.ListByState(r.Context(), state, limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"diffs": out, "state": state})
+}
+
+// diffsByID 处理 /api/v1/diffs/{id} / {id}/transition / {id}/audit
+func (s *Server) diffsByID(w http.ResponseWriter, r *http.Request) {
+	if s.diffStore == nil {
+		http.Error(w, "diff store not configured", http.StatusServiceUnavailable)
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/diffs/")
+	parts := strings.SplitN(rest, "/", 2)
+	id := parts[0]
+	action := ""
+	if len(parts) == 2 {
+		action = parts[1]
+	}
+	switch {
+	case action == "" && r.Method == http.MethodGet:
+		d, err := s.diffStore.Get(r.Context(), id)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, d)
+	case action == "transition" && r.Method == http.MethodPost:
+		var body struct {
+			To   string `json:"to"`
+			Note string `json:"note"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		actor := actorOrUnknown(r)
+		if err := s.diffStore.Transition(r.Context(), id, diffstate.State(body.To), actor, body.Note); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		// 取最新状态返
+		d, _ := s.diffStore.Get(r.Context(), id)
+		writeJSON(w, http.StatusOK, d)
+	case action == "audit" && r.Method == http.MethodGet:
+		log, err := s.diffStore.Audit(r.Context(), id)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"audit": log})
+	default:
+		http.Error(w, "not found", http.StatusNotFound)
+	}
+}
+
+// ─── /api/v1/admin/dlq[/...] 失败投递重试 ───────────────────────────────
+
+// dlqList GET /api/v1/admin/dlq[?limit=100]
+func (s *Server) dlqList(w http.ResponseWriter, r *http.Request) {
+	if s.dlq == nil {
+		http.Error(w, "dlq not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		fmt.Sscanf(v, "%d", &limit)
+	}
+	entries, err := s.dlq.List(r.Context(), limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	stats, _ := s.dlq.Stats(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entries": entries,
+		"stats":   stats,
+	})
+}
+
+// dlqByID 处理 /api/v1/admin/dlq/{id}/replay
+func (s *Server) dlqByID(w http.ResponseWriter, r *http.Request) {
+	if s.dlq == nil || s.dispatcher == nil {
+		http.Error(w, "dlq not configured", http.StatusServiceUnavailable)
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/dlq/")
+	parts := strings.SplitN(rest, "/", 2)
+	id := parts[0]
+	action := ""
+	if len(parts) == 2 {
+		action = parts[1]
+	}
+	if action != "replay" || r.Method != http.MethodPost {
+		http.Error(w, "expected POST /api/v1/admin/dlq/{id}/replay", http.StatusNotFound)
+		return
+	}
+	if err := s.dlq.Replay(r.Context(), s.dispatcher, id); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+}
+
+// ─── /api/v1/scripts/_batch_run 批处理对账 ──────────────────────────────
+
+// scriptBatchRun POST /api/v1/scripts/_batch_run
+//
+// Body: { script_id: string, params: map[string]string }
+//
+// 与 /scripts/<id>/run 区别：params 自动塞 batch_mode=true，脚本可识别走批处理
+// 分支（典型：scan_index 一次拉更多 + 分页处理 / 加 since/until 时间过滤）。
+//
+// 实现复用 Loader.Run；脚本作者负责自己的批处理语义（reconplatform 不规定
+// 怎么 batch — 业务对账逻辑差异太大，用 ctx.params 注入参数最灵活）。
+func (s *Server) scriptBatchRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		ScriptID string            `json:"script_id"`
+		Params   map[string]string `json:"params"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.ScriptID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("script_id required"))
+		return
+	}
+	if body.Params == nil {
+		body.Params = map[string]string{}
+	}
+	body.Params["batch_mode"] = "true"
+	// 30min 上限：批处理可能扫几十万行
+	runCtx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancel()
+	sctx := script.NewContext(runCtx, s.searcher, s.zapAdapter(), body.Params)
+	res := s.loader.Run(sctx, body.ScriptID, "batch:"+actorOrUnknown(r))
+	if err := s.scriptDB.SaveResult(r.Context(), res); err != nil {
+		s.logger.Warn("save batch result failed", zap.Error(err))
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // scriptDryRun POST /api/v1/scripts/_dry_run

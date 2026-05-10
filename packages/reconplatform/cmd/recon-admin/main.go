@@ -51,7 +51,9 @@ import (
 
 	"reconcile-system/internal/api"
 	"reconcile-system/internal/cdc"
+	"reconcile-system/internal/diffstate"
 	"reconcile-system/internal/meta"
+	"reconcile-system/internal/notifier"
 	"reconcile-system/internal/scheduler"
 	"reconcile-system/internal/script"
 	"reconcile-system/internal/store"
@@ -156,9 +158,73 @@ func main() {
 	go reloadWatcher.Run(ctx)
 	logger.Info("script reload watcher started")
 
+	// ─── Notifier (sink dispatcher) + Suppressor + DLQ + diffstate ──────────────
+	dispatcher := notifier.New(logger)
+	dlq := notifier.NewRedisDLQ(rdb, logger)
+	dispatcher.SetDLQ(dlq)
+	suppressor := notifier.NewSuppressor(rdb, 5*time.Minute)
+	diffStore := diffstate.New(rdb)
+
+	// 注 webhook / 钉钉 / Slack sink — 配置走 config-center
+	// (key=reconplatform/notifier.sinks JSON list)。Hot reload 也接 OnChange。
+	loadSinksFromConfig(ctx, dispatcher, ccCli, logger)
+	if ccCli != nil {
+		ccCli.OnChange("notifier.sinks", func(_ *configcenter.ConfigValue) {
+			loadSinksFromConfig(ctx, dispatcher, ccCli, logger)
+		})
+	}
+
+	// 把 notifier + diffstate 接到 Loader.Run 出口：
+	//   1. Suppressor.Filter 过一遍（5min 窗口同 type+key 仅发首条）
+	//   2. dispatcher.Dispatch 分发到 sinks（失败进 DLQ）
+	//   3. diffstate.CreateOpen 落 store 让运营在 admin web 处置
+	loader.AddPostRunHook(func(_ *script.Context, r *script.Result) {
+		if r == nil || len(r.Diffs) == 0 {
+			return
+		}
+		// 转 notifier 视图
+		nDiffs := make([]notifier.Diff, len(r.Diffs))
+		for i, d := range r.Diffs {
+			nDiffs[i] = notifier.Diff{Type: d.Type, Key: d.Key, Want: d.Want, Got: d.Got, Detail: d.Detail}
+		}
+		nr := &notifier.RunResult{
+			ScriptID: r.ScriptID, RunID: r.RunID, StartedAt: r.StartedAt,
+			FinishedAt: r.FinishedAt, Status: r.Status, Error: r.Error,
+			TriggeredBy: r.TriggeredBy, Diffs: nDiffs,
+		}
+		filtered, _ := suppressor.Filter(ctx, nr)
+		dispatcher.Dispatch(ctx, filtered)
+		// diffstate.CreateOpen 每条 diff 一条
+		for i, d := range r.Diffs {
+			detailMap, _ := d.Detail.(map[string]any)
+			_ = diffStore.CreateOpen(ctx, diffstate.Diff{
+				ID:        diffstate.IDFor(r.ScriptID, r.RunID, d.Type, d.Key, i),
+				ScriptID:  r.ScriptID, RunID: r.RunID,
+				Type: d.Type, Key: d.Key, Detail: detailMap,
+			})
+		}
+	})
+
+	// 后台 GC：N 天前 open diff 自动 expire（默认 30d）
+	go func() {
+		t := time.NewTicker(1 * time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if n, err := diffStore.ExpireOld(ctx, 30*24*time.Hour); err == nil && n > 0 {
+					logger.Info("diffstate GC: expired old open diffs", zap.Int("count", n))
+				}
+			}
+		}
+	}()
+
 	// ─── HTTP server（admin web + API + metrics）──────────────
 	mux := http.NewServeMux()
 	apiSrv := api.New(loader, scriptStore, searcher, cdcMgr, logger)
+	apiSrv.WithDiffStore(diffStore).WithDLQ(dlq, dispatcher)
 	apiSrv.Mount(mux)
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -357,4 +423,56 @@ func envDuration(k string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// loadSinksFromConfig 从 config-center 拉 notifier.sinks JSON list 注册到 dispatcher。
+//
+// 配置格式（key=reconplatform/notifier.sinks）：
+//
+//	[
+//	  {"name":"webhook:oncall",  "type":"webhook",  "url":"https://oncall.internal/recon", "headers":{"X-Auth":"..."}},
+//	  {"name":"dingtalk:risk",   "type":"dingtalk", "access_token":"abc..."},
+//	  {"name":"slack:platform",  "type":"slack",    "url":"https://hooks.slack.com/..."}
+//	]
+//
+// 默认（config 不可达 / key 缺失）：仅 LogSink，diff 进日志不发外部告警。
+func loadSinksFromConfig(ctx context.Context, dispatcher *notifier.Dispatcher, cli *configcenter.Client, logger *zap.Logger) {
+	if cli == nil {
+		logger.Info("notifier: no config-center, only LogSink active")
+		return
+	}
+	cv, err := cli.Get(ctx, "notifier.sinks")
+	if err != nil || cv == nil || cv.Value == "" {
+		logger.Info("notifier: notifier.sinks not configured, only LogSink active")
+		return
+	}
+	var entries []struct {
+		Name        string            `json:"name"`
+		Type        string            `json:"type"`
+		URL         string            `json:"url"`
+		AccessToken string            `json:"access_token"`
+		Headers     map[string]string `json:"headers"`
+	}
+	if err := json.Unmarshal([]byte(cv.Value), &entries); err != nil {
+		logger.Warn("notifier: parse notifier.sinks failed", zap.Error(err))
+		return
+	}
+	defaults := []string{"log"}
+	for _, e := range entries {
+		switch e.Type {
+		case "webhook":
+			dispatcher.RegisterSink(notifier.NewWebhookSink(e.Name, e.URL, e.Headers))
+		case "dingtalk":
+			dispatcher.RegisterSink(notifier.NewDingTalkSink(e.Name, e.AccessToken))
+		case "slack":
+			dispatcher.RegisterSink(notifier.NewSlackSink(e.Name, e.URL))
+		default:
+			logger.Warn("notifier: unknown sink type, skipping",
+				zap.String("name", e.Name), zap.String("type", e.Type))
+			continue
+		}
+		defaults = append(defaults, e.Name)
+	}
+	dispatcher.SetDefault(defaults)
+	logger.Info("notifier: sinks loaded", zap.Strings("sinks", defaults))
 }
