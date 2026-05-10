@@ -53,8 +53,26 @@ func NewPublisher(r redis.UniversalClient, ttl *TTLProvider, logger *zap.Logger)
 
 // Publish 把单条事件写入 Redis（1 RTT pipeline）。
 // 调用者已经组装好 Event.Indexes（parser 阶段就填了）。
+//
+// 日志策略（数据流可观察性）：
+//
+//	debug-level: 写入前/写入后各打一条，含 svc/table/pk/op/idx_count/ttl/dur
+//	             生产环境关 debug 即可消音；dev 排查 binlog 是不是真到 Redis
+//	             这俩日志最关键。
+//	warn-level:  pipeline 失败 + 元信息，给 oncall 排查 Redis 抖动 / 网络问题
 func (p *Publisher) Publish(ctx context.Context, e *Event) error {
 	ttl := p.ttl.Resolve(e.Service, e.Table)
+
+	// 写入前日志：标记本条事件即将落 Redis（写入前能看到，
+	// 即使后面 Exec 卡住也能定位是哪条事件挂了）
+	p.logger.Debug("redis publish: begin",
+		zap.String("svc", e.Service),
+		zap.String("table", e.Table),
+		zap.String("pk", e.PK),
+		zap.String("op", string(e.Op)),
+		zap.Int("idx_count", len(e.Indexes)),
+		zap.Duration("ttl", ttl))
+
 	pipe := p.r.Pipeline()
 
 	// 1) 主存
@@ -64,6 +82,7 @@ func (p *Publisher) Publish(ctx context.Context, e *Event) error {
 	//    用 SADD 不是 SET：同一 indexed key 可能引用多条事件。
 	//    EXPIRE 不能给 SET 的某成员单独配，所以索引 SET 的 TTL 跟该事件 TTL 走。
 	//    后续若同 SET 内有新事件 EXPIRE 会被 refresh 到那条事件的 TTL（合理：取最大）。
+	idxWritten := 0
 	for idxCol, val := range e.Indexes {
 		if val == "" {
 			continue
@@ -71,6 +90,7 @@ func (p *Publisher) Publish(ctx context.Context, e *Event) error {
 		idxKey := fmt.Sprintf("recon:idx:%s:%s", idxCol, val)
 		pipe.SAdd(ctx, idxKey, e.MemberRef())
 		pipe.Expire(ctx, idxKey, ttl)
+		idxWritten++
 	}
 
 	// 3) Stream（事件驱动）
@@ -89,14 +109,35 @@ func (p *Publisher) Publish(ctx context.Context, e *Event) error {
 		})
 	}
 
+	start := time.Now()
 	_, err := pipe.Exec(ctx)
+	dur := time.Since(start)
 	if p.OnPublish != nil {
 		p.OnPublish(e.Service, e.Table, e.Op, err)
 	}
 	if err != nil {
+		// 写入失败 — warn 级，关键信息全 dump 让 oncall 一眼看懂
+		p.logger.Warn("redis publish: failed",
+			zap.String("svc", e.Service),
+			zap.String("table", e.Table),
+			zap.String("pk", e.PK),
+			zap.String("op", string(e.Op)),
+			zap.Int("idx_count", idxWritten),
+			zap.Duration("dur", dur),
+			zap.Error(err))
 		// caller 看到 error 自己决定回退；publisher 不重试（避免无界堆积）
 		return fmt.Errorf("redis pipeline: %w", err)
 	}
+
+	// 写入成功日志：含耗时让 oncall 看 Redis 健康度（>50ms 就该警觉）
+	p.logger.Debug("redis publish: ok",
+		zap.String("svc", e.Service),
+		zap.String("table", e.Table),
+		zap.String("pk", e.PK),
+		zap.String("op", string(e.Op)),
+		zap.String("event_key", e.EventKey()),
+		zap.Int("idx_written", idxWritten),
+		zap.Duration("dur", dur))
 	return nil
 }
 
@@ -106,10 +147,23 @@ func (p *Publisher) Publish(ctx context.Context, e *Event) error {
 //
 // 注意：MaxLen 只对最后一条 XADD 生效（pipeline 不能跨 args 共享 MaxLen），
 // 但因为是 Approx 修剪，每次都修一点也 OK。
+//
+// 日志：debug 级前/后各一条；info 级当 batch >= 50 时摘要（避免 binlog 高峰
+// 期 debug 刷屏）。失败 warn + 数量 + 抽样首条 svc/table 给 oncall。
 func (p *Publisher) PublishBatch(ctx context.Context, events []*Event) error {
 	if len(events) == 0 {
 		return nil
 	}
+	// 写入前：批量摘要日志（同 svc/table 计数让搜索"为什么搜不到"一目了然）
+	tableCounts := make(map[string]int, 8)
+	for _, e := range events {
+		tableCounts[e.Service+":"+e.Table]++
+	}
+	p.logger.Debug("redis publish batch: begin",
+		zap.Int("events", len(events)),
+		zap.Any("by_table", tableCounts))
+
+	start := time.Now()
 	pipe := p.r.Pipeline()
 	for _, e := range events {
 		ttl := p.ttl.Resolve(e.Service, e.Table)
@@ -138,12 +192,39 @@ func (p *Publisher) PublishBatch(ctx context.Context, events []*Event) error {
 		}
 	}
 	_, err := pipe.Exec(ctx)
+	dur := time.Since(start)
 	if p.OnPublish != nil {
 		for _, e := range events {
 			p.OnPublish(e.Service, e.Table, e.Op, err)
 		}
 	}
-	return err
+	if err != nil {
+		// 抓首条事件 svc/table 给排查用
+		var sample string
+		if len(events) > 0 {
+			sample = events[0].Service + ":" + events[0].Table
+		}
+		p.logger.Warn("redis publish batch: failed",
+			zap.Int("events", len(events)),
+			zap.String("sample", sample),
+			zap.Duration("dur", dur),
+			zap.Error(err))
+		return err
+	}
+	// 写入成功：debug 级；批量大时升 info 让 ops 能在 prod 默认 info 级看到
+	// 实时搜索 "为什么搜不到 / 搜得到" 的判定信号。
+	if len(events) >= 50 {
+		p.logger.Info("redis publish batch: ok (large batch)",
+			zap.Int("events", len(events)),
+			zap.Any("by_table", tableCounts),
+			zap.Duration("dur", dur))
+	} else {
+		p.logger.Debug("redis publish batch: ok",
+			zap.Int("events", len(events)),
+			zap.Any("by_table", tableCounts),
+			zap.Duration("dur", dur))
+	}
+	return nil
 }
 
 // SavePosition 持久化某 service 的 binlog 位点（旧 API；单实例场景）。

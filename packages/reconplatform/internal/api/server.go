@@ -572,16 +572,27 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	start := time.Now()
 	if value != "" {
 		// 精确查询：返关联事件
 		events, err := s.searcher.SearchByIndex(ctx, idxName, value)
+		dur := time.Since(start)
 		if err != nil {
+			s.logger.Warn("search failed",
+				zap.String("index", idxName), zap.String("value", value),
+				zap.Duration("dur", dur), zap.Error(err))
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
+		// 日志：方便 oncall 看 "实时搜索为什么搜不到":
+		//   hits=0 + CDC 没流入 → CDC 没连上 / 表不在订阅清单
+		//   hits=0 + 该 idx 有别的 value → 输入的具体 value 真没事件
+		s.logger.Info("search by index: exact",
+			zap.String("index", idxName), zap.String("value", value),
+			zap.Int("hits", len(events)), zap.Duration("dur", dur))
 		writeJSON(w, http.StatusOK, map[string]any{
-			"index": idxName,
-			"value": value,
+			"index":  idxName,
+			"value":  value,
 			"events": events,
 		})
 		return
@@ -597,10 +608,17 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	values, err := s.searcher.ScanIndex(ctx, idxName, prefix, limit)
+	dur := time.Since(start)
 	if err != nil {
+		s.logger.Warn("search scan failed",
+			zap.String("index", idxName), zap.String("prefix", prefix),
+			zap.Duration("dur", dur), zap.Error(err))
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.logger.Info("search by index: scan",
+		zap.String("index", idxName), zap.String("prefix", prefix),
+		zap.Int("hits", len(values)), zap.Duration("dur", dur))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"index":  idxName,
 		"prefix": prefix,

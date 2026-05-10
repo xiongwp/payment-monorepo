@@ -180,15 +180,28 @@ func (h *canalHandler) OnRow(e *canal.RowsEvent) error {
 	schemaName := e.Table.Schema
 	tableName := e.Table.Name
 	if !h.source.IsSchemaWatched(schemaName) {
+		// 入站日志（debug）：让排查 "binlog 进来了但搜不到" 时能区分
+		// "schema 不在订阅清单" vs "table 不在白名单"
+		h.logger.Debug("OnRow: schema not watched, skip",
+			zap.String("schema", schemaName), zap.String("table", tableName))
 		return nil
 	}
 	tcfg, ok := h.matchTable(tableName)
 	if !ok {
+		h.logger.Debug("OnRow: table not in white-list, skip",
+			zap.String("schema", schemaName), zap.String("table", tableName))
 		return nil
 	}
 
 	op := canalActionToOp(e.Action)
 	cols := canalColumnsToInfos(e.Table.Columns)
+	// 入站日志：binlog 真到 OnRow 的入口；用于 oncall 确认 "事件确实流过来了"
+	h.logger.Debug("OnRow: received",
+		zap.String("svc", h.source.Service),
+		zap.String("schema", schemaName),
+		zap.String("table", tableName),
+		zap.String("op", string(op)),
+		zap.Int("rows", len(e.Rows)))
 
 	// PK 列：source 配置优先；缺省用 information_schema 推断。
 	pkCols := tcfg.PK
