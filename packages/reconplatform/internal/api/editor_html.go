@@ -194,6 +194,9 @@ const editorHTMLContent = `<!doctype html>
   <div class="nav">
     <button class="secondary" id="btnDashboard">📊 Dashboard</button>
     <button class="secondary" id="btnDiffs">🔍 Diffs</button>
+    <button class="secondary" id="btnCatalog">📚 Catalog</button>
+    <button class="secondary" id="btnApprovals">✅ Approvals</button>
+    <button class="secondary" id="btnEOD">📅 EOD</button>
     <button class="secondary" id="btnGraph">🔗 Graph</button>
     <button class="secondary" id="btnTemplates">🧩 Templates</button>
     <button class="secondary" id="btnLive">📡 Live</button>
@@ -356,6 +359,39 @@ const editorHTMLContent = `<!doctype html>
       </div>
       <div id="diffsTable" style="overflow:auto"></div>
     </div>
+  </div>
+</div>
+
+<!-- Catalog modal: 内置规则一键 Install -->
+<div class="full-modal" id="catalogModal">
+  <div class="full-modal-inner">
+    <div class="header">
+      <h2>📚 内置对账规则目录</h2>
+      <button class="close-btn" onclick="closeModal('catalogModal')">关闭</button>
+    </div>
+    <div class="body" id="catalogBody">加载中...</div>
+  </div>
+</div>
+
+<!-- Approvals modal: 待批准 transition -->
+<div class="full-modal" id="approvalsModal">
+  <div class="full-modal-inner">
+    <div class="header">
+      <h2>✅ 待复核（双人审批）</h2>
+      <button class="close-btn" onclick="closeModal('approvalsModal')">关闭</button>
+    </div>
+    <div class="body" id="approvalsBody">加载中...</div>
+  </div>
+</div>
+
+<!-- EOD reports modal: 日切对账日历 -->
+<div class="full-modal" id="eodModal">
+  <div class="full-modal-inner">
+    <div class="header">
+      <h2>📅 EOD 日切对账报告</h2>
+      <button class="close-btn" onclick="closeModal('eodModal')">关闭</button>
+    </div>
+    <div class="body" id="eodBody">加载中...</div>
   </div>
 </div>
 
@@ -1198,9 +1234,164 @@ async function jumpJaeger(diffID) {
   }
 }
 
+// ─── Catalog: 内置规则 Install ─────────────────────────────────────────
+async function openCatalog() {
+  openModal('catalogModal');
+  const body = document.getElementById('catalogBody');
+  body.innerHTML = '<p style="text-align:center;color:#6b7280;padding:40px">加载中...</p>';
+  try {
+    const r = await api('/api/v1/catalog/rules');
+    const rules = r.rules || [];
+    if (!rules.length) {
+      body.innerHTML = '<p style="color:#9ca3af">No rules</p>';
+      return;
+    }
+    let html = '<table class="diffs-table"><thead><tr>' +
+      '<th>ID</th><th>标题</th><th>类别</th><th>严重</th><th>推荐 Cron</th><th>动作</th>' +
+      '</tr></thead><tbody>';
+    rules.forEach(rule => {
+      html += '<tr>' +
+        '<td class="col-id">' + rule.id + '</td>' +
+        '<td>' + rule.title + '<br><span style="font-size:10px;color:#9ca3af">' + rule.description + '</span></td>' +
+        '<td>' + rule.category + '</td>' +
+        '<td><span class="col-state ' + (rule.severity === 'P0' ? 'danger' : rule.severity === 'P1' ? 'alert' : '') + '">' + rule.severity + '</span></td>' +
+        '<td><code style="font-size:11px">' + rule.default_schedule + '</code></td>' +
+        '<td><button class="jaeger-btn" onclick="installCatalogRule(\'' + rule.id + '\')">📥 Install</button></td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<p style="color:#dc2626">加载失败: ' + e + '</p>';
+  }
+}
+
+async function installCatalogRule(id) {
+  // 先看 rule 详情拿 parameters
+  let rule;
+  try { rule = await api('/api/v1/catalog/rules/' + id); }
+  catch (e) { alert('加载规则失败: ' + e); return; }
+  // 简化：参数填默认值。生产应该弹个 form 让用户填。
+  const params = {};
+  (rule.parameters || []).forEach(p => { params[p.name] = p.default || ''; });
+  for (const p of rule.parameters || []) {
+    if (p.required && !params[p.name]) {
+      const v = prompt(p.label + ' (' + p.hint + ')', p.default || '');
+      if (!v) { alert('Cancelled'); return; }
+      params[p.name] = v;
+    }
+  }
+  try {
+    const r = await apiPost('/api/v1/catalog/rules/' + id + '/install', { params, schedule: '' });
+    alert('已安装到 ' + r.script_id + '\nschedule: ' + r.schedule);
+  } catch (e) {
+    alert('安装失败: ' + e);
+  }
+}
+
+// ─── Approvals: 待批准列表 ────────────────────────────────────────────
+async function openApprovals() {
+  openModal('approvalsModal');
+  const body = document.getElementById('approvalsBody');
+  body.innerHTML = '<p style="text-align:center;color:#6b7280;padding:40px">加载中...</p>';
+  try {
+    const r = await api('/api/v1/approvals/pending');
+    const list = r.pending || [];
+    if (!list.length) {
+      body.innerHTML = '<p style="text-align:center;color:#10b981;padding:40px">✓ 无待批准</p>';
+      return;
+    }
+    let html = '<table class="diffs-table"><thead><tr>' +
+      '<th>ID</th><th>Diff</th><th>From → To</th><th>Requested by</th><th>Approvers</th><th>Reason</th><th>Action</th>' +
+      '</tr></thead><tbody>';
+    list.forEach(pa => {
+      html += '<tr>' +
+        '<td class="col-id">' + pa.id + '</td>' +
+        '<td class="col-id">' + pa.diff_id + '</td>' +
+        '<td>' + pa.from_state + ' → <b>' + pa.to_state + '</b></td>' +
+        '<td>' + pa.requested_by + '</td>' +
+        '<td>' + (pa.approvers || []).length + ' / ' + pa.required_approvers + '</td>' +
+        '<td style="font-size:11px">' + (pa.reason || '') + '</td>' +
+        '<td>' +
+          '<button class="jaeger-btn" style="background:#10b981" onclick="approveOne(\'' + pa.id + '\')">✓ Approve</button> ' +
+          '<button class="jaeger-btn" style="background:#dc2626" onclick="rejectOne(\'' + pa.id + '\')">✗ Reject</button>' +
+        '</td></tr>';
+    });
+    html += '</tbody></table>';
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<p style="color:#dc2626">加载失败: ' + e + '</p>';
+  }
+}
+
+async function approveOne(id) {
+  try {
+    const r = await apiPost('/api/v1/approvals/' + id + '/approve', {});
+    alert(r.committed ? '✓ Approved + committed!' : '✓ 你的赞已记录，还差 ' +
+      (r.approval.required_approvers - (r.approval.approvers || []).length) + ' 个');
+    openApprovals();
+  } catch (e) { alert('approve 失败: ' + e); }
+}
+
+async function rejectOne(id) {
+  const reason = prompt('Reject reason:');
+  if (!reason) return;
+  try {
+    await apiPost('/api/v1/approvals/' + id + '/reject', { reason });
+    alert('已拒绝');
+    openApprovals();
+  } catch (e) { alert('reject 失败: ' + e); }
+}
+
+// ─── EOD: 日切对账日历 ────────────────────────────────────────────────
+async function openEOD() {
+  openModal('eodModal');
+  const body = document.getElementById('eodBody');
+  body.innerHTML = '<p style="text-align:center;color:#6b7280;padding:40px">加载中...</p>';
+  try {
+    const r = await api('/api/v1/eod/reports?limit=30');
+    const list = r.reports || [];
+    if (!list.length) {
+      body.innerHTML = '<p style="color:#9ca3af;text-align:center;padding:40px">尚无日切报告（02:00 后会有）</p>';
+      return;
+    }
+    let html = '<table class="diffs-table"><thead><tr>' +
+      '<th>日期</th><th>状态</th><th>耗时</th><th>总行数</th><th>总金额</th><th>SignOff</th><th>动作</th>' +
+      '</tr></thead><tbody>';
+    list.forEach(rep => {
+      html += '<tr>' +
+        '<td><b>' + rep.date + '</b></td>' +
+        '<td class="col-state ' + (rep.status === 'ok' ? 'resolved' : rep.status === 'partial' ? 'open' : 'expired') + '">' + rep.status + '</td>' +
+        '<td>' + ((rep.duration_ms || 0) / 1000).toFixed(1) + 's</td>' +
+        '<td>' + (rep.total_rows || 0) + '</td>' +
+        '<td>' + (rep.total_amount || 0) + '</td>' +
+        '<td>' + (rep.signed_off_by || '<i style="color:#9ca3af">未签核</i>') + '</td>' +
+        '<td>' + (rep.signed_off_by ? '' :
+          '<button class="jaeger-btn" onclick="signOffEOD(\'' + rep.date + '\')">📝 SignOff</button>') +
+        '</td></tr>';
+    });
+    html += '</tbody></table>';
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<p style="color:#dc2626">加载失败: ' + e + '</p>';
+  }
+}
+
+async function signOffEOD(date) {
+  if (!confirm('Sign off ' + date + '?')) return;
+  try {
+    await apiPost('/api/v1/eod/reports/' + date + '/signoff', {});
+    alert('Signed off!');
+    openEOD();
+  } catch (e) { alert('signoff 失败: ' + e); }
+}
+
 // ─── Bind 4 navbar buttons ─────────────────────────────────────────────
 document.getElementById('btnDashboard').onclick = openDashboard;
 document.getElementById('btnDiffs').onclick = openDiffs;
+document.getElementById('btnCatalog').onclick = openCatalog;
+document.getElementById('btnApprovals').onclick = openApprovals;
+document.getElementById('btnEOD').onclick = openEOD;
 document.getElementById('btnGraph').onclick = openGraph;
 document.getElementById('btnTemplates').onclick = openTemplates;
 document.getElementById('btnLive').onclick = openLive;
