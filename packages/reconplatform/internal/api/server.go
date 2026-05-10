@@ -165,7 +165,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 // 调用方建议从 admin web "后台任务" 标签触发，不在 normal request loop。
 func (s *Server) adminBackfill(w http.ResponseWriter, r *http.Request) {
 	if s.publisher == nil {
-		http.Error(w, "publisher not configured", http.StatusServiceUnavailable)
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("publisher not configured"))
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -190,7 +190,7 @@ func (s *Server) adminBackfill(w http.ResponseWriter, r *http.Request) {
 // diffStats GET /api/v1/diffs/_stats — dashboard 数据汇总
 func (s *Server) diffStats(w http.ResponseWriter, r *http.Request) {
 	if s.diffStore == nil {
-		http.Error(w, "diff store not configured", http.StatusServiceUnavailable)
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("diff store not configured"))
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -212,7 +212,7 @@ func (s *Server) diffStats(w http.ResponseWriter, r *http.Request) {
 // eventsStream GET /api/v1/events/stream — SSE 实时事件流
 func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
 	if s.rdb == nil {
-		http.Error(w, "redis not configured", http.StatusServiceUnavailable)
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("redis not configured"))
 		return
 	}
 	hub := NewSSEHub(s.rdb, s.logger)
@@ -307,7 +307,7 @@ func (s *Server) dslRender(w http.ResponseWriter, r *http.Request) {
 // 列出指定状态的 diff（admin web 值班看 "open 待办"）。
 func (s *Server) diffsList(w http.ResponseWriter, r *http.Request) {
 	if s.diffStore == nil {
-		http.Error(w, "diff store not configured", http.StatusServiceUnavailable)
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("diff store not configured"))
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -333,7 +333,7 @@ func (s *Server) diffsList(w http.ResponseWriter, r *http.Request) {
 // diffsByID 处理 /api/v1/diffs/{id} / {id}/transition / {id}/audit
 func (s *Server) diffsByID(w http.ResponseWriter, r *http.Request) {
 	if s.diffStore == nil {
-		http.Error(w, "diff store not configured", http.StatusServiceUnavailable)
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("diff store not configured"))
 		return
 	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/diffs/")
@@ -455,7 +455,7 @@ func (s *Server) tracingJaegerURL(w http.ResponseWriter, r *http.Request) {
 // dlqList GET /api/v1/admin/dlq[?limit=100]
 func (s *Server) dlqList(w http.ResponseWriter, r *http.Request) {
 	if s.dlq == nil {
-		http.Error(w, "dlq not configured", http.StatusServiceUnavailable)
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("dlq not configured"))
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -481,7 +481,7 @@ func (s *Server) dlqList(w http.ResponseWriter, r *http.Request) {
 // dlqByID 处理 /api/v1/admin/dlq/{id}/replay
 func (s *Server) dlqByID(w http.ResponseWriter, r *http.Request) {
 	if s.dlq == nil || s.dispatcher == nil {
-		http.Error(w, "dlq not configured", http.StatusServiceUnavailable)
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("dlq not configured"))
 		return
 	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/dlq/")
@@ -1001,8 +1001,8 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 // archiver 未配置时降级 — 返 501，提示走 /api/v1/diffs（hot only）。
 func (s *Server) diffsSearch(w http.ResponseWriter, r *http.Request) {
 	if s.archiver == nil {
-		http.Error(w, "archiver not configured (set CLICKHOUSE_URL)",
-			http.StatusNotImplemented)
+		writeErr(w, http.StatusNotImplemented,
+			fmt.Errorf("archiver not configured (set CLICKHOUSE_URL)"))
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -1052,7 +1052,8 @@ func (s *Server) diffsSearch(w http.ResponseWriter, r *http.Request) {
 // 仅查冷数据（>7d）；hot 部分 admin 直接用 stats.go ZCOUNT。
 func (s *Server) diffsAggByDay(w http.ResponseWriter, r *http.Request) {
 	if s.archiver == nil {
-		http.Error(w, "archiver not configured", http.StatusNotImplemented)
+		writeErr(w, http.StatusNotImplemented,
+			fmt.Errorf("archiver not configured"))
 		return
 	}
 	if r.Method != http.MethodGet {

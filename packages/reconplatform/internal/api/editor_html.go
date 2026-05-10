@@ -374,14 +374,32 @@ const editorHTMLContent = `<!doctype html>
 <script>
 require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.46.0/min/vs' } });
 
-const api = path => fetch(path).then(r => r.json());
+// api / apiPost / apiPut / apiDel: 统一 helper。响应非 JSON 时（如 nginx 502
+// HTML、http.Error 纯文本 5xx）抛带 status + body 文本的 Error，避免
+// "Unexpected token 'a'" 这种迷之 SyntaxError 露给用户。
+async function _readResp(r) {
+  const text = await r.text();
+  if (!text) {
+    if (!r.ok) {
+      const err = new Error('HTTP ' + r.status + (r.statusText ? ' ' + r.statusText : ''));
+      err.status = r.status; throw err;
+    }
+    return {};
+  }
+  try { return JSON.parse(text); }
+  catch (_) {
+    const err = new Error('HTTP ' + r.status + ': ' + text.trim().slice(0, 200));
+    err.status = r.status; throw err;
+  }
+}
+const api = path => fetch(path).then(_readResp);
 const apiPost = (path, body) => fetch(path, {
   method:'POST', headers:{'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined,
-}).then(r => r.json());
+}).then(_readResp);
 const apiPut  = (path, body) => fetch(path, {
   method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
-}).then(r => r.json());
-const apiDel  = path => fetch(path, {method:'DELETE'}).then(r => r.json());
+}).then(_readResp);
+const apiDel  = path => fetch(path, {method:'DELETE'}).then(_readResp);
 
 let currentID = null;
 let editor = null;            // monaco editor 实例
