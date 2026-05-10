@@ -47,7 +47,7 @@ sources:
       - shared-shard-8:3306
       - shared-shard-9:3306
     user:     "${RECON_CDC_USER:-recon_cdc}"
-    password: "${RECON_CDC_PASS}"
+    password: "${RECON_CDC_PASS:-recon_cdc_pwd}"
     server_id_base: 1000   # 第 N 个 endpoint 用 1000+N
     schemas:
       - order_core_db_0
@@ -86,7 +86,7 @@ sources:
     addrs:
       - shared-shard-0:3306        # paychan_db 共用 shard-0 实例
     user:     "${RECON_CDC_USER:-recon_cdc}"
-    password: "${RECON_CDC_PASS}"
+    password: "${RECON_CDC_PASS:-recon_cdc_pwd}"
     server_id_base: 2000
     schemas:
       - paychan_db
@@ -123,7 +123,7 @@ sources:
       - shared-shard-8:3306
       - shared-shard-9:3306
     user:     "${RECON_CDC_USER:-recon_cdc}"
-    password: "${RECON_CDC_PASS}"
+    password: "${RECON_CDC_PASS:-recon_cdc_pwd}"
     server_id_base: 3000
     schemas:
       - accounting_db_0
