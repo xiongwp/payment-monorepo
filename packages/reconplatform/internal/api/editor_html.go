@@ -31,6 +31,8 @@ const editorHTMLContent = `<!doctype html>
 <!-- Monaco editor: AMD loader 拉 0.46 (LTS-ish)。版本固定，避免 CDN 兜底劣化。-->
 <link rel="stylesheet" data-name="vs/editor/editor.main"
       href="https://cdn.jsdelivr.net/npm/monaco-editor@0.46.0/min/vs/editor/editor.main.css">
+<!-- Cytoscape: 跨服务事件关联图 -->
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 13px; color: #1f2937; background: #f3f4f6; }
@@ -111,12 +113,88 @@ const editorHTMLContent = `<!doctype html>
   .history-versions .ver .num { font-weight: 500; }
   .history-versions .ver .meta { font-size: 11px; color: #6b7280; margin-top: 2px; }
   .history-diff { border: 1px solid #e5e7eb; border-radius: 4px; overflow: hidden; }
+  /* Generic full-screen modal (dashboard / graph / dsl / live) */
+  .full-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; z-index: 120; }
+  .full-modal.open { display: flex; }
+  .full-modal-inner { background: #fff; border-radius: 8px; max-width: 1400px; max-height: 92vh; width: 95%; margin: auto; padding: 16px; overflow: hidden; display: flex; flex-direction: column; }
+  .full-modal-inner .header { display: flex; align-items: center; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid #e5e7eb; margin-bottom: 12px; }
+  .full-modal-inner .header h2 { font-size: 16px; flex: 1; }
+  .full-modal-inner .header .close-btn { background: #6b7280; color: #fff; border: 0; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
+  .full-modal-inner .body { flex: 1; min-height: 0; overflow: auto; }
+  /* dashboard cards */
+  .kpi-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 16px; }
+  .kpi-card { background: #f9fafb; border: 1px solid #e5e7eb; padding: 14px; border-radius: 6px; }
+  .kpi-card .label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; }
+  .kpi-card .value { font-size: 24px; font-weight: 600; color: #111827; margin-top: 4px; }
+  .kpi-card.alert { border-left: 3px solid #f59e0b; background: #fef3c7; }
+  .kpi-card.danger { border-left: 3px solid #dc2626; background: #fee2e2; }
+  .kpi-card.ok { border-left: 3px solid #10b981; background: #dcfce7; }
+  .kpi-row-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .kpi-bar-list .bar { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; }
+  .kpi-bar-list .bar .name { width: 200px; color: #111827; font-family: ui-monospace, monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kpi-bar-list .bar .fill { height: 14px; background: #1677ff; border-radius: 2px; }
+  .kpi-bar-list .bar .count { width: 40px; text-align: right; color: #6b7280; }
+  /* cytoscape graph */
+  #graphCanvas { width: 100%; height: 600px; border: 1px solid #e5e7eb; border-radius: 4px; }
+  .graph-controls { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; padding: 12px; background: #f9fafb; border-radius: 4px; }
+  .graph-controls input, .graph-controls select { padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 12px; }
+  .graph-controls button { background: #1677ff; color: #fff; border: 0; border-radius: 4px; padding: 6px 12px; cursor: pointer; }
+  /* DSL form */
+  .dsl-grid { display: grid; grid-template-columns: 280px 1fr; gap: 16px; height: 70vh; }
+  .dsl-templates { border: 1px solid #e5e7eb; border-radius: 4px; overflow: auto; }
+  .dsl-templates .tpl { padding: 12px; cursor: pointer; border-bottom: 1px solid #f3f4f6; }
+  .dsl-templates .tpl:hover { background: #f3f4f6; }
+  .dsl-templates .tpl.active { background: #e0f2fe; border-left: 3px solid #1677ff; }
+  .dsl-templates .tpl .name { font-weight: 500; }
+  .dsl-templates .tpl .desc { font-size: 11px; color: #6b7280; margin-top: 4px; }
+  .dsl-form { display: flex; flex-direction: column; gap: 12px; padding: 12px; }
+  .dsl-form .field { display: grid; grid-template-columns: 160px 1fr; gap: 12px; align-items: center; }
+  .dsl-form .field label { font-size: 12px; color: #4b5563; font-weight: 500; }
+  .dsl-form .field input, .dsl-form .field select { padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 12px; }
+  .dsl-form .field .hint { grid-column: 2; font-size: 10px; color: #9ca3af; }
+  .dsl-form .footer { margin-top: auto; display: flex; gap: 8px; }
+  .dsl-form .footer button { background: #1677ff; color: #fff; border: 0; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
+  .dsl-form .footer button.secondary { background: #6b7280; }
+  /* SSE live stream */
+  #liveLog { font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5; height: 70vh; overflow: auto; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 4px; }
+  #liveLog .ev { padding: 2px 0; }
+  #liveLog .ev .ts { color: #64748b; margin-right: 8px; }
+  #liveLog .ev .svc { color: #38bdf8; }
+  #liveLog .ev .table { color: #a78bfa; }
+  #liveLog .ev .op { color: #fbbf24; }
+  #liveLog .ev .pk { color: #4ade80; }
+  .live-status { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+  .live-status .dot { width: 10px; height: 10px; border-radius: 50%; background: #6b7280; }
+  .live-status .dot.connected { background: #10b981; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  /* Diffs search table */
+  .diffs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .diffs-table th { background: #f3f4f6; padding: 8px; text-align: left; border-bottom: 2px solid #e5e7eb; font-weight: 500; color: #4b5563; position: sticky; top: 0; }
+  .diffs-table td { padding: 8px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+  .diffs-table tr:hover { background: #f9fafb; }
+  .diffs-table .col-id { font-family: ui-monospace, monospace; font-size: 10px; color: #6b7280; }
+  .diffs-table .col-state { font-weight: 500; }
+  .diffs-table .col-state.open { color: #f59e0b; }
+  .diffs-table .col-state.acked { color: #1677ff; }
+  .diffs-table .col-state.resolved { color: #10b981; }
+  .diffs-table .col-state.false_positive { color: #6b7280; }
+  .diffs-table .col-state.expired { color: #dc2626; }
+  .diffs-table .tier-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; margin-left: 4px; }
+  .diffs-table .tier-badge.hot { background: #fee2e2; color: #dc2626; }
+  .diffs-table .tier-badge.cold { background: #dbeafe; color: #1677ff; }
+  .diffs-table .jaeger-btn { background: #8b5cf6; color: #fff; border: 0; padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: 11px; }
+  .diffs-table .jaeger-btn:disabled { background: #d1d5db; cursor: not-allowed; }
 </style>
 </head>
 <body>
 <header>
   <h1>reconplatform · 对账脚本</h1>
   <div class="nav">
+    <button class="secondary" id="btnDashboard">📊 Dashboard</button>
+    <button class="secondary" id="btnDiffs">🔍 Diffs</button>
+    <button class="secondary" id="btnGraph">🔗 Graph</button>
+    <button class="secondary" id="btnTemplates">🧩 Templates</button>
+    <button class="secondary" id="btnLive">📡 Live</button>
     <button class="secondary" id="btnValidate">语法检查 (Cmd+K)</button>
     <button class="secondary" id="btnDryRun">Dry Run (Cmd+D)</button>
     <button class="secondary" id="btnHistory">历史版本</button>
@@ -177,6 +255,104 @@ const editorHTMLContent = `<!doctype html>
     <div class="history-body">
       <div class="history-versions" id="historyList"></div>
       <div class="history-diff" id="historyDiff"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Dashboard modal -->
+<div class="full-modal" id="dashboardModal">
+  <div class="full-modal-inner">
+    <div class="header">
+      <h2>📊 对账平台 Dashboard</h2>
+      <button class="close-btn" onclick="closeModal('dashboardModal')">关闭</button>
+    </div>
+    <div class="body" id="dashboardBody">加载中...</div>
+  </div>
+</div>
+
+<!-- Graph modal (cytoscape 跨服务事件关联图) -->
+<div class="full-modal" id="graphModal">
+  <div class="full-modal-inner">
+    <div class="header">
+      <h2>🔗 跨服务事件关联图</h2>
+      <button class="close-btn" onclick="closeModal('graphModal')">关闭</button>
+    </div>
+    <div class="body">
+      <div class="graph-controls">
+        <select id="graphIdx"></select>
+        <input id="graphVal" placeholder="value (例 pi_xxx)" style="flex:1">
+        <input id="graphDepth" type="number" placeholder="depth" value="3" style="width:80px">
+        <button onclick="loadGraph()">查询关联图</button>
+        <span id="graphStats" style="color:#6b7280;font-size:12px"></span>
+      </div>
+      <div id="graphCanvas"></div>
+    </div>
+  </div>
+</div>
+
+<!-- DSL templates modal -->
+<div class="full-modal" id="dslModal">
+  <div class="full-modal-inner">
+    <div class="header">
+      <h2>🧩 DSL 模板 — 不写代码生成 Starlark</h2>
+      <button class="close-btn" onclick="closeModal('dslModal')">关闭</button>
+    </div>
+    <div class="body">
+      <div class="dsl-grid">
+        <div class="dsl-templates" id="dslTplList"></div>
+        <div class="dsl-form" id="dslForm">
+          <p style="color:#6b7280;text-align:center;margin-top:80px">← 请先在左侧选择一个模板</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Live SSE event stream modal -->
+<div class="full-modal" id="liveModal">
+  <div class="full-modal-inner">
+    <div class="header">
+      <h2>📡 Live 事件流 — 实时 binlog</h2>
+      <button class="close-btn" onclick="closeModal('liveModal');stopLive()">关闭</button>
+    </div>
+    <div class="body">
+      <div class="live-status">
+        <span class="dot" id="liveDot"></span>
+        <span id="liveState">未连接</span>
+        <span style="flex:1"></span>
+        <span style="color:#6b7280;font-size:11px">已收 <span id="liveCount">0</span> 条</span>
+        <button onclick="clearLive()" style="background:#6b7280;color:#fff;border:0;padding:4px 10px;border-radius:4px;cursor:pointer">清屏</button>
+      </div>
+      <div id="liveLog"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Diffs search modal (跨 Redis + ClickHouse + Jaeger 跳转) -->
+<div class="full-modal" id="diffsModal">
+  <div class="full-modal-inner">
+    <div class="header">
+      <h2>🔍 Diffs · 冷热分层查询 + Trace 跳转</h2>
+      <button class="close-btn" onclick="closeModal('diffsModal')">关闭</button>
+    </div>
+    <div class="body">
+      <div class="graph-controls">
+        <select id="diffState">
+          <option value="">所有状态</option>
+          <option value="open">open</option>
+          <option value="acked">acked</option>
+          <option value="resolved">resolved</option>
+          <option value="false_positive">false_positive</option>
+          <option value="expired">expired</option>
+        </select>
+        <input id="diffScript" placeholder="script_id 过滤" style="width:200px">
+        <input id="diffType" placeholder="type 过滤" style="width:150px">
+        <input id="diffFrom" type="datetime-local" style="width:180px">
+        <input id="diffTo" type="datetime-local" style="width:180px">
+        <button onclick="loadDiffs()">查询</button>
+        <span id="diffsStats" style="color:#6b7280;font-size:12px"></span>
+      </div>
+      <div id="diffsTable" style="overflow:auto"></div>
     </div>
   </div>
 </div>
@@ -549,6 +725,407 @@ document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); validate(); }
   if ((e.metaKey || e.ctrlKey) && e.key === 'd') { e.preventDefault(); dryRun(); }
 });
+
+// ─── 全局：generic full-modal 打开/关闭 ─────────────────────────────────
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+// ─── Dashboard view ───────────────────────────────────────────────────
+async function openDashboard() {
+  openModal('dashboardModal');
+  const body = document.getElementById('dashboardBody');
+  body.innerHTML = '<p style="text-align:center;color:#6b7280;padding:40px">加载中...</p>';
+  try {
+    const [stats, cdcStatus] = await Promise.all([
+      api('/api/v1/diffs/_stats'),
+      api('/api/v1/cdc/status?detailed=1').catch(() => ({})),
+    ]);
+    body.innerHTML = renderDashboard(stats, cdcStatus);
+  } catch (e) {
+    body.innerHTML = '<p style="color:#dc2626">加载失败: ' + e + '</p>';
+  }
+}
+
+function renderDashboard(stats, cdcStatus) {
+  const c = stats.counts || {};
+  const open = c.open || 0;
+  const acked = c.acked || 0;
+  const resolved = c.resolved || 0;
+  const fp = c.false_positive || 0;
+  const today = stats.last_24h_new || 0;
+  const cdcSummary = cdcStatus.summary || {};
+
+  let html = '<div class="kpi-grid">';
+  html += kpiCard('Open', open, open > 0 ? 'alert' : 'ok');
+  html += kpiCard('Acked', acked);
+  html += kpiCard('Resolved', resolved, 'ok');
+  html += kpiCard('False Positive', fp);
+  html += kpiCard('今日新增', today, today > 50 ? 'danger' : '');
+  html += '</div>';
+
+  // CDC status row
+  if (cdcSummary.total) {
+    html += '<div class="kpi-grid" style="grid-template-columns:repeat(4,1fr)">';
+    html += kpiCard('CDC Runners', cdcSummary.total);
+    html += kpiCard('Running', cdcSummary.running, cdcSummary.running === cdcSummary.total ? 'ok' : 'alert');
+    html += kpiCard('Stopped', cdcSummary.stopped, cdcSummary.stopped > 0 ? 'danger' : '');
+    html += kpiCard('Max Lag', (cdcSummary.max_lag_seconds||0).toFixed(1) + 's',
+      cdcSummary.max_lag_seconds > 60 ? 'danger' : cdcSummary.max_lag_seconds > 5 ? 'alert' : 'ok');
+    html += '</div>';
+  }
+
+  // by_type / by_script bar lists
+  html += '<div class="kpi-row-2col">';
+  html += '<div><h3 style="font-size:14px;margin-bottom:8px">Top Diff Types</h3>' + renderBars(stats.by_type) + '</div>';
+  html += '<div><h3 style="font-size:14px;margin-bottom:8px">Top Scripts</h3>' + renderBars(stats.by_script) + '</div>';
+  html += '</div>';
+
+  html += '<p style="margin-top:16px;font-size:11px;color:#9ca3af">Generated at ' + (stats.generated_at || '') + '</p>';
+  return html;
+}
+
+function kpiCard(label, value, kind) {
+  return '<div class="kpi-card ' + (kind || '') + '"><div class="label">' + label + '</div><div class="value">' + value + '</div></div>';
+}
+
+function renderBars(items) {
+  if (!items || !items.length) return '<p style="color:#9ca3af;font-size:12px">无数据</p>';
+  const max = Math.max(...items.map(x => x.count), 1);
+  return '<div class="kpi-bar-list">' +
+    items.map(x => {
+      const w = Math.max(2, (x.count / max) * 280);
+      return '<div class="bar"><div class="name">' + x.key + '</div>' +
+        '<div class="fill" style="width:' + w + 'px"></div>' +
+        '<div class="count">' + x.count + '</div></div>';
+    }).join('') + '</div>';
+}
+
+// ─── Graph view (cytoscape.js) ────────────────────────────────────────
+let cyInstance = null;
+async function openGraph() {
+  openModal('graphModal');
+  // 第一次打开时初始化 idx 选项
+  const sel = document.getElementById('graphIdx');
+  if (!sel.options.length) {
+    try {
+      const r = await api('/api/v1/meta/idx_keys');
+      (r.index_keys || ['pi_id', 'order_id', 'merchant_id', 'trace_id']).forEach(k => {
+        const opt = document.createElement('option');
+        opt.value = k; opt.textContent = k;
+        sel.appendChild(opt);
+      });
+    } catch (e) {
+      ['pi_id', 'order_id', 'merchant_id', 'trace_id'].forEach(k => {
+        const opt = document.createElement('option');
+        opt.value = k; opt.textContent = k; sel.appendChild(opt);
+      });
+    }
+  }
+}
+
+async function loadGraph() {
+  const idx = document.getElementById('graphIdx').value;
+  const val = document.getElementById('graphVal').value.trim();
+  const depth = document.getElementById('graphDepth').value || 3;
+  if (!val) { alert('请填 value (如 pi_xxx)'); return; }
+  try {
+    const r = await api('/api/v1/graph?index=' + encodeURIComponent(idx) +
+      '&value=' + encodeURIComponent(val) + '&depth=' + depth);
+    document.getElementById('graphStats').textContent =
+      r.stats.nodes + ' 节点 / ' + r.stats.edges + ' 边 (depth=' + r.stats.depth_reached + ')' +
+      (r.stats.truncated ? ' [TRUNCATED]' : '');
+    renderGraphCytoscape(r);
+  } catch (e) {
+    document.getElementById('graphStats').textContent = '加载失败: ' + e;
+  }
+}
+
+function renderGraphCytoscape(g) {
+  const container = document.getElementById('graphCanvas');
+  // 按服务名分配颜色
+  const palette = ['#1677ff', '#10b981', '#f59e0b', '#dc2626', '#8b5cf6', '#06b6d4', '#ec4899'];
+  const svcColor = {};
+  let cIdx = 0;
+  (g.nodes || []).forEach(n => {
+    if (!svcColor[n.svc]) { svcColor[n.svc] = palette[cIdx % palette.length]; cIdx++; }
+  });
+  const elements = [];
+  (g.nodes || []).forEach(n => {
+    elements.push({
+      data: {
+        id: n.id,
+        label: n.svc + '\\n' + n.table + '\\n' + n.pk,
+        color: svcColor[n.svc],
+        title: JSON.stringify(n.data, null, 2),
+      },
+    });
+  });
+  (g.edges || []).forEach(e => {
+    elements.push({ data: { source: e.src, target: e.dst, label: e.via } });
+  });
+  if (cyInstance) cyInstance.destroy();
+  cyInstance = cytoscape({
+    container, elements, layout: { name: 'breadthfirst', directed: false, spacingFactor: 1.5 },
+    style: [
+      { selector: 'node',
+        style: {
+          'background-color': 'data(color)',
+          'label': 'data(label)',
+          'text-wrap': 'wrap',
+          'color': '#fff',
+          'font-size': 10,
+          'text-halign': 'center',
+          'text-valign': 'center',
+          'width': 90, 'height': 60,
+          'shape': 'roundrectangle',
+          'border-width': 1, 'border-color': '#fff',
+        } },
+      { selector: 'edge',
+        style: {
+          'curve-style': 'bezier',
+          'line-color': '#9ca3af',
+          'target-arrow-color': '#9ca3af',
+          'target-arrow-shape': 'triangle',
+          'label': 'data(label)',
+          'font-size': 9,
+          'color': '#4b5563',
+          'text-background-color': '#fff',
+          'text-background-opacity': 0.8,
+          'text-background-padding': 2,
+        } },
+    ],
+  });
+  cyInstance.on('tap', 'node', evt => {
+    const n = evt.target.data();
+    alert(n.id + '\\n\\n' + n.title);
+  });
+}
+
+// ─── DSL templates view ───────────────────────────────────────────────
+let dslTemplatesCache = null;
+async function openTemplates() {
+  openModal('dslModal');
+  if (!dslTemplatesCache) {
+    const r = await api('/api/v1/dsl/templates');
+    dslTemplatesCache = r.templates || [];
+  }
+  const list = document.getElementById('dslTplList');
+  list.innerHTML = dslTemplatesCache.map(t =>
+    '<div class="tpl" data-id="' + t.id + '"><div class="name">' + t.name + '</div>' +
+    '<div class="desc">' + t.description + '</div></div>'
+  ).join('');
+  list.querySelectorAll('.tpl').forEach(el => {
+    el.onclick = () => selectTemplate(el.dataset.id);
+  });
+}
+
+function selectTemplate(id) {
+  document.querySelectorAll('#dslTplList .tpl').forEach(el => {
+    el.classList.toggle('active', el.dataset.id === id);
+  });
+  const t = dslTemplatesCache.find(x => x.id === id);
+  const form = document.getElementById('dslForm');
+  let html = '<h3 style="font-size:14px">' + t.name + '</h3>';
+  html += '<p style="font-size:12px;color:#6b7280">' + t.description + '</p>';
+  t.fields.forEach(f => {
+    let input;
+    if (f.type === 'select') {
+      input = '<select name="' + f.name + '">' +
+        f.options.map(o => '<option value="' + o + '">' + o + '</option>').join('') + '</select>';
+    } else if (f.type === 'number') {
+      input = '<input type="number" name="' + f.name + '" placeholder="' + (f.hint || '') + '" value="' + (f.default || '') + '">';
+    } else {
+      input = '<input type="text" name="' + f.name + '" placeholder="' + (f.hint || '') + '" value="' + (f.default || '') + '">';
+    }
+    html += '<div class="field"><label>' + f.label + (f.required ? ' *' : '') + '</label>' + input + '</div>';
+    if (f.hint) html += '<div class="field"><span></span><span class="hint">' + f.hint + '</span></div>';
+  });
+  html += '<div class="footer">' +
+    '<button onclick="renderTemplate(\\'' + id + '\\')">生成代码 → 编辑器</button>' +
+    '<button class="secondary" onclick="closeModal(\\'dslModal\\')">取消</button></div>';
+  form.innerHTML = html;
+}
+
+async function renderTemplate(id) {
+  const form = document.getElementById('dslForm');
+  const params = {};
+  form.querySelectorAll('input,select').forEach(inp => {
+    params[inp.name] = inp.value;
+  });
+  try {
+    const r = await apiPost('/api/v1/dsl/render', { template_id: id, params });
+    if (r.error) { alert('生成失败: ' + r.error); return; }
+    // 把代码塞进 Monaco editor + 关闭 modal
+    if (window.editor) {
+      editorValue.set(r.code);
+      // starter 名字也覆盖一下
+      document.getElementById('metaName').value = id + ' (从模板生成)';
+    }
+    closeModal('dslModal');
+    status('✓ 模板代码已填入编辑器，调整后保存', 'ok');
+  } catch (e) {
+    alert('生成失败: ' + e);
+  }
+}
+
+// ─── Live SSE stream ──────────────────────────────────────────────────
+let sseSource = null;
+let sseCount = 0;
+function openLive() {
+  openModal('liveModal');
+  startLive();
+}
+
+function startLive() {
+  if (sseSource) return;
+  document.getElementById('liveState').textContent = '连接中...';
+  document.getElementById('liveDot').classList.remove('connected');
+  sseSource = new EventSource('/api/v1/events/stream');
+  sseSource.addEventListener('connect', e => {
+    document.getElementById('liveState').textContent = '已连接';
+    document.getElementById('liveDot').classList.add('connected');
+  });
+  sseSource.addEventListener('binlog', e => {
+    sseCount++;
+    document.getElementById('liveCount').textContent = sseCount;
+    let data;
+    try { data = JSON.parse(e.data); } catch { data = { raw: e.data }; }
+    const log = document.getElementById('liveLog');
+    const div = document.createElement('div');
+    div.className = 'ev';
+    const ts = new Date().toISOString().slice(11, 23);
+    div.innerHTML = '<span class="ts">' + ts + '</span>' +
+      '<span class="svc">' + (data.svc || '?') + '</span>/<span class="table">' + (data.table || '?') + '</span> ' +
+      '<span class="op">' + (data.op || '?') + '</span> pk=<span class="pk">' + (data.pk || '?') + '</span>';
+    log.appendChild(div);
+    // 保留最近 500 条
+    while (log.children.length > 500) log.removeChild(log.firstChild);
+    log.scrollTop = log.scrollHeight;
+  });
+  sseSource.onerror = () => {
+    document.getElementById('liveState').textContent = '连接断开';
+    document.getElementById('liveDot').classList.remove('connected');
+    // 浏览器自动重连
+  };
+}
+
+function stopLive() {
+  if (sseSource) { sseSource.close(); sseSource = null; }
+  document.getElementById('liveState').textContent = '未连接';
+  document.getElementById('liveDot').classList.remove('connected');
+}
+
+function clearLive() {
+  document.getElementById('liveLog').innerHTML = '';
+  sseCount = 0;
+  document.getElementById('liveCount').textContent = '0';
+}
+
+// ─── Diffs search (跨 Redis hot + ClickHouse cold + Jaeger 跳) ────────
+async function openDiffs() {
+  openModal('diffsModal');
+  // 默认查最近 7d（Redis hot）
+  const now = new Date();
+  const from = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+  document.getElementById('diffFrom').value = toLocalInput(from);
+  document.getElementById('diffTo').value = toLocalInput(now);
+  loadDiffs();
+}
+
+function toLocalInput(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) +
+    'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+async function loadDiffs() {
+  const params = new URLSearchParams();
+  const st = document.getElementById('diffState').value;
+  const sc = document.getElementById('diffScript').value.trim();
+  const ty = document.getElementById('diffType').value.trim();
+  const from = document.getElementById('diffFrom').value;
+  const to = document.getElementById('diffTo').value;
+  if (st) params.set('state', st);
+  if (sc) params.set('script_id', sc);
+  if (ty) params.set('type', ty);
+  if (from) params.set('from', from + ':00');
+  if (to) params.set('to', to + ':00');
+  params.set('limit', '200');
+  document.getElementById('diffsTable').innerHTML = '<p style="text-align:center;color:#6b7280;padding:20px">查询中...</p>';
+  try {
+    const r = await api('/api/v1/diffs/_search?' + params.toString());
+    document.getElementById('diffsStats').textContent =
+      r.total + ' 条 (热=' + r.hot_count + ' 冷=' + r.cold_count + ')';
+    renderDiffsTable(r);
+  } catch (e) {
+    // archiver 没配置时返 501 → 降级 hot only via /api/v1/diffs?state=
+    if ((e + '').indexOf('501') >= 0 || (e + '').indexOf('Not Implemented') >= 0) {
+      document.getElementById('diffsStats').textContent = '冷归档未启用 — 仅查 hot 7d';
+      try {
+        const r2 = await api('/api/v1/diffs?state=' + (st || 'open') + '&limit=200');
+        const fake = { diffs: r2.diffs || [], hot_count: (r2.diffs || []).length, cold_count: 0 };
+        renderDiffsTable(fake);
+      } catch (e2) {
+        document.getElementById('diffsTable').innerHTML = '<p style="color:#dc2626">查询失败: ' + e2 + '</p>';
+      }
+      return;
+    }
+    document.getElementById('diffsTable').innerHTML = '<p style="color:#dc2626">查询失败: ' + e + '</p>';
+  }
+}
+
+function renderDiffsTable(r) {
+  const diffs = r.diffs || [];
+  if (!diffs.length) {
+    document.getElementById('diffsTable').innerHTML = '<p style="text-align:center;color:#9ca3af;padding:30px">无匹配 diff</p>';
+    return;
+  }
+  // 简单 tier 标记：cold 按 cold_count 推断，但准确做法是按 updated_at < now-7d 标 cold
+  const hotCutoff = Date.now() - 7 * 24 * 3600 * 1000;
+  let html = '<table class="diffs-table"><thead><tr>' +
+    '<th>ID</th><th>State</th><th>Type</th><th>Script</th><th>Key</th>' +
+    '<th>Updated</th><th>Trace</th></tr></thead><tbody>';
+  diffs.forEach(d => {
+    const upd = d.updated_at ? new Date(d.updated_at) : null;
+    const tier = upd && upd.getTime() < hotCutoff ? 'cold' : 'hot';
+    const tid = (d.detail && (d.detail.trace_id || d.detail.x_trace_id)) || '';
+    html += '<tr>' +
+      '<td class="col-id">' + d.id + '</td>' +
+      '<td class="col-state ' + d.state + '">' + d.state +
+        '<span class="tier-badge ' + tier + '">' + tier + '</span></td>' +
+      '<td>' + (d.type || '') + '</td>' +
+      '<td>' + (d.script_id || '') + '</td>' +
+      '<td>' + (d.key || '') + '</td>' +
+      '<td>' + (upd ? upd.toISOString().slice(0,19).replace('T',' ') : '') + '</td>' +
+      '<td>' + (tid
+        ? '<button class="jaeger-btn" onclick="jumpJaeger(\\'' + d.id + '\\')">🔍 Jaeger</button>'
+        : '<button class="jaeger-btn" disabled title="此 diff 无 trace_id">🔍 Jaeger</button>') +
+      '</td>' +
+      '</tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('diffsTable').innerHTML = html;
+}
+
+async function jumpJaeger(diffID) {
+  try {
+    const r = await api('/api/v1/diffs/' + encodeURIComponent(diffID) + '/trace');
+    if (!r.jaeger_url) {
+      alert('该 diff 无 trace_id：' + (r.reason || '请脚本作者在 detail 里加 trace_id'));
+      return;
+    }
+    window.open(r.jaeger_url, '_blank', 'noopener');
+  } catch (e) {
+    alert('跳转失败: ' + e);
+  }
+}
+
+// ─── Bind 4 navbar buttons ─────────────────────────────────────────────
+document.getElementById('btnDashboard').onclick = openDashboard;
+document.getElementById('btnDiffs').onclick = openDiffs;
+document.getElementById('btnGraph').onclick = openGraph;
+document.getElementById('btnTemplates').onclick = openTemplates;
+document.getElementById('btnLive').onclick = openLive;
 
 // ─── Monaco 初始化 + Starlark 自动补齐 ────────────────────────────────
 //

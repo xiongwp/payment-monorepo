@@ -50,6 +50,7 @@ import (
 	"go.uber.org/zap"
 
 	"reconcile-system/internal/api"
+	"reconcile-system/internal/archive"
 	"reconcile-system/internal/cdc"
 	"reconcile-system/internal/diffstate"
 	"reconcile-system/internal/meta"
@@ -57,6 +58,7 @@ import (
 	"reconcile-system/internal/scheduler"
 	"reconcile-system/internal/script"
 	"reconcile-system/internal/store"
+	"reconcile-system/internal/tracing"
 )
 
 func main() {
@@ -212,6 +214,15 @@ func main() {
 		// diffstate.CreateOpen 每条 diff 一条 + 立即过自动规则
 		for i, d := range r.Diffs {
 			detailMap, _ := d.Detail.(map[string]any)
+			// 自动把 detail.event.indexes.trace_id 提到 detail.trace_id 顶层 —
+			// 这样 ClickHouse 归档 / admin web 详情面板都能直接读到。
+			if detailMap != nil {
+				if _, ok := detailMap["trace_id"]; !ok {
+					if tid := tracing.ExtractTraceID(detailMap); tid != "" {
+						detailMap["trace_id"] = tid
+					}
+				}
+			}
 			ds := diffstate.Diff{
 				ID:        diffstate.IDFor(r.ScriptID, r.RunID, d.Type, d.Key, i),
 				ScriptID:  r.ScriptID, RunID: r.RunID,
@@ -241,6 +252,34 @@ func main() {
 		}
 	}()
 
+	// ─── 冷热分层归档（ClickHouse）─────────────────────────
+	// 配置走 env：CLICKHOUSE_URL / CLICKHOUSE_USER / CLICKHOUSE_PASSWORD / CLICKHOUSE_DB。
+	// 未设置 → 跳过归档，admin /api/v1/diffs/_search 返 501（hot only 模式）。
+	var archiver *archive.Archiver
+	if chURL := os.Getenv("CLICKHOUSE_URL"); chURL != "" {
+		acfg := archive.DefaultConfig()
+		acfg.URL = chURL
+		if v := os.Getenv("CLICKHOUSE_DB"); v != "" {
+			acfg.Database = v
+		}
+		acfg.User = os.Getenv("CLICKHOUSE_USER")
+		acfg.Password = os.Getenv("CLICKHOUSE_PASSWORD")
+		archiver = archive.New(acfg, rdb, diffStore, logger)
+		// 启动时建表（IF NOT EXISTS 幂等）
+		if err := archiver.EnsureSchema(ctx); err != nil {
+			logger.Warn("clickhouse schema ensure failed (archive disabled)",
+				zap.Error(err))
+			archiver = nil
+		} else {
+			go archiver.Run(ctx)
+			logger.Info("archive worker started",
+				zap.String("ch_url", acfg.URL),
+				zap.Duration("hot_window", acfg.HotWindow))
+		}
+	} else {
+		logger.Info("CLICKHOUSE_URL not set — cold archive disabled (hot-only mode)")
+	}
+
 	// ─── HTTP server（admin web + API + metrics）──────────────
 	mux := http.NewServeMux()
 	apiSrv := api.New(loader, scriptStore, searcher, cdcMgr, logger)
@@ -248,6 +287,11 @@ func main() {
 		WithDLQ(dlq, dispatcher).
 		WithPublisher(publisher).
 		WithRedis(rdb)
+	if archiver != nil {
+		apiSrv.WithArchiver(archiver)
+	}
+	// OTel/Jaeger 配置 — 没设 JAEGER_UI_URL 时仍可调端点（返空 URL）
+	apiSrv.WithTracing(tracing.FromEnv())
 	apiSrv.Mount(mux)
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {

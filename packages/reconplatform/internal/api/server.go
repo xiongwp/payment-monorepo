@@ -38,6 +38,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"reconcile-system/internal/archive"
 	"reconcile-system/internal/backfill"
 	"reconcile-system/internal/cdc"
 	"reconcile-system/internal/diffstate"
@@ -46,6 +47,7 @@ import (
 	"reconcile-system/internal/notifier"
 	"reconcile-system/internal/script"
 	"reconcile-system/internal/store"
+	"reconcile-system/internal/tracing"
 )
 
 // Server admin web HTTP 入口。
@@ -60,6 +62,8 @@ type Server struct {
 	dispatcher *notifier.Dispatcher  // optional：DLQ replay 用
 	publisher  *cdc.Publisher        // optional：backfill 端点用
 	rdb        redis.UniversalClient // optional：CDC status / SSE 用
+	archiver   *archive.Archiver     // optional：冷热分层归档 + 跨年查询
+	tracingCfg tracing.Config        // OTel/Jaeger 跳转配置（默认空 = 不启用）
 }
 
 // New 构造。
@@ -101,6 +105,18 @@ func (s *Server) WithRedis(r redis.UniversalClient) *Server {
 	return s
 }
 
+// WithArchiver 注 archive client；冷热分层归档 + 跨年查询用。
+func (s *Server) WithArchiver(a *archive.Archiver) *Server {
+	s.archiver = a
+	return s
+}
+
+// WithTracing 注 Jaeger UI URL 配置；diff 详情面板"Open in Jaeger"端点要用。
+func (s *Server) WithTracing(cfg tracing.Config) *Server {
+	s.tracingCfg = cfg
+	return s
+}
+
 // Mount 注册路由到调用方提供的 mux。
 //
 // 注意：这是 admin 入口，调用方应在外层包一道 auth middleware（同
@@ -130,6 +146,11 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/admin/backfill", s.adminBackfill)
 	mux.HandleFunc("/api/v1/diffs/_stats", s.diffStats)
 	mux.HandleFunc("/api/v1/events/stream", s.eventsStream)
+	// 冷热分层 — Redis 7d 热 + ClickHouse 跨年冷
+	mux.HandleFunc("/api/v1/diffs/_search", s.diffsSearch)
+	mux.HandleFunc("/api/v1/diffs/_agg_by_day", s.diffsAggByDay)
+	// OTel：diff trace 关联 + Jaeger 跳转
+	mux.HandleFunc("/api/v1/tracing/jaeger_url", s.tracingJaegerURL)
 	mux.HandleFunc("/admin/", s.editorHTML)
 	mux.HandleFunc("/admin", s.editorHTML)
 }
@@ -370,9 +391,53 @@ func (s *Server) diffsByID(w http.ResponseWriter, r *http.Request) {
 			resp["bad_index"] = badIdx
 		}
 		writeJSON(w, http.StatusOK, resp)
+	case action == "trace" && r.Method == http.MethodGet:
+		// 找 diff 的 trace_id 然后拼 Jaeger URL（admin web "Open in Jaeger" 用）
+		d, err := s.diffStore.Get(r.Context(), id)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		traceID := tracing.ExtractTraceID(d.Detail)
+		resp := map[string]any{
+			"diff_id":  id,
+			"trace_id": traceID,
+		}
+		if traceID == "" {
+			resp["jaeger_url"] = ""
+			resp["reason"] = "diff detail has no trace_id field — script needs to set detail['trace_id']"
+		} else {
+			resp["jaeger_url"] = s.tracingCfg.JaegerURL(traceID)
+		}
+		writeJSON(w, http.StatusOK, resp)
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// tracingJaegerURL GET /api/v1/tracing/jaeger_url?trace_id=xxx
+//
+// Standalone helper：给定 trace_id 直接返 Jaeger URL（前端不依赖 diff store）。
+// 也接 ?service=&lookback_min=N 走 search 模式（admin "看脚本所有出错 trace"）。
+func (s *Server) tracingJaegerURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	q := r.URL.Query()
+	tid := q.Get("trace_id")
+	resp := map[string]any{
+		"trace_id":   tid,
+		"jaeger_url": "",
+	}
+	if tid != "" {
+		resp["jaeger_url"] = s.tracingCfg.JaegerURL(tid)
+	} else if svc := q.Get("service"); svc != "" {
+		lookback := 60
+		fmt.Sscanf(q.Get("lookback_min"), "%d", &lookback)
+		resp["jaeger_url"] = s.tracingCfg.SearchURL(svc, lookback)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ─── /api/v1/admin/dlq[/...] 失败投递重试 ───────────────────────────────
@@ -904,6 +969,132 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]any{"error": err.Error()})
+}
+
+// diffsSearch GET /api/v1/diffs/_search — 跨 Redis(7d 热) + ClickHouse 冷 统一查询。
+//
+// Query params:
+//
+//	from=YYYY-MM-DDTHH:MM:SS  (UTC) — 默认 now-30d
+//	to=YYYY-MM-DDTHH:MM:SS    (UTC) — 默认 now
+//	state=open|acked|...  (空=any)
+//	script_id=<id>            (空=any)
+//	type=<type>               (空=any)
+//	limit=N                    (默认 100，max 500)
+//
+// 返:
+//
+//	{ "diffs": [...], "total": N, "hot_count": A, "cold_count": B,
+//	  "queried_hot": true, "queried_cold": true }
+//
+// 路由：< 7d 走 Redis，> 7d 走 ClickHouse，跨界拼接。
+// archiver 未配置时降级 — 返 501，提示走 /api/v1/diffs（hot only）。
+func (s *Server) diffsSearch(w http.ResponseWriter, r *http.Request) {
+	if s.archiver == nil {
+		http.Error(w, "archiver not configured (set CLICKHOUSE_URL)",
+			http.StatusNotImplemented)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	q := r.URL.Query()
+	opts := archive.SearchOpts{
+		State:    q.Get("state"),
+		ScriptID: q.Get("script_id"),
+		Type:     q.Get("type"),
+	}
+	if v := q.Get("from"); v != "" {
+		t, err := parseFlexTime(v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid from: %w", err))
+			return
+		}
+		opts.From = t
+	}
+	if v := q.Get("to"); v != "" {
+		t, err := parseFlexTime(v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid to: %w", err))
+			return
+		}
+		opts.To = t
+	}
+	if v := q.Get("limit"); v != "" {
+		fmt.Sscanf(v, "%d", &opts.Limit)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	res, err := s.archiver.Search(ctx, opts)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// diffsAggByDay GET /api/v1/diffs/_agg_by_day — ClickHouse 按天聚合（趋势图用）。
+//
+// Query params: from / to / script_id（同上）。
+// 返: { "buckets": { "2025-11-01": 152, ... }, "total": N }
+//
+// 仅查冷数据（>7d）；hot 部分 admin 直接用 stats.go ZCOUNT。
+func (s *Server) diffsAggByDay(w http.ResponseWriter, r *http.Request) {
+	if s.archiver == nil {
+		http.Error(w, "archiver not configured", http.StatusNotImplemented)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	q := r.URL.Query()
+	now := time.Now()
+	from := now.Add(-365 * 24 * time.Hour)
+	to := now
+	if v := q.Get("from"); v != "" {
+		if t, err := parseFlexTime(v); err == nil {
+			from = t
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if t, err := parseFlexTime(v); err == nil {
+			to = t
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	buckets, err := s.archiver.AggByDay(ctx, from, to, q.Get("script_id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	total := 0
+	for _, c := range buckets {
+		total += c
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"buckets": buckets,
+		"total":   total,
+		"from":    from.UTC().Format(time.RFC3339),
+		"to":      to.UTC().Format(time.RFC3339),
+	})
+}
+
+// parseFlexTime 接受 RFC3339 / "2006-01-02 15:04:05" / "2006-01-02"。
+func parseFlexTime(v string) (time.Time, error) {
+	for _, layout := range []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	} {
+		if t, err := time.Parse(layout, v); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unparseable time %q", v)
 }
 
 // zapAdapter 把 *zap.Logger 适配成 script.Logger（kv 形式）。
