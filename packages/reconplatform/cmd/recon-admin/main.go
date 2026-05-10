@@ -165,6 +165,21 @@ func main() {
 	suppressor := notifier.NewSuppressor(rdb, 5*time.Minute)
 	diffStore := diffstate.New(rdb)
 
+	// 自动 ack 规则引擎：CreateOpen 后立即评估，命中规则的 diff 直接 transition
+	// 到 false_positive / resolved，oncall 不打扰。配置走 config-center
+	// reconplatform/auto_rules（JSON list）+ OnChange 热更。
+	autoRules := diffstate.NewRulesEngine(logger)
+	if ccCli != nil {
+		if cv, err := ccCli.Get(ctx, "auto_rules"); err == nil && cv != nil && cv.Value != "" {
+			_ = autoRules.LoadJSON(cv.Value)
+		}
+		ccCli.OnChange("auto_rules", func(v *configcenter.ConfigValue) {
+			if v != nil {
+				_ = autoRules.LoadJSON(v.Value)
+			}
+		})
+	}
+
 	// 注 webhook / 钉钉 / Slack sink — 配置走 config-center
 	// (key=reconplatform/notifier.sinks JSON list)。Hot reload 也接 OnChange。
 	loadSinksFromConfig(ctx, dispatcher, ccCli, logger)
@@ -194,14 +209,19 @@ func main() {
 		}
 		filtered, _ := suppressor.Filter(ctx, nr)
 		dispatcher.Dispatch(ctx, filtered)
-		// diffstate.CreateOpen 每条 diff 一条
+		// diffstate.CreateOpen 每条 diff 一条 + 立即过自动规则
 		for i, d := range r.Diffs {
 			detailMap, _ := d.Detail.(map[string]any)
-			_ = diffStore.CreateOpen(ctx, diffstate.Diff{
+			ds := diffstate.Diff{
 				ID:        diffstate.IDFor(r.ScriptID, r.RunID, d.Type, d.Key, i),
 				ScriptID:  r.ScriptID, RunID: r.RunID,
 				Type: d.Type, Key: d.Key, Detail: detailMap,
-			})
+			}
+			if err := diffStore.CreateOpen(ctx, ds); err != nil {
+				continue
+			}
+			// 立即过自动规则；命中就 Transition 到 false_positive / resolved
+			autoRules.ApplyOnCreate(ctx, diffStore, &ds)
 		}
 	})
 
@@ -224,7 +244,10 @@ func main() {
 	// ─── HTTP server（admin web + API + metrics）──────────────
 	mux := http.NewServeMux()
 	apiSrv := api.New(loader, scriptStore, searcher, cdcMgr, logger)
-	apiSrv.WithDiffStore(diffStore).WithDLQ(dlq, dispatcher)
+	apiSrv.WithDiffStore(diffStore).
+		WithDLQ(dlq, dispatcher).
+		WithPublisher(publisher).
+		WithRedis(rdb)
 	apiSrv.Mount(mux)
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {

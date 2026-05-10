@@ -36,6 +36,9 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/redis/go-redis/v9"
+
+	"reconcile-system/internal/backfill"
 	"reconcile-system/internal/cdc"
 	"reconcile-system/internal/diffstate"
 	"reconcile-system/internal/dsl"
@@ -55,6 +58,8 @@ type Server struct {
 	diffStore  *diffstate.Store     // optional：处置工作流端点用
 	dlq        *notifier.RedisDLQ    // optional：DLQ 端点用
 	dispatcher *notifier.Dispatcher  // optional：DLQ replay 用
+	publisher  *cdc.Publisher        // optional：backfill 端点用
+	rdb        redis.UniversalClient // optional：CDC status / SSE 用
 }
 
 // New 构造。
@@ -84,6 +89,18 @@ func (s *Server) WithDLQ(q *notifier.RedisDLQ, dispatcher *notifier.Dispatcher) 
 	return s
 }
 
+// WithPublisher 注 publisher；backfill 端点要用它把回灌行写 Redis。
+func (s *Server) WithPublisher(p *cdc.Publisher) *Server {
+	s.publisher = p
+	return s
+}
+
+// WithRedis 注 redis client；CDC status 端点 + SSE 用。
+func (s *Server) WithRedis(r redis.UniversalClient) *Server {
+	s.rdb = r
+	return s
+}
+
 // Mount 注册路由到调用方提供的 mux。
 //
 // 注意：这是 admin 入口，调用方应在外层包一道 auth middleware（同
@@ -109,8 +126,75 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	// DSL 模板（运营选模板填参生成 Starlark）
 	mux.HandleFunc("/api/v1/dsl/templates", s.dslTemplates)
 	mux.HandleFunc("/api/v1/dsl/render", s.dslRender)
+	// Backfill / dashboard / SSE
+	mux.HandleFunc("/api/v1/admin/backfill", s.adminBackfill)
+	mux.HandleFunc("/api/v1/diffs/_stats", s.diffStats)
+	mux.HandleFunc("/api/v1/events/stream", s.eventsStream)
 	mux.HandleFunc("/admin/", s.editorHTML)
 	mux.HandleFunc("/admin", s.editorHTML)
+}
+
+// adminBackfill POST /api/v1/admin/backfill
+//
+// Body: {service, dsn, table, pk_col, index_cols, ignore_cols, batch_size,
+//        start_pk, stop_pk, where, where_args}
+//
+// 同步执行（不返回直到 backfill 完成）。生产可能扫几十万行，5h 上限。
+// 调用方建议从 admin web "后台任务" 标签触发，不在 normal request loop。
+func (s *Server) adminBackfill(w http.ResponseWriter, r *http.Request) {
+	if s.publisher == nil {
+		http.Error(w, "publisher not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var spec backfill.Spec
+	if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if spec.Service == "" || spec.DSN == "" || spec.Table == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("service/dsn/table required"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Hour)
+	defer cancel()
+	res := backfill.Run(ctx, &spec, s.publisher, s.logger)
+	writeJSON(w, http.StatusOK, res)
+}
+
+// diffStats GET /api/v1/diffs/_stats — dashboard 数据汇总
+func (s *Server) diffStats(w http.ResponseWriter, r *http.Request) {
+	if s.diffStore == nil {
+		http.Error(w, "diff store not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	limit := 5000
+	if v := r.URL.Query().Get("sample"); v != "" {
+		fmt.Sscanf(v, "%d", &limit)
+	}
+	stats, err := s.diffStore.Stats(r.Context(), limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+// eventsStream GET /api/v1/events/stream — SSE 实时事件流
+func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
+	if s.rdb == nil {
+		http.Error(w, "redis not configured", http.StatusServiceUnavailable)
+		return
+	}
+	hub := NewSSEHub(s.rdb, s.logger)
+	hub.Handle(w, r)
 }
 
 // graphView GET /api/v1/graph?index=pi_id&value=pi_xxx[&depth=3&max_nodes=200]
