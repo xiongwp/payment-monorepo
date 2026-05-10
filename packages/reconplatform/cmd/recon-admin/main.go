@@ -291,10 +291,11 @@ func main() {
 	// External 文件源（SFTP/CSV 银行流水）— sources 走 config-center 拉
 	extMgr := external.NewManager(rdb, logger)
 	if ccCli != nil {
+		ccAdapter := &configCenterAdapter{c: ccCli}
 		var extPayload struct {
 			Sources []external.Source `json:"sources"`
 		}
-		if err := ccCli.GetJSON(ctx, "external.sources", &extPayload); err == nil {
+		if err := ccAdapter.GetJSON(ctx, "external.sources", &extPayload); err == nil {
 			for _, src := range extPayload.Sources {
 				tr, err := external.BuildTransport(src.Transport)
 				if err != nil {
@@ -321,10 +322,11 @@ func main() {
 	// Invariant 声明式恒等检查
 	invEng := invariant.New(rdb, diffStore, logger)
 	if ccCli != nil {
+		ccAdapter := &configCenterAdapter{c: ccCli}
 		var invPayload struct {
 			Invariants []invariant.Spec `json:"invariants"`
 		}
-		if err := ccCli.GetJSON(ctx, "invariants", &invPayload); err == nil && len(invPayload.Invariants) > 0 {
+		if err := ccAdapter.GetJSON(ctx, "invariants", &invPayload); err == nil && len(invPayload.Invariants) > 0 {
 			if err := invEng.LoadSpecs(ctx, invPayload.Invariants); err != nil {
 				logger.Warn("invariants load failed", zap.Error(err))
 			}
