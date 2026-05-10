@@ -164,23 +164,25 @@ WHERE TABLE_SCHEMA NOT IN ('information_schema','mysql','performance_schema','sy
 	}
 	defer rows.Close()
 
-	// 同一 (schema, table) 的列攒到 cols；遇到 break 就 flush 一条 schema JSON。
-	type bucket struct {
-		schema, table string
-		cols          []Column
+	// **分库分表合并**：order_core_db_0.payment_intents_00 / db_1.payment_intents_00
+	// / ... 共 10×N 张物理表合并成一个逻辑 (svc, base_table)。
+	//
+	// 合并策略：
+	//   schema 名取首个看到的（dbg 用）；列定义只存第一次（同一逻辑表所有 shard
+	//   schema 相同，否则上线流程肯定挂了；不一致时后写覆盖更新，记 shard 增量）
+	//   shard_count 累加：admin web 显示 'order-core:payment_intents (10 shards)'
+	type logicalKey struct {
+		service   string
+		baseTable string
 	}
-	var cur *bucket
+	type logical struct {
+		key        logicalKey
+		cols       []Column
+		shardSet   map[string]struct{} // physical_table → 见过的 shard 数
+	}
+	logicals := make(map[logicalKey]*logical)
 	flushed := make([]string, 0, 64)
 	pipe := s.r.Pipeline()
-	flush := func() {
-		if cur == nil || len(cur.cols) == 0 {
-			return
-		}
-		jsonBytes, _ := json.Marshal(cur.cols)
-		key := fmt.Sprintf("recon:meta:schema:%s:%s", src.Service, cur.table)
-		pipe.Set(ctx, key, jsonBytes, 0) // 永久（被新一轮 SyncOnce 覆盖）
-		flushed = append(flushed, src.Service+":"+cur.table)
-	}
 
 	for rows.Next() {
 		var schema, table, name, ctype, nullable, key, comment string
@@ -188,11 +190,20 @@ WHERE TABLE_SCHEMA NOT IN ('information_schema','mysql','performance_schema','sy
 		if err := rows.Scan(&schema, &table, &name, &ctype, &nullable, &key, &comment, &ord); err != nil {
 			return flushed, fmt.Errorf("scan: %w", err)
 		}
-		if cur == nil || cur.schema != schema || cur.table != table {
-			flush()
-			cur = &bucket{schema: schema, table: table}
+		base := baseTableName(table)
+		k := logicalKey{service: src.Service, baseTable: base}
+		lg, ok := logicals[k]
+		if !ok {
+			lg = &logical{key: k, shardSet: map[string]struct{}{}}
+			logicals[k] = lg
 		}
-		cur.cols = append(cur.cols, Column{
+		lg.shardSet[schema+"."+table] = struct{}{}
+		// 列定义只在首次出现的 (schema, table) 上累计；其他 shard 跳过
+		// （ord 从 1 重置 = 新物理表）
+		if ord == 1 && len(lg.cols) > 0 {
+			continue // 已经从首张 shard 拿到列定义，后面 shard 不再追加
+		}
+		lg.cols = append(lg.cols, Column{
 			Name:     name,
 			Type:     ctype,
 			Nullable: nullable == "YES",
@@ -201,7 +212,20 @@ WHERE TABLE_SCHEMA NOT IN ('information_schema','mysql','performance_schema','sy
 			Ord:      ord,
 		})
 	}
-	flush()
+	for k, lg := range logicals {
+		if len(lg.cols) == 0 {
+			continue
+		}
+		jsonBytes, _ := json.Marshal(lg.cols)
+		// 主 schema 写在 base_table 名下（去 shard 后缀）
+		redisKey := fmt.Sprintf("recon:meta:schema:%s:%s", k.service, k.baseTable)
+		pipe.Set(ctx, redisKey, jsonBytes, 0)
+		// shard_count 元信息：admin web 用来显示 '(N shards)'
+		pipe.Set(ctx,
+			fmt.Sprintf("recon:meta:shards:%s:%s", k.service, k.baseTable),
+			fmt.Sprintf("%d", len(lg.shardSet)), 0)
+		flushed = append(flushed, src.Service+":"+k.baseTable)
+	}
 	if err := rows.Err(); err != nil {
 		return flushed, fmt.Errorf("rows: %w", err)
 	}
@@ -280,4 +304,62 @@ func placeholders(n int) string {
 		out = append(out, '?')
 	}
 	return string(out)
+}
+
+// baseTableName 把分库分表的物理表名归一化为逻辑表名。
+//
+// 各服务约定的命名规则：
+//
+//	V1 (现役):  base_table_NN          后缀 2 位数字（00-99）→ 100 shard
+//	V2 (新):    base_table_NN_NNN      后缀 5 位 (db_NN, tbl_NNN)  → 1000 shard
+//	shadow:    base_table_NN_shadow   或 base_table_NN_NNN_shadow → 影子流量
+//
+// 实现：从右往左剥后缀
+//   1. 末尾 _shadow → 剥
+//   2. 末尾 _NNN_NN 或 _NN → 剥
+//
+// 例：
+//	payment_intents_03                → payment_intents
+//	payment_intents_03_shadow         → payment_intents
+//	voucher_07_813                    → voucher
+//	voucher_07_813_shadow             → voucher
+//	leaf_alloc                        → leaf_alloc (无后缀，原样返)
+func baseTableName(table string) string {
+	t := table
+	// 1) 剥 _shadow 后缀
+	const shadowSuf = "_shadow"
+	if len(t) > len(shadowSuf) && t[len(t)-len(shadowSuf):] == shadowSuf {
+		t = t[:len(t)-len(shadowSuf)]
+	}
+	// 2) 循环剥末尾的 _<digits> 段；最多剥 2 段（V2 layout 是 _NN_NNN）
+	for i := 0; i < 2; i++ {
+		idx := -1
+		for j := len(t) - 1; j >= 0; j-- {
+			c := t[j]
+			if c >= '0' && c <= '9' {
+				continue
+			}
+			if c == '_' {
+				idx = j
+			}
+			break
+		}
+		if idx <= 0 {
+			break
+		}
+		// 必须 _ 后全是数字（至少 1 位），否则不是 shard 后缀
+		allDigits := true
+		for j := idx + 1; j < len(t); j++ {
+			c := t[j]
+			if c < '0' || c > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if !allDigits || idx+1 == len(t) {
+			break
+		}
+		t = t[:idx]
+	}
+	return t
 }
