@@ -62,20 +62,27 @@ sources:
       - order_db_8
       - order_db_9
     tables:
-      payment_intents:
+      # NOTE: 实际表名 payment_intent / charge / refund (单数)，且 sharding 后缀
+      # 是 _10..19（按 user_id %100 hash）。canal_impl.go matchTable 用 _*
+      # 后缀做 prefix 匹配。
+      payment_intent_*:
         pk: [id]
         index_columns: [merchant_id, customer_id, user_card_id]
-        ignore_columns: [metadata]   # JSON 字段太大，跳过
-      charges:
+        ignore_columns: [metadata]
+      charge_*:
         pk: [id]
         index_columns: [pi_id, merchant_id]
-      refunds:
+      refund_*:
         pk: [id]
         index_columns: [charge_id, pi_id, merchant_id]
-      webhook_outbox:
+      accounting_outbox_*:
         pk: [id]
         index_columns: [event_id, merchant_id]
-        ignore_columns: [payload]    # webhook payload 可能很大
+        ignore_columns: [payload]
+      inbound_webhook_*:
+        pk: [id]
+        index_columns: [event_id, source]
+        ignore_columns: [raw_body, payload]
 
   # ─── payment-channel ──────────────────────────────────────────
   # 单库部署（按 channel 分表，不分库）。
@@ -111,13 +118,18 @@ sources:
       - paychan_db_8
       - paychan_db_9
     tables:
-      card_charges:
+      # NOTE: 实际表名 acquirer_tx / channel_token / webhook_raw（不是 card_*）。
+      acquirer_tx_*:
         pk: [id]
         index_columns: [pi_id, idempotency_key, adapter]
-      card_refunds:
+      channel_token_*:
         pk: [id]
-        index_columns: [charge_id, pi_id]
-      webhook_inbox:
+        index_columns: [user_id, adapter]
+      webhook_raw_*:
+        pk: [id]
+        index_columns: [adapter, event_id]
+        ignore_columns: [raw_body]
+      webhook_raw_rejected_*:
         pk: [id]
         index_columns: [adapter, event_id]
         ignore_columns: [raw_body]
@@ -157,24 +169,28 @@ sources:
       - accounting_db_8
       - accounting_db_9
     tables:
-      account_transaction:
-        # 100 表 hash 在 schema 内：account_transaction_0 .. account_transaction_99
-        # canal 支持表名通配，patterns 比 tables 字段适合分表场景
-        table_pattern: "account_transaction_\\d+"
+      # NOTE: 改用 _* 后缀触发 canal_impl.go matchTable 的 prefix 模式匹配。
+      # 实际表名：account / account_transaction / accounting_voucher /
+      # batch_order / freeze_compensate_outbox / tcc_transaction / tcc_coordinator /
+      # transaction_order / transaction_order_extra / settlement_outbox。
+      account_transaction_*:
         pk: [id]
         index_columns: [related_pi_id, user_id, business_type, transaction_id]
-      transaction_voucher:
-        table_pattern: "transaction_voucher_\\d+"
+      accounting_voucher_*:
         pk: [id]
         index_columns: [transaction_id, user_id]
-      freeze_compensate_outbox:
-        table_pattern: "freeze_compensate_outbox_\\d+"
+      freeze_compensate_outbox_*:
         pk: [id]
         index_columns: [transaction_id]
-      tcc_record:
-        table_pattern: "tcc_record_\\d+"
+      tcc_transaction_*:
         pk: [id]
         index_columns: [transaction_id, user_id]
+      transaction_order_*:
+        pk: [id]
+        index_columns: [related_pi_id, user_id]
+      account_*:
+        pk: [id]
+        index_columns: [user_id]
 
 # ─── TTL 配置（每张表的 Redis 过期时间）────────────────────────
 # 单独一份 config-center key=reconplatform/cdc.ttl，按 4 级优先级匹配：
