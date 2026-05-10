@@ -349,8 +349,11 @@ func main() {
 						zap.Int("idx", i), zap.Error(err))
 					return // 拒绝整批新配置，保持旧 runner 跑
 				}
-				payload.Sources[i].Password = os.ExpandEnv(payload.Sources[i].Password)
-				payload.Sources[i].User = os.ExpandEnv(payload.Sources[i].User)
+				// ⚠️ 不要用 os.ExpandEnv —— 不支持 bash 风格 ${VAR:-default}，
+				// 会把 "RECON_CDC_PASS:-recon_cdc_pwd" 当变量名找空 → 密码空
+				// → canal 1045 access denied。必须用 cdc 包内自带的兼容函数。
+				payload.Sources[i].Password = cdc.ExpandEnvShellLike(payload.Sources[i].Password)
+				payload.Sources[i].User = cdc.ExpandEnvShellLike(payload.Sources[i].User)
 			}
 			cdcMgr.Reload(ctx, payload.Sources)
 			syncer.Reload(toMetaSources(payload.Sources), cdc.IndexKeysOf(payload.Sources))

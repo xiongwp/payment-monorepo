@@ -35,6 +35,10 @@ import (
 //	$VAR                同 ${VAR}（保留 os.ExpandEnv 行为）
 var bashEnvPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
 
+// ExpandEnvShellLike exported alias for cmd/recon-admin/main.go OnChange path.
+// 之前 OnChange 用 os.ExpandEnv 不支持 ${VAR:-default}，导致 password 空 → 1045。
+func ExpandEnvShellLike(s string) string { return expandEnvShellLike(s) }
+
 func expandEnvShellLike(s string) string {
 	// 先处理 ${VAR:-default} 形式，剩下的 $VAR / ${VAR} 交给 os.ExpandEnv
 	s = bashEnvPattern.ReplaceAllStringFunc(s, func(match string) string {
