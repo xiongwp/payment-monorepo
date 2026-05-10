@@ -37,8 +37,8 @@ func (c *starlarkContext) Hash() (uint32, error) { return 0, fmt.Errorf("recon.C
 // **autocomplete 关键**：editor 通过 /symbols 端点拿这个清单。
 func (c *starlarkContext) AttrNames() []string {
 	return []string{
-		"now", "params",
-		"scan_index", "get_by_index", "get",
+		"now", "now_ms", "params",
+		"scan_index", "get_by_index", "get", "scan",
 		"http_get",
 		"log_info", "log_warn", "log_error",
 	}
@@ -51,6 +51,9 @@ func (c *starlarkContext) Attr(name string) (starlark.Value, error) {
 	switch name {
 	case "now":
 		return starlark.String(c.inner.Now.Format("2006-01-02T15:04:05Z07:00")), nil
+	case "now_ms":
+		// unix milliseconds — catalog 内置脚本算时间窗用得多
+		return starlark.MakeInt64(c.inner.Now.UnixMilli()), nil
 	case "params":
 		return goToStarlark(c.inner.Params), nil
 	case "scan_index":
@@ -59,6 +62,9 @@ func (c *starlarkContext) Attr(name string) (starlark.Value, error) {
 		return starlark.NewBuiltin("ctx.get_by_index", c.getByIndex), nil
 	case "get":
 		return starlark.NewBuiltin("ctx.get", c.get), nil
+	case "scan":
+		// scan(service, table) → 列出该 service+table 的全部 row（最多 5000 条）
+		return starlark.NewBuiltin("ctx.scan", c.scanService), nil
 	case "http_get":
 		return starlark.NewBuiltin("ctx.http_get", c.httpGet), nil
 	case "log_info":
@@ -83,6 +89,18 @@ func (c *starlarkContext) scanIndex(_ *starlark.Thread, _ *starlark.Builtin, arg
 		_ = out.Append(starlark.String(k))
 	}
 	return out, nil
+}
+
+// scanService — ctx.scan(service, table[, limit]) 列该表的所有 row（最多 limit
+// 条，默认 5000）。SCAN 全部 keys 比较慢，慎用 — 大表建议先 get_by_index 缩范围。
+func (c *starlarkContext) scanService(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
+	var service, table string
+	limit := 5000
+	if err := starlark.UnpackArgs("scan", args, nil, "service", &service, "table", &table, "limit?", &limit); err != nil {
+		return nil, err
+	}
+	events := c.inner.ScanService(service, table, limit)
+	return wrapEventList(events), nil
 }
 
 func (c *starlarkContext) getByIndex(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {

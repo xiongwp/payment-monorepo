@@ -108,6 +108,22 @@ func (c *Context) ScanIndex(idxName, prefix string, limit int) []string {
 	return out
 }
 
+// ScanService 列出某 (service, table) 下的全部 row（最多 limit 条）。
+//
+// 脚本里：rows = ctx.scan("order-core", "payment_intent")
+// 实现：SCAN recon:event:<svc>:<table>*:* → GET 每条；O(n)。大表慎用，
+// 优先 get_by_index 缩范围。
+func (c *Context) ScanService(service, table string, limit int) store.EventList {
+	c.stats.Scans++
+	out, err := c.searcher.ScanService(c.Ctx, service, table, limit)
+	if err != nil {
+		c.logger.Warn("scan failed", "svc", service, "table", table, "err", err.Error())
+		c.stats.RedisErrors++
+		return nil
+	}
+	return out
+}
+
 // ─── Diff 输出 API（兼容 yaegi 老风格 ctx.add_diff） ──────────────
 
 // Diff 一条对账差异。Type 是脚本作者自定义的分类 tag（"missing" / "amount_mismatch" 等）。

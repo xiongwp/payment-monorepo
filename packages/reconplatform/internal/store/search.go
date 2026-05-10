@@ -196,6 +196,45 @@ func (s *Searcher) GetEvent(ctx context.Context, service, table, pk string) (*Ev
 	return &e, nil
 }
 
+// ScanService 列出某 (service, table) 下的全部 event row（最多 limit 条）。
+//
+// 实现：SCAN cursor MATCH "recon:evt:<svc>:<table>*:*" + GET 每条。
+// 注意：sharded 表（如 payment_intent_10..19）会自然命中所有 shard。
+// 大表慎用 — 业务侧 100 万 row 全扫要几秒到几十秒。
+func (s *Searcher) ScanService(ctx context.Context, service, table string, limit int) (EventList, error) {
+	if limit <= 0 || limit > 50000 {
+		limit = 5000
+	}
+	pattern := fmt.Sprintf("recon:evt:%s:%s*:*", service, table)
+	out := make(EventList, 0, 100)
+	var cursor uint64
+	for len(out) < limit {
+		keys, next, err := s.r.Scan(ctx, cursor, pattern, 1000).Result()
+		if err != nil {
+			return out, err
+		}
+		for _, key := range keys {
+			raw, err := s.r.Get(ctx, key).Bytes()
+			if err != nil {
+				continue
+			}
+			var e Event
+			if err := json.Unmarshal(raw, &e); err != nil {
+				continue
+			}
+			out = append(out, &e)
+			if len(out) >= limit {
+				return out, nil
+			}
+		}
+		if next == 0 {
+			break
+		}
+		cursor = next
+	}
+	return out, nil
+}
+
 // ScanIndex 遍历某个 idx_name 下所有 value（编辑器搜索框模糊补全 / 脚本扫一段时间用）。
 //
 // 实现：SCAN cursor MATCH "recon:idx:<idx>:<prefix>*" COUNT 1000，去掉前缀返回 value 列表。
