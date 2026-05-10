@@ -35,6 +35,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"reconcile-system/internal/diffstate"
+	"reconcile-system/internal/metrics"
 )
 
 // SearchOpts 跨层查询条件。
@@ -69,6 +70,15 @@ func (a *Archiver) Search(ctx context.Context, opts SearchOpts) (*SearchResult, 
 		opts.From = opts.To.Add(-30 * 24 * time.Hour)
 	}
 	res := &SearchResult{Diffs: []*diffstate.Diff{}}
+	defer func() {
+		tier := "hot"
+		if res.QueriedHot && res.QueriedCold {
+			tier = "mixed"
+		} else if res.QueriedCold {
+			tier = "cold"
+		}
+		metrics.ArchiveSearchTotal.WithLabelValues(tier).Inc()
+	}()
 
 	hotCutoff := time.Now().Add(-a.cfg.HotWindow)
 	// 时间窗与 hot 区间 (hotCutoff, now] 是否有交集

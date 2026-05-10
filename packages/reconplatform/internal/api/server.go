@@ -45,6 +45,7 @@ import (
 	"reconcile-system/internal/dsl"
 	"reconcile-system/internal/graph"
 	"reconcile-system/internal/notifier"
+	"reconcile-system/internal/metrics"
 	"reconcile-system/internal/script"
 	"reconcile-system/internal/store"
 	"reconcile-system/internal/tracing"
@@ -288,9 +289,11 @@ func (s *Server) dslRender(w http.ResponseWriter, r *http.Request) {
 	}
 	code, err := dsl.Render(body.TemplateID, body.Params)
 	if err != nil {
+		metrics.DSLRenderTotal.WithLabelValues(body.TemplateID, "err").Inc()
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	metrics.DSLRenderTotal.WithLabelValues(body.TemplateID, "ok").Inc()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"code":        code,
 		"template_id": body.TemplateID,
@@ -404,10 +407,17 @@ func (s *Server) diffsByID(w http.ResponseWriter, r *http.Request) {
 			"trace_id": traceID,
 		}
 		if traceID == "" {
+			metrics.TracingJaegerLookups.WithLabelValues("miss").Inc()
 			resp["jaeger_url"] = ""
 			resp["reason"] = "diff detail has no trace_id field — script needs to set detail['trace_id']"
 		} else {
-			resp["jaeger_url"] = s.tracingCfg.JaegerURL(traceID)
+			url := s.tracingCfg.JaegerURL(traceID)
+			if url == "" {
+				metrics.TracingJaegerLookups.WithLabelValues("invalid").Inc()
+			} else {
+				metrics.TracingJaegerLookups.WithLabelValues("hit").Inc()
+			}
+			resp["jaeger_url"] = url
 		}
 		writeJSON(w, http.StatusOK, resp)
 	default:

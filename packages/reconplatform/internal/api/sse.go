@@ -33,6 +33,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+
+	"reconcile-system/internal/metrics"
 )
 
 // SSEHub 持有 Redis 连接 + 给 server.go 路由用。
@@ -70,6 +72,10 @@ func (h *SSEHub) Handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
+
+	// 活跃连接 gauge — defer 减保证异常退出也清理
+	metrics.SSEActiveConnections.Inc()
+	defer metrics.SSEActiveConnections.Dec()
 
 	from := r.URL.Query().Get("from")
 	if from == "" {
@@ -127,6 +133,7 @@ func (h *SSEHub) Handle(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					return
 				}
+				metrics.SSEEventsPushed.Inc()
 				from = msg.ID
 			}
 		}

@@ -33,6 +33,8 @@ const editorHTMLContent = `<!doctype html>
       href="https://cdn.jsdelivr.net/npm/monaco-editor@0.46.0/min/vs/editor/editor.main.css">
 <!-- Cytoscape: 跨服务事件关联图 -->
 <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<!-- Chart.js: dashboard 跨年趋势柱状 -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 13px; color: #1f2937; background: #f3f4f6; }
@@ -741,6 +743,8 @@ async function openDashboard() {
       api('/api/v1/cdc/status?detailed=1').catch(() => ({})),
     ]);
     body.innerHTML = renderDashboard(stats, cdcStatus);
+    // 异步加载跨年趋势 — 失败不阻塞主面板
+    loadTrendChart();
   } catch (e) {
     body.innerHTML = '<p style="color:#dc2626">加载失败: ' + e + '</p>';
   }
@@ -780,8 +784,64 @@ function renderDashboard(stats, cdcStatus) {
   html += '<div><h3 style="font-size:14px;margin-bottom:8px">Top Scripts</h3>' + renderBars(stats.by_script) + '</div>';
   html += '</div>';
 
+  // 跨年趋势图 — 走 ClickHouse agg_by_day
+  html += '<div style="margin-top:24px"><h3 style="font-size:14px;margin-bottom:8px">📈 跨年 Diff 趋势 (ClickHouse 冷归档)</h3>';
+  html += '<div id="trendChartWrap" style="height:200px;background:#fafafa;border:1px solid #e5e7eb;border-radius:4px;padding:8px"><canvas id="trendChart"></canvas></div></div>';
+
   html += '<p style="margin-top:16px;font-size:11px;color:#9ca3af">Generated at ' + (stats.generated_at || '') + '</p>';
   return html;
+}
+
+// ─── 跨年趋势 Chart.js（接 ClickHouse agg_by_day）────────────────────
+let trendChartInstance = null;
+async function loadTrendChart() {
+  const wrap = document.getElementById('trendChartWrap');
+  if (!wrap) return;
+  // 默认查最近 90 天
+  const to = new Date();
+  const from = new Date(to.getTime() - 90 * 24 * 3600 * 1000);
+  const params = new URLSearchParams({
+    from: from.toISOString().slice(0, 19),
+    to: to.toISOString().slice(0, 19),
+  });
+  try {
+    const r = await api('/api/v1/diffs/_agg_by_day?' + params.toString());
+    const buckets = r.buckets || {};
+    const days = Object.keys(buckets).sort();
+    if (!days.length) {
+      wrap.innerHTML = '<p style="text-align:center;color:#9ca3af;padding:60px">无冷归档数据 — 启用 CLICKHOUSE_URL + 等 7 天</p>';
+      return;
+    }
+    if (trendChartInstance) trendChartInstance.destroy();
+    const ctx = document.getElementById('trendChart').getContext('2d');
+    trendChartInstance = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: days,
+        datasets: [{
+          label: 'Diffs / day',
+          data: days.map(d => buckets[d]),
+          backgroundColor: 'rgba(22, 119, 255, 0.7)',
+          borderColor: 'rgba(22, 119, 255, 1)',
+          borderWidth: 1,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, ticks: { font: { size: 10 } } },
+          x: { ticks: { font: { size: 9 }, maxRotation: 60, minRotation: 0 } },
+        },
+      },
+    });
+  } catch (e) {
+    if ((e + '').indexOf('501') >= 0 || (e + '').indexOf('Not Implemented') >= 0) {
+      wrap.innerHTML = '<p style="text-align:center;color:#9ca3af;padding:60px">📦 ClickHouse 冷归档未启用 — 设 CLICKHOUSE_URL 后启用</p>';
+    } else {
+      wrap.innerHTML = '<p style="text-align:center;color:#dc2626;padding:60px">趋势加载失败: ' + e + '</p>';
+    }
+  }
 }
 
 function kpiCard(label, value, kind) {

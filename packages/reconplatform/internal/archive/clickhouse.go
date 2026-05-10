@@ -61,6 +61,7 @@ import (
 	"go.uber.org/zap"
 
 	"reconcile-system/internal/diffstate"
+	"reconcile-system/internal/metrics"
 )
 
 // Config ClickHouse HTTP 接入参数。
@@ -196,13 +197,18 @@ func (a *Archiver) archiveOnce(ctx context.Context) {
 		if len(batch) == 0 {
 			continue
 		}
+		t0 := time.Now()
 		if err := a.insertBatch(ctx, batch); err != nil {
+			metrics.ArchiveBatchTotal.WithLabelValues(string(st), "err").Inc()
 			a.log.Warn("archive insert failed",
 				zap.String("state", string(st)),
 				zap.Int("batch_size", len(batch)),
 				zap.Error(err))
 			continue
 		}
+		metrics.ArchiveBatchTotal.WithLabelValues(string(st), "ok").Inc()
+		metrics.ArchiveBatchSize.Observe(float64(len(batch)))
+		metrics.ArchiveInsertSeconds.Observe(time.Since(t0).Seconds())
 		a.log.Info("archive batch ok",
 			zap.String("state", string(st)),
 			zap.Int("count", len(batch)),
