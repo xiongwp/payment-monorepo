@@ -136,6 +136,18 @@ for i in 0 1 2 3 4 5 6 7 8 9; do
       echo "-- ==== card-payment _shadow ===="
       cat "$cp_shadow"
     fi
+    # ── recon_cdc 用户（reconplatform CDC binlog 订阅必需）──
+    # mysql 8.0 默认 caching_sha2_password；canal v1.9 不支持 → 强制
+    # mysql_native_password。密码与 reconplatform RECON_CDC_PASS 对齐。
+    cat <<'RECON_USER'
+
+-- ==== recon_cdc binlog 用户 ====
+CREATE USER IF NOT EXISTS 'recon_cdc'@'%' IDENTIFIED WITH mysql_native_password BY 'recon_cdc_pwd';
+ALTER USER 'recon_cdc'@'%' IDENTIFIED WITH mysql_native_password BY 'recon_cdc_pwd';
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'recon_cdc'@'%';
+GRANT SELECT ON *.* TO 'recon_cdc'@'%';
+FLUSH PRIVILEGES;
+RECON_USER
   } > "$out"
 done
 
@@ -181,6 +193,16 @@ ACCT_META_SHADOW="$ROOT/accounting-system/database/metadb/init/init_shadow.sql"
       cat "$shadow"
     fi
   done
+  # ── recon_cdc 用户（同 N_init.sql；mysql user 表不跨实例需各 shard 单建）──
+  cat <<'RECON_USER'
+
+-- ==== recon_cdc binlog 用户 ====
+CREATE USER IF NOT EXISTS 'recon_cdc'@'%' IDENTIFIED WITH mysql_native_password BY 'recon_cdc_pwd';
+ALTER USER 'recon_cdc'@'%' IDENTIFIED WITH mysql_native_password BY 'recon_cdc_pwd';
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'recon_cdc'@'%';
+GRANT SELECT ON *.* TO 'recon_cdc'@'%';
+FLUSH PRIVILEGES;
+RECON_USER
 } > "$META_OUT"
 
 echo "生成完毕："
