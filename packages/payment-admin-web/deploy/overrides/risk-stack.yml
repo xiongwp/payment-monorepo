@@ -29,6 +29,11 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    # 必须持久化 — 否则重启 zookeeper 拿新 cluster_id，跟 risk_kafka_data 里
+    # 存的老 cluster_id 对不上，触发 InconsistentClusterIdException 启动失败。
+    volumes:
+      - risk_zookeeper_data:/var/lib/zookeeper/data
+      - risk_zookeeper_log:/var/lib/zookeeper/log
 
   risk-kafka:
     image: confluentinc/cp-kafka:7.6.0
@@ -170,6 +175,8 @@ services:
 volumes:
   risk_redis_data:
   risk_kafka_data:
+  risk_zookeeper_data:
+  risk_zookeeper_log:
   risk_etcd_data:
   risk_clickhouse_data:
   risk_nebula_meta:
