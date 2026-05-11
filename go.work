@@ -1,0 +1,23 @@
+// go.work — monorepo workspace 让 8 个新业务包能互相 replace 引用。
+//
+// 注意：本会话内新建 / 扩展的 8 个包用各自 go.mod (独立模块)，避免跟现有
+// 包冲突。其它老包 (accounting-system, order-core 等) 不放本 workspace，
+// 它们各自仍按自己的 module path 工作。
+//
+// 用法：
+//   cd repo root && go work use ./packages/billing-system  # 加新成员
+//   go work sync                                            # 同步
+//   go build reconcile-system/packages/billing-system/...   # 跨包 build
+
+go 1.22
+
+use (
+	./packages/billing-system
+	./packages/payment-gateway
+	./packages/dispute-service
+	./packages/merchant-webhook
+	./packages/refund-engine
+	./packages/kyc-service
+	./packages/audit-log
+	./packages/biz-admin-web
+)

@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>biz-admin · 支付平台运营控制台</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+.tab.active { background: #1677ff; color: white; }
+pre.json { background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 6px; font-size: 12px; max-height: 400px; overflow: auto; }
+.health-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+.health-ok { background: #10b981; }
+.health-down { background: #ef4444; }
+</style>
+</head>
+<body class="bg-gray-50 min-h-screen" x-data="bizAdmin()" x-init="loadHealth(); setInterval(loadHealth, 10000)">
+
+<header class="bg-white shadow-sm border-b border-gray-200">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+    <div>
+      <h1 class="text-lg font-semibold">💳 biz-admin · 支付平台</h1>
+      <p class="text-xs text-gray-500">统一控制台 — 7 业务服务 + 1 对账平台</p>
+    </div>
+    <div class="flex gap-3 text-xs">
+      <template x-for="(status, svc) in health" :key="svc">
+        <span>
+          <span class="health-dot" :class="status.startsWith('ok') ? 'health-ok' : 'health-down'"></span>
+          <span x-text="svc" class="font-mono"></span>
+        </span>
+      </template>
+    </div>
+  </div>
+</header>
+
+<nav class="bg-white border-b border-gray-200 px-4">
+  <div class="max-w-7xl mx-auto flex gap-2 py-2 text-sm">
+    <template x-for="t in tabs" :key="t.id">
+      <button @click="active = t.id" :class="active === t.id ? 'tab active' : ''"
+              class="tab px-3 py-1.5 rounded font-medium hover:bg-blue-50">
+        <span x-text="t.label"></span>
+      </button>
+    </template>
+  </div>
+</nav>
+
+<main class="max-w-7xl mx-auto p-6">
+
+<!-- BILLING -->
+<section x-show="active === 'billing'" x-transition>
+  <h2 class="text-xl font-semibold mb-4">📊 Billing — 商户计费 + 出账</h2>
+  <div class="grid grid-cols-2 gap-6">
+    <div class="bg-white p-5 rounded-lg shadow">
+      <h3 class="font-medium mb-2">Fee 试算 (Dry-run)</h3>
+      <input x-model="billing.input.merchant_id" placeholder="merchant_id" class="border rounded px-2 py-1 w-full mb-2">
+      <input x-model="billing.input.amount_minor" type="number" placeholder="amount_minor (e.g. 10000)" class="border rounded px-2 py-1 w-full mb-2">
+      <input x-model="billing.input.currency" placeholder="currency (USD/PHP)" class="border rounded px-2 py-1 w-full mb-2">
+      <select x-model="billing.input.product" class="border rounded px-2 py-1 w-full mb-2">
+        <option>card_charge</option><option>wallet</option><option>bank_transfer</option>
+      </select>
+      <input x-model="billing.input.region" placeholder="region (PH/US)" class="border rounded px-2 py-1 w-full mb-2">
+      <input x-model="billing.input.channel_adapter" placeholder="channel_adapter (visa/mastercard)" class="border rounded px-2 py-1 w-full mb-2">
+      <button @click="calcFee()" class="bg-blue-600 text-white px-4 py-2 rounded">算 fee →</button>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow">
+      <h3 class="font-medium mb-2">结果</h3>
+      <pre class="json" x-text="JSON.stringify(billing.out, null, 2)"></pre>
+    </div>
+  </div>
+</section>
+
+<!-- PAYMENT GATEWAY -->
+<section x-show="active === 'gateway'" x-transition>
+  <h2 class="text-xl font-semibold mb-4">🚪 Gateway — 卡令牌化 + 智能路由</h2>
+  <div class="grid grid-cols-2 gap-6">
+    <div class="bg-white p-5 rounded-lg shadow">
+      <h3 class="font-medium mb-2">Tokenize 卡</h3>
+      <input x-model="gateway.card.pan" placeholder="PAN (e.g. 4111111111111111)" class="border rounded px-2 py-1 w-full mb-2">
+      <div class="flex gap-2 mb-2">
+        <input x-model.number="gateway.card.expiry_mm" type="number" placeholder="MM" class="border rounded px-2 py-1 w-1/2">
+        <input x-model.number="gateway.card.expiry_yy" type="number" placeholder="YY" class="border rounded px-2 py-1 w-1/2">
+      </div>
+      <input x-model="gateway.card.cvv" placeholder="CVV" class="border rounded px-2 py-1 w-full mb-2">
+      <input x-model="gateway.card.holder_name" placeholder="持卡人姓名" class="border rounded px-2 py-1 w-full mb-2">
+      <button @click="tokenize()" class="bg-blue-600 text-white px-4 py-2 rounded">Tokenize →</button>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow">
+      <h3 class="font-medium mb-2">路由决策</h3>
+      <input x-model="gateway.route.merchant_id" placeholder="merchant_id" class="border rounded px-2 py-1 w-full mb-2">
+      <input x-model.number="gateway.route.amount_minor" type="number" placeholder="amount_minor" class="border rounded px-2 py-1 w-full mb-2">
+      <input x-model="gateway.route.currency" placeholder="currency" class="border rounded px-2 py-1 w-full mb-2">
+      <input x-model="gateway.route.region" placeholder="region" class="border rounded px-2 py-1 w-full mb-2">
+      <input x-model="gateway.route.card_bin" placeholder="card_bin (e.g. 411111)" class="border rounded px-2 py-1 w-full mb-2">
+      <button @click="route()" class="bg-blue-600 text-white px-4 py-2 rounded">Decide →</button>
+    </div>
+  </div>
+  <div class="mt-4 bg-white p-5 rounded-lg shadow">
+    <h3 class="font-medium mb-2">结果</h3>
+    <pre class="json" x-text="JSON.stringify(gateway.out, null, 2)"></pre>
+  </div>
+</section>
+
+<!-- DISPUTE -->
+<section x-show="active === 'dispute'" x-transition>
+  <h2 class="text-xl font-semibold mb-4">⚖️ Dispute — 信用卡争议</h2>
+  <div class="bg-white p-5 rounded-lg shadow mb-4">
+    <h3 class="font-medium mb-2">模拟卡组 chargeback notification</h3>
+    <div class="grid grid-cols-3 gap-2 mb-2">
+      <input x-model="dispute.in.external_id" placeholder="external_id (case_xxx)" class="border rounded px-2 py-1">
+      <input x-model="dispute.in.merchant_id" placeholder="merchant_id" class="border rounded px-2 py-1">
+      <input x-model="dispute.in.charge_id" placeholder="charge_id" class="border rounded px-2 py-1">
+      <input x-model.number="dispute.in.amount_minor" type="number" placeholder="amount_minor" class="border rounded px-2 py-1">
+      <input x-model="dispute.in.currency" placeholder="currency" class="border rounded px-2 py-1">
+      <select x-model="dispute.in.reason" class="border rounded px-2 py-1">
+        <option>fraud</option><option>not_received</option><option>duplicate</option>
+      </select>
+      <select x-model="dispute.in.network" class="border rounded px-2 py-1">
+        <option>visa</option><option>mastercard</option><option>amex</option>
+      </select>
+    </div>
+    <button @click="receiveDispute()" class="bg-blue-600 text-white px-4 py-2 rounded">Ingest →</button>
+  </div>
+  <div class="bg-white p-5 rounded-lg shadow">
+    <h3 class="font-medium mb-2">商户 disputes 列表</h3>
+    <div class="flex gap-2 mb-2">
+      <input x-model="dispute.listMid" placeholder="merchant_id" class="border rounded px-2 py-1 flex-1">
+      <button @click="listDisputes()" class="bg-gray-600 text-white px-4 py-1 rounded">查询</button>
+    </div>
+    <pre class="json" x-text="JSON.stringify(dispute.out, null, 2)"></pre>
+  </div>
+</section>
+
+<!-- REFUND -->
+<section x-show="active === 'refund'" x-transition>
+  <h2 class="text-xl font-semibold mb-4">↩️ Refund — 退款引擎</h2>
+  <div class="bg-white p-5 rounded-lg shadow mb-4">
+    <h3 class="font-medium mb-2">发起退款</h3>
+    <div class="grid grid-cols-2 gap-2 mb-2">
+      <input x-model="refund.in.merchant_id" placeholder="merchant_id" class="border rounded px-2 py-1">
+      <input x-model="refund.in.charge_id" placeholder="charge_id" class="border rounded px-2 py-1">
+      <input x-model.number="refund.in.amount_minor" type="number" placeholder="amount_minor" class="border rounded px-2 py-1">
+      <input x-model.number="refund.in.original_charge_amount_minor" type="number" placeholder="original_amount_minor" class="border rounded px-2 py-1">
+      <input x-model="refund.in.currency" placeholder="currency" class="border rounded px-2 py-1">
+      <select x-model="refund.in.reason" class="border rounded px-2 py-1">
+        <option>customer_request</option><option>duplicate</option><option>fraudulent</option>
+        <option>product_issue</option><option>not_received</option>
+      </select>
+      <select x-model="refund.in.method" class="border rounded px-2 py-1">
+        <option>original_channel</option><option>wallet</option><option>bank_transfer</option>
+      </select>
+      <select x-model="refund.in.requested_by" class="border rounded px-2 py-1">
+        <option>merchant</option><option>customer</option><option>ops</option>
+      </select>
+    </div>
+    <button @click="createRefund()" class="bg-blue-600 text-white px-4 py-2 rounded">Request →</button>
+  </div>
+  <div class="bg-white p-5 rounded-lg shadow">
+    <h3 class="font-medium mb-2">结果</h3>
+    <pre class="json" x-text="JSON.stringify(refund.out, null, 2)"></pre>
+  </div>
+</section>
+
+<!-- KYC -->
+<section x-show="active === 'kyc'" x-transition>
+  <h2 class="text-xl font-semibold mb-4">🆔 KYC — 商户审核</h2>
+  <div class="bg-white p-5 rounded-lg shadow mb-4">
+    <h3 class="font-medium mb-2">提交 KYB 申请</h3>
+    <div class="grid grid-cols-2 gap-2 mb-2">
+      <input x-model="kyc.in.merchant_id" placeholder="merchant_id" class="border rounded px-2 py-1">
+      <input x-model="kyc.in.business_name" placeholder="business_name" class="border rounded px-2 py-1">
+      <input x-model="kyc.in.business_number" placeholder="business_number (BR)" class="border rounded px-2 py-1">
+      <input x-model="kyc.in.business_country" placeholder="country (PH/SG/CN)" class="border rounded px-2 py-1">
+      <input x-model="kyc.in.industry_code" placeholder="MCC (5411)" class="border rounded px-2 py-1">
+      <input x-model.number="kyc.in.expected_gmv_month" type="number" placeholder="expected_gmv_month (minor)" class="border rounded px-2 py-1">
+    </div>
+    <button @click="createKYC()" class="bg-blue-600 text-white px-4 py-2 rounded">Submit →</button>
+  </div>
+  <div class="bg-white p-5 rounded-lg shadow">
+    <h3 class="font-medium mb-2">结果</h3>
+    <pre class="json" x-text="JSON.stringify(kyc.out, null, 2)"></pre>
+  </div>
+</section>
+
+<!-- MERCHANT WEBHOOK -->
+<section x-show="active === 'webhook'" x-transition>
+  <h2 class="text-xl font-semibold mb-4">📡 Webhook — 商户出站</h2>
+  <div class="bg-white p-5 rounded-lg shadow mb-4">
+    <h3 class="font-medium mb-2">注册 webhook endpoint</h3>
+    <div class="grid grid-cols-2 gap-2 mb-2">
+      <input x-model="webhook.in.merchant_id" placeholder="merchant_id" class="border rounded px-2 py-1">
+      <input x-model="webhook.in.url" placeholder="https://merchant.com/webhook" class="border rounded px-2 py-1">
+      <input x-model="webhook.in.event_types" placeholder="event_types (CSV)" class="border rounded px-2 py-1 col-span-2">
+    </div>
+    <button @click="registerWebhook()" class="bg-blue-600 text-white px-4 py-2 rounded">Register →</button>
+  </div>
+  <div class="bg-white p-5 rounded-lg shadow">
+    <h3 class="font-medium mb-2">结果（注意 signing_secret 只显示一次）</h3>
+    <pre class="json" x-text="JSON.stringify(webhook.out, null, 2)"></pre>
+  </div>
+</section>
+
+<!-- AUDIT LOG -->
+<section x-show="active === 'audit'" x-transition>
+  <h2 class="text-xl font-semibold mb-4">📜 Audit Log — 全局审计哈希链</h2>
+  <div class="grid grid-cols-2 gap-6 mb-4">
+    <div class="bg-white p-5 rounded-lg shadow">
+      <h3 class="font-medium mb-2">查询日志</h3>
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <input x-model="audit.in.service" placeholder="service" class="border rounded px-2 py-1">
+        <input x-model="audit.in.actor_email" placeholder="actor_email" class="border rounded px-2 py-1">
+        <input x-model="audit.in.action" placeholder="action" class="border rounded px-2 py-1">
+        <input x-model="audit.in.resource_type" placeholder="resource_type" class="border rounded px-2 py-1">
+      </div>
+      <button @click="auditSearch()" class="bg-blue-600 text-white px-4 py-2 rounded">Search →</button>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow">
+      <h3 class="font-medium mb-2">链校验</h3>
+      <p class="text-xs text-gray-500 mb-2">完整 hash chain 校验，1h 也自动跑一次。</p>
+      <button @click="auditVerify()" class="bg-purple-600 text-white px-4 py-2 rounded">Verify Chain →</button>
+      <a href="/api/audit/audit/export?format=csv" target="_blank" class="ml-2 inline-block bg-gray-600 text-white px-4 py-2 rounded text-sm">📥 Export CSV</a>
+    </div>
+  </div>
+  <div class="bg-white p-5 rounded-lg shadow">
+    <pre class="json" x-text="JSON.stringify(audit.out, null, 2)"></pre>
+  </div>
+</section>
+
+<!-- E2E DEMO -->
+<section x-show="active === 'e2e'" x-transition>
+  <h2 class="text-xl font-semibold mb-4">🎬 E2E Demo — 一键跨服务流程</h2>
+  <div class="bg-white p-5 rounded-lg shadow">
+    <p class="text-sm mb-3">
+      演示完整流程: <b>Tokenize 卡 → Charge → Refund → Webhook 通知 → Billing 记 fee_event(refund) → Audit 留痕</b>
+    </p>
+    <button @click="runE2E()" class="bg-purple-600 text-white px-4 py-2 rounded">▶ Run Full Demo</button>
+    <div class="mt-4">
+      <template x-for="step in e2e.log" :key="step.idx">
+        <div class="border-l-2 pl-3 my-2" :class="step.ok ? 'border-green-500' : 'border-red-500'">
+          <div class="text-sm font-medium" x-text="step.label"></div>
+          <pre class="json text-xs mt-1" x-text="JSON.stringify(step.result, null, 2)"></pre>
+        </div>
+      </template>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script>
+function bizAdmin() {
+  return {
+    active: 'billing',
+    health: {},
+    tabs: [
+      { id: 'billing', label: '📊 Billing' },
+      { id: 'gateway', label: '🚪 Gateway' },
+      { id: 'dispute', label: '⚖️ Dispute' },
+      { id: 'refund', label: '↩️ Refund' },
+      { id: 'kyc', label: '🆔 KYC' },
+      { id: 'webhook', label: '📡 Webhook' },
+      { id: 'audit', label: '📜 Audit' },
+      { id: 'e2e', label: '🎬 E2E Demo' },
+    ],
+
+    billing: {
+      input: { merchant_id: 'mer_demo', amount_minor: 10000, currency: 'PHP',
+               product: 'card_charge', region: 'PH', channel_adapter: 'visa',
+               ref_id: 'pi_demo_' + Date.now(), event_type: 'charge' },
+      out: null,
+    },
+    gateway: {
+      card: { pan: '4111111111111111', expiry_mm: 12, expiry_yy: 30, cvv: '123', holder_name: 'Alice Demo' },
+      route: { merchant_id: 'mer_demo', amount_minor: 10000, currency: 'PHP', region: 'PH', card_bin: '411111', product: 'card_charge' },
+      out: null,
+    },
+    dispute: {
+      in: { external_id: 'case_' + Date.now(), merchant_id: 'mer_demo', charge_id: 'ch_demo',
+            amount_minor: 10000, currency: 'PHP', reason: 'fraud', network: 'visa' },
+      listMid: 'mer_demo', out: null,
+    },
+    refund: {
+      in: { merchant_id: 'mer_demo', charge_id: 'ch_demo', amount_minor: 5000,
+            original_charge_amount_minor: 10000, currency: 'PHP', reason: 'customer_request',
+            method: 'original_channel', requested_by: 'merchant' },
+      out: null,
+    },
+    kyc: {
+      in: { merchant_id: 'mer_demo', business_name: 'Demo Inc.', business_number: 'BR12345',
+            business_country: 'PH', industry_code: '5411', expected_gmv_month: 100000000 },
+      out: null,
+    },
+    webhook: {
+      in: { merchant_id: 'mer_demo', url: 'https://webhook.site/test',
+            event_types: 'charge.succeeded,refund.completed,dispute.received' },
+      out: null,
+    },
+    audit: { in: { service: '', actor_email: '', action: '', resource_type: '' }, out: null },
+    e2e: { log: [] },
+
+    async loadHealth() {
+      try {
+        const r = await fetch('/health/all');
+        this.health = await r.json();
+      } catch (e) { /* ignore */ }
+    },
+
+    async post(url, body) {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      return r.json();
+    },
+    async get(url) {
+      const r = await fetch(url);
+      return r.json();
+    },
+
+    async calcFee() { this.billing.out = await this.post('/api/billing/api/v1/fee/calc', this.billing.input); },
+    async tokenize() { this.gateway.out = await this.post('/api/gateway/api/v1/tokens', { card: this.gateway.card, type: 'one_time' }); },
+    async route() { this.gateway.out = await this.post('/api/gateway/api/v1/route', this.gateway.route); },
+    async receiveDispute() { this.dispute.out = await this.post('/api/dispute/api/v1/disputes/webhook', this.dispute.in); },
+    async listDisputes() { this.dispute.out = await this.get('/api/dispute/api/v1/disputes?merchant_id=' + this.dispute.listMid); },
+    async createRefund() { this.refund.out = await this.post('/api/refund/api/v1/refunds', this.refund.in); },
+    async createKYC() { this.kyc.out = await this.post('/api/kyc/api/v1/kyc/cases', this.kyc.in); },
+    async registerWebhook() { this.webhook.out = await this.post('/api/webhook/api/v1/endpoints', this.webhook.in); },
+    async auditSearch() {
+      const params = new URLSearchParams();
+      Object.entries(this.audit.in).forEach(([k, v]) => { if (v) params.set(k, v); });
+      this.audit.out = await this.get('/api/audit/api/v1/audit/logs?' + params.toString());
+    },
+    async auditVerify() { this.audit.out = await this.get('/api/audit/api/v1/audit/verify'); },
+
+    async runE2E() {
+      this.e2e.log = [];
+      const log = (label, ok, result) => this.e2e.log.push({ idx: this.e2e.log.length, label, ok, result });
+      const chargeID = 'ch_e2e_' + Date.now();
+      const piID = 'pi_e2e_' + Date.now();
+      const mid = 'mer_e2e_' + Date.now().toString(36);
+
+      // 1. Register webhook
+      try {
+        const r = await this.post('/api/webhook/api/v1/endpoints', { merchant_id: mid, url: 'https://webhook.site/null', event_types: 'refund.created,refund.completed' });
+        log('1. 注册商户 webhook endpoint', r.id > 0, r);
+      } catch (e) { log('1. webhook register', false, { error: e + '' }); }
+
+      // 2. Tokenize card
+      try {
+        const r = await this.post('/api/gateway/api/v1/tokens', { card: { pan: '4111111111111111', expiry_mm: 12, expiry_yy: 30, cvv: '123', holder_name: 'E2E User' }, type: 'one_time' });
+        log('2. tokenize 卡', !!r.id, r);
+      } catch (e) { log('2. tokenize', false, { error: e + '' }); }
+
+      // 3. Route decision
+      try {
+        const r = await this.post('/api/gateway/api/v1/route', { merchant_id: mid, amount_minor: 10000, currency: 'PHP', region: 'PH', card_bin: '411111', product: 'card_charge' });
+        log('3. 智能路由决策', !!(r.primary && r.primary.id), r);
+      } catch (e) { log('3. route', false, { error: e + '' }); }
+
+      // 4. Calc fee
+      try {
+        const r = await this.post('/api/billing/api/v1/fee/calc', { merchant_id: mid, ref_id: piID, event_type: 'charge', amount_minor: 10000, currency: 'PHP', product: 'card_charge', channel_adapter: 'visa', region: 'PH' });
+        log('4. billing 算 fee', r.fee_minor > 0, r);
+      } catch (e) { log('4. fee', false, { error: e + '' }); }
+
+      // 5. Refund (会触发 webhook + billing fee_event(refund))
+      try {
+        const r = await this.post('/api/refund/api/v1/refunds', { merchant_id: mid, charge_id: chargeID, payment_intent_id: piID, amount_minor: 3000, original_charge_amount_minor: 10000, currency: 'PHP', reason: 'customer_request', method: 'original_channel', requested_by: 'merchant', trace_id: 'tr_e2e' });
+        log('5. 发起 refund (触发 webhook + billing)', !!r.id, r);
+      } catch (e) { log('5. refund', false, { error: e + '' }); }
+
+      // 6. Write audit
+      try {
+        const r = await this.post('/api/audit/api/v1/audit/log', { service: 'biz-admin-web', actor_email: 'demo@admin', action: 'e2e.demo.run', resource_type: 'demo', resource_id: chargeID, note: 'E2E demo executed' });
+        log('6. 写 audit_log', !!r.chain_hash, r);
+      } catch (e) { log('6. audit', false, { error: e + '' }); }
+
+      // 7. KYC
+      try {
+        const r = await this.post('/api/kyc/api/v1/kyc/cases', { merchant_id: mid, business_name: 'E2E Demo Co.', business_number: 'BR-E2E-001', business_country: 'PH', industry_code: '5411', expected_gmv_month: 50000000 });
+        log('7. KYC 提交申请', !!r.id, r);
+      } catch (e) { log('7. kyc', false, { error: e + '' }); }
+    },
+  };
+}
+</script>
+
+</body>
+</html>
