@@ -1,0 +1,51 @@
+# Prod override — 跟 values.yaml 比:
+#   - 真 image registry
+#   - replicas 提高
+#   - PDB 严格 (minAvailable 50%)
+#   - mTLS 启
+#   - autoscale 上限更高
+
+global:
+  imageRegistry: "your-registry.com/payments"
+  imageTag: "v1.0.0"
+  imagePullPolicy: IfNotPresent
+  mtls:
+    enabled: true
+  env:
+    RECON_ENV: prod
+
+defaults:
+  replicas: 3
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits:   { cpu: 1, memory: 512Mi }
+  autoscaling:
+    minReplicas: 3
+    maxReplicas: 30
+    targetCPUUtilizationPercentage: 60
+  podDisruptionBudget:
+    minAvailable: 50%
+
+services:
+  payment-gateway:
+    replicas: 5
+    resources:
+      requests: { cpu: 500m, memory: 512Mi }
+      limits:   { cpu: 4, memory: 2Gi }
+    autoscaling:
+      minReplicas: 5
+      maxReplicas: 100
+      targetCPUUtilizationPercentage: 50
+
+ingress:
+  host: admin.payment.production.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rps: "200"          # 商户 200/s 限流
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
+
+trialBalanceCron:
+  schedule: "55 23 * * *"
+  toleranceMinor: 0       # 生产 0 容忍
+
+serviceMonitor:
+  enabled: true

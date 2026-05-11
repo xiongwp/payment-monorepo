@@ -1,0 +1,139 @@
+{{/* 一个文件循环生成 8 service 的 Deployment+Service+HPA+PDB —— 避免 8 文件 */}}
+
+{{- range $name, $svc := .Values.services }}
+{{- $defaults := $.Values.defaults }}
+{{- $replicas := default $defaults.replicas $svc.replicas }}
+{{- $resources := default $defaults.resources $svc.resources }}
+{{- $hpa := default $defaults.autoscaling $svc.autoscaling }}
+{{- $pdb := default $defaults.podDisruptionBudget $svc.podDisruptionBudget }}
+{{- $probes := default $defaults.probes $svc.probes }}
+{{- $port := default 8080 $svc.port }}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "biz.serviceLabels" (dict "name" $name) | nindent 4 }}
+spec:
+  replicas: {{ $replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "biz.serviceLabels" (dict "name" $name) | nindent 8 }}
+      annotations:
+        {{- include "biz.podAnnotations" $ | nindent 8 }}
+    spec:
+      containers:
+        - name: app
+          image: {{ include "biz.fullimage" (dict "global" $.Values.global "service" $svc) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            - { containerPort: {{ $port }}, name: http }
+          env:
+            {{- include "biz.envList" (dict "global" $.Values.global "service" $svc) | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: {{ $probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ default 3 $probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ $probes.readiness.periodSeconds }}
+          livenessProbe:
+            httpGet:
+              path: {{ $probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ default 30 $probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ $probes.liveness.periodSeconds }}
+          resources:
+            {{- toYaml $resources | nindent 12 }}
+          {{- if $.Values.global.mtls.enabled }}
+          volumeMounts:
+            - { name: tls, mountPath: /etc/certs, readOnly: true }
+          {{- end }}
+      {{- if $.Values.global.mtls.enabled }}
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ $name }}-tls
+      {{- end }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "biz.serviceLabels" (dict "name" $name) | nindent 4 }}
+spec:
+  selector:
+    app: {{ $name }}
+  ports:
+    - { port: {{ $port }}, targetPort: http, name: http }
+
+{{- if $hpa.enabled | default true }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ $hpa.minReplicas }}
+  maxReplicas: {{ $hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $hpa.targetCPUUtilizationPercentage }}
+{{- end }}
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  minAvailable: {{ $pdb.minAvailable }}
+  selector:
+    matchLabels:
+      app: {{ $name }}
+
+{{- if $.Values.global.mtls.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $name }}-tls
+  namespace: {{ $.Release.Namespace }}
+spec:
+  secretName: {{ $name }}-tls
+  duration: {{ $.Values.global.mtls.durationDays }}d
+  renewBefore: {{ $.Values.global.mtls.renewBeforeDays }}d
+  commonName: {{ $name }}
+  dnsNames:
+    - {{ $name }}
+    - {{ $name }}.{{ $.Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    name: {{ $.Values.global.mtls.issuer }}
+    kind: ClusterIssuer
+{{- end }}
+
+{{- end }} {{/* range services */}}

@@ -1,0 +1,95 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-ingress
+  namespace: {{ .Release.Namespace }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ .Values.ingress.host }}]
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.ingress.service }}
+                port:
+                  number: 8080
+{{- end }}
+
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-internal-only
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels: { tier: business }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+        {{- range .Values.networkPolicy.allowedNamespaces }}
+        - namespaceSelector:
+            matchLabels: { name: {{ . }} }
+        {{- end }}
+{{- end }}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: biz-config
+  namespace: {{ .Release.Namespace }}
+data:
+  {{- range $k, $v := .Values.global.env }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: biz-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  INTERNAL_TOKEN: {{ .Values.global.internalToken | default "dev-internal-token-CHANGE-IN-PROD" | quote }}
+
+{{- if .Values.trialBalanceCron.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: billing-trial-balance
+  namespace: {{ .Release.Namespace }}
+spec:
+  schedule: {{ .Values.trialBalanceCron.schedule | quote }}
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: trial-balance
+              image: {{ include "biz.fullimage" (dict "global" .Values.global "service" .Values.services.billing-system) }}
+              command: ["/app/trial-balance-runner"]
+              env:
+                - name: TOLERANCE_MINOR
+                  value: {{ .Values.trialBalanceCron.toleranceMinor | quote }}
+                - name: RECON_URL
+                  value: "{{ .Values.externalServices.recon_url }}"
+{{- end }}

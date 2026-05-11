@@ -1,0 +1,179 @@
+# biz-stack default values — 跟 prod values 比适合 dev/staging。
+#
+# 安装:
+#   helm install biz-stack ./biz-stack -n payment --create-namespace
+# 升级:
+#   helm upgrade biz-stack ./biz-stack -n payment -f values-prod.yaml
+# 卸载:
+#   helm uninstall biz-stack -n payment
+
+global:
+  imageRegistry: ""        # 留空走 :local；prod 用 'your-registry.com'
+  imageTag: latest
+  imagePullPolicy: IfNotPresent
+
+  # 通用 env (所有 service 都注入)
+  env:
+    TZ: Asia/Shanghai
+    RECON_ENV: prod
+    BILLING_BASE_CURRENCY: USD
+
+  # 服务间 INTERNAL_TOKEN
+  internalToken: ""        # 生产用 --set-string 或 sealed-secret
+
+  # mTLS 配置（cert-manager 装好后启用）
+  mtls:
+    enabled: false
+    issuer: payment-internal-ca
+    durationDays: 30
+    renewBeforeDays: 10
+
+  # 共享 prom annotations
+  prometheus:
+    scrape: true
+    port: 8080
+    path: /metrics
+
+# 默认资源 — 每 service 可覆盖
+defaults:
+  replicas: 2
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    minAvailable: 1
+  probes:
+    readiness: { path: /healthz, periodSeconds: 5, initialDelaySeconds: 3 }
+    liveness:  { path: /healthz, periodSeconds: 30, initialDelaySeconds: 30 }
+
+# ─── 各 service 配置（覆盖 defaults）────────────────────────────────
+services:
+  billing-system:
+    image: billing-system
+    port: 8080
+    env:
+      BILLING_HTTP_PORT: "8080"
+
+  payment-gateway:
+    image: payment-gateway
+    port: 8080
+    replicas: 3                          # 流量大头多副本
+    resources:
+      requests: { cpu: 200m, memory: 256Mi }
+      limits:   { cpu: 2, memory: 1Gi }
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 20
+      targetCPUUtilizationPercentage: 60  # 更激进 scale
+    env:
+      PAYMENT_GATEWAY_HTTP_PORT: "8080"
+
+  dispute-service:
+    image: dispute-service
+    port: 8080
+    env:
+      DISPUTE_HTTP_PORT: "8080"
+
+  merchant-webhook:
+    image: merchant-webhook
+    port: 8080
+    env:
+      MERCHANT_WEBHOOK_HTTP_PORT: "8080"
+
+  refund-engine:
+    image: refund-engine
+    port: 8080
+    env:
+      REFUND_HTTP_PORT: "8080"
+      MERCHANT_WEBHOOK_URL: http://merchant-webhook:8080
+    depends:
+      - merchant-webhook
+
+  kyc-service:
+    image: kyc-service
+    port: 8080
+    replicas: 1                          # 流量低
+    autoscaling: { maxReplicas: 5 }
+    env:
+      KYC_HTTP_PORT: "8080"
+
+  audit-log:
+    image: audit-log
+    port: 8080
+    env:
+      AUDIT_HTTP_PORT: "8080"
+    resources:
+      limits: { cpu: 500m, memory: 512Mi }    # hash chain 校验吃内存
+
+  biz-admin-web:
+    image: biz-admin-web
+    port: 8080
+    env:
+      BIZ_ADMIN_HTTP_PORT: "8080"
+      BILLING_URL: http://billing-system:8080
+      GATEWAY_URL: http://payment-gateway:8080
+      DISPUTE_URL: http://dispute-service:8080
+      WEBHOOK_URL: http://merchant-webhook:8080
+      REFUND_URL: http://refund-engine:8080
+      KYC_URL: http://kyc-service:8080
+      AUDIT_URL: http://audit-log:8080
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits:   { cpu: 200m, memory: 128Mi }
+    depends:
+      - billing-system
+      - payment-gateway
+      - dispute-service
+      - merchant-webhook
+      - refund-engine
+      - kyc-service
+      - audit-log
+
+# ─── Ingress (admin web 唯一外部入口) ────────────────────────────────
+ingress:
+  enabled: true
+  className: nginx
+  host: admin.payment.example.com
+  tls:
+    enabled: true
+    secretName: biz-admin-tls
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  service: biz-admin-web
+
+# ─── NetworkPolicy ────────────────────────────────────────────────────
+networkPolicy:
+  enabled: true
+  allowedNamespaces:
+    - ingress-nginx
+    - monitoring
+
+# ─── ServiceMonitor (Prometheus Operator) ────────────────────────────
+serviceMonitor:
+  enabled: false   # 如果用 Prom Operator 设 true
+  interval: 30s
+  scrapeTimeout: 10s
+
+# ─── 资金安全 / 日切 trial balance cron ──────────────────────────────
+trialBalanceCron:
+  enabled: true
+  schedule: "55 23 * * *"   # 每日 23:55 UTC
+  toleranceMinor: 0
+
+# ─── 数据库依赖（外部，本 chart 不部署）───────────────────────────────
+externalServices:
+  mysql:
+    enabled: false        # set true 时会建一个 ExternalName Service 指向真 DB
+    host: shared-shard-0.payment-data.svc.cluster.local
+  redis:
+    enabled: false
+    host: risk-redis.payment-data.svc.cluster.local
+  audit_log_url: http://audit-log:8080
+  recon_url: http://reconplatform-admin:8080
