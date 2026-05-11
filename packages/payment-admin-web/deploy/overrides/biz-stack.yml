@@ -1,0 +1,106 @@
+# biz-stack: 5 个新业务包统一拉起 (billing-system + payment-gateway + dispute /
+# merchant-webhook + refund-engine)。共用 payment-stack network 跟其它服务联通。
+#
+# 端口分布 (18090 段, 避开 reconplatform/api-gateway):
+#   18090  billing-system
+#   18091  payment-gateway
+#   18092  dispute-service
+#   18093  merchant-webhook
+#   18094  refund-engine
+#
+# 使用:
+#   docker compose -f overrides/biz-stack.yml -p payment-stack up -d
+#
+# 前置:
+#   1. payment-stack network 已建 (其它 stack 也用)
+#   2. 各包已 build 出 :local image:
+#        for p in billing-system payment-gateway dispute-service merchant-webhook refund-engine; do
+#          (cd packages/$p && docker build -t $p:local .)
+#        done
+
+services:
+  billing-system:
+    image: billing-system:local
+    pull_policy: never
+    container_name: billing-system
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports: ["18090:8080"]
+    environment:
+      TZ: Asia/Shanghai
+      BILLING_HTTP_PORT: "8080"
+      BILLING_BASE_CURRENCY: USD
+      BILLING_RULES_YAML: /app/configs/fee_rules.yaml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  payment-gateway:
+    image: payment-gateway:local
+    pull_policy: never
+    container_name: payment-gateway
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports: ["18091:8080"]
+    environment:
+      TZ: Asia/Shanghai
+      PAYMENT_GATEWAY_HTTP_PORT: "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  dispute-service:
+    image: dispute-service:local
+    pull_policy: never
+    container_name: dispute-service
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports: ["18092:8080"]
+    environment:
+      TZ: Asia/Shanghai
+      DISPUTE_HTTP_PORT: "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  merchant-webhook:
+    image: merchant-webhook:local
+    pull_policy: never
+    container_name: merchant-webhook
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports: ["18093:8080"]
+    environment:
+      TZ: Asia/Shanghai
+      MERCHANT_WEBHOOK_HTTP_PORT: "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  refund-engine:
+    image: refund-engine:local
+    pull_policy: never
+    container_name: refund-engine
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports: ["18094:8080"]
+    environment:
+      TZ: Asia/Shanghai
+      REFUND_HTTP_PORT: "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+networks:
+  payment-stack:
+    external: true
