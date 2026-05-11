@@ -1,13 +1,8 @@
-// go.work — monorepo workspace 让 8 个新业务包能互相 replace 引用。
+// go.work — 仅本会话新建的 9 业务包 (都 go 1.22 兼容)。
 //
-// 注意：本会话内新建 / 扩展的 8 个包用各自 go.mod (独立模块)，避免跟现有
-// 包冲突。其它老包 (accounting-system, order-core 等) 不放本 workspace，
-// 它们各自仍按自己的 module path 工作。
-//
-// 用法：
-//   cd repo root && go work use ./packages/billing-system  # 加新成员
-//   go work sync                                            # 同步
-//   go build reconcile-system/packages/billing-system/...   # 跨包 build
+// 老包 (order-core/payment-core 等) 用 go 1.25/1.26 — 它们自己各自 go.mod 跑就行。
+// 想跑老包：cd packages/<svc> && GOWORK=off go run ./cmd/server
+// 或：先 mv go.work go.work.disabled 临时关 workspace。
 
 go 1.22
 
@@ -21,4 +16,5 @@ use (
 	./packages/audit-log
 	./packages/biz-admin-web
 	./packages/payment-mw
+	./packages/oauth2-server
 )
