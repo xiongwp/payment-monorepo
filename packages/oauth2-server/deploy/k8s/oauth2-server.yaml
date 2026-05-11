@@ -1,0 +1,173 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oauth2-server-config
+  namespace: payment
+data:
+  OAUTH2_ADDR: ":8087"
+  OAUTH2_ISSUER: "https://oauth.payment.example.com"
+  OAUTH2_AUDIENCE: "payment-api"
+  OAUTH2_TOKEN_TTL_SEC: "3600"
+  OAUTH2_KEY_PATH: "/var/lib/oauth2/oauth-rsa.pem"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oauth2-server-secrets
+  namespace: payment
+type: Opaque
+stringData:
+  OAUTH2_ADMIN_TOKEN: "REPLACE_ME_WITH_STRONG_RANDOM_TOKEN"
+  OAUTH2_MYSQL_DSN: "oauth2:CHANGE_PWD@tcp(mysql:3306)/oauth2db?charset=utf8mb4&parseTime=true&loc=UTC"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: oauth2-keys-pvc
+  namespace: payment
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-server
+  namespace: payment
+  labels:
+    app: oauth2-server
+spec:
+  # 注意: PVC RWO 模式下副本数 1。要 >1 必须用 MySQL 持久化 RSA key (rsa_keys 表) 替代 PVC。
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: oauth2-server
+  template:
+    metadata:
+      labels:
+        app: oauth2-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8087"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+      - name: oauth2-server
+        image: ghcr.io/example/oauth2-server:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8087
+          name: http
+        envFrom:
+        - configMapRef: { name: oauth2-server-config }
+        - secretRef: { name: oauth2-server-secrets }
+        volumeMounts:
+        - name: keys
+          mountPath: /var/lib/oauth2
+        readinessProbe:
+          httpGet: { path: /healthz, port: 8087 }
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: { path: /healthz, port: 8087 }
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        resources:
+          requests: { cpu: "100m", memory: "128Mi" }
+          limits:   { cpu: "1000m", memory: "512Mi" }
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+      volumes:
+      - name: keys
+        persistentVolumeClaim:
+          claimName: oauth2-keys-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-server
+  namespace: payment
+  labels:
+    app: oauth2-server
+spec:
+  type: ClusterIP
+  selector:
+    app: oauth2-server
+  ports:
+  - name: http
+    port: 8087
+    targetPort: 8087
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: oauth2-server
+  namespace: payment
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts: [oauth.payment.example.com]
+    secretName: oauth2-server-tls
+  rules:
+  - host: oauth.payment.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: oauth2-server
+            port: { number: 8087 }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: oauth2-server
+  namespace: payment
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: oauth2-server
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: oauth2-server
+  namespace: payment
+spec:
+  podSelector:
+    matchLabels:
+      app: oauth2-server
+  policyTypes: [Ingress, Egress]
+  ingress:
+  # public: token / introspect / jwks 允许集群内任何 svc + ingress
+  - from:
+    - namespaceSelector: {}
+    ports: [{ protocol: TCP, port: 8087 }]
+  egress:
+  - to:
+    - podSelector:
+        matchLabels: { app: mysql }
+    ports: [{ protocol: TCP, port: 3306 }]
+  - to:
+    - namespaceSelector: { matchLabels: { name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
+    ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }

@@ -158,20 +158,11 @@ func (ks *KeyStore) Sign(claims map[string]any) (string, error) {
 	headerJSON, _ := json.Marshal(header)
 	claimsJSON, _ := json.Marshal(claims)
 	signing := b64(headerJSON) + "." + b64(claimsJSON)
-
-	h := sha256.Sum256([]byte(signing))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, kp.PrivateKey, 0, h[:])
+	sig, err := signRS256(kp.PrivateKey, []byte(signing))
 	if err != nil {
 		return "", err
 	}
-	// crypto.SHA256 is hash 0+ ID, but Go's rsa.SignPKCS1v15 第 3 个 param 是 crypto.Hash
-	// 用 crypto.SHA256 (5)。这里偷懒重写：
-	sig2, err := signRS256(kp.PrivateKey, []byte(signing))
-	if err != nil {
-		return "", err
-	}
-	_ = sig
-	return signing + "." + b64(sig2), nil
+	return signing + "." + b64(sig), nil
 }
 
 // Verify 解析 + 验签 + 检 exp/iss/aud。
