@@ -1,0 +1,147 @@
+# 9 业务服务 SLO 定义 + Prometheus burn-rate alerts。
+#
+# 应用:
+#   kubectl apply -f biz-slos.yaml
+#
+# 集成 sloth (slo.dev) 自动生成 Prometheus alert rule:
+#   sloth generate -i biz-slos.yaml -o /etc/prometheus/biz-slo-alerts.yaml
+
+version: prometheus/v1
+service: payment-platform
+slos:
+  # ───────── billing-system ─────────
+  - name: billing-availability
+    objective: 99.95
+    description: "billing-system 5xx rate < 0.05% 30d"
+    sli:
+      events:
+        error_query: sum(rate(biz_http_requests_total{service="billing-system",status=~"5.."}[{{.window}}]))
+        total_query: sum(rate(biz_http_requests_total{service="billing-system"}[{{.window}}]))
+    alerting:
+      name: BillingAvailabilityDegraded
+      labels: { team: payments, severity: critical, service: billing-system }
+      annotations:
+        runbook: "https://runbooks/billing-system#availability"
+      page_alert: { labels: { severity: critical } }
+      ticket_alert: { labels: { severity: warning } }
+
+  - name: billing-latency
+    objective: 99
+    description: "P99 latency < 500ms 30d"
+    sli:
+      events:
+        error_query: |
+          sum(rate(biz_http_request_duration_seconds_bucket{service="billing-system",le="0.5"}[{{.window}}])) -
+          sum(rate(biz_http_request_duration_seconds_bucket{service="billing-system",le="+Inf"}[{{.window}}]))
+        total_query: sum(rate(biz_http_request_duration_seconds_count{service="billing-system"}[{{.window}}]))
+
+  # ───────── payment-gateway (流量大头，SLO 更严) ─────────
+  - name: gateway-availability
+    objective: 99.99
+    description: "payment-gateway 4 个 9 — 商户入口"
+    sli:
+      events:
+        error_query: sum(rate(biz_http_requests_total{service="payment-gateway",status=~"5.."}[{{.window}}]))
+        total_query: sum(rate(biz_http_requests_total{service="payment-gateway"}[{{.window}}]))
+    alerting:
+      name: GatewayAvailabilityCritical
+      labels: { team: payments, severity: critical }
+
+  - name: gateway-latency-p99
+    objective: 99.5
+    description: "P99 < 300ms — 商户支付链路"
+    sli:
+      events:
+        error_query: |
+          sum(rate(biz_http_request_duration_seconds_bucket{service="payment-gateway",le="0.3"}[{{.window}}])) -
+          sum(rate(biz_http_request_duration_seconds_bucket{service="payment-gateway",le="+Inf"}[{{.window}}]))
+        total_query: sum(rate(biz_http_request_duration_seconds_count{service="payment-gateway"}[{{.window}}]))
+
+  # ───────── refund-engine ─────────
+  - name: refund-completion-time
+    objective: 99
+    description: "refund.requested → refund.completed < 2min 99% 7d"
+    sli:
+      events:
+        error_query: histogram_quantile(0.99, sum(rate(refund_completion_seconds_bucket[{{.window}}])) by (le)) > 120
+        total_query: 1
+
+  - name: refund-availability
+    objective: 99.9
+    sli:
+      events:
+        error_query: sum(rate(biz_http_requests_total{service="refund-engine",status=~"5.."}[{{.window}}]))
+        total_query: sum(rate(biz_http_requests_total{service="refund-engine"}[{{.window}}]))
+
+  # ───────── dispute-service ─────────
+  - name: dispute-deadline-compliance
+    objective: 100
+    description: "0 disputes 过 deadline 未提交 (合规硬指标)"
+    sli:
+      events:
+        error_query: dispute_overdue_count
+        total_query: 1
+    alerting:
+      name: DisputeOverdueAny
+      labels: { severity: critical, page: legal }
+
+  # ───────── merchant-webhook ─────────
+  - name: webhook-delivery
+    objective: 99
+    description: "webhook 1h 内投递成功率 > 99%"
+    sli:
+      events:
+        error_query: sum(rate(webhook_delivery_total{status="delivered"}[1h]))
+        total_query: sum(rate(webhook_delivery_total[1h]))
+
+  - name: webhook-dlq-zero
+    objective: 100
+    description: "进 DLQ 数应该接近 0 — 任意一笔进 DLQ 都 alert"
+    sli:
+      events:
+        error_query: sum(rate(webhook_delivery_total{status="dlq"}[5m])) > 0
+        total_query: 1
+    alerting:
+      name: WebhookDLQEntry
+      labels: { severity: warning, team: payments }
+
+  # ───────── kyc-service ─────────
+  - name: kyc-auto-approve-rate
+    objective: 70
+    description: "low-risk 商户自动 approve 占比 >= 70% (efficiency 指标)"
+    sli:
+      events:
+        error_query: sum(rate(kyc_cases_total{status="approved", reviewer="system"}[{{.window}}]))
+        total_query: sum(rate(kyc_cases_total{status="approved"}[{{.window}}]))
+
+  # ───────── audit-log ─────────
+  - name: audit-chain-integrity
+    objective: 100
+    description: "hash chain 0 中断"
+    sli:
+      events:
+        error_query: audit_chain_verify_failures_total
+        total_query: 1
+    alerting:
+      name: AuditChainTampered
+      labels: { severity: critical, page: security, page: legal }
+
+  # ───────── reconplatform ─────────
+  - name: recon-cdc-lag
+    objective: 99
+    description: "CDC binlog lag < 60s 99% 24h"
+    sli:
+      events:
+        error_query: max(recon_cdc_lag_seconds) > 60
+        total_query: 1
+
+  - name: recon-unresolved-p0-zero
+    objective: 100
+    description: "P0 diff 未处理数 = 0"
+    sli:
+      events:
+        error_query: recon_diff_open{severity="P0"} > 0
+        total_query: 1
+    alerting:
+      name: ReconUnresolvedP0
+      labels: { severity: critical, page: payments_oncall }
