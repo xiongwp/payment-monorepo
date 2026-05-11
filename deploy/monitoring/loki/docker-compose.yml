@@ -1,0 +1,51 @@
+# Loki + Promtail 集中日志栈。
+#
+# 启动:
+#   docker compose -f deploy/monitoring/loki/docker-compose.yml up -d
+#
+# 接 Grafana:
+#   Settings → Data sources → Add Loki → URL: http://loki:3100
+#
+# 查询 (Grafana Explore):
+#   {service="order-core"} |= "error"
+#   {service=~".+"} |~ "merchant=mer_001"
+#   {service="oauth2-server"} | json | level="error"
+#   rate({service="payment-gateway"} |~ "5xx" [5m])
+
+services:
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: loki
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports: ["3100:3100"]
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  promtail:
+    image: grafana/promtail:2.9.4
+    container_name: promtail
+    restart: unless-stopped
+    networks: [payment-stack]
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - ./promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail-positions:/var/lib/promtail
+    depends_on: [loki]
+
+volumes:
+  loki-data:
+  promtail-positions:
+
+networks:
+  payment-stack:
+    external: true

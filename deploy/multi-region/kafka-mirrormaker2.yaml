@@ -1,0 +1,80 @@
+# Kafka MirrorMaker 2.0 跨 region 双向复制.
+#
+# Topics 复制:
+#   us → eu: payment-events, refund-events, audit-log, outbox
+#   eu → us: 同上 (active-active 友好, 不丢消息)
+#
+# 部署: kubectl apply -f kafka-mirrormaker2.yaml -n kafka
+
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaMirrorMaker2
+metadata:
+  name: payment-mm2
+  namespace: kafka
+spec:
+  version: 3.6.0
+  replicas: 3
+  connectCluster: dr-cluster
+
+  clusters:
+  - alias: primary
+    bootstrapServers: kafka-primary.us-east-1.example.com:9093
+    config:
+      config.storage.replication.factor: 3
+      offset.storage.replication.factor: 3
+      status.storage.replication.factor: 3
+    authentication:
+      type: tls
+      certificateAndKey:
+        secretName: kafka-primary-tls
+        certificate: tls.crt
+        key: tls.key
+
+  - alias: dr-cluster
+    bootstrapServers: kafka-dr.eu-west-1.example.com:9093
+    config:
+      config.storage.replication.factor: 3
+    authentication:
+      type: tls
+      certificateAndKey:
+        secretName: kafka-dr-tls
+        certificate: tls.crt
+        key: tls.key
+
+  mirrors:
+  - sourceCluster: primary
+    targetCluster: dr-cluster
+    sourceConnector:
+      tasksMax: 6
+      config:
+        replication.factor: 3
+        offset-syncs.topic.replication.factor: 3
+        sync.topic.acls.enabled: "true"
+        replication.policy.separator: "__"            # 避免环回, primary.topic → dr-cluster__primary__topic
+        refresh.topics.interval.seconds: "30"
+        consumer.auto.offset.reset: latest             # 不 catch-up 历史 (RPO=now)
+    heartbeatConnector:
+      config:
+        heartbeats.topic.replication.factor: 3
+    checkpointConnector:
+      config:
+        checkpoints.topic.replication.factor: 3
+        sync.group.offsets.enabled: "true"             # consumer group offset 也同步, failover 后接着消费
+        sync.group.offsets.interval.seconds: "10"
+
+    topicsPattern: "payment-events|refund-events|audit-log|outbox-.*"
+    groupsPattern: ".*"
+
+  # 反向 (active-active 时启用; active-passive 可注释)
+  - sourceCluster: dr-cluster
+    targetCluster: primary
+    sourceConnector:
+      tasksMax: 3
+      config:
+        replication.factor: 3
+        replication.policy.separator: "__"
+    topicsPattern: "payment-events|refund-events|audit-log|outbox-.*"
+
+  resources:
+    requests: { cpu: 1, memory: 2Gi }
+    limits:   { cpu: 4, memory: 4Gi }

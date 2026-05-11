@@ -19,7 +19,7 @@ git reset HEAD 2>/dev/null >/dev/null || true
 # ─────────────────────────────────────────────────────────
 # 1. oauth2-server: 完整实现
 # ─────────────────────────────────────────────────────────
-echo "▶ [1/5] oauth2-server"
+echo "▶ [1/7] oauth2-server"
 git add packages/oauth2-server/
 git commit -m "feat(oauth2-server): 完整实现 client_credentials + JWKS + admin
 
@@ -51,7 +51,7 @@ git commit -m "feat(oauth2-server): 完整实现 client_credentials + JWKS + adm
 # ─────────────────────────────────────────────────────────
 # 2. payment-mw: OAuth2 Bearer JWT 支持
 # ─────────────────────────────────────────────────────────
-echo "▶ [2/5] payment-mw"
+echo "▶ [2/7] payment-mw"
 git add packages/payment-mw/oauth_bearer.go packages/payment-mw/mw.go packages/payment-mw/bootstrap.go
 git commit -m "feat(payment-mw): OAuth2 Bearer JWT 验签 + scope RBAC
 
@@ -75,7 +75,7 @@ git commit -m "feat(payment-mw): OAuth2 Bearer JWT 验签 + scope RBAC
 # ─────────────────────────────────────────────────────────
 # 3. OpenAPI 3.0 specs (10 份)
 # ─────────────────────────────────────────────────────────
-echo "▶ [3/5] OpenAPI specs"
+echo "▶ [3/7] OpenAPI specs"
 git add api/
 git commit -m "docs(api): OpenAPI 3.0 specs — 10 服务标准化文档
 
@@ -99,7 +99,7 @@ git commit -m "docs(api): OpenAPI 3.0 specs — 10 服务标准化文档
 # ─────────────────────────────────────────────────────────
 # 4. 集成 demo + rollout docs
 # ─────────────────────────────────────────────────────────
-echo "▶ [4/5] integration demos + docs"
+echo "▶ [4/7] integration demos + docs"
 git add examples/ OAUTH2_ROLLOUT.md
 git commit -m "docs(oauth2): 端到端集成 demo + rollout 计划
 
@@ -123,7 +123,7 @@ OAUTH2_ROLLOUT.md:
 # ─────────────────────────────────────────────────────────
 # 5. deploy 集成 (biz-stack 加 oauth2-server)
 # ─────────────────────────────────────────────────────────
-echo "▶ [5/6] biz-stack compose 集成"
+echo "▶ [5/7] biz-stack compose 集成"
 git add packages/payment-admin-web/deploy/overrides/biz-stack.yml
 git commit -m "feat(deploy): biz-stack 集成 oauth2-server
 
@@ -137,7 +137,7 @@ git commit -m "feat(deploy): biz-stack 集成 oauth2-server
 # ─────────────────────────────────────────────────────────
 # 6. 优化 (metrics / rate-limit / audit / scope / introspect cache)
 # ─────────────────────────────────────────────────────────
-echo "▶ [6/6] OAuth2 生产化优化"
+echo "▶ [6/7] OAuth2 生产化优化"
 git add packages/oauth2-server/internal/metrics/ \
         packages/oauth2-server/internal/ratelimit/ \
         packages/oauth2-server/internal/audit/ \
@@ -188,8 +188,170 @@ git commit -m "feat(oauth2): 生产化 — metrics + rate-limit + audit + scope 
 echo "▶ 注: go.work.disabled / go.work.sum 是 Go 工具自动产物, 已在 .gitignore 应忽略"
 echo "    如果需要忽略, 加 .gitignore: go.work.disabled, go.work.sum"
 
+# ─────────────────────────────────────────────────────────
+# 7. 修复 payment-admin-backend gRPC "no children" 问题
+# ─────────────────────────────────────────────────────────
+echo "▶ [7/7] 修 admin-backend grpc.NewClient 启动顺序问题"
+git add packages/payment-admin-web/backend/cmd/server/main.go \
+        scripts/rebuild-admin-backend.sh
+git commit -m "fix(payment-admin-web): 修 grpc.NewClient 'no children to pick from'
+
+根因:
+- grpc.NewClient(\"host:port\") 默认走 passthrough resolver, 不会
+  re-resolve DNS; 启动顺序错 / 后端容器重启时 picker 卡在空状态.
+- /api/user-merchant/audits 等接口 502 + 'no children to pick from'.
+
+修复:
+- target 自动加 dns:/// 前缀 -> 内置 DNS resolver + idle 重连时
+  re-resolve.
+- healthCheckConfig: backend NOT_SERVING 自动剔除 picker.
+- retryPolicy: UNAVAILABLE 自动重试 3 次 (指数退避), 启动期偶发
+  picker miss 自愈.
+- 两处 grpc.NewClient (etcd-disabled + etcd-empty fallback) 都修.
+
+scripts/rebuild-admin-backend.sh — 重 build + 部署 + 验证脚本."
+
+# ─────────────────────────────────────────────────────────
+# 8. P0 系统能力建设: 日志/合成监控/feature flag/备份/chaos/trace graph
+# ─────────────────────────────────────────────────────────
+echo "▶ [8/9] 系统能力补全 — observability + reliability"
+git add docs/SYSTEM_GAPS_2026Q3.md docs/DR_PLAN.md \
+        deploy/monitoring/loki/ deploy/monitoring/blackbox/ \
+        deploy/monitoring/grafana/ \
+        packages/payment-util/featureflag/ \
+        deploy/backup/ deploy/chaos/ \
+        packages/payment-admin-web/backend/internal/handler/trace_graph.go \
+        packages/payment-admin-web/backend/cmd/server/main.go \
+        tools/trace-viewer/
+git commit -m "feat(platform): observability+reliability — 6 项 P0/P1 能力补全
+
+监控:
+- deploy/monitoring/loki/         Loki + Promtail 集中日志栈 (30d 留存)
+- deploy/monitoring/blackbox/     blackbox-exporter 合成监控 (healthz/oauth-token/TCP/TLS-expiry)
+- deploy/monitoring/grafana/      Grafana datasource provisioning (Loki ⇄ Jaeger 双向跳)
+
+可运维:
+- packages/payment-util/featureflag/  灰度/熔断 SDK
+  * config-center 拉, 10s 热刷, 不重启服务
+  * 一致性 hash 按 merchant_id/user_id 落桶 0-99
+  * include/exclude 白名单, JSON/Bool/Int/String 4 种类型
+  * 12 个单测覆盖
+- tools/trace-viewer/                 输入 trace_id 看 timeline + 服务依赖图 + 关联日志 SPA
+- packages/payment-admin-web/.../trace_graph.go  /api/trace/{id}/graph
+  聚合 Jaeger spans + Loki logs 派生 dependency edges
+
+灾备:
+- deploy/backup/                  自动备份 + 季度恢复演练 cronjob
+  * backup.sh: mysqldump | gzip | s3 cp, push prom metric
+  * restore-drill.sh: ephemeral mysql + verify + checksum
+  * k8s-backup-cronjobs.yaml: 9 库 daily, retention 40 份
+- docs/DR_PLAN.md                 RTO/RPO 表 + RACI + 触发-行动 matrix
+
+chaos:
+- deploy/chaos/                   3 个 chaos-mesh 实验
+  * network-loss-payment-channel: 渠道 50% 丢包验重试
+  * pod-kill-rolling: 30s 随机杀 pod 验副本 HA
+  * db-stall-primary: 主库 1s 延迟验 timeout/异步队列
+  * README.md: GameDay 流程 + RTO/RPO
+
+告警:
+- deploy/alerts/burn-rate.yaml    SLO budget 多窗口 burn rate (fast 14.4× / slow 6×)
+- deploy/alertmanager/routing-tree.yml  按 severity/kind 路由 (page/warn/info/untriaged)
+
+总览: docs/SYSTEM_GAPS_2026Q3.md  5 维度 22 项能力盘点 + P0-P2 路线图"
+
+# ─────────────────────────────────────────────────────────
+# 9. burn-rate + routing-tree (alerts/alertmanager 分目录)
+# ─────────────────────────────────────────────────────────
+echo "▶ [9/9] alert rules + routing"
+git add deploy/alerts/burn-rate.yaml deploy/alertmanager/routing-tree.yml
+git commit -m "feat(alerts): SLO burn-rate + routing tree
+
+- burn-rate.yaml: Google SRE workbook §5 多窗口 burn rate
+  oauth2 + payment-gateway 各 4 个 (5m+1h / 30m+6h / 2h+24h / 6h+3d)
+- routing-tree.yml: severity/kind 分级路由
+  page→PagerDuty (out-of-hours 走二线), warn→Slack, info→静默
+  fund_safety/security 直通财务/security oncall
+  inhibit: ServiceDown 抑制子告警, fast-burn 抑制 slow-burn"
+
+# ─────────────────────────────────────────────────────────
+# 10. P2 系统进阶: async job / dep-graph / pool audit / RUM / blue-green / rollback
+# ─────────────────────────────────────────────────────────
+echo "▶ [10/10] P2 进阶能力"
+git add packages/payment-util/jobqueue/ \
+        packages/payment-admin-web/frontend/rum.js \
+        packages/payment-admin-web/backend/internal/handler/rum_ingest.go \
+        tools/dep-graph/ tools/pool-audit/ \
+        deploy/bluegreen/ \
+        scripts/rollback.sh
+git commit -m "feat(platform): P2 高级运维能力
+
+可扩展:
+- packages/payment-util/jobqueue/   异步任务队列
+  * Client/Server 接口 (queue/MaxRetry/Timeout/Unique/ProcessAt)
+  * MemoryClient 测试用; 生产 WrapAsynqClient 接 Redis-backed asynq
+  * 优先级 queue (critical/default/low) + DLQ + 幂等
+
+监控:
+- packages/payment-admin-web/frontend/rum.js          RUM snippet
+  * Web Vitals (LCP/FID/CLS/TTFB/FCP) + JS error + fetch failure
+  * data-rum-event click track + 慢资源 (>1s) + page view
+  * 5s/20条 自动 batch + visibility-hidden sendBeacon
+- backend/internal/handler/rum_ingest.go              POST /api/rum/ingest
+  * service 白名单 + page ID 脱敏 + Prometheus metrics
+  * rum_web_vital_ms / rum_errors_total / rum_clicks_total / rum_page_views_total
+- tools/dep-graph/main.go                             OTel-derived 服务依赖图
+  * Jaeger /api/dependencies → JSON/DOT/Mermaid 三种输出
+  * k8s CronJob 每小时跑, docs 自动更新
+- tools/pool-audit/main.go                            连接池配置审计
+  * 扫 monorepo 找 sql/redis/http 池配置, 标红反模式
+  * format=text/markdown/json (CI 用 markdown 输出审计报告)
+
+可运维:
+- deploy/bluegreen/                                   Argo Rollouts 蓝绿/canary
+  * oauth2-server-rollout.yaml (blueGreen + preview service)
+  * analysis-template-success-rate.yaml (3 indicator: success/p99/business)
+  * 自动回滚: 3 次连续失败 → abort
+- scripts/rollback.sh                                 一键回滚 + Slack 通知"
+
+# ─────────────────────────────────────────────────────────
+# 11. P2 终: multi-region + CDN + PCI 内部扫描
+# ─────────────────────────────────────────────────────────
+echo "▶ [11/11] multi-region / CDN / PCI"
+git add deploy/multi-region/ deploy/cdn/ \
+        scripts/cdn-deploy.sh scripts/pci-self-check.sh \
+        .github/workflows/security-scan.yml
+git commit -m "feat(platform): multi-region + CDN + PCI 内部扫描
+
+灾备:
+- deploy/multi-region/failover.sh      跨 region failover 一键 (precheck →
+  promote RDS replica → scale DR → DNS cutover → smoke test → Slack 通知)
+- deploy/multi-region/route53-failover.tf  Route53 health-check + 自动 failover
+- deploy/multi-region/kafka-mirrormaker2.yaml  Strimzi MM2 双向复制 + group
+  offset 同步 (failover 后 consumer 接着消费)
+- deploy/multi-region/README.md         拓扑 + 数据复制策略 + RTO/RPO 表 +
+  季度 failover drill SOP
+
+CDN:
+- deploy/cdn/cloudflare.tf              Cloudflare Terraform — 4 个 page rule
+  (immutable .hash.js 1y / *.html 5min / /api/* bypass) + WAF + 全局 rate limit
+- scripts/cdn-deploy.sh                 前端 build → S3 sync (immutable +
+  hashed; html short-cache) → Cloudflare 选择性 purge + smoke test
+
+合规:
+- .github/workflows/security-scan.yml   6 job 安全扫描
+  * trivy (容器 CVE), gitleaks (secrets), gosec (Go 安全), nuclei (web vuln),
+    OWASP ZAP baseline, PCI checklist 自动校验
+- scripts/pci-self-check.sh             PCI DSS v4.0 30 项自查
+  * Req 1 (NetworkPolicy) / 2 (默认凭据) / 3 (PAN 加密) / 4 (TLS 1.2+) /
+    6 (CI scan) / 7 (RBAC scope) / 8 (bcrypt+2FA) / 10 (audit hash chain) /
+    11 (chaos+drill) / 12 (key rotation)
+
+注: PCI ASV 扫描 + 年度 pentest + on-site QSA audit 仍需外采, 本套是 *预防* 内部
+扫描, 减少 ASV 扫描翻车率"
+
 echo ""
 echo "════════════════════════════════════════════"
-echo " ✅ 5 个 commit 完成"
+echo " ✅ 11 个 commit 完成"
 echo "════════════════════════════════════════════"
-git log --oneline -7
+git log --oneline -13

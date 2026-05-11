@@ -1,0 +1,60 @@
+# AnalysisTemplate — 成功率 + p99 latency 双指标。
+#
+# 每 30s 查 Prometheus:
+#   - successRate > 99%  AND  p99Latency < 1s  → 通过
+#   - 任一失败 → counter +1; 累计 3 次失败 → analysis 失败 → rollout abort
+#   - 连续 5 次成功 → analysis 成功 → rollout 进入下一步
+
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+  namespace: payment
+spec:
+  args:
+  - name: service-name
+  - name: prometheus-server
+
+  metrics:
+
+  - name: success-rate
+    interval: 30s
+    successCondition: result[0] >= 0.99
+    failureLimit: 3
+    count: 8
+    provider:
+      prometheus:
+        address: "{{args.prometheus-server}}"
+        query: |
+          sum(rate(http_requests_total{service="{{args.service-name}}", status!~"5.."}[2m]))
+            /
+          sum(rate(http_requests_total{service="{{args.service-name}}"}[2m]))
+
+  - name: p99-latency
+    interval: 30s
+    successCondition: result[0] < 1.0
+    failureLimit: 3
+    count: 8
+    provider:
+      prometheus:
+        address: "{{args.prometheus-server}}"
+        query: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{service="{{args.service-name}}"}[2m])) by (le)
+          )
+
+  # 关键业务指标 — 退款 / 支付服务自定义
+  - name: business-error-budget
+    interval: 60s
+    successCondition: result[0] < 0.001
+    failureLimit: 2
+    count: 5
+    provider:
+      prometheus:
+        address: "{{args.prometheus-server}}"
+        query: |
+          (
+            sum(rate(http_requests_total{service="{{args.service-name}}", status=~"5.."}[5m]))
+              /
+            sum(rate(http_requests_total{service="{{args.service-name}}"}[5m]))
+          )

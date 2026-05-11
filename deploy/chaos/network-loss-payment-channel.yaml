@@ -1,0 +1,37 @@
+# 实验 1: payment-channel → 外部渠道 50% 丢包 5min。
+#
+# Hypothesis (稳态):
+#   退款 / charge 成功率仍 > 90% (重试 + bulkhead 救援)
+#   p99 < 5s (vs. 正常 800ms; SLO 阈值 3s 会临时违反, 自动恢复)
+#   告警: payment_channel_call_failure_rate > 10% 在 2min 内触发
+#
+# 验证目标:
+#   - retry middleware (payment-mw/retry.go) 真的在重试
+#   - circuit breaker (要做的话) 在阈值开启
+#   - bulkhead 防止单一渠道把全服务拖死
+#
+# 清理:
+#   kubectl delete networkchaos network-loss-payment-channel
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-loss-payment-channel
+  namespace: chaos-mesh
+spec:
+  action: loss
+  mode: all
+  selector:
+    namespaces: [payment]
+    labelSelectors:
+      app: payment-channel
+  loss:
+    loss: "50"       # 50% 丢包
+    correlation: "0"
+  direction: to
+  externalTargets:
+  - "api.stripe.com"
+  - "api.adyen.com"
+  - "openapi.alipay.com"
+  - "api.mch.weixin.qq.com"
+  duration: "5m"

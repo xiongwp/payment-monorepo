@@ -1,0 +1,32 @@
+# 实验 3: 主库延迟 1s 持续 3min — 验证读副本读取 + 异步写排队不雪崩。
+#
+# Hypothesis:
+#   读路径 (GetMerchant, ListAudits) 走 read replica, 无影响
+#   同步写路径 latency 上升, 但有 timeout (5s) 保护
+#   异步路径 (audit, outbox) 在 channel buffer 撑过 3min
+#   告警: db_query_p99 > 500ms 触发 sev2
+#
+# 验证目标:
+#   - read/write split (TODO: 当前还没全切, 见 SYSTEM_GAPS_2026Q3.md P2#1)
+#   - timeout interceptor 不让请求堆积 → goroutine 爆炸
+#   - 重试不无限放大 (本地限流 + bulkhead)
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: db-stall-primary
+  namespace: chaos-mesh
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces: [payment]
+    labelSelectors:
+      app: mysql
+      role: primary
+  delay:
+    latency: "1000ms"
+    correlation: "0"
+    jitter: "100ms"
+  direction: to
+  duration: "3m"

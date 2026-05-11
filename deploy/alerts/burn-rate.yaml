@@ -1,0 +1,107 @@
+# SLO Burn-rate alerts — 多窗口 burn rate, Google SRE workbook §5。
+#
+# 核心思想: 不用绝对错误率告警 (太多噪音), 改盯 "错误预算燃烧率"。
+# 一个 30d 99.9% 可用 SLO 给你 43.2min 错误预算。
+# 如果连续 1h 燃烧速度是 14.4× 平均 → 2 天烧光预算 → page。
+#
+# 4 个窗口:
+#   - 5m + 1h    (catch fast burn, page sev1)
+#   - 30m + 6h   (catch slow burn, page sev2)
+#   - 2h + 24h   (warn, slack sev3)
+#   - 6h + 3d    (info)
+#
+# 公式:
+#   burn_rate = error_ratio_短窗 / (1 - SLO)
+#
+# 阈值参考 (SLO 99.9% = 0.001 error budget):
+#   sev1: 14.4× (2% budget / 1h)  → 短窗 5m, 长窗 1h 都超才告 (避免抖动)
+#   sev2: 6×    (5% budget / 6h)
+#   sev3: 3×    (10% budget / 24h)
+#   info: 1×    (30d budget burnt in 30d)
+
+groups:
+
+- name: oauth2-server-slo-burn-rate
+  interval: 30s
+  rules:
+  # 错误率 = 5xx / total (token endpoint 是用户面 critical path)
+  - record: oauth2:token_error_ratio:5m
+    expr: |
+      sum(rate(oauth2_token_issue_total{outcome!~"ok|.*throttled"}[5m]))
+        /
+      sum(rate(oauth2_token_issue_total[5m]))
+  - record: oauth2:token_error_ratio:1h
+    expr: |
+      sum(rate(oauth2_token_issue_total{outcome!~"ok|.*throttled"}[1h]))
+        /
+      sum(rate(oauth2_token_issue_total[1h]))
+  - record: oauth2:token_error_ratio:6h
+    expr: |
+      sum(rate(oauth2_token_issue_total{outcome!~"ok|.*throttled"}[6h]))
+        /
+      sum(rate(oauth2_token_issue_total[6h]))
+  - record: oauth2:token_error_ratio:1d
+    expr: |
+      sum(rate(oauth2_token_issue_total{outcome!~"ok|.*throttled"}[1d]))
+        /
+      sum(rate(oauth2_token_issue_total[1d]))
+
+  - alert: OAuth2TokenBurnRateFast
+    expr: |
+      (oauth2:token_error_ratio:5m  > (14.4 * 0.001))
+      and
+      (oauth2:token_error_ratio:1h  > (14.4 * 0.001))
+    for: 2m
+    labels: { severity: page, slo: oauth2-token-99.9 }
+    annotations:
+      summary: "OAuth2 token endpoint burning error budget 14.4× fast (5m+1h)"
+      description: "2% of 30d budget will burn in 1h at this rate. Page on-call."
+      runbook: "runbooks/oauth2-server.md#fast-burn"
+
+  - alert: OAuth2TokenBurnRateSlow
+    expr: |
+      (oauth2:token_error_ratio:30m > (6 * 0.001))
+      and
+      (oauth2:token_error_ratio:6h  > (6 * 0.001))
+    for: 15m
+    labels: { severity: page, slo: oauth2-token-99.9 }
+    annotations:
+      summary: "OAuth2 token burning 6× over 6h"
+
+  - alert: OAuth2TokenBudgetBurning
+    expr: |
+      (oauth2:token_error_ratio:6h > (3 * 0.001))
+      and
+      (oauth2:token_error_ratio:1d > (3 * 0.001))
+    for: 1h
+    labels: { severity: warn, slo: oauth2-token-99.9 }
+    annotations:
+      summary: "OAuth2 budget burning slowly (3×) — investigate"
+
+# 通用模板: 复制给所有有 SLO 的服务 (refund-engine, payment-gateway, ...)
+# 把 oauth2_token_issue_total → http_request_total{service="X"} 即可。
+
+- name: payment-gateway-slo-burn-rate
+  interval: 30s
+  rules:
+  - record: gw:pi_error_ratio:5m
+    expr: |
+      sum(rate(http_request_duration_seconds_count{service="payment-gateway",status=~"5.."}[5m]))
+        /
+      sum(rate(http_request_duration_seconds_count{service="payment-gateway"}[5m]))
+  - record: gw:pi_error_ratio:1h
+    expr: |
+      sum(rate(http_request_duration_seconds_count{service="payment-gateway",status=~"5.."}[1h]))
+        /
+      sum(rate(http_request_duration_seconds_count{service="payment-gateway"}[1h]))
+
+  - alert: PaymentGatewayBurnRateFast
+    expr: |
+      (gw:pi_error_ratio:5m > (14.4 * 0.001))
+      and
+      (gw:pi_error_ratio:1h > (14.4 * 0.001))
+    for: 2m
+    labels: { severity: page, slo: gateway-pi-99.9 }
+    annotations:
+      summary: "Payment gateway burning budget 14.4× fast"
+      runbook: "runbooks/payment-gateway.md#fast-burn"

@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Trace Graph Viewer</title>
+<style>
+  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+  body { margin: 0; padding: 0; background: #f8f9fb; color: #1a1a2e; font-size: 13px; }
+  header { background: #1a1a2e; color: #fff; padding: 14px 24px; display: flex; gap: 12px; align-items: center; }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  header input { flex: 1; max-width: 520px; padding: 6px 10px; border-radius: 4px; border: 0; font-family: monospace; font-size: 13px; }
+  header button { padding: 6px 16px; border: 0; border-radius: 4px; background: #4040c0; color: #fff; cursor: pointer; font-weight: 500; }
+  header button:hover { background: #5050d0; }
+  header .meta { color: #aab; margin-left: auto; font-family: monospace; font-size: 12px; }
+  main { display: grid; grid-template-columns: 1fr 320px; gap: 0; height: calc(100vh - 56px); }
+  #timeline { padding: 16px; overflow: auto; background: #fff; border-right: 1px solid #e0e2e8; }
+  #sidebar { padding: 16px; overflow: auto; background: #f4f5f7; }
+  .stat { display: flex; gap: 16px; margin-bottom: 16px; padding: 10px; background: #f0f2f5; border-radius: 6px; }
+  .stat .item { display: flex; flex-direction: column; }
+  .stat .item .label { color: #6a7080; font-size: 11px; text-transform: uppercase; }
+  .stat .item .val { font-size: 16px; font-weight: 600; color: #1a1a2e; font-family: monospace; }
+  h2 { font-size: 13px; text-transform: uppercase; color: #6a7080; margin: 16px 0 8px 0; font-weight: 600; letter-spacing: 0.5px; }
+  .span-row { display: grid; grid-template-columns: 180px 1fr; gap: 8px; align-items: center; padding: 3px 0; border-bottom: 1px dashed #eee; }
+  .span-row .label { font-size: 11px; color: #5a5a7a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; }
+  .span-row .bar-track { position: relative; height: 18px; background: #f0f2f5; border-radius: 3px; }
+  .span-row .bar { position: absolute; height: 100%; border-radius: 3px; min-width: 1px; }
+  .span-row .bar.ok { background: #4cb478; }
+  .span-row .bar.err { background: #e04848; }
+  .span-row .bar:hover { opacity: 0.8; cursor: pointer; }
+  .span-row .bar .dur { position: absolute; right: 4px; top: 1px; font-size: 10px; color: #fff; font-family: monospace; white-space: nowrap; }
+  #graph { width: 100%; height: 240px; background: #fff; border-radius: 6px; border: 1px solid #e0e2e8; }
+  .log-line { padding: 6px 8px; border-bottom: 1px solid #e8eaef; font-family: monospace; font-size: 11px; line-height: 1.5; }
+  .log-line .svc { color: #4040c0; font-weight: 500; }
+  .log-line .ts { color: #888; font-size: 10px; }
+  .log-line.error { background: #fef0f0; }
+  .log-line.warn { background: #fef9e7; }
+  .empty { color: #999; padding: 16px; text-align: center; }
+  details > summary { cursor: pointer; padding: 4px 0; color: #4040c0; font-size: 11px; user-select: none; }
+  pre.tags { background: #1a1a2e; color: #aabbcc; padding: 8px; border-radius: 4px; font-size: 11px; overflow: auto; margin: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔍 Trace Graph</h1>
+  <input id="tid" placeholder="paste trace_id (hex 16-32)..." value="">
+  <button id="go">Load</button>
+  <span class="meta" id="meta"></span>
+</header>
+<main>
+  <div id="timeline">
+    <div id="stats"></div>
+    <h2>Service dependency</h2>
+    <svg id="graph"></svg>
+    <h2>Spans timeline</h2>
+    <div id="spans"></div>
+  </div>
+  <aside id="sidebar">
+    <h2>Logs (filtered by trace_id)</h2>
+    <div id="logs" class="empty">输入 trace_id 后加载</div>
+  </aside>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const API_BASE = window.PAYMENT_ADMIN_API || 'http://localhost:19190';
+
+document.getElementById('go').onclick = load;
+document.getElementById('tid').addEventListener('keyup', (e) => {
+  if (e.key === 'Enter') load();
+});
+// URL 参数支持深链
+const params = new URLSearchParams(location.search);
+if (params.get('trace_id')) {
+  $('tid').value = params.get('trace_id');
+  load();
+}
+
+async function load() {
+  const tid = $('tid').value.trim();
+  if (!tid) return;
+  history.replaceState({}, '', '?trace_id=' + tid);
+  $('meta').textContent = 'loading...';
+  $('spans').innerHTML = '';
+  $('logs').innerHTML = '<div class="empty">loading...</div>';
+
+  try {
+    const r = await fetch(`${API_BASE}/api/trace/${tid}/graph`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    const g = await r.json();
+    renderStats(g);
+    renderGraph(g);
+    renderSpans(g);
+    renderLogs(g);
+    $('meta').textContent = `${g.spans.length} spans · ${g.services.length} services · ${g.duration_ms}ms`;
+  } catch (e) {
+    $('meta').textContent = '';
+    $('spans').innerHTML = `<div class="empty" style="color:#e04848">❌ ${e.message}</div>`;
+    $('logs').innerHTML = '';
+  }
+}
+
+function renderStats(g) {
+  $('stats').innerHTML = `<div class="stat">
+    <div class="item"><div class="label">trace_id</div><div class="val">${g.trace_id.slice(0, 16)}…</div></div>
+    <div class="item"><div class="label">total dur</div><div class="val">${g.duration_ms}ms</div></div>
+    <div class="item"><div class="label">spans</div><div class="val">${g.spans.length}</div></div>
+    <div class="item"><div class="label">services</div><div class="val">${g.services.length}</div></div>
+    <div class="item"><div class="label">errors</div><div class="val" style="color:${g.spans.some(s=>s.error)?'#e04848':'#4cb478'}">${g.spans.filter(s=>s.error).length}</div></div>
+    <div class="item"><div class="label">logs</div><div class="val">${g.logs.length}</div></div>
+  </div>`;
+}
+
+function renderSpans(g) {
+  if (!g.spans.length) { $('spans').innerHTML = '<div class="empty">no spans</div>'; return; }
+  const t0 = g.start_ms;
+  const total = g.duration_ms || 1;
+  const colors = {};
+  const palette = ['#4040c0','#c04080','#208878','#c08040','#7848a0','#388848'];
+  g.services.forEach((s,i) => colors[s] = palette[i % palette.length]);
+
+  $('spans').innerHTML = g.spans.map(s => {
+    const left = ((s.start_ms - t0) / total) * 100;
+    const width = Math.max((s.duration_ms / total) * 100, 0.3);
+    const cls = s.error ? 'err' : 'ok';
+    const tagsJson = JSON.stringify({...s.tags, parent: s.parent_id, status: s.status_code}, null, 2);
+    return `<div class="span-row">
+      <span class="label" style="color:${colors[s.service]||'#666'}">${s.service} · ${s.operation}</span>
+      <div class="bar-track">
+        <div class="bar ${cls}" style="left:${left}%;width:${width}%" title="${s.operation} ${s.duration_ms}ms${s.error?' ERROR':''}">
+          <span class="dur">${s.duration_ms}ms</span>
+        </div>
+      </div>
+    </div>
+    <details style="margin:-2px 0 4px 188px">
+      <summary>tags / span_id ${s.span_id.slice(0,8)}…</summary>
+      <pre class="tags">${tagsJson}</pre>
+    </details>`;
+  }).join('');
+}
+
+function renderGraph(g) {
+  const svg = $('graph');
+  svg.innerHTML = '';
+  if (!g.services.length) return;
+  const W = svg.clientWidth || 800, H = 240;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+  // 简易圆形布局
+  const cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 50;
+  const pos = {};
+  g.services.forEach((s, i) => {
+    const a = (i / g.services.length) * 2 * Math.PI - Math.PI / 2;
+    pos[s] = { x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) };
+  });
+
+  // arrowhead defs
+  svg.insertAdjacentHTML('beforeend', `<defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#888"/>
+    </marker>
+  </defs>`);
+
+  // edges
+  for (const e of g.edges) {
+    const a = pos[e.from], b = pos[e.to];
+    if (!a || !b) continue;
+    svg.insertAdjacentHTML('beforeend', `
+      <line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"
+            stroke="#888" stroke-width="${Math.min(1+Math.log2(e.count+1), 4)}" marker-end="url(#arr)"/>
+      <text x="${(a.x+b.x)/2}" y="${(a.y+b.y)/2 - 4}" font-size="10" fill="#888"
+            text-anchor="middle">×${e.count}</text>`);
+  }
+  // nodes
+  for (const s of g.services) {
+    const p = pos[s];
+    svg.insertAdjacentHTML('beforeend', `
+      <circle cx="${p.x}" cy="${p.y}" r="22" fill="#4040c0" stroke="#fff" stroke-width="2"/>
+      <text x="${p.x}" y="${p.y + 4}" text-anchor="middle" font-size="10" fill="#fff" font-weight="600">${s.slice(0, 8)}</text>
+      <text x="${p.x}" y="${p.y + 38}" text-anchor="middle" font-size="11" fill="#1a1a2e">${s}</text>`);
+  }
+}
+
+function renderLogs(g) {
+  if (!g.logs.length) { $('logs').innerHTML = '<div class="empty">no logs (Loki 没找到; 确认 promtail 在跑)</div>'; return; }
+  $('logs').innerHTML = g.logs.map(l => {
+    const cls = (l.level || '').toLowerCase();
+    const ts = new Date(l.ts).toISOString().slice(11, 23);
+    return `<div class="log-line ${cls}">
+      <span class="ts">${ts}</span>
+      <span class="svc">[${l.service}]</span>
+      ${escapeHtml(l.message)}
+    </div>`;
+  }).join('');
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>

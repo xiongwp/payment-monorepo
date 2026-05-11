@@ -1,0 +1,63 @@
+# blackbox-exporter — 黑盒 SLA 探测。
+#
+# 5 个 module 覆盖支付平台的探测场景:
+#   http_2xx        — 通用 healthz, 期望 200
+#   http_post_json  — POST JSON, 验业务 endpoint 真能处理
+#   grpc_health     — gRPC health/v1 协议
+#   tcp_connect     — DB / Redis 等 TCP 端口探活
+#   tls_cert_expiry — mTLS 证书 30 天过期前告警
+
+modules:
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+      valid_status_codes: [200]
+      method: GET
+      fail_if_body_not_matches_regexp: ["ok|healthy|alive"]
+
+  http_post_json:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+      valid_status_codes: [200, 201]
+      method: POST
+      headers:
+        Content-Type: application/json
+        X-Synthetic-Probe: blackbox
+      body: '{"probe":true}'
+
+  http_oauth_token:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+      valid_status_codes: [200]
+      method: POST
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+      body: "grant_type=client_credentials&client_id=svc_synthetic&client_secret=__INJECT__"
+      fail_if_body_not_matches_regexp: ['"access_token":']
+
+  grpc_health:
+    prober: grpc
+    timeout: 5s
+    grpc:
+      tls: false
+      preferred_ip_protocol: ip4
+
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+
+  tls_cert_expiry:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+      method: GET
+      fail_if_not_ssl: true
+      tls_config:
+        insecure_skip_verify: false

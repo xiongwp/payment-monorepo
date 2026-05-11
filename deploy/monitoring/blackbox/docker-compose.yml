@@ -1,0 +1,14 @@
+services:
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports: ["9115:9115"]
+    command: --config.file=/etc/blackbox/blackbox.yml
+    volumes:
+      - ./blackbox.yml:/etc/blackbox/blackbox.yml:ro
+
+networks:
+  payment-stack:
+    external: true

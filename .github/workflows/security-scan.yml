@@ -1,0 +1,162 @@
+# Security scan — 每天 02:00 UTC + 每个 PR 跑。
+#
+# 工具 (开源, 免费):
+#   - trivy:     容器镜像漏洞扫描 (CVE)
+#   - gitleaks:  代码里 secrets 泄漏 (AWS key / private key / token)
+#   - gosec:     Go 代码安全 (sql injection / weak crypto / etc)
+#   - nuclei:    跑 web vulnerability 模板 (XSS / SSRF / open redirect ...)
+#   - zaproxy:   OWASP ZAP baseline scan (HTTP active scan)
+#
+# PCI ASV 扫描必须用 PCI-approved scanner (Qualys/Tenable/Acunetix),
+# 这里只做 *内部预扫描* 提前发现问题, 不替代 ASV.
+
+name: security-scan
+
+on:
+  schedule:
+  - cron: "0 2 * * *"      # 每天 02:00 UTC
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+
+  # ─── 1. 容器镜像 CVE ─────────────────────────────────────
+  image-cve:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image:
+        - oauth2-server
+        - payment-gateway
+        - refund-engine
+        - dispute-service
+        - merchant-webhook
+        - billing-system
+        - kyc-service
+        - audit-log
+        - biz-admin-web
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build image
+      run: docker build -t ${{ matrix.image }}:scan packages/${{ matrix.image }}/
+    - name: Trivy scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ matrix.image }}:scan
+        format: sarif
+        output: trivy-${{ matrix.image }}.sarif
+        severity: CRITICAL,HIGH
+        exit-code: '1'         # fail PR on Critical/High
+        ignore-unfixed: true
+    - uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: "trivy-${{ matrix.image }}.sarif"
+
+  # ─── 2. Secrets 泄漏 ─────────────────────────────────────
+  secrets-leak:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with: { fetch-depth: 0 }
+    - uses: gitleaks/gitleaks-action@v2
+      env:
+        GITLEAKS_CONFIG: .gitleaks.toml
+        GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  # ─── 3. Go 代码安全 ──────────────────────────────────────
+  gosec:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pkg: [oauth2-server, payment-mw, payment-util]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with: { go-version: '1.22' }
+    - run: |
+        go install github.com/securego/gosec/v2/cmd/gosec@latest
+        cd packages/${{ matrix.pkg }}
+        gosec -fmt sarif -out ../../gosec-${{ matrix.pkg }}.sarif \
+          -severity high -confidence high ./... || true
+    - uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: "gosec-${{ matrix.pkg }}.sarif"
+
+  # ─── 4. Web vulnerability templates (nuclei) ────────────
+  nuclei-web:
+    runs-on: ubuntu-latest
+    needs: image-cve
+    steps:
+    - uses: actions/checkout@v4
+    - name: Start app stack
+      run: |
+        docker compose -f packages/payment-admin-web/stack/docker-compose.yml \
+          -f packages/payment-admin-web/deploy/overrides/biz-stack.yml up -d
+        sleep 30
+    - name: Nuclei scan
+      uses: projectdiscovery/nuclei-action@main
+      with:
+        target: |
+          http://localhost:18091/
+          http://localhost:18087/
+          http://localhost:18099/
+        templates: |
+          cves,
+          vulnerabilities,
+          misconfiguration,
+          exposures,
+          default-logins,
+          headers,
+          ssl
+        flags: -severity critical,high -rate-limit 50
+
+  # ─── 5. OWASP ZAP baseline ──────────────────────────────
+  zap-baseline:
+    runs-on: ubuntu-latest
+    needs: image-cve
+    steps:
+    - uses: actions/checkout@v4
+    - name: Start app stack
+      run: |
+        docker compose -f packages/payment-admin-web/stack/docker-compose.yml up -d
+        sleep 30
+    - name: ZAP baseline
+      uses: zaproxy/action-baseline@v0.10.0
+      with:
+        target: 'http://localhost:18099'
+        rules_file_name: '.zap/rules.tsv'
+        cmd_options: '-a -j'      # all + json output
+
+  # ─── 6. PCI checklist 自动校验 ──────────────────────────
+  pci-checklist:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Verify PCI-relevant config
+      run: |
+        set -e
+        # PCI 3.4: PAN 不能进日志 — 扫日志格式定义
+        if grep -rn "pan\|card_number\|primary_account" packages/ \
+           --include="*.go" | grep -v "pan_token\|test\|_test" | grep "log.\|fmt.Println"; then
+          echo "PCI 3.4 violation: PAN-like field in plaintext log"; exit 1
+        fi
+        echo "✓ PCI 3.4: no PAN in plaintext logs"
+
+        # PCI 8.2: 密码 hash
+        if grep -rn "password.*=.*\".*\"" packages/ --include="*.go" \
+           | grep -v "test\|_test\|placeholder\|CHANGE"; then
+          echo "PCI 8.2 violation: plaintext password literal found"; exit 1
+        fi
+        echo "✓ PCI 8.2: no plaintext password"
+
+        # PCI 10.5: 审计日志哈希链存在
+        grep -q "row_hash\|hash chain" packages/order-core/internal/server/*.go \
+          && echo "✓ PCI 10.5: audit hash chain present"
+
+        # PCI 4.1: TLS 1.2+ required
+        if grep -rn "MinVersion.*VersionTLS1[01]" packages/; then
+          echo "PCI 4.1 violation: TLS < 1.2"; exit 1
+        fi
+        echo "✓ PCI 4.1: TLS 1.2+"

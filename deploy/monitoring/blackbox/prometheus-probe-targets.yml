@@ -1,0 +1,90 @@
+# 把这段加到 prometheus.yml 的 scrape_configs 下。
+# 每个 target 被 blackbox 探一次, 失败 → probe_success=0 → 告警。
+
+scrape_configs:
+# ─── 关键 endpoint healthz (每 30s) ──────────────────────────
+- job_name: probe_http_health
+  scrape_interval: 30s
+  metrics_path: /probe
+  params:
+    module: [http_2xx]
+  static_configs:
+  - targets:
+    - http://api-gateway:8080/healthz
+    - http://payment-gateway:8080/healthz
+    - http://order-core:9091/healthz
+    - http://payment-core:9090/healthz
+    - http://refund-engine:8080/healthz
+    - http://dispute-service:8080/healthz
+    - http://merchant-webhook:8080/healthz
+    - http://billing-system:8080/healthz
+    - http://kyc-service:8080/healthz
+    - http://audit-log:8080/healthz
+    - http://oauth2-server:8087/healthz
+    - http://biz-admin-web:8080/healthz
+    - http://payment-admin-backend:9190/healthz
+    - http://reconplatform:8080/healthz
+  relabel_configs:
+  - source_labels: [__address__]
+    target_label: __param_target
+  - source_labels: [__param_target]
+    target_label: instance
+  - target_label: __address__
+    replacement: blackbox-exporter:9115
+
+# ─── OAuth2 token 端到端 (每 1min, 验真业务能用) ──────────────
+- job_name: probe_oauth_token
+  scrape_interval: 60s
+  metrics_path: /probe
+  params:
+    module: [http_oauth_token]
+  static_configs:
+  - targets: [http://oauth2-server:8087/oauth2/token]
+  relabel_configs:
+  - source_labels: [__address__]
+    target_label: __param_target
+  - source_labels: [__param_target]
+    target_label: instance
+  - target_label: __address__
+    replacement: blackbox-exporter:9115
+
+# ─── TCP 后端依赖 (MySQL / Redis / Kafka) ─────────────────────
+- job_name: probe_tcp
+  scrape_interval: 30s
+  metrics_path: /probe
+  params:
+    module: [tcp_connect]
+  static_configs:
+  - targets:
+    - config-meta:3306
+    - shared-shard-0:3306
+    - shared-shard-1:3306
+    - redis:6379
+    - kafka:9092
+    - etcd:2379
+  relabel_configs:
+  - source_labels: [__address__]
+    target_label: __param_target
+  - source_labels: [__param_target]
+    target_label: instance
+  - target_label: __address__
+    replacement: blackbox-exporter:9115
+
+# ─── 公网 endpoint TLS 证书过期 (每 1h) ────────────────────────
+- job_name: probe_tls_expiry
+  scrape_interval: 1h
+  metrics_path: /probe
+  params:
+    module: [tls_cert_expiry]
+  static_configs:
+  - targets:
+    - https://api.payment.example.com/healthz
+    - https://oauth.payment.example.com/.well-known/jwks.json
+    - https://admin.payment.example.com/healthz
+  relabel_configs:
+  - source_labels: [__address__]
+    target_label: __param_target
+  - source_labels: [__param_target]
+    target_label: instance
+  - target_label: __address__
+    replacement: blackbox-exporter:9115

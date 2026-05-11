@@ -1,0 +1,34 @@
+# 实验 2: 每 30s 随机杀一个 service replica, 持续 10min。
+#
+# Hypothesis:
+#   HTTP 5xx < 1% (副本切换无感)
+#   p99 latency < 1.2 × 基线 (k8s service load balance + readiness 探针正常)
+#   告警: 仅 sev3 通知, 不上 PagerDuty
+#
+# 验证目标:
+#   - HPA 维持目标副本数
+#   - PodDisruptionBudget 阻止同时杀 > maxUnavailable
+#   - graceful shutdown 在 sig 后 drain in-flight 请求
+#   - liveness/readiness 探针 reject 老 conn
+#
+# 范围: oauth2-server, refund-engine, dispute-service, biz-admin-web 这种
+#       多副本无状态服务. 避开 id-generator (有 etcd watch 状态)。
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: Schedule
+metadata:
+  name: pod-kill-rolling
+  namespace: chaos-mesh
+spec:
+  schedule: "@every 30s"
+  historyLimit: 50
+  concurrencyPolicy: Allow
+  type: PodChaos
+  podChaos:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: [payment]
+      labelSelectors:
+        chaos-eligible: "true"   # 业务 deployment 加这个 label 才参与
+    gracePeriod: 0

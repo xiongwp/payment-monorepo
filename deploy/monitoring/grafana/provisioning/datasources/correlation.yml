@@ -1,0 +1,81 @@
+# Grafana datasource provisioning — Loki + Jaeger 双向关联。
+#
+# 部署:
+#   把这个文件放到 grafana 容器 /etc/grafana/provisioning/datasources/
+#   Grafana 启动时自动加载。
+#
+# 效果:
+#   1) Loki Explore 看日志 → trace_id 字段自动变成 "View in Jaeger" 链接
+#   2) Jaeger trace 详情页 → 每个 span "View Logs" → 跳 Loki 按 trace_id 过滤
+#   3) 一个 dashboard 里同时显示 trace timeline + 关联 logs (split view)
+
+apiVersion: 1
+
+datasources:
+- name: Prometheus
+  type: prometheus
+  uid: prom
+  access: proxy
+  url: http://prometheus:9090
+  isDefault: true
+  editable: false
+
+- name: Loki
+  type: loki
+  uid: loki
+  access: proxy
+  url: http://loki:3100
+  editable: false
+  jsonData:
+    # 从日志行里解出来的 trace_id 字段 → 自动渲染成超链接, 点击跳 Jaeger
+    derivedFields:
+    - name: TraceID
+      # 同时匹配 JSON 日志的 "trace_id":"..." 和明文格式 trace_id=...
+      matcherRegex: '"?trace_id"?\s*[":=]\s*"?([a-f0-9]{16,32})"?'
+      datasourceUid: jaeger
+      url: '$${__value.raw}'
+      urlDisplayLabel: '🔍 View trace'
+    - name: SpanID
+      matcherRegex: '"?span_id"?\s*[":=]\s*"?([a-f0-9]{8,16})"?'
+      datasourceUid: jaeger
+      url: '$${__value.raw}'
+
+- name: Jaeger
+  type: jaeger
+  uid: jaeger
+  access: proxy
+  url: http://jaeger:16686
+  editable: false
+  jsonData:
+    # Jaeger span → "Logs for this span" 自动跳 Loki, 按 trace_id 过滤
+    tracesToLogsV2:
+      datasourceUid: loki
+      spanStartTimeShift: -1m
+      spanEndTimeShift: 1m
+      filterByTraceID: true
+      filterBySpanID: false
+      customQuery: true
+      query: '{service=~".+"} |~ "$${__trace.traceId}"'
+      tags:
+      - key: service.name
+        value: service
+    # span → Prometheus metric (右上角 "Metrics for this span")
+    tracesToMetrics:
+      datasourceUid: prom
+      tags:
+      - key: service.name
+        value: service
+      queries:
+      - name: 'Service request rate'
+        query: 'sum(rate(http_request_duration_seconds_count{service="$$__tags.service"}[5m]))'
+      - name: 'Service p99 latency'
+        query: 'histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{service="$$__tags.service"}[5m])) by (le))'
+    nodeGraph:
+      enabled: true
+
+# (Optional) 接 Tempo 替代 Jaeger; 留着方便后续迁移
+# - name: Tempo
+#   type: tempo
+#   uid: tempo
+#   access: proxy
+#   url: http://tempo:3200

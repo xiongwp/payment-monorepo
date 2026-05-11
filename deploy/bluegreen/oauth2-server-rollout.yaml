@@ -1,0 +1,76 @@
+# Blue/Green Rollout for oauth2-server.
+#
+# 流程 (kubectl argo rollouts set image 触发):
+#   1. preview replicaset (绿) 启动, 等 ready
+#   2. preview service 指向绿; production service 仍指向蓝
+#   3. AnalysisRun "success-rate" 跑 prePromotionAnalysis
+#      - 每 30s 查 prometheus
+#      - 连续 3 次失败 → 自动 abort (回滚)
+#   4. 成功 → 切流量 (active service 指向绿, preview 指向蓝)
+#   5. autoPromotionEnabled=false: 等人工 kubectl argo rollouts promote
+#   6. promote 后 scaleDownDelaySeconds=300 = 5min 后销毁旧 (蓝)
+
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: oauth2-server
+  namespace: payment
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: { app: oauth2-server }
+  template:
+    metadata:
+      labels:
+        app: oauth2-server
+        chaos-eligible: "true"
+    spec:
+      containers:
+      - name: oauth2-server
+        image: ghcr.io/example/oauth2-server:v1.0.0
+        ports: [{ containerPort: 8087 }]
+        readinessProbe:
+          httpGet: { path: /healthz, port: 8087 }
+        livenessProbe:
+          httpGet: { path: /healthz, port: 8087 }
+          initialDelaySeconds: 30
+
+  strategy:
+    blueGreen:
+      activeService: oauth2-server          # 生产流量 service
+      previewService: oauth2-server-preview # 探测 service (内网测试)
+      autoPromotionEnabled: false           # 人工 promote (生产建议)
+      scaleDownDelaySeconds: 300            # 旧版保留 5min, 回滚秒级
+      prePromotionAnalysis:
+        templates:
+        - templateName: success-rate
+        args:
+        - name: service-name
+          value: oauth2-server
+        - name: prometheus-server
+          value: http://prometheus.monitoring.svc.cluster.local:9090
+      postPromotionAnalysis:
+        templates:
+        - templateName: success-rate
+        args:
+        - name: service-name
+          value: oauth2-server
+        - name: prometheus-server
+          value: http://prometheus.monitoring.svc.cluster.local:9090
+
+---
+apiVersion: v1
+kind: Service
+metadata: { name: oauth2-server, namespace: payment }
+spec:
+  selector: { app: oauth2-server }
+  ports: [{ port: 8087, targetPort: 8087 }]
+
+---
+apiVersion: v1
+kind: Service
+metadata: { name: oauth2-server-preview, namespace: payment }
+spec:
+  selector: { app: oauth2-server }
+  ports: [{ port: 8087, targetPort: 8087 }]

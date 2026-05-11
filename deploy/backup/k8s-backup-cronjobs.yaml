@@ -1,0 +1,130 @@
+# DB 自动备份 CronJob - 9 个核心库每天 02:00 UTC, S3 兼容对象存储归档。
+#
+# Strategy:
+#   - 每日全量 mysqldump → gzip → s3 PutObject
+#   - 保留: 7 daily + 4 weekly + 12 monthly (40 份)
+#   - prometheus metric: db_backup_last_success_ts → 告警 24h 没成功
+#
+# 部署:
+#   kubectl create secret generic backup-credentials -n payment \
+#     --from-literal=S3_ACCESS_KEY=... --from-literal=S3_SECRET_KEY=...
+#   kubectl apply -f k8s-backup-cronjobs.yaml
+#
+# 监控:
+#   db_backup_last_success_ts{db="oauth2db"} > now()-26h  # 26h 阈值留容错
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-config
+  namespace: payment
+data:
+  S3_BUCKET: "payment-backups-prod"
+  S3_REGION: "us-east-1"
+  S3_ENDPOINT: ""  # 留空 = AWS; 用 MinIO/Ceph 时填 https://minio.internal
+  RETENTION_DAYS: "40"
+
+---
+# Backup job template (一个 CronJob 备一个库)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-orderdb
+  namespace: payment
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: backup
+            image: payment/db-backup:latest    # 包含 mysqldump + aws-cli + pushgateway curl
+            env:
+            - name: DB_HOST
+              value: "shared-shard-0.mysql"    # 主库; 备份建议用读副本
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: backup-credentials, key: DB_USER } }
+            - name: DB_PASS
+              valueFrom: { secretKeyRef: { name: backup-credentials, key: DB_PASS } }
+            - name: DB_NAME
+              value: "order_db_0"
+            envFrom:
+            - configMapRef: { name: backup-config }
+            - secretRef: { name: backup-credentials }
+            command: ["/usr/local/bin/backup.sh"]
+            resources:
+              requests: { cpu: "100m", memory: "256Mi" }
+              limits:   { cpu: "1",    memory: "2Gi" }
+
+---
+# 同模板复制 8 份 (列表化更清晰):
+#
+#   oauth2db / order_db_[0-9] / paychan_db_[0-9] / accounting / billing /
+#   user_merchant / kms / risk / clearing / dispute / kyc / audit_log / etc.
+#
+# 实际生产: 用 Helm / kustomize 把这些参数化。
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: backup-oauth2db,  namespace: payment }
+spec: { schedule: "0 2 * * *", jobTemplate: { spec: { template: { spec: {
+  restartPolicy: OnFailure,
+  containers: [{
+    name: backup, image: payment/db-backup:latest,
+    env: [{name: DB_NAME, value: oauth2db}, {name: DB_HOST, value: oauth2-mysql}],
+    envFrom: [{configMapRef:{name:backup-config}},{secretRef:{name:backup-credentials}}],
+    command: ["/usr/local/bin/backup.sh"]
+  }]
+}}}}}
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: backup-usermerchant, namespace: payment }
+spec: { schedule: "0 2 * * *", jobTemplate: { spec: { template: { spec: {
+  restartPolicy: OnFailure,
+  containers: [{
+    name: backup, image: payment/db-backup:latest,
+    env: [{name: DB_NAME, value: usermerchantdb}, {name: DB_HOST, value: user-merchant-mysql}],
+    envFrom: [{configMapRef:{name:backup-config}},{secretRef:{name:backup-credentials}}],
+    command: ["/usr/local/bin/backup.sh"]
+  }]
+}}}}}
+
+---
+# 每周日 03:00 跑 retention 清理
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: backup-retention,  namespace: payment }
+spec:
+  schedule: "0 3 * * 0"
+  jobTemplate: { spec: { template: { spec: {
+    restartPolicy: OnFailure,
+    containers: [{
+      name: cleanup, image: payment/db-backup:latest,
+      envFrom: [{configMapRef:{name:backup-config}},{secretRef:{name:backup-credentials}}],
+      command: ["/usr/local/bin/retention-cleanup.sh"]
+    }]
+  }}}}
+
+---
+# 季度恢复演练 (1st day of Jan/Apr/Jul/Oct, 04:00)
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: backup-restore-drill, namespace: payment }
+spec:
+  schedule: "0 4 1 1,4,7,10 *"
+  jobTemplate: { spec: { template: { spec: {
+    restartPolicy: OnFailure,
+    containers: [{
+      name: drill, image: payment/db-backup:latest,
+      envFrom: [{configMapRef:{name:backup-config}},{secretRef:{name:backup-credentials}}],
+      command: ["/usr/local/bin/restore-drill.sh"]
+    }]
+  }}}}

@@ -1,0 +1,152 @@
+# Alertmanager 高级路由 — 按 severity / kind / 时间 路由到不同 receiver。
+#
+# 原则 (Google SRE):
+#   page    → PagerDuty (吵醒人, 应该有明确 runbook + 必须人工干预)
+#   warn    → Slack #payment-warn (上班时间内看)
+#   info    → Slack #payment-info (静默 / 周报)
+#   ticket  → JIRA (业务问题, 不紧急)
+#
+# 关键: 任何 severity=page 告警, 必须有 runbook annotation 才允许触发,
+# 否则路由到 #payment-untriaged 让 SRE 补 runbook (用 inhibit_rules 实现).
+
+global:
+  resolve_timeout: 5m
+  # Slack global webhook (在每个 receiver 覆盖)
+  slack_api_url: 'https://hooks.slack.com/services/CHANGE/ME/HERE'
+
+# ─── 抑制规则 (避免告警风暴) ──────────────────────────────────────────
+inhibit_rules:
+# 服务整体 down → 不报子模块告警
+- source_matchers: [alertname="ServiceDown"]
+  target_matchers: [severity=~"page|warn"]
+  equal: [service]
+
+# region 整体 down → 不报单 pod 告警
+- source_matchers: [alertname="RegionDown"]
+  target_matchers: [severity=~"page|warn"]
+  equal: [region]
+
+# fast burn 已经报了 → 抑制 slow burn (它必然也在烧)
+- source_matchers: [alertname=~".*BurnRateFast"]
+  target_matchers: [alertname=~".*BurnRateSlow|.*BudgetBurning"]
+  equal: [slo]
+
+# ─── 路由树 ──────────────────────────────────────────────────────────
+route:
+  receiver: default-slack
+  group_by: [alertname, service, severity]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+
+  # 资金/合规类 — 不管 severity, 都 page 财务 oncall
+  - matchers:
+    - kind=~"fund_safety|compliance|audit_integrity"
+    receiver: pd-finance-oncall
+    group_wait: 0s              # 立即
+    continue: true              # 同时也走下面 severity 通用路由
+
+  # security 类 — page security oncall + 必走 Slack 留底
+  - matchers: [kind=security]
+    receiver: pd-security
+    routes:
+    - matchers: [severity=page]
+      receiver: pd-security-page
+    continue: true
+
+  # P0 page
+  - matchers: [severity=page]
+    receiver: pd-primary-oncall
+    group_wait: 0s
+    repeat_interval: 30m
+    routes:
+    # 周末/夜间路由到二线 + 加 +20% 重试
+    - active_time_intervals: [out-of-hours]
+      receiver: pd-secondary-oncall
+      repeat_interval: 45m
+
+  # warn → Slack 工作时间
+  - matchers: [severity=warn]
+    receiver: slack-warn
+    repeat_interval: 6h
+
+  # info 静默归类
+  - matchers: [severity=info]
+    receiver: slack-info
+    repeat_interval: 1d
+
+  # untriaged: 缺 runbook 的告警
+  - matchers:
+    - severity=page
+    - runbook=""
+    receiver: slack-untriaged
+
+time_intervals:
+- name: out-of-hours
+  time_intervals:
+  - weekdays: [saturday, sunday]
+  - times:
+    - start_time: '22:00'
+      end_time: '08:00'
+
+receivers:
+
+- name: default-slack
+  slack_configs:
+  - channel: '#payment-alerts'
+    title: '[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+    text: |
+      {{ range .Alerts }}
+        *Alert:* {{ .Labels.alertname }}
+        *Service:* {{ .Labels.service }}
+        *Severity:* {{ .Labels.severity }}
+        *Summary:* {{ .Annotations.summary }}
+        *Runbook:* {{ .Annotations.runbook }}
+      {{ end }}
+
+- name: pd-primary-oncall
+  pagerduty_configs:
+  - service_key: 'INTEGRATION_KEY_PRIMARY'
+    severity: 'critical'
+    description: '{{ .GroupLabels.alertname }}: {{ (index .Alerts 0).Annotations.summary }}'
+
+- name: pd-secondary-oncall
+  pagerduty_configs:
+  - service_key: 'INTEGRATION_KEY_SECONDARY'
+    severity: 'critical'
+
+- name: pd-finance-oncall
+  pagerduty_configs:
+  - service_key: 'INTEGRATION_KEY_FINANCE'
+    severity: 'critical'
+  slack_configs:
+  - channel: '#finance-oncall'
+    title: '[💰 FUND SAFETY] {{ .GroupLabels.alertname }}'
+
+- name: pd-security
+  slack_configs:
+  - channel: '#security-alerts'
+
+- name: pd-security-page
+  pagerduty_configs:
+  - service_key: 'INTEGRATION_KEY_SECURITY'
+
+- name: slack-warn
+  slack_configs:
+  - channel: '#payment-warn'
+
+- name: slack-info
+  slack_configs:
+  - channel: '#payment-info'
+
+- name: slack-untriaged
+  slack_configs:
+  - channel: '#payment-untriaged'
+    title: '⚠️ Page alert WITHOUT runbook: {{ .GroupLabels.alertname }}'
+    text: |
+      Page-severity alert fired but has no runbook annotation.
+      Add runbook URL to the rule, or downgrade severity.
+      Alert: {{ (index .Alerts 0).Labels.alertname }}
+      Service: {{ (index .Alerts 0).Labels.service }}

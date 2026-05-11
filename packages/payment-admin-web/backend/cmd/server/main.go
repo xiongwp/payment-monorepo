@@ -83,6 +83,7 @@ func main() {
 	disputeH := handler.NewDisputeHandler(deps, deps.Dispute)
 	mchSecretH := handler.NewMerchantSecretHandler(deps, deps.MerchantSecret)
 	userMerchantAuditH := handler.NewUserMerchantAuditHandler(deps)
+	traceGraphH := handler.NewTraceGraphHandler()
 	riskH := handler.NewRiskHandler()
 
 	r := mux.NewRouter()
@@ -131,6 +132,9 @@ func main() {
 	api.HandleFunc("/audit", auditH.List).Methods("GET", "OPTIONS")
 	// user-merchant-core 的独立审计链（每次 mutation 自动写入 + 链式 row_hash）
 	api.HandleFunc("/user-merchant/audits", userMerchantAuditH.List).Methods("GET", "OPTIONS")
+
+	// trace_id 关联图: Jaeger spans + Loki logs 聚合成 timeline + dependency graph
+	api.HandleFunc("/trace/{trace_id}/graph", traceGraphH.Graph).Methods("GET", "OPTIONS")
 
 	// outbound webhook deliveries (wave C)
 	api.HandleFunc("/webhooks/deliveries", whDelivH.List).Methods("GET", "OPTIONS")
