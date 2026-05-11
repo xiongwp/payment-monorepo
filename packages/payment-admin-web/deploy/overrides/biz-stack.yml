@@ -95,6 +95,40 @@ services:
     environment:
       TZ: Asia/Shanghai
       REFUND_HTTP_PORT: "8080"
+      MERCHANT_WEBHOOK_URL: http://merchant-webhook:8080
+    depends_on: [merchant-webhook]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  kyc-service:
+    image: kyc-service:local
+    pull_policy: never
+    container_name: kyc-service
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports: ["18095:8080"]
+    environment:
+      TZ: Asia/Shanghai
+      KYC_HTTP_PORT: "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  audit-log:
+    image: audit-log:local
+    pull_policy: never
+    container_name: audit-log
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports: ["18096:8080"]
+    environment:
+      TZ: Asia/Shanghai
+      AUDIT_HTTP_PORT: "8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
       interval: 10s

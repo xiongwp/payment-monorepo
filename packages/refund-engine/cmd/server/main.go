@@ -19,6 +19,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"reconcile-system/packages/refund-engine/internal/clients"
 	"reconcile-system/packages/refund-engine/internal/domain"
 	"reconcile-system/packages/refund-engine/internal/workflow"
 )
@@ -29,7 +30,11 @@ func main() {
 	port := envOr("REFUND_HTTP_PORT", "8080")
 
 	repo := newMemoryRepo()
-	svc := workflow.New(repo, stubChannel{log: logger}, logNotifier{}, logger)
+	// 真实 client：refund 完成 → 调 merchant-webhook + billing
+	// 没设环境变量时走默认（容器内 service DNS），调不通就 log warn 但不阻塞
+	webhookURL := envOr("MERCHANT_WEBHOOK_URL", "http://merchant-webhook:8080")
+	notif := clients.NewWebhookClient(webhookURL)
+	svc := workflow.New(repo, stubChannel{log: logger}, notif, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/refunds", func(w http.ResponseWriter, r *http.Request) {
@@ -249,10 +254,6 @@ func (s stubChannel) SubmitRefund(_ context.Context, r *domain.Refund) (string, 
 	return "ch_ref_" + r.RefundID, nil
 }
 
-type logNotifier struct{}
-
-func (logNotifier) NotifyMerchant(_ context.Context, mid, et string, _ any) error { return nil }
-func (logNotifier) NotifyBilling(_ context.Context, _ *domain.Refund) error       { return nil }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")

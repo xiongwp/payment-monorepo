@@ -17,8 +17,8 @@ if ! docker network inspect payment-stack >/dev/null 2>&1; then
     docker network create payment-stack
 fi
 
-# 2. build 5 个 image
-PKGS=(billing-system payment-gateway dispute-service merchant-webhook refund-engine)
+# 2. build 7 个 image
+PKGS=(billing-system payment-gateway dispute-service merchant-webhook refund-engine kyc-service audit-log)
 for pkg in "${PKGS[@]}"; do
     echo ""
     echo "==> building $pkg:local"
