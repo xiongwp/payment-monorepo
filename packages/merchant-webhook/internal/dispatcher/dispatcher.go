@@ -45,6 +45,7 @@ type Repository interface {
 
 	// Events
 	SaveEvent(ctx context.Context, e *domain.Event) (int64, error)
+	GetEvent(id int64) *domain.Event
 
 	// Deliveries
 	CreateDelivery(ctx context.Context, d *domain.Delivery) (int64, error)
@@ -272,9 +273,11 @@ func (d *Dispatcher) markFailed(ctx context.Context, del *domain.Delivery, ep *d
 	return d.repo.UpdateDelivery(ctx, del.ID, domain.StatusFailed, fields)
 }
 
-// fetchEvent 取 event payload — 简化版（生产 SaveEvent/loadEvent 都在 repo）。
-// 这里假设 repo.GetDelivery 已经能 join 出 event；占位。
+// fetchEvent 取 event payload。
 func (d *Dispatcher) fetchEvent(ctx context.Context, eventID int64) (*domain.Event, error) {
-	// 真实实现：repo 加 GetEvent 方法。这里返个 stub 防编译错。
-	return &domain.Event{ID: eventID}, nil
+	ev := d.repo.GetEvent(eventID)
+	if ev == nil {
+		return nil, fmt.Errorf("event %d not found", eventID)
+	}
+	return ev, nil
 }
