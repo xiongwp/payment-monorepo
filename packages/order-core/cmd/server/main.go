@@ -126,6 +126,11 @@ func loadConfig() (*viper.Viper, error) {
 		if !errors.As(err, &notFound) {
 			return nil, err
 		}
+		// 🔍 DIAGNOSTIC: 文件没找到时打到 stderr，方便诊断
+		cwd, _ := os.Getwd()
+		fmt.Fprintf(os.Stderr, "⚠️  config file NOT FOUND in any of: ./config, ., /etc/order-core (cwd=%s)\n", cwd)
+	} else {
+		fmt.Fprintf(os.Stderr, "✓ config loaded from: %s\n", v.ConfigFileUsed())
 	}
 	if err := assertProdSafety(v); err != nil {
 		return nil, err
