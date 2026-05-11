@@ -20,4 +20,5 @@ use (
 	./packages/kyc-service
 	./packages/audit-log
 	./packages/biz-admin-web
+	./packages/payment-mw
 )

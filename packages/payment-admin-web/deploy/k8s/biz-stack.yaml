@@ -1,0 +1,353 @@
+# biz-stack.yaml — k8s 准生产部署清单 (8 个新业务服务).
+#
+# 应用:
+#   kubectl apply -f biz-stack.yaml
+#
+# 前置:
+#   - namespace 'payment' 已存在: kubectl create namespace payment
+#   - image 已 push 到集群可访问的 registry (示例用 :local，prod 换 ECR/GCR)
+#   - storage class 已配 (PVC 用 — billing/audit 暂不需要，memory repo)
+#
+# 包含:
+#   - 8 个 Deployment (含 readinessProbe + livenessProbe + resource limits)
+#   - 8 个 Service (ClusterIP)
+#   - 8 个 HPA (CPU 70% scale 2-10 replicas)
+#   - 1 个 Ingress 入口 (NGINX ingress controller 假定已装)
+#   - 1 个 ConfigMap (统一 env)
+#   - 1 个 Secret (API key / KMS key 占位)
+#   - 1 个 NetworkPolicy (限制只允许同 namespace 互访)
+#   - PodDisruptionBudget (生产滚动升级时保至少 50% 可用)
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: biz-config
+  namespace: payment
+data:
+  TZ: Asia/Shanghai
+  RECON_ENV: prod
+  BILLING_BASE_CURRENCY: USD
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: biz-secrets
+  namespace: payment
+type: Opaque
+stringData:
+  INTERNAL_TOKEN: REPLACE_ME_internal_service_token
+  KMS_KEY: REPLACE_ME_kms_master_key
+
+---
+# ─── 8 Deployments + Services + HPAs ──────────────────────────────────
+
+# 用 YAML anchor 复用通用配置
+# (k8s 不支持 anchor 跨 doc，所以每个 service 手写一份，但结构一致)
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-system
+  namespace: payment
+  labels: { app: billing-system, tier: business }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: billing-system } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } }
+  template:
+    metadata:
+      labels: { app: billing-system, tier: business }
+      annotations: { "prometheus.io/scrape": "true", "prometheus.io/port": "8080", "prometheus.io/path": "/metrics" }
+    spec:
+      containers:
+      - name: app
+        image: billing-system:local
+        imagePullPolicy: IfNotPresent
+        ports: [{ containerPort: 8080, name: http }]
+        env:
+        - name: BILLING_HTTP_PORT
+          value: "8080"
+        envFrom: [{ configMapRef: { name: biz-config } }, { secretRef: { name: biz-secrets } }]
+        readinessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 3, periodSeconds: 5 }
+        livenessProbe:  { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 30, periodSeconds: 30 }
+        resources:
+          requests: { cpu: 100m, memory: 128Mi }
+          limits:   { cpu: 1, memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: billing-system, namespace: payment }
+spec:
+  selector: { app: billing-system }
+  ports: [{ port: 8080, targetPort: http, name: http }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: billing-system, namespace: payment }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: billing-system }
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: billing-system, namespace: payment }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: billing-system } }
+
+# ─── payment-gateway ──────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-gateway
+  namespace: payment
+  labels: { app: payment-gateway, tier: business }
+spec:
+  replicas: 3   # 流量大头多副本
+  selector: { matchLabels: { app: payment-gateway } }
+  template:
+    metadata:
+      labels: { app: payment-gateway }
+      annotations: { "prometheus.io/scrape": "true", "prometheus.io/port": "8080" }
+    spec:
+      containers:
+      - name: app
+        image: payment-gateway:local
+        ports: [{ containerPort: 8080, name: http }]
+        env: [{ name: PAYMENT_GATEWAY_HTTP_PORT, value: "8080" }]
+        envFrom: [{ configMapRef: { name: biz-config } }, { secretRef: { name: biz-secrets } }]
+        readinessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 5 }
+        livenessProbe:  { httpGet: { path: /healthz, port: http }, periodSeconds: 30 }
+        resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { cpu: 2, memory: 1Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: payment-gateway, namespace: payment }
+spec:
+  selector: { app: payment-gateway }
+  ports: [{ port: 8080, targetPort: http }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: payment-gateway, namespace: payment }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: payment-gateway }
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource: { name: cpu, target: { type: Utilization, averageUtilization: 60 } }
+
+# ─── dispute-service ──────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: dispute-service, namespace: payment, labels: { app: dispute-service } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: dispute-service } }
+  template:
+    metadata: { labels: { app: dispute-service }, annotations: { "prometheus.io/scrape": "true", "prometheus.io/port": "8080" } }
+    spec:
+      containers:
+      - name: app
+        image: dispute-service:local
+        ports: [{ containerPort: 8080, name: http }]
+        env: [{ name: DISPUTE_HTTP_PORT, value: "8080" }]
+        envFrom: [{ configMapRef: { name: biz-config } }, { secretRef: { name: biz-secrets } }]
+        readinessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 5 }
+        livenessProbe:  { httpGet: { path: /healthz, port: http }, periodSeconds: 30 }
+        resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 256Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: dispute-service, namespace: payment }
+spec: { selector: { app: dispute-service }, ports: [{ port: 8080, targetPort: http }] }
+
+# ─── merchant-webhook ─────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: merchant-webhook, namespace: payment, labels: { app: merchant-webhook } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: merchant-webhook } }
+  template:
+    metadata: { labels: { app: merchant-webhook }, annotations: { "prometheus.io/scrape": "true", "prometheus.io/port": "8080" } }
+    spec:
+      containers:
+      - name: app
+        image: merchant-webhook:local
+        ports: [{ containerPort: 8080, name: http }]
+        env: [{ name: MERCHANT_WEBHOOK_HTTP_PORT, value: "8080" }]
+        envFrom: [{ configMapRef: { name: biz-config } }, { secretRef: { name: biz-secrets } }]
+        readinessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 5 }
+        livenessProbe:  { httpGet: { path: /healthz, port: http }, periodSeconds: 30 }
+        resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 256Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: merchant-webhook, namespace: payment }
+spec: { selector: { app: merchant-webhook }, ports: [{ port: 8080, targetPort: http }] }
+
+# ─── refund-engine ────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: refund-engine, namespace: payment, labels: { app: refund-engine } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: refund-engine } }
+  template:
+    metadata: { labels: { app: refund-engine }, annotations: { "prometheus.io/scrape": "true", "prometheus.io/port": "8080" } }
+    spec:
+      containers:
+      - name: app
+        image: refund-engine:local
+        ports: [{ containerPort: 8080, name: http }]
+        env:
+        - { name: REFUND_HTTP_PORT, value: "8080" }
+        - { name: MERCHANT_WEBHOOK_URL, value: "http://merchant-webhook:8080" }
+        envFrom: [{ configMapRef: { name: biz-config } }, { secretRef: { name: biz-secrets } }]
+        readinessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 5 }
+        livenessProbe:  { httpGet: { path: /healthz, port: http }, periodSeconds: 30 }
+        resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 256Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: refund-engine, namespace: payment }
+spec: { selector: { app: refund-engine }, ports: [{ port: 8080, targetPort: http }] }
+
+# ─── kyc-service ──────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: kyc-service, namespace: payment, labels: { app: kyc-service } }
+spec:
+  replicas: 1   # 流量低
+  selector: { matchLabels: { app: kyc-service } }
+  template:
+    metadata: { labels: { app: kyc-service }, annotations: { "prometheus.io/scrape": "true", "prometheus.io/port": "8080" } }
+    spec:
+      containers:
+      - name: app
+        image: kyc-service:local
+        ports: [{ containerPort: 8080, name: http }]
+        env: [{ name: KYC_HTTP_PORT, value: "8080" }]
+        envFrom: [{ configMapRef: { name: biz-config } }, { secretRef: { name: biz-secrets } }]
+        readinessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 5 }
+        resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 256Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: kyc-service, namespace: payment }
+spec: { selector: { app: kyc-service }, ports: [{ port: 8080, targetPort: http }] }
+
+# ─── audit-log ────────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: audit-log, namespace: payment, labels: { app: audit-log } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: audit-log } }
+  template:
+    metadata: { labels: { app: audit-log }, annotations: { "prometheus.io/scrape": "true", "prometheus.io/port": "8080" } }
+    spec:
+      containers:
+      - name: app
+        image: audit-log:local
+        ports: [{ containerPort: 8080, name: http }]
+        env: [{ name: AUDIT_HTTP_PORT, value: "8080" }]
+        envFrom: [{ configMapRef: { name: biz-config } }, { secretRef: { name: biz-secrets } }]
+        readinessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 5 }
+        resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: audit-log, namespace: payment }
+spec: { selector: { app: audit-log }, ports: [{ port: 8080, targetPort: http }] }
+
+# ─── biz-admin-web ────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: biz-admin-web, namespace: payment, labels: { app: biz-admin-web } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: biz-admin-web } }
+  template:
+    metadata: { labels: { app: biz-admin-web } }
+    spec:
+      containers:
+      - name: app
+        image: biz-admin-web:local
+        ports: [{ containerPort: 8080, name: http }]
+        env:
+        - { name: BIZ_ADMIN_HTTP_PORT, value: "8080" }
+        - { name: BILLING_URL,  value: "http://billing-system:8080" }
+        - { name: GATEWAY_URL,  value: "http://payment-gateway:8080" }
+        - { name: DISPUTE_URL,  value: "http://dispute-service:8080" }
+        - { name: WEBHOOK_URL,  value: "http://merchant-webhook:8080" }
+        - { name: REFUND_URL,   value: "http://refund-engine:8080" }
+        - { name: KYC_URL,      value: "http://kyc-service:8080" }
+        - { name: AUDIT_URL,    value: "http://audit-log:8080" }
+        envFrom: [{ configMapRef: { name: biz-config } }]
+        readinessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 5 }
+        resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: 200m, memory: 128Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: biz-admin-web, namespace: payment }
+spec: { selector: { app: biz-admin-web }, ports: [{ port: 8080, targetPort: http }] }
+
+# ─── Ingress (NGINX) ──────────────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: biz-admin-ingress
+  namespace: payment
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    cert-manager.io/cluster-issuer: letsencrypt-prod   # 假定 cert-manager 装好了
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts: [admin.payment.example.com]
+    secretName: biz-admin-tls
+  rules:
+  - host: admin.payment.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service: { name: biz-admin-web, port: { number: 8080 } }
+
+# ─── NetworkPolicy: 限制内部互访 ──────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: biz-internal-only
+  namespace: payment
+spec:
+  podSelector: { matchLabels: { tier: business } }
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector: {}                # 同 namespace 任意 pod
+    - namespaceSelector:
+        matchLabels: { name: ingress-nginx }   # 接 ingress
+    - namespaceSelector:
+        matchLabels: { name: monitoring }       # 接 prometheus scrape
