@@ -1,0 +1,102 @@
+# billing-system fee_rules sample config
+#
+# 求值规则: 按 priority desc 找第一个匹配的（详见 internal/feerule/engine.go）。
+# 没匹配走 default fallback (2.9% + $0.30 — feecalc.Service 内置).
+#
+# Currency 在 fee 计算时是 minor unit:
+#   USD/EUR: cents (100 = $1.00)
+#   PHP:     centavos (100 = ₱1.00)
+#   TWD:     dollars (10 = NT$10 — no fraction)
+
+rules:
+  # P0 商户 — 大客户优惠 (1.9% + $0.10)
+  - id: 100
+    name: P0-Merchant-Special
+    priority: 100
+    merchant_tier: P0
+    percent_bps: 190
+    fixed_minor: 10
+    fee_min_minor: 0
+    fee_max_minor: 0
+    refund_fee_behavior: refund
+    active: true
+
+  # 跨境卡 (Visa/MC) PH 区域 (2.9% + 0.30 + 1% FX markup)
+  - id: 200
+    name: Cross-Border-Card-PH
+    priority: 50
+    product: card_charge
+    channel_adapter: visa
+    region: PH
+    currency_allow: "USD,EUR,SGD"
+    percent_bps: 290
+    fixed_minor: 30
+    fx_markup_bps: 100
+    refund_fee_behavior: keep
+    active: true
+
+  - id: 201
+    name: Cross-Border-Card-PH-MC
+    priority: 50
+    product: card_charge
+    channel_adapter: mastercard
+    region: PH
+    currency_allow: "USD,EUR,SGD"
+    percent_bps: 290
+    fixed_minor: 30
+    fx_markup_bps: 100
+    refund_fee_behavior: keep
+    active: true
+
+  # 本币卡 PH (PHP card → PHP)，2.5% + ₱0.50
+  - id: 210
+    name: Domestic-Card-PH
+    priority: 40
+    product: card_charge
+    region: PH
+    currency_allow: PHP
+    percent_bps: 250
+    fixed_minor: 50
+    refund_fee_behavior: prorate
+    active: true
+
+  # GCash 钱包 (1.5% 固定，没有 fixed_minor)
+  - id: 300
+    name: Wallet-GCash
+    priority: 45
+    product: wallet
+    channel_adapter: gcash
+    percent_bps: 150
+    fixed_minor: 0
+    refund_fee_behavior: prorate
+    active: true
+
+  # 银行转账 (0.5% + ₱5)
+  - id: 400
+    name: Bank-Transfer
+    priority: 45
+    product: bank_transfer
+    percent_bps: 50
+    fixed_minor: 500
+    fee_max_minor: 50000  # 上限 ₱500
+    refund_fee_behavior: keep
+    active: true
+
+  # 大额限制 — 超 $10k 走另一档 (1.5% no fixed)
+  - id: 500
+    name: Large-Amount-Override
+    priority: 80
+    amount_min_minor: 1000000  # $10,000
+    percent_bps: 150
+    fixed_minor: 0
+    refund_fee_behavior: refund
+    active: true
+
+  # Chargeback 罚款 ($15 固定)
+  - id: 900
+    name: Chargeback-Fine
+    priority: 200
+    product: chargeback
+    percent_bps: 0
+    fixed_minor: 1500
+    active: true
