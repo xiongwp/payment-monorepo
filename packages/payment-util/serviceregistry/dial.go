@@ -2,6 +2,7 @@ package serviceregistry
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -122,9 +123,20 @@ func DialWithFallback(endpoints []string, service, fallbackAddr string, opts ...
 	// 直连模式也加 round_robin + keepalive：DNS 解析返回多 A 记录时（k8s
 	// headless svc / docker network 多副本同 alias）会均摊；副本被 kill 后
 	// 10s 内被 keepalive ping 探测出来踢掉，避免 stale 连接 hang。
+	//
+	// 关键: target 自动加 dns:/// 前缀。grpc.NewClient("host:port") 默认走
+	// passthrough resolver, 它只在拨号时解一次 DNS, 之后永不 re-resolve。
+	// 启动顺序错 (admin-web 先起,accounting-system 后起) 或后端容器重启时,
+	// passthrough 拿不到 endpoint → balancer 报 "no children to pick from",
+	// 后续请求一直 fail 直到进程重启。
+	// 加 dns:/// 触发 gRPC 内置 DNS resolver, idle 连接重建时会重新解析。
+	target := fallbackAddr
+	if !strings.Contains(target, "://") {
+		target = "dns:///" + target
+	}
 	fixed := hardenedOptions()
 	fixed = append(fixed, opts...)
-	return grpc.NewClient(fallbackAddr, fixed...)
+	return grpc.NewClient(target, fixed...)
 }
 
 // DialDirect 是一条只走"静态 endpoint + hardened opts"的捷径，不需要走 etcd。
