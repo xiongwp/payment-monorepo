@@ -1,0 +1,41 @@
+// {{.ServiceName}} server — auto-generated from template.
+//
+// 起:
+//   go run ./cmd/server
+//
+// env:
+//   {{.ServiceUpper}}_HTTP_PORT      默认 {{.DefaultPort}}
+//   OAUTH2_JWKS_URL                  开启 Bearer JWT 验签
+//   OTEL_EXPORTER_OTLP_ENDPOINT      jaeger trace
+//   ACCOUNTING_GRPC_ADDR             accounting-system 客户端
+
+package main
+
+import (
+	"context"
+	"net/http"
+
+	mw "reconcile-system/packages/payment-mw"
+
+	"go.uber.org/zap"
+)
+
+func main() {
+	mw.Bootstrap(mw.BootstrapConfig{
+		ServiceName: "{{.ServiceName}}",
+		DefaultPort: "{{.DefaultPort}}",
+		AuthCfg: mw.AuthConfig{
+			PublicPaths: []string{"/healthz", "/metrics"},
+		},
+		SetupRoutes: func(mux *http.ServeMux, log *zap.Logger) error {
+			// TODO: 业务路由
+			// mux.Handle("POST /api/v1/foo",
+			//     mw.RequireScope("{{.Domain}}:write")(http.HandlerFunc(createFoo)))
+			return nil
+		},
+		OnStart: func(ctx context.Context, log *zap.Logger) error {
+			log.Info("{{.ServiceName}} ready")
+			return nil
+		},
+	})
+}

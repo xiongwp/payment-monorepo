@@ -1,0 +1,20 @@
+{
+  "key": "referral-bonus",
+  "name": "推荐返利 — 老用户带新, 平台拿 10 USD 出来奖励推荐人",
+  "version": "1.0.0",
+  "status": "active",
+  "spec": {
+    "triggers": [
+      { "event": "charge.succeeded", "filter": "is_first_payment=true" }
+    ],
+    "nodes": [
+      { "id": "platform",  "type": "input",   "label": "平台推广预算", "account_template": "platform_marketing_budget" },
+      { "id": "referrer",  "type": "account", "label": "推荐人",      "account_template": "user_balance/{referrer_user_id}", "from_attr": "referrer_user_id" },
+      { "id": "newuser",   "type": "account", "label": "新用户",      "account_template": "user_balance/{user_id}", "from_attr": "user_id" }
+    ],
+    "edges": [
+      { "from": "platform", "to": "referrer", "rule": { "type": "fixed_minor", "value": 1000 } },
+      { "from": "platform", "to": "newuser",  "rule": { "type": "fixed_minor", "value": 500 } }
+    ]
+  }
+}

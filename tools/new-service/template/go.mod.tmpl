@@ -1,0 +1,12 @@
+module reconcile-system/packages/{{.ServiceName}}
+
+go 1.22
+
+require (
+	go.uber.org/zap v1.27.0
+	reconcile-system/packages/payment-mw v0.0.0
+	reconcile-system/packages/payment-util v0.0.0
+)
+
+replace reconcile-system/packages/payment-mw => ../payment-mw
+replace reconcile-system/packages/payment-util => ../payment-util

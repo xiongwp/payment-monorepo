@@ -1,0 +1,28 @@
+{
+  "key": "marketplace-default",
+  "name": "Marketplace 标准分账 (90% 卖家 / 5% 平台 / 5% 推广)",
+  "version": "1.0.0",
+  "status": "active",
+  "spec": {
+    "triggers": [
+      { "event": "charge.succeeded", "filter": "merchant.tier=marketplace" }
+    ],
+    "nodes": [
+      { "id": "src",       "type": "input",   "label": "顾客付款",   "account_template": "platform_collected/{merchant_id}" },
+      { "id": "platform",  "type": "account", "label": "平台手续费", "account_template": "platform_fee_revenue/{merchant_id}" },
+      { "id": "seller",    "type": "account", "label": "卖家",       "account_template": "seller_balance_unsettled/{seller_id}", "from_attr": "seller_id" },
+      { "id": "referrer",  "type": "account", "label": "推广员",     "account_template": "referrer_balance/{referrer}", "from_attr": "referrer", "optional": true }
+    ],
+    "edges": [
+      { "from": "src", "to": "platform",  "rule": { "type": "percent", "value": 500 } },
+      { "from": "src", "to": "referrer",  "rule": { "type": "percent", "value": 500, "if_missing": "skip" } },
+      { "from": "src", "to": "seller",    "rule": { "type": "remainder" } }
+    ],
+    "guards": [
+      { "kind": "amount_min", "value": 100, "msg": "金额过小不分账" },
+      { "kind": "currency_in", "value": ["USD", "EUR", "GBP"], "msg": "仅支持 3 种币" }
+    ],
+    "hold": { "days": 7, "applies_to": ["seller"] },
+    "reversal": { "strategy": "proportional", "platform_covers_shortfall": true }
+  }
+}

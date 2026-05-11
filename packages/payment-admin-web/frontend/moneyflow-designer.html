@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Money Flow Designer</title>
+<style>
+  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+  body { margin: 0; background: #f7f8fa; font-size: 13px; }
+  header { background: #1a1a2e; color: #fff; padding: 12px 24px; display: flex; gap: 12px; align-items: center; }
+  header h1 { margin: 0; font-size: 16px; flex: 1; }
+  header input, header select, header button { padding: 6px 10px; border: 0; border-radius: 4px; font-size: 13px; }
+  header button { background: #4040c0; color: #fff; cursor: pointer; font-weight: 500; }
+  header button:hover { background: #5050d0; }
+  header button.secondary { background: #555; }
+  main { display: grid; grid-template-columns: 280px 1fr 320px; gap: 0; height: calc(100vh - 56px); }
+  .panel { padding: 16px; overflow: auto; background: #fff; border-right: 1px solid #e0e2e8; }
+  .panel:last-child { border-right: 0; border-left: 1px solid #e0e2e8; }
+  #canvas { background: #fff; position: relative; }
+  h2 { font-size: 12px; text-transform: uppercase; color: #6a7080; margin: 16px 0 8px; letter-spacing: 0.5px; }
+  .palette-item { padding: 8px 10px; background: #f0f2f5; border-radius: 4px; margin-bottom: 6px; cursor: grab; user-select: none; font-size: 12px; }
+  .palette-item:hover { background: #e4e6eb; }
+  .palette-item.input { border-left: 3px solid #4cb478; }
+  .palette-item.account { border-left: 3px solid #4040c0; }
+  .palette-item.output { border-left: 3px solid #c08040; }
+  label { display: block; margin: 8px 0 4px; color: #555; font-size: 11px; text-transform: uppercase; }
+  input.field, select.field, textarea.field { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+  .json-preview { background: #1a1a2e; color: #aabbcc; padding: 10px; border-radius: 4px; font-family: monospace; font-size: 11px; max-height: 320px; overflow: auto; }
+  .toolbar { display: flex; gap: 8px; padding: 8px 16px; border-bottom: 1px solid #e0e2e8; background: #f4f5f7; }
+  .toolbar button { padding: 4px 10px; font-size: 12px; }
+  #svg-canvas { width: 100%; height: calc(100% - 40px); }
+  .node-rect { fill: #fff; stroke: #ccc; stroke-width: 1.5; cursor: move; }
+  .node-rect.selected { stroke: #4040c0; stroke-width: 3; }
+  .node-rect.input { stroke: #4cb478; }
+  .node-rect.account { stroke: #4040c0; }
+  .node-rect.output { stroke: #c08040; }
+  .node-label { font-size: 12px; pointer-events: none; user-select: none; }
+  .edge-path { stroke: #888; stroke-width: 2; fill: none; }
+  .edge-label { font-size: 11px; fill: #555; }
+  .empty-canvas { color: #aaa; text-align: center; padding: 80px 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>💰 Money Flow Designer</h1>
+  <select id="graph-key">
+    <option value="">[ new graph ]</option>
+  </select>
+  <input id="graph-name" placeholder="Graph 名称 (e.g. marketplace 分账)" style="min-width:240px">
+  <button id="save-btn">Save</button>
+  <button id="export-btn" class="secondary">Export JSON</button>
+  <button id="test-btn" class="secondary">Dry Run...</button>
+</header>
+<main>
+  <!-- 左: 节点 palette -->
+  <aside class="panel">
+    <h2>Node types</h2>
+    <div class="palette-item input" data-type="input" draggable="true">📥 Input (资金来源)</div>
+    <div class="palette-item account" data-type="account" draggable="true">💳 Account (收款方)</div>
+    <div class="palette-item output" data-type="output" draggable="true">📤 Output (最终账户)</div>
+
+    <h2>Triggers</h2>
+    <select id="trigger-event" class="field">
+      <option value="charge.succeeded">charge.succeeded</option>
+      <option value="refund.completed">refund.completed</option>
+      <option value="hold.expired">hold.expired</option>
+      <option value="dispute.lost">dispute.lost</option>
+      <option value="payout.requested">payout.requested</option>
+      <option value="subscription.cycle">subscription.cycle</option>
+    </select>
+    <input id="trigger-filter" class="field" placeholder='filter: merchant.tier=marketplace' style="margin-top:6px">
+
+    <h2>Guards</h2>
+    <label>amount_min (cents)</label>
+    <input id="g-min" type="number" class="field" value="100">
+    <label>currency_in (csv)</label>
+    <input id="g-curr" class="field" value="USD,EUR,GBP">
+
+    <h2>Hold period (days)</h2>
+    <input id="hold-days" type="number" class="field" value="0">
+    <label>applies to (node ids, csv)</label>
+    <input id="hold-applies" class="field" placeholder="seller,vendor">
+  </aside>
+
+  <!-- 中: canvas -->
+  <div id="canvas">
+    <div class="toolbar">
+      <button id="add-node-btn">+ Node</button>
+      <button id="add-edge-btn">+ Edge</button>
+      <button id="del-btn" class="secondary">Delete selected</button>
+      <button id="clear-btn" class="secondary">Clear all</button>
+      <span style="margin-left:auto; color:#888; font-size:11px">Drag node ↔ connect edges (click 2 nodes after pressing + Edge)</span>
+    </div>
+    <svg id="svg-canvas">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#888"/>
+        </marker>
+      </defs>
+    </svg>
+  </div>
+
+  <!-- 右: 属性 + JSON 预览 -->
+  <aside class="panel">
+    <h2>Selected element</h2>
+    <div id="prop-form">
+      <p style="color:#888; font-size:11px">点节点或边查看属性</p>
+    </div>
+    <h2>JSON Preview</h2>
+    <pre id="json-preview" class="json-preview">{}</pre>
+  </aside>
+</main>
+
+<script>
+// ─── 状态 ──────────────────────────────────────────────────────────
+const state = {
+  graph: {
+    id: 0, key: '', name: '', version: '1.0.0', status: 'draft',
+    spec: { triggers: [], nodes: [], edges: [], guards: [], hold: null, reversal: { strategy: 'proportional', platform_covers_shortfall: true } }
+  },
+  selected: null,           // {kind:'node'|'edge', id}
+  edgeFrom: null,           // 加边时点的第一个节点
+  mode: 'select',           // select / add-edge
+};
+
+const $ = (id) => document.getElementById(id);
+const svg = $('svg-canvas');
+const API_BASE = window.PAYMENT_ADMIN_API || 'http://localhost:19190';
+
+// ─── 渲染 ──────────────────────────────────────────────────────────
+function render() {
+  // 清空
+  [...svg.querySelectorAll('.node-g, .edge-g')].forEach(el => el.remove());
+
+  // edges 先画 (在节点下)
+  state.graph.spec.edges.forEach(e => {
+    const a = state.graph.spec.nodes.find(n => n.id === e.from);
+    const b = state.graph.spec.nodes.find(n => n.id === e.to);
+    if (!a || !b) return;
+    const ax = a.x ?? 100, ay = a.y ?? 100;
+    const bx = b.x ?? 300, by = b.y ?? 100;
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.classList.add('edge-g');
+    g.dataset.edge = e.from + '->' + e.to;
+    g.innerHTML = `
+      <path class="edge-path" d="M ${ax+90} ${ay+22} Q ${(ax+bx)/2} ${(ay+by)/2 - 30} ${bx} ${by+22}"
+            marker-end="url(#arrow)" stroke="${state.selected?.kind==='edge'&&state.selected.id===e.from+'->'+e.to?'#4040c0':'#888'}"/>
+      <text class="edge-label" x="${(ax+bx)/2}" y="${(ay+by)/2 - 20}" text-anchor="middle">${ruleLabel(e.rule)}</text>
+    `;
+    g.onclick = (ev) => { ev.stopPropagation(); selectEdge(e.from, e.to); };
+    svg.appendChild(g);
+  });
+
+  // nodes
+  state.graph.spec.nodes.forEach(n => {
+    const x = n.x ?? 100, y = n.y ?? 100;
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.classList.add('node-g');
+    g.dataset.node = n.id;
+    const sel = state.selected?.kind === 'node' && state.selected.id === n.id;
+    g.innerHTML = `
+      <rect class="node-rect ${n.type} ${sel ? 'selected' : ''}" x="${x}" y="${y}" width="180" height="44" rx="6"/>
+      <text class="node-label" x="${x+10}" y="${y+18}" fill="#1a1a2e" font-weight="600">${escapeHtml(n.label||n.id)}</text>
+      <text class="node-label" x="${x+10}" y="${y+34}" fill="#888" font-size="10">${escapeHtml(n.account_template||'')}</text>
+    `;
+    let dragging = false, ox = 0, oy = 0;
+    g.querySelector('rect').onmousedown = (ev) => {
+      if (state.mode === 'add-edge') {
+        if (!state.edgeFrom) {
+          state.edgeFrom = n.id;
+        } else if (state.edgeFrom !== n.id) {
+          addEdge(state.edgeFrom, n.id);
+          state.edgeFrom = null;
+          state.mode = 'select';
+        }
+        render();
+        return;
+      }
+      selectNode(n.id);
+      dragging = true;
+      ox = ev.offsetX - x;
+      oy = ev.offsetY - y;
+    };
+    g.querySelector('rect').onmousemove = (ev) => {
+      if (!dragging) return;
+      n.x = ev.offsetX - ox;
+      n.y = ev.offsetY - oy;
+      render();
+    };
+    g.querySelector('rect').onmouseup = () => { dragging = false; };
+    svg.appendChild(g);
+  });
+
+  $('json-preview').textContent = JSON.stringify(state.graph.spec, null, 2);
+}
+
+function ruleLabel(r) {
+  if (!r) return '?';
+  if (r.type === 'percent') return (r.value/100).toFixed(1) + '%';
+  if (r.type === 'fixed_minor') return '$' + (r.value/100).toFixed(2);
+  if (r.type === 'remainder') return 'remainder';
+  return r.type;
+}
+function escapeHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ─── 操作 ──────────────────────────────────────────────────────────
+function selectNode(id) {
+  state.selected = { kind: 'node', id };
+  const n = state.graph.spec.nodes.find(x => x.id === id);
+  renderPropForm('node', n);
+  render();
+}
+function selectEdge(from, to) {
+  state.selected = { kind: 'edge', id: from+'->'+to };
+  const e = state.graph.spec.edges.find(x => x.from === from && x.to === to);
+  renderPropForm('edge', e);
+  render();
+}
+
+function renderPropForm(kind, obj) {
+  const form = $('prop-form');
+  if (!obj) { form.innerHTML = '<p style="color:#888">无</p>'; return; }
+  if (kind === 'node') {
+    form.innerHTML = `
+      <label>ID</label><input class="field" id="p-id" value="${obj.id}" disabled>
+      <label>Type</label>
+      <select class="field" id="p-type">
+        <option value="input"   ${obj.type==='input'?'selected':''}>input</option>
+        <option value="account" ${obj.type==='account'?'selected':''}>account</option>
+        <option value="output"  ${obj.type==='output'?'selected':''}>output</option>
+      </select>
+      <label>Label</label><input class="field" id="p-label" value="${escapeHtml(obj.label||'')}">
+      <label>Account template (支持 {placeholder})</label>
+      <input class="field" id="p-tmpl" value="${escapeHtml(obj.account_template||'')}">
+      <label>From attribute (placeholder 来源)</label>
+      <input class="field" id="p-attr" value="${escapeHtml(obj.from_attr||'')}">
+      <label><input type="checkbox" id="p-optional" ${obj.optional?'checked':''}> optional</label>
+    `;
+    ['p-type','p-label','p-tmpl','p-attr','p-optional'].forEach(k => {
+      $(k).oninput = $(k).onchange = () => {
+        obj.type = $('p-type').value;
+        obj.label = $('p-label').value;
+        obj.account_template = $('p-tmpl').value;
+        obj.from_attr = $('p-attr').value;
+        obj.optional = $('p-optional').checked;
+        render();
+      };
+    });
+  } else {
+    obj.rule = obj.rule || { type: 'percent', value: 500 };
+    form.innerHTML = `
+      <label>Rule type</label>
+      <select class="field" id="r-type">
+        <option value="percent"     ${obj.rule.type==='percent'?'selected':''}>percent (basis points)</option>
+        <option value="fixed_minor" ${obj.rule.type==='fixed_minor'?'selected':''}>fixed (cents)</option>
+        <option value="remainder"   ${obj.rule.type==='remainder'?'selected':''}>remainder</option>
+      </select>
+      <label>Value</label>
+      <input type="number" class="field" id="r-value" value="${obj.rule.value || 0}">
+      <label>If missing</label>
+      <select class="field" id="r-missing">
+        <option value="skip"    ${obj.rule.if_missing==='skip'?'selected':''}>skip</option>
+        <option value="fail"    ${obj.rule.if_missing==='fail'?'selected':''}>fail</option>
+        <option value="default" ${obj.rule.if_missing==='default'?'selected':''}>default</option>
+      </select>
+    `;
+    ['r-type','r-value','r-missing'].forEach(k => {
+      $(k).oninput = $(k).onchange = () => {
+        obj.rule.type = $('r-type').value;
+        obj.rule.value = parseInt($('r-value').value) || 0;
+        obj.rule.if_missing = $('r-missing').value;
+        render();
+      };
+    });
+  }
+}
+
+function addNode(type) {
+  const id = type + '_' + (state.graph.spec.nodes.length + 1);
+  state.graph.spec.nodes.push({
+    id, type, label: type, account_template: type==='input' ? 'platform_collected/{merchant_id}' : '',
+    x: 50 + state.graph.spec.nodes.length * 200, y: 100,
+  });
+  render();
+  selectNode(id);
+}
+function addEdge(from, to) {
+  if (state.graph.spec.edges.find(e => e.from === from && e.to === to)) return;
+  state.graph.spec.edges.push({ from, to, rule: { type: 'percent', value: 1000, if_missing: 'skip' } });
+  render();
+  selectEdge(from, to);
+}
+function delSelected() {
+  if (!state.selected) return;
+  if (state.selected.kind === 'node') {
+    state.graph.spec.nodes = state.graph.spec.nodes.filter(n => n.id !== state.selected.id);
+    state.graph.spec.edges = state.graph.spec.edges.filter(e => e.from !== state.selected.id && e.to !== state.selected.id);
+  } else {
+    const [f,t] = state.selected.id.split('->');
+    state.graph.spec.edges = state.graph.spec.edges.filter(e => !(e.from === f && e.to === t));
+  }
+  state.selected = null;
+  $('prop-form').innerHTML = '<p style="color:#888">无</p>';
+  render();
+}
+
+// ─── palette drag-drop ─────────────────────────────────────────────
+document.querySelectorAll('.palette-item').forEach(el => {
+  el.ondragstart = (e) => e.dataTransfer.setData('type', el.dataset.type);
+});
+svg.ondragover = (e) => e.preventDefault();
+svg.ondrop = (e) => {
+  const t = e.dataTransfer.getData('type');
+  if (!t) return;
+  const r = svg.getBoundingClientRect();
+  const id = t + '_' + (state.graph.spec.nodes.length + 1);
+  state.graph.spec.nodes.push({
+    id, type: t, label: t, account_template: '',
+    x: e.clientX - r.left - 90, y: e.clientY - r.top - 22,
+  });
+  render();
+  selectNode(id);
+};
+
+// ─── triggers / guards / hold sync from sidebar ────────────────────
+function syncSidebarToSpec() {
+  state.graph.spec.triggers = [{
+    event: $('trigger-event').value,
+    filter: $('trigger-filter').value || undefined,
+  }];
+  state.graph.spec.guards = [
+    { kind: 'amount_min', value: parseInt($('g-min').value) || 0 },
+  ];
+  const curr = $('g-curr').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (curr.length) state.graph.spec.guards.push({ kind: 'currency_in', value: curr });
+  const hd = parseInt($('hold-days').value) || 0;
+  if (hd > 0) state.graph.spec.hold = { days: hd, applies_to: $('hold-applies').value.split(',').map(s=>s.trim()).filter(Boolean) };
+  else state.graph.spec.hold = null;
+  render();
+}
+['trigger-event','trigger-filter','g-min','g-curr','hold-days','hold-applies'].forEach(k => {
+  $(k).oninput = $(k).onchange = syncSidebarToSpec;
+});
+
+// ─── 工具栏按钮 ────────────────────────────────────────────────────
+$('add-node-btn').onclick = () => addNode('account');
+$('add-edge-btn').onclick = () => { state.mode = 'add-edge'; state.edgeFrom = null; alert('点 2 个节点连边'); };
+$('del-btn').onclick = delSelected;
+$('clear-btn').onclick = () => { if (confirm('清空 graph?')) { state.graph.spec.nodes = []; state.graph.spec.edges = []; render(); } };
+
+// ─── save / export / dry-run ───────────────────────────────────────
+$('save-btn').onclick = async () => {
+  state.graph.name = $('graph-name').value || 'untitled';
+  state.graph.key = state.graph.key || state.graph.name.toLowerCase().replace(/\s/g,'-');
+  const r = await fetch(`${API_BASE}/api/moneyflow/graphs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(state.graph),
+  });
+  if (r.ok) alert('saved ✓'); else alert('save failed: ' + await r.text());
+};
+
+$('export-btn').onclick = () => {
+  const blob = new Blob([JSON.stringify(state.graph, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (state.graph.key || 'graph') + '.json';
+  a.click();
+};
+
+$('test-btn').onclick = async () => {
+  const charge = prompt('test charge_id?', 'ch_test');
+  const amount = parseInt(prompt('amount (cents)?', '10000')) || 0;
+  if (!amount) return;
+  const r = await fetch(`${API_BASE}/api/moneyflow/dry-run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      graph: state.graph,
+      event: { event: 'charge.succeeded', charge_id: charge, amount_minor: amount, currency: 'USD',
+               attributes: { seller_id: 'seller_001', referrer: 'ref_jane' } }
+    }),
+  });
+  alert(await r.text());
+};
+
+// 载入已有
+async function loadGraphs() {
+  try {
+    const r = await fetch(`${API_BASE}/api/moneyflow/graphs`);
+    const list = await r.json();
+    const sel = $('graph-key');
+    sel.innerHTML = '<option value="">[ new graph ]</option>';
+    (list.data || []).forEach(g => {
+      sel.innerHTML += `<option value="${g.key}">${g.name}</option>`;
+    });
+    sel.onchange = async () => {
+      if (!sel.value) { state.graph = { id:0, key:'', name:'', version:'1.0.0', spec:{triggers:[],nodes:[],edges:[]} }; render(); return; }
+      const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${sel.value}`);
+      state.graph = await r.json();
+      $('graph-name').value = state.graph.name;
+      render();
+    };
+  } catch (e) { /* admin-backend 没起就忽略 */ }
+}
+loadGraphs();
+render();
+</script>
+</body>
+</html>

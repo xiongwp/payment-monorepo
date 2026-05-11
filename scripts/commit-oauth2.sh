@@ -350,8 +350,119 @@ CDN:
 注: PCI ASV 扫描 + 年度 pentest + on-site QSA audit 仍需外采, 本套是 *预防* 内部
 扫描, 减少 ASV 扫描翻车率"
 
+# ─────────────────────────────────────────────────────────
+# 12. split-payment / Money Flow Graph 资金流编排服务
+# ─────────────────────────────────────────────────────────
+echo "▶ [12/12] split-payment + Money Flow Graph"
+git add packages/split-payment/ examples/moneyflow-graphs/ \
+        packages/payment-admin-web/frontend/moneyflow-designer.html
+git commit -m "feat(split-payment): Money Flow Graph 资金流编排服务
+
+设计:
+- 不持账, 资金真相由 accounting-system 负责
+- N 个 split items 打包成 1 个 AtomicBatchBookingRequest, all-or-nothing
+- 通用 Graph DSL (节点+边+触发+guards+hold+reversal), 不限于分账,
+  也支持 referral / 退款反向 / hold 释放 / dispute 等任意资金流
+
+文件:
+- README.md / MONEYFLOW_GRAPH.md   设计文档
+- internal/domain/graph.go         Graph / Node / Edge / Movement / RunPlan
+- internal/domain/types.go         旧 Rule / Plan (兼容)
+- internal/workflow/translator.go  纯函数: Graph + event → RunPlan
+- internal/workflow/engine.go      事件驱动 (Kafka 订阅 → match → translate → post)
+- internal/workflow/translator_test.go  7 个 case (basic/尾差/optional/required/guards/fixed)
+- internal/clients/accounting.go   AccountingClient — PostMovements/PostSplitAtomic/Reverse/GetBalance
+- internal/repo/memory.go          GraphRepo + RunRepo 内存实现
+- internal/adminhttp/graph.go      /api/moneyflow/{graphs,dry-run,runs/search}
+- cmd/server/main.go               入口 — 加载 accounting client + seed example graphs
+- go.mod                           监 accounting-system 本地模块
+
+前端 SPA:
+- packages/payment-admin-web/frontend/moneyflow-designer.html
+  cytoscape-style 拖拽设计器 — 节点 palette / 边连接 / 属性表单 / JSON 预览
+  / save 到后端 / dry-run 测试
+
+示例:
+- examples/moneyflow-graphs/marketplace-default.json  90/5/5 分账 + 7d hold
+- examples/moneyflow-graphs/referral-bonus.json       首付推荐奖励"
+
+# ─────────────────────────────────────────────────────────
+# 13. Subscription 周期扣款 + FX 多币种
+# ─────────────────────────────────────────────────────────
+echo "▶ [13/13] subscription + fx-service"
+git add packages/subscription/ packages/fx-service/
+git commit -m "feat(business): subscription + fx-service — SaaS / 跨境支付能力
+
+subscription (SaaS 周期扣款):
+- domain/types.go            Plan / Subscription / Invoice / DunningEvent
+- workflow/cycle.go          CycleTick (cron) + processCycle (单订阅扣款)
+                              + DunningTick (失败重试 3/7/21d) + 状态机
+- 关键集成: 收款成功后发 subscription.cycle 事件 → moneyflow-engine
+  按 plan.MoneyFlowGraph 自动分账 (复用 Money Flow Graph, 不重复造分账)
+- 内置: trial / grace period / max cycles / dunning / proration hook
+
+fx-service (多币种 + 汇率):
+- domain/types.go            Rate/Quote/Conversion + ApplyRate/ApplySpread
+- sources/ecb.go             ECB 欧央行 + Manual override fetchers
+- workflow/quote.go          报价 (锁 5min) + crossRate (USD 桥) + Confirm 落账
+- 关键: Quote/Confirm 分离防止双花, 兑换走 accounting AtomicBatch
+  (FROM 扣 + TO 加 + fee 扣, 3 笔分录原子)
+- 8 位小数精度 (int64 * 1e8) 防 float 累计误差
+- 多源汇率聚合: ECB / OANDA / stripe_fx / manual 优先级 + 时间衰减"
+
+
+# ─────────────────────────────────────────────────────────
+# 14. 业务能力 (k6 / wallet / subscription / fx / risk扩展)
+# ─────────────────────────────────────────────────────────
+echo "▶ [14/15] business capabilities"
+git add test/k6/ \
+        packages/wallet-service/ packages/subscription/ packages/fx-service/ \
+        packages/risk-manage/internal/rules/velocity_geo_device.go \
+        packages/risk-manage/internal/rules/velocity_geo_device_test.go 2>/dev/null
+git commit -m "feat(business): k6 perf + wallet + subscription + fx + risk扩展
+
+test/k6/                k6 perf suite (01-oauth-token + 02-charge-create + README)
+packages/wallet-service/  Pay/Transfer/Freeze, 全走 accounting AtomicBatch
+packages/subscription/    cycle worker + dunning + 发 subscription.cycle 事件
+packages/fx-service/      Quote/Confirm/cross-rate + ECB+Manual sources
+risk-manage 扩展规则      VelocityChecker + GeoChecker + DeviceChecker + 9 单测"
+
+# ─────────────────────────────────────────────────────────
+# 15. 平台能力 (schema-registry + problem+json + service generator)
+# ─────────────────────────────────────────────────────────
+echo "▶ [15/15] platform capabilities"
+git add packages/payment-util/schema/ \
+        packages/payment-util/problem/ \
+        packages/payment-util/tenant/ \
+        tools/new-service/
+git commit -m "feat(platform): schema registry + RFC7807 problem+json + service generator
+
+packages/payment-util/schema/    Kafka 事件 schema 中心化
+- Registry 接口 (MemoryRegistry 实现; prod 接 Confluent 兼容)
+- 兼容性策略: BACKWARD/FORWARD/FULL/NONE
+- checkBackward: 检测加 required / 改类型等破坏性变更
+- Validate: producer 发消息前校验 payload 符合 schema
+- 9 个单测 (V1/add-optional/add-required/type-change/latest/validate)
+
+packages/payment-util/problem/   RFC 7807 Problem Details for HTTP APIs
+- *Problem struct + Option pattern (WithStatus/Code/Title/Detail/Field/Meta)
+- 预定义 helpers (InvalidArgument/Unauthorized/Forbidden/NotFound/Conflict/
+  IdempotencyConflict/InsufficientBalance/RateLimited/UpstreamError/Internal)
+- Write(w,r,p) 自动注入 trace_id + instance, Content-Type=application/problem+json
+- FromError 任意 error → Problem (兜底 500), 已是 *Problem 透传
+- 7 个单测 + 1 个跟 ctx trace_id 集成
+
+tools/new-service/              微服务脚手架 generator
+- 输入: -name <kebab> -port -domain
+- 产出 9 文件: cmd/server (mw.Bootstrap) / go.mod (监 payment-mw/util) /
+  Dockerfile / internal/domain+repo+adminhttp / README / k8s manifest / openapi
+- 一行命令半小时拉起新服务
+
+packages/payment-util/tenant/    placeholder (用户决策: 多租户暂不需要)"
+
+
 echo ""
 echo "════════════════════════════════════════════"
-echo " ✅ 11 个 commit 完成"
+echo " ✅ 15 个 commit 完成"
 echo "════════════════════════════════════════════"
-git log --oneline -13
+git log --oneline -17
