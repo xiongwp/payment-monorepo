@@ -5,6 +5,9 @@ services:
   oauth2-server:
     image: oauth2-server:local
     pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: oauth2-server
     restart: unless-stopped
     networks: [payment-stack]

@@ -25,10 +25,10 @@ services:
       OAUTH2_MYSQL_DSN: "${OAUTH2_MYSQL_DSN:-}"
     volumes:
       - oauth2-keys:/var/lib/oauth2
-    depends_on:
-      shared-db:
-        condition: service_healthy
-        required: false
+    # 注意: 不能写 depends_on: shared-db
+    # deploy.sh 用 `-p oauth2-server` 独立 compose project 起这个服务,
+    # shared-db 是在 `-p shared-db` project 里独立起的。
+    # 启动顺序由 deploy.sh::ensure_infra_first() 保证 (先 infra 后 app).
 
 volumes:
   oauth2-keys:

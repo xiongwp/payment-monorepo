@@ -17,11 +17,13 @@ run: build ## 本地运行 (dev 模式: in-memory + seed)
 test: ## 单元测试
 	@go test -race ./...
 
-tidy: ## go mod tidy
-	@go mod tidy
+tidy: ## go mod tidy (GOWORK=off — 不让 monorepo go.work 干扰)
+	@GOWORK=off go mod tidy
 
-vendor: tidy ## vendor 依赖 (Dockerfile 用)
-	@go mod vendor
+vendor: tidy ## vendor 依赖 (Dockerfile 用; GOWORK=off 必须, 否则 modules.txt 缺 explicit 标记)
+	@rm -rf vendor
+	@GOWORK=off go mod vendor
+	@echo "✓ vendor/ regenerated ($(shell ls vendor 2>/dev/null | wc -l | tr -d ' ') dirs)"
 
 image: vendor ## docker build
 	@docker build -t $(IMAGE) .

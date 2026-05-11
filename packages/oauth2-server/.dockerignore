@@ -1,0 +1,14 @@
+# 不让 docker build context 抓垃圾文件 / 加快 transferring context
+.git
+.gitignore
+.idea
+.vscode
+*.md
+bin/
+# 关键: 排除 vendor — Dockerfile 已切到 go mod download, 不用 vendor/.
+# 留着会让残留 vendor/modules.txt 跟容器内 go module 版本对不上, 报 inconsistent.
+vendor/
+database/init/*_init.sql
+database/init/02_schema_full.sql
+test/
+docs/
