@@ -38,9 +38,11 @@ import (
 	"reconcile-system/packages/oauth2-server/internal/adminhttp"
 	"reconcile-system/packages/oauth2-server/internal/domain"
 	"reconcile-system/packages/oauth2-server/internal/jwks"
+	"reconcile-system/packages/oauth2-server/internal/metrics"
 	"reconcile-system/packages/oauth2-server/internal/store"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
 
@@ -94,6 +96,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
+	mux.Handle("/metrics", promhttp.Handler())
 
 	h := withAccessLog(log, mux)
 	server := &http.Server{
@@ -150,6 +153,13 @@ func bgTasks(log *zap.Logger, s store.Store, mem *store.MemoryStore, ks *jwks.Ke
 			gcKey := ks.PurgeRetired()
 			if gcRev > 0 || gcKey > 0 {
 				log.Info("bg gc", zap.Int("revoked", gcRev), zap.Int("keys", gcKey))
+			}
+			// 刷新 gauge 指标
+			if kp := ks.Active(); kp != nil {
+				metrics.ActiveKeyAgeSeconds.Set(time.Since(kp.CreatedAt).Seconds())
+			}
+			if list, err := s.ListClients(); err == nil {
+				metrics.ClientsRegistered.Set(float64(len(list)))
 			}
 		}
 	}

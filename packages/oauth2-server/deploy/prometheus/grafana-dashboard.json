@@ -1,0 +1,121 @@
+{
+  "title": "OAuth2 Server",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["oauth2", "auth", "payment-platform"],
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Token issuance rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum(rate(oauth2_token_issue_total[1m])) by (outcome)",
+          "legendFormat": "{{outcome}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Token p50 / p99 latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "histogram_quantile(0.5,  sum(rate(oauth2_token_issue_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.99, sum(rate(oauth2_token_issue_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Token outcomes (last 5min, by owner_type)",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "sum(increase(oauth2_token_issue_total{outcome=\"ok\"}[5m])) by (owner_type)",
+          "legendFormat": "{{owner_type}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Failure breakdown",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "targets": [
+        { "expr": "sum(increase(oauth2_token_issue_total{outcome!=\"ok\"}[1h])) by (outcome)",
+          "legendFormat": "{{outcome}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Rate-limit hits",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(oauth2_rate_limit_hits_total[1m])) by (limit_key)",
+          "legendFormat": "{{limit_key}}" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Introspect rate (active vs revoked)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "sum(rate(oauth2_introspect_total[1m])) by (active)",
+          "legendFormat": "active={{active}}" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "JWKS fetch rate (resource servers polling)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "sum(rate(oauth2_jwks_fetch_total[5m]))" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Active key age (days)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
+      "options": {
+        "colorMode": "value",
+        "thresholds": {
+          "steps": [
+            { "color": "green",  "value": 0 },
+            { "color": "yellow", "value": 60 },
+            { "color": "red",    "value": 90 }
+          ]
+        }
+      },
+      "targets": [
+        { "expr": "oauth2_active_key_age_seconds / 86400" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Registered clients / Revoked tokens",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [
+        { "expr": "oauth2_clients_registered_total", "legendFormat": "clients" },
+        { "expr": "oauth2_revoked_tokens_count",     "legendFormat": "revoked" },
+        { "expr": "oauth2_retired_keys_count",       "legendFormat": "retired_keys" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Admin actions (last 24h)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        { "expr": "sum(increase(oauth2_admin_action_total[24h])) by (action, outcome)",
+          "format": "table" }
+      ]
+    }
+  ]
+}

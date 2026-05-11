@@ -19,6 +19,7 @@
 package adminhttp
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -31,8 +32,11 @@ import (
 	"strings"
 	"time"
 
+	"reconcile-system/packages/oauth2-server/internal/audit"
 	"reconcile-system/packages/oauth2-server/internal/domain"
 	"reconcile-system/packages/oauth2-server/internal/jwks"
+	"reconcile-system/packages/oauth2-server/internal/metrics"
+	"reconcile-system/packages/oauth2-server/internal/ratelimit"
 	"reconcile-system/packages/oauth2-server/internal/store"
 
 	"go.uber.org/zap"
@@ -40,13 +44,16 @@ import (
 
 // Server HTTP handlers.
 type Server struct {
-	Log            *zap.Logger
-	Keys           *jwks.KeyStore
-	Store          store.Store
-	Issuer         string
-	Audience       string
-	TokenTTL       time.Duration
-	AdminToken     string
+	Log         *zap.Logger
+	Keys        *jwks.KeyStore
+	Store       store.Store
+	Issuer      string
+	Audience    string
+	TokenTTL    time.Duration
+	AdminToken  string
+	Audit       audit.Sink     // 审计 sink (nil = 不审计)
+	TokenLimit  *ratelimit.Limiter // /oauth2/token 客户端限流 (nil = 不限)
+	IPLimit     *ratelimit.Limiter // /oauth2/token 单 IP 限流 (防扫描)
 }
 
 // NewServer 构造。
@@ -62,6 +69,9 @@ func NewServer(log *zap.Logger, ks *jwks.KeyStore, s store.Store, issuer, audien
 		Audience:   audience,
 		TokenTTL:   ttl,
 		AdminToken: adminToken,
+		Audit:      &audit.LogSink{Log: log},
+		TokenLimit: ratelimit.New(20, 40),  // 20 rps per client, burst 40
+		IPLimit:    ratelimit.New(50, 100), // 50 rps per IP, burst 100
 	}
 }
 
@@ -81,11 +91,21 @@ func (s *Server) Register(mux *http.ServeMux) {
 // ─── /oauth2/token ─────────────────────────────────────────────────────
 
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	outcome := "ok"
+	ownerType := "unknown"
+	defer func() {
+		metrics.TokenIssueDuration.WithLabelValues(outcome).Observe(time.Since(start).Seconds())
+		metrics.TokenIssueTotal.WithLabelValues("client_credentials", ownerType, outcome).Inc()
+	}()
+
 	if r.Method != http.MethodPost {
+		outcome = "method_not_allowed"
 		writeOAuthErr(w, http.StatusMethodNotAllowed, "invalid_request", "POST required")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
+		outcome = "parse_error"
 		writeOAuthErr(w, http.StatusBadRequest, "invalid_request", "cannot parse form")
 		return
 	}
@@ -104,27 +124,48 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	sourceIP := clientIP(r)
+
+	// IP 限流 (匿名维度, 防全网扫描)
+	if s.IPLimit != nil && !s.IPLimit.Allow("ip:"+sourceIP) {
+		metrics.RateLimitHits.WithLabelValues("token", "ip").Inc()
+		outcome = "ip_throttled"
+		writeOAuthErr(w, http.StatusTooManyRequests, "slow_down", "too many requests from this IP")
+		return
+	}
+
 	if req.GrantType != "client_credentials" {
+		outcome = "unsupported_grant"
 		writeOAuthErr(w, http.StatusBadRequest, "unsupported_grant_type",
 			"only client_credentials supported")
 		return
 	}
 	if req.ClientID == "" || req.ClientSecret == "" {
+		outcome = "missing_creds"
 		writeOAuthErr(w, http.StatusUnauthorized, "invalid_client", "client_id/client_secret required")
 		return
 	}
 
-	sourceIP := clientIP(r)
+	// per-client 限流 (防 brute force 单 client)
+	if s.TokenLimit != nil && !s.TokenLimit.Allow("client:"+req.ClientID) {
+		metrics.RateLimitHits.WithLabelValues("token", "client").Inc()
+		outcome = "client_throttled"
+		writeOAuthErr(w, http.StatusTooManyRequests, "slow_down", "too many requests for this client")
+		return
+	}
+
 	cli, grantedScope, err := store.AuthenticateClient(s.Store, req.ClientID, req.ClientSecret, req.Scope, sourceIP)
 	if err != nil {
 		s.Log.Warn("client auth failed",
 			zap.String("client_id", req.ClientID),
 			zap.String("ip", sourceIP),
 			zap.Error(err))
+		outcome = errOutcomeLabel(err)
 		status, code := mapAuthErr(err)
 		writeOAuthErr(w, status, code, err.Error())
 		return
 	}
+	ownerType = string(cli.OwnerType)
 
 	now := time.Now().UTC()
 	exp := now.Add(s.TokenTTL)
@@ -164,6 +205,8 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 // ─── /oauth2/introspect ────────────────────────────────────────────────
 
 func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { metrics.IntrospectDuration.Observe(time.Since(start).Seconds()) }()
 	if r.Method != http.MethodPost {
 		writeOAuthErr(w, http.StatusMethodNotAllowed, "invalid_request", "POST required")
 		return
@@ -194,14 +237,17 @@ func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := s.Keys.Verify(token)
 	if err != nil {
+		metrics.IntrospectTotal.WithLabelValues("false").Inc()
 		writeJSON(w, http.StatusOK, domain.IntrospectResponse{Active: false})
 		return
 	}
 	jti, _ := claims["jti"].(string)
 	if jti != "" && s.Store.IsRevoked(jti) {
+		metrics.IntrospectTotal.WithLabelValues("false").Inc()
 		writeJSON(w, http.StatusOK, domain.IntrospectResponse{Active: false})
 		return
 	}
+	metrics.IntrospectTotal.WithLabelValues("true").Inc()
 	resp := domain.IntrospectResponse{
 		Active:    true,
 		Scope:     stringClaim(claims, "scope"),
@@ -245,6 +291,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.Store.Revoke(jti, time.Unix(exp, 0))
+	metrics.RevokeTotal.Inc()
 	s.Log.Info("token revoked", zap.String("jti", jti))
 	w.WriteHeader(http.StatusOK)
 }
@@ -252,6 +299,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 // ─── /.well-known/jwks.json ────────────────────────────────────────────
 
 func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
+	metrics.JWKSFetchTotal.Inc()
 	s.Keys.ServeJWKS(w, r)
 }
 
@@ -281,6 +329,24 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 }
 
 // ─── /admin/* ──────────────────────────────────────────────────────────
+
+// writeAudit 记一条审计事件 (best-effort)。
+func (s *Server) writeAudit(r *http.Request, action, clientID string, details map[string]any) {
+	if s.Audit == nil {
+		return
+	}
+	actor := r.Header.Get("X-Admin-User")
+	if actor == "" {
+		actor = "admin-token"
+	}
+	_ = s.Audit.Write(context.Background(), audit.Event{
+		Actor:    actor,
+		Action:   action,
+		ClientID: clientID,
+		SourceIP: clientIP(r),
+		Details:  audit.Redact(details),
+	})
+}
 
 func (s *Server) checkAdmin(r *http.Request) error {
 	if s.AdminToken == "" {
@@ -358,6 +424,14 @@ func (s *Server) handleAdminClients(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		metrics.AdminActionTotal.WithLabelValues("create-client", "ok").Inc()
+		s.writeAudit(r, "create-client", clientID, map[string]any{
+			"name":           in.Name,
+			"owner_type":     in.OwnerType,
+			"owner_id":       in.OwnerID,
+			"allowed_scopes": in.AllowedScopes,
+			"allowed_ips":    in.AllowedIPs,
+		})
 		// 返 secret — 仅此一次！
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"client_id":     clientID,
@@ -414,6 +488,8 @@ func (s *Server) handleAdminClientByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		metrics.AdminActionTotal.WithLabelValues("rotate-secret", "ok").Inc()
+		s.writeAudit(r, "rotate-secret", cid, nil)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"client_id":     c.ClientID,
 			"client_secret": newSec,
@@ -422,14 +498,20 @@ func (s *Server) handleAdminClientByID(w http.ResponseWriter, r *http.Request) {
 	case "suspend":
 		c.Status = "suspended"
 		_ = s.Store.PutClient(c)
+		metrics.AdminActionTotal.WithLabelValues("suspend", "ok").Inc()
+		s.writeAudit(r, "suspend", cid, nil)
 		writeJSON(w, http.StatusOK, c)
 	case "activate":
 		c.Status = "active"
 		_ = s.Store.PutClient(c)
+		metrics.AdminActionTotal.WithLabelValues("activate", "ok").Inc()
+		s.writeAudit(r, "activate", cid, nil)
 		writeJSON(w, http.StatusOK, c)
 	case "revoke":
 		c.Status = "revoked"
 		_ = s.Store.PutClient(c)
+		metrics.AdminActionTotal.WithLabelValues("revoke-client", "ok").Inc()
+		s.writeAudit(r, "revoke-client", cid, nil)
 		writeJSON(w, http.StatusOK, c)
 	default:
 		http.Error(w, "unknown action: "+action, http.StatusBadRequest)
@@ -446,9 +528,13 @@ func (s *Server) handleAdminKeyRotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Keys.Rotate(); err != nil {
+		metrics.AdminActionTotal.WithLabelValues("key-rotate", "error").Inc()
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	metrics.KeyRotationTotal.Inc()
+	metrics.AdminActionTotal.WithLabelValues("key-rotate", "ok").Inc()
+	s.writeAudit(r, "key-rotate", "", map[string]any{"new_kid": s.Keys.Active().KID})
 	s.Log.Info("RSA key rotated", zap.String("new_kid", s.Keys.Active().KID))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"new_kid": s.Keys.Active().KID,
@@ -502,6 +588,24 @@ func int64Claim(c map[string]any, k string) int64 {
 		return i
 	}
 	return 0
+}
+
+func errOutcomeLabel(err error) string {
+	switch {
+	case errors.Is(err, store.ErrClientNotFound):
+		return "unknown_client"
+	case errors.Is(err, store.ErrInvalidSecret):
+		return "bad_secret"
+	case errors.Is(err, store.ErrClientSuspended):
+		return "suspended"
+	case errors.Is(err, store.ErrClientExpired):
+		return "expired_creds"
+	case errors.Is(err, store.ErrIPNotAllowed):
+		return "ip_blocked"
+	case errors.Is(err, store.ErrScopeNotAllowed):
+		return "scope_denied"
+	}
+	return "other_error"
 }
 
 func mapAuthErr(err error) (int, string) {

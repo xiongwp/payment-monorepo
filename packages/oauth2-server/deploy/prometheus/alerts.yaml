@@ -1,0 +1,99 @@
+# oauth2-server Prometheus alert rules
+#
+# 部署:
+#   kubectl create configmap oauth2-prom-alerts -n monitoring \
+#     --from-file=alerts.yaml=./alerts.yaml
+#   引用到 Prometheus rule_files
+
+groups:
+- name: oauth2-server
+  interval: 30s
+  rules:
+
+  # ─── SLO: availability ─────────────────────────────────────
+  - alert: OAuth2TokenEndpointDown
+    expr: up{job="oauth2-server"} == 0
+    for: 2m
+    labels: { severity: page, service: oauth2-server }
+    annotations:
+      summary: "oauth2-server is down ({{ $labels.instance }})"
+      runbook: "https://runbooks.example.com/oauth2-server#down"
+
+  - alert: OAuth2HighErrorRate
+    expr: |
+      (
+        sum(rate(oauth2_token_issue_total{outcome!="ok"}[5m])) /
+        sum(rate(oauth2_token_issue_total[5m]))
+      ) > 0.05
+    for: 10m
+    labels: { severity: page }
+    annotations:
+      summary: "OAuth2 token error rate > 5% (currently {{ $value | humanizePercentage }})"
+      description: "Likely brute-force or bad client config"
+
+  - alert: OAuth2TokenLatencyHigh
+    expr: |
+      histogram_quantile(0.99,
+        sum(rate(oauth2_token_issue_duration_seconds_bucket[5m])) by (le)
+      ) > 0.5
+    for: 10m
+    labels: { severity: warn }
+    annotations:
+      summary: "OAuth2 token p99 latency > 500ms"
+
+  # ─── 安全告警 ─────────────────────────────────────────────
+  - alert: OAuth2BruteForceDetected
+    expr: |
+      sum(rate(oauth2_token_issue_total{outcome="bad_secret"}[5m])) > 5
+    for: 5m
+    labels: { severity: warn, kind: security }
+    annotations:
+      summary: "Possible OAuth2 brute force: bad_secret > 5/sec for 5min"
+      description: "Check client_id distribution, consider lowering rate limit / SOC notice"
+
+  - alert: OAuth2RateLimitingFiring
+    expr: |
+      sum(rate(oauth2_rate_limit_hits_total[5m])) > 10
+    for: 5m
+    labels: { severity: warn }
+    annotations:
+      summary: "OAuth2 rate limiter active > 10 hits/sec"
+
+  # ─── 资源 / 容量 ──────────────────────────────────────────
+  - alert: OAuth2ActiveKeyOld
+    expr: oauth2_active_key_age_seconds > (90 * 24 * 3600)
+    for: 1h
+    labels: { severity: warn }
+    annotations:
+      summary: "Active RSA key > 90d old — schedule rotation"
+      runbook: "POST /admin/keys/rotate"
+
+  - alert: OAuth2NoActiveKey
+    expr: absent(oauth2_active_key_age_seconds)
+    for: 1m
+    labels: { severity: page }
+    annotations:
+      summary: "oauth2-server has no active RSA key"
+
+  - alert: OAuth2RevocationListGrowing
+    expr: oauth2_revoked_tokens_count > 10000
+    for: 15m
+    labels: { severity: warn }
+    annotations:
+      summary: "Revocation list > 10K — check GC, may signal abuse"
+
+  # ─── 业务/异常 ────────────────────────────────────────────
+  - alert: OAuth2KeyRotationFrequent
+    expr: increase(oauth2_key_rotation_total[1h]) > 1
+    for: 1h
+    labels: { severity: warn }
+    annotations:
+      summary: "RSA key rotated > 1× in past hour — verify intentional"
+
+  - alert: OAuth2ScopeDeniedSurge
+    expr: |
+      sum(rate(oauth2_token_issue_total{outcome="scope_denied"}[5m])) > 1
+    for: 10m
+    labels: { severity: warn }
+    annotations:
+      summary: "scope_denied surge — client SDK 升级未带新 scope?"

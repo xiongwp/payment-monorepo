@@ -123,7 +123,7 @@ OAUTH2_ROLLOUT.md:
 # ─────────────────────────────────────────────────────────
 # 5. deploy 集成 (biz-stack 加 oauth2-server)
 # ─────────────────────────────────────────────────────────
-echo "▶ [5/5] biz-stack compose 集成"
+echo "▶ [5/6] biz-stack compose 集成"
 git add packages/payment-admin-web/deploy/overrides/biz-stack.yml
 git commit -m "feat(deploy): biz-stack 集成 oauth2-server
 
@@ -133,6 +133,56 @@ git commit -m "feat(deploy): biz-stack 集成 oauth2-server
   * 健康检查 + 标准 18087 host port
 - biz-admin-web 加 OAUTH2_BASE_URL + OAUTH2_ADMIN_TOKEN env
 - depends_on 加 oauth2-server"
+
+# ─────────────────────────────────────────────────────────
+# 6. 优化 (metrics / rate-limit / audit / scope / introspect cache)
+# ─────────────────────────────────────────────────────────
+echo "▶ [6/6] OAuth2 生产化优化"
+git add packages/oauth2-server/internal/metrics/ \
+        packages/oauth2-server/internal/ratelimit/ \
+        packages/oauth2-server/internal/audit/ \
+        packages/oauth2-server/deploy/prometheus/ \
+        packages/oauth2-server/test/loadtest.sh \
+        packages/oauth2-server/cmd/server/main.go \
+        packages/oauth2-server/internal/adminhttp/server.go \
+        packages/oauth2-server/go.mod \
+        packages/payment-mw/scope.go \
+        packages/payment-mw/scope_test.go \
+        packages/payment-mw/introspect_cache.go
+git commit -m "feat(oauth2): 生产化 — metrics + rate-limit + audit + scope 层级
+
+可观测性 (Prometheus):
+- internal/metrics/metrics.go: 11 个指标 (token issue/p99/outcomes,
+  introspect, revoke, JWKS fetch, rate limit hits, admin actions,
+  key rotation, active key age, clients/revoked count)
+- deploy/prometheus/alerts.yaml: 9 条告警 (down/error rate/latency/
+  brute force/scope denial surge/key age/rate limit firing/
+  revocation list growing/frequent key rotation)
+- deploy/prometheus/grafana-dashboard.json: 10 panel dashboard
+- cmd/server/main.go: /metrics endpoint + 后台 15min gauge 刷新
+
+性能 + 安全 (rate limit):
+- internal/ratelimit/limiter.go: token bucket per-key + GC
+- internal/ratelimit/limiter_test.go: 4 个单测
+- handleToken 加 IP (50rps) + client (20rps) 双维度限流
+- 失败 outcome 8 类 label (unknown_client/bad_secret/suspended/
+  expired_creds/ip_blocked/scope_denied/ip_throttled/client_throttled)
+
+合规 (audit log):
+- internal/audit/audit.go: Event/Sink/Multi/Redact
+- 6 个 admin action 全部审计 (create/rotate/suspend/activate/
+  revoke-client/key-rotate)
+- Redact 自动脱敏 secret/private_key
+
+业务层 (payment-mw):
+- scope.go: scope 层级 + 通配 (refund:* / *:read / 全通配 +
+  write→read 隐含); HasScopeOrImplied / AnyScope / AllScopes
+- scope_test.go: 13 个 case
+- introspect_cache.go: 异步 revocation 传播 (~30s 延迟, 99% 走本地)
+
+负载测试:
+- test/loadtest.sh: 3 场景 (单 client 50rps 限流 / 100 并发吞吐 /
+  错 secret 100 次 brute-force 计数)"
 
 # 清掉自动生成的辅助文件 (不进 commit)
 echo "▶ 注: go.work.disabled / go.work.sum 是 Go 工具自动产物, 已在 .gitignore 应忽略"

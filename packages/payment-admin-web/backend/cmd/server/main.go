@@ -343,13 +343,30 @@ func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn 
 		if !registered {
 			log.Printf("[bff] WARN %q etcd 无注册条目，降级直连 %s（待该服务起来并注册到 etcd 后重启 BFF 会自动切回 etcd resolver）",
 				service, fallbackAddr)
-			conn, derr := grpc.NewClient(fallbackAddr,
+			target := fallbackAddr
+			if !strings.Contains(target, "://") {
+				target = "dns:///" + target
+			}
+			conn, derr := grpc.NewClient(target,
 				creds,
 				keepalive,
-				grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
+				grpc.WithDefaultServiceConfig(`{
+					"loadBalancingConfig":[{"round_robin":{}}],
+					"healthCheckConfig":{"serviceName":""},
+					"methodConfig":[{
+						"name":[{}],
+						"retryPolicy":{
+							"maxAttempts":3,
+							"initialBackoff":"0.1s",
+							"maxBackoff":"1s",
+							"backoffMultiplier":2,
+							"retryableStatusCodes":["UNAVAILABLE"]
+						}
+					}]
+				}`),
 			)
 			if derr != nil {
-				log.Fatalf("dial %s fallback (%s): %v", service, fallbackAddr, derr)
+				log.Fatalf("dial %s fallback (%s): %v", service, target, derr)
 			}
 			return conn
 		}
@@ -363,13 +380,34 @@ func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn 
 		log.Printf("[bff] dialed %s via etcd %v", service, registry)
 		return conn
 	}
-	conn, err := grpc.NewClient(fallbackAddr,
+	// dns 显式前缀触发 gRPC 内置 DNS resolver；不写默认是 passthrough（不 re-resolve），
+	// 后端容器重启 / 副本切换 / 启动顺序错时会卡在 "no children to pick from"。
+	target := fallbackAddr
+	if !strings.Contains(target, "://") {
+		target = "dns:///" + target
+	}
+	conn, err := grpc.NewClient(target,
 		creds,
 		keepalive,
-		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
+		// round_robin 多副本均衡 + 30s DNS re-resolve (resolveNowFreq is internal,
+		// 但 idle 连接重建会触发 re-resolve)。配 healthCheck 让 unhealthy backend 自动剔除。
+		grpc.WithDefaultServiceConfig(`{
+			"loadBalancingConfig":[{"round_robin":{}}],
+			"healthCheckConfig":{"serviceName":""},
+			"methodConfig":[{
+				"name":[{}],
+				"retryPolicy":{
+					"maxAttempts":3,
+					"initialBackoff":"0.1s",
+					"maxBackoff":"1s",
+					"backoffMultiplier":2,
+					"retryableStatusCodes":["UNAVAILABLE"]
+				}
+			}]
+		}`),
 	)
 	if err != nil {
-		log.Fatalf("dial %s (%s): %v", service, fallbackAddr, err)
+		log.Fatalf("dial %s (%s): %v", service, target, err)
 	}
 	return conn
 }
