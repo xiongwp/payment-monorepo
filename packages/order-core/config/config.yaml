@@ -68,58 +68,58 @@ database:
   # 写满风险来源：worker 全表扫描或慢查询持锁；监控 db_pool_in_use_count + db_pool_wait_count。
   meta:
     name: order_meta
-    dsn: "root:password@tcp(127.0.0.1:3316)/order_meta?charset=utf8mb4&parseTime=True&loc=Local"
+    dsn: "root:password@tcp(127.0.0.1:3400)/order_meta?charset=utf8mb4&parseTime=True&loc=Local"
     max_open_conns: 10
     max_idle_conns: 3
     conn_max_lifetime: 3600
   shards:
     - name: order_db_0
-      dsn: "root:password@tcp(127.0.0.1:3306)/order_db_0?charset=utf8mb4&parseTime=True&loc=Local"
+      dsn: "root:password@tcp(127.0.0.1:3410)/order_db_0?charset=utf8mb4&parseTime=True&loc=Local"
       max_open_conns: 30
       max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_1
-      dsn: "root:password@tcp(127.0.0.1:3307)/order_db_1?charset=utf8mb4&parseTime=True&loc=Local"
+      dsn: "root:password@tcp(127.0.0.1:3411)/order_db_1?charset=utf8mb4&parseTime=True&loc=Local"
       max_open_conns: 30
       max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_2
-      dsn: "root:password@tcp(127.0.0.1:3308)/order_db_2?charset=utf8mb4&parseTime=True&loc=Local"
+      dsn: "root:password@tcp(127.0.0.1:3412)/order_db_2?charset=utf8mb4&parseTime=True&loc=Local"
       max_open_conns: 30
       max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_3
-      dsn: "root:password@tcp(127.0.0.1:3309)/order_db_3?charset=utf8mb4&parseTime=True&loc=Local"
+      dsn: "root:password@tcp(127.0.0.1:3413)/order_db_3?charset=utf8mb4&parseTime=True&loc=Local"
       max_open_conns: 30
       max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_4
-      dsn: "root:password@tcp(127.0.0.1:3310)/order_db_4?charset=utf8mb4&parseTime=True&loc=Local"
+      dsn: "root:password@tcp(127.0.0.1:3414)/order_db_4?charset=utf8mb4&parseTime=True&loc=Local"
       max_open_conns: 30
       max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_5
-      dsn: "root:password@tcp(127.0.0.1:3311)/order_db_5?charset=utf8mb4&parseTime=True&loc=Local"
+      dsn: "root:password@tcp(127.0.0.1:3415)/order_db_5?charset=utf8mb4&parseTime=True&loc=Local"
       max_open_conns: 30
       max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_6
-      dsn: "root:password@tcp(127.0.0.1:3312)/order_db_6?charset=utf8mb4&parseTime=True&loc=Local"
+      dsn: "root:password@tcp(127.0.0.1:3416)/order_db_6?charset=utf8mb4&parseTime=True&loc=Local"
       max_open_conns: 30
       max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_7
-      dsn: "root:password@tcp(127.0.0.1:3313)/order_db_7?charset=utf8mb4&parseTime=True&loc=Local"
+      dsn: "root:password@tcp(127.0.0.1:3417)/order_db_7?charset=utf8mb4&parseTime=True&loc=Local"
       max_open_conns: 30
       max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_8
-      dsn: "root:password@tcp(127.0.0.1:3314)/order_db_8?charset=utf8mb4&parseTime=True&loc=Local"
+      dsn: "root:password@tcp(127.0.0.1:3418)/order_db_8?charset=utf8mb4&parseTime=True&loc=Local"
       max_open_conns: 30
       max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: order_db_9
-      dsn: "root:password@tcp(127.0.0.1:3315)/order_db_9?charset=utf8mb4&parseTime=True&loc=Local"
+      dsn: "root:password@tcp(127.0.0.1:3419)/order_db_9?charset=utf8mb4&parseTime=True&loc=Local"
       max_open_conns: 30
       max_idle_conns: 10
       conn_max_lifetime: 3600
