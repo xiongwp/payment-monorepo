@@ -1,0 +1,38 @@
+# oauth2-server override — 加入 payment-stack network + 注入 dev seed env.
+#
+# 端口规则 (跟其他服务对齐):
+#   18087 host → 8087 container  (跟 biz-stack.yml 同 host port)
+#
+# RSA 私钥持久化在 oauth2-keys volume; 容器重启不丢 key.
+
+services:
+  oauth2-server:
+    networks:
+      - payment-stack
+    ports: !override
+      - "18087:8087"
+    environment:
+      TZ: Asia/Shanghai
+      OAUTH2_ADDR: ":8087"
+      OAUTH2_ISSUER: "http://oauth2-server:8087"
+      OAUTH2_AUDIENCE: "payment-api"
+      OAUTH2_KEY_PATH: "/var/lib/oauth2/oauth-rsa.pem"
+      OAUTH2_ADMIN_TOKEN: "${OAUTH2_ADMIN_TOKEN:-admintok-dev-CHANGE-IN-PROD}"
+      OAUTH2_DEV_SEED: "${OAUTH2_DEV_SEED:-1}"
+      OAUTH2_TOKEN_TTL_SEC: "3600"
+      # 100 分片 (生产配 dsn_prefix 走 ShardedMySQLStore); dev 默认 in-memory
+      # OAUTH2_MYSQL_DSN: 留空 → 走 memory store + seed clients
+      OAUTH2_MYSQL_DSN: "${OAUTH2_MYSQL_DSN:-}"
+    volumes:
+      - oauth2-keys:/var/lib/oauth2
+    depends_on:
+      shared-db:
+        condition: service_healthy
+        required: false
+
+volumes:
+  oauth2-keys:
+
+networks:
+  payment-stack:
+    external: true
