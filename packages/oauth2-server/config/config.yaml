@@ -1,0 +1,46 @@
+server:
+  http_port: 8087
+
+issuer: "https://oauth.payment.example.com"
+audience: "payment-api"
+token_ttl: 3600s            # access_token 有效期 1h
+
+admin_token: ""              # 从 OAUTH2_ADMIN_TOKEN env 注入
+
+rsa:
+  key_path: "/var/lib/oauth2/oauth-rsa.pem"
+  rotation_days: 90          # 自动 rotate 周期; 配合 cron 调 /admin/keys/rotate
+  retention_days: 30         # retired key 保留期, 期间老 token 仍可验
+
+database:
+  # 单库模式 DSN (dev)
+  dsn: ""
+  # 分片模式 DSN 前缀 (生产; 拼 db_index 后缀 0..9)
+  # 例: "user:pwd@tcp(mysql-cluster:3306)/oauth2_db_"
+  dsn_prefix: ""
+  sharded: false             # true 走 ShardedMySQLStore (100 分片)
+  max_open_conns: 20
+  max_idle_conns: 5
+  conn_max_lifetime: 30m
+
+rate_limit:
+  client_rps: 20             # /oauth2/token 每 client_id 限流
+  client_burst: 40
+  ip_rps: 50                 # /oauth2/token 每 source IP 限流
+  ip_burst: 100
+
+audit:
+  # 写哪里 — log / db / both
+  sinks: ["log"]
+  retention_days: 2555       # 7 年 (PCI DSS 10.7 要求)
+
+dev:
+  # 开发时种 3 demo client + use in-memory store (不持久化)
+  seed_clients: false
+
+metrics:
+  # /metrics 走 server.http_port 同端口; 单独端口暂未支持
+
+telemetry:
+  otel_endpoint: ""          # OTLP gRPC endpoint, 空=关闭
+  service_name: "oauth2-server"

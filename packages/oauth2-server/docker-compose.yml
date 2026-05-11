@@ -1,0 +1,35 @@
+# 单服务 docker-compose — 给本地 dev / CI 起栈用.
+# 生产部署用 deploy/k8s/.
+
+services:
+  oauth2-server:
+    image: oauth2-server:local
+    pull_policy: never
+    container_name: oauth2-server
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports:
+      - "8087:8087"
+    environment:
+      TZ: Asia/Shanghai
+      # 通过 viper 读 config.docker.yaml; env 覆盖 yaml 同层级
+      OAUTH2_CONFIG: /app/config/config.docker.yaml
+      OAUTH2_ADMIN_TOKEN: "${OAUTH2_ADMIN_TOKEN:-admintok-dev-CHANGE-IN-PROD}"
+      OAUTH2_MYSQL_DSN: "${OAUTH2_MYSQL_DSN:-}"
+      OAUTH2_DEV_SEED: "${OAUTH2_DEV_SEED:-1}"
+    volumes:
+      - oauth2-keys:/var/lib/oauth2
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8087/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  oauth2-keys:
+
+networks:
+  payment-stack:
+    external: true

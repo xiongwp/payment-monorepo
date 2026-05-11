@@ -1,0 +1,38 @@
+# Docker compose 用配置 — 容器内 DNS 解析服务名.
+
+server:
+  http_port: 8087
+
+issuer: "http://oauth2-server:8087"
+audience: "payment-api"
+token_ttl: 3600s
+
+admin_token: "${OAUTH2_ADMIN_TOKEN}"
+
+rsa:
+  key_path: "/var/lib/oauth2/oauth-rsa.pem"
+  rotation_days: 90
+  retention_days: 30
+
+database:
+  # docker-compose 起的 MySQL 容器
+  dsn: "${OAUTH2_MYSQL_DSN:-oauth2:password@tcp(mysql:3306)/oauth2db?charset=utf8mb4&parseTime=true&loc=UTC}"
+  dsn_prefix: ""
+  sharded: false             # docker dev 默认走单库; 生产换 true + dsn_prefix
+
+rate_limit:
+  client_rps: 20
+  client_burst: 40
+  ip_rps: 50
+  ip_burst: 100
+
+audit:
+  sinks: ["log"]
+  retention_days: 2555
+
+dev:
+  seed_clients: true         # docker dev 自动种 3 client 方便联调
+
+telemetry:
+  otel_endpoint: "http://jaeger:4317"
+  service_name: "oauth2-server"
