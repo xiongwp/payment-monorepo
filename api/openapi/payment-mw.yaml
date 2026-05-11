@@ -1,0 +1,45 @@
+openapi: 3.0.3
+info:
+  title: Payment Middleware Library
+  description: |
+    payment-mw 不是独立服务，是 8 业务服务共用的 Go 库。
+    本 spec 描述它注入到每个服务后的 **横切关注点 (cross-cutting) API**:
+    所有服务自动暴露以下 endpoint。
+  version: 1.0.0
+servers:
+  - url: '{service_url}'
+    variables:
+      service_url:
+        default: http://localhost:8080
+        description: 任何接入了 payment-mw bootstrap 的服务
+
+paths:
+  /healthz:
+    get:
+      summary: 存活探针
+      security: []
+      responses:
+        '200': { description: ok }
+
+  /metrics:
+    get:
+      summary: Prometheus 指标
+      security: []
+      responses:
+        '200':
+          description: Prometheus 格式
+          content:
+            text/plain: { schema: { type: string } }
+
+components:
+  headers:
+    X-Trace-ID:
+      schema: { type: string }
+      description: 由 mw.Trace() 自动注入 / 透传，全链路追踪。
+    X-RateLimit-Remaining:
+      schema: { type: integer }
+      description: 由 mw.RateLimit() 注入。
+  securitySchemes:
+    oauth2BearerJWT: { $ref: './_common.yaml#/components/securitySchemes/oauth2BearerJWT' }
+    apiKey:          { $ref: './_common.yaml#/components/securitySchemes/apiKey' }
+    internalToken:   { $ref: './_common.yaml#/components/securitySchemes/internalToken' }

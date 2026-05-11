@@ -1,0 +1,99 @@
+openapi: 3.0.3
+info:
+  title: KYC / KYB Service API
+  description: 商户准入 (KYB) + 实名审核 (KYC) 流程。
+  version: 1.0.0
+servers:
+  - url: https://api.payment.example.com/kyc/v1
+  - url: http://localhost:18095
+
+security:
+  - oauth2BearerJWT: [kyc:read]
+
+paths:
+  /healthz: { get: { summary: liveness, security: [], responses: { '200': { description: ok } } } }
+
+  /applications:
+    post:
+      summary: 创建 KYB / KYC 申请
+      security: [{ oauth2BearerJWT: [kyc:write] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, applicant_id]
+              properties:
+                type: { type: string, enum: [kyb, kyc] }
+                applicant_id: { type: string, description: "merchant_id 或 customer_id" }
+                business_info:
+                  type: object
+                  properties:
+                    legal_name: { type: string }
+                    tax_id:     { type: string }
+                    country:    { type: string, example: US }
+                    address:    { type: object }
+                    ubo_list:   { type: array, items: { type: object } }
+                individual_info:
+                  type: object
+                  properties:
+                    full_name:  { type: string }
+                    dob:        { type: string, format: date }
+                    nationality: { type: string }
+                documents:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      kind: { type: string, enum: [passport, id_card, drivers_license, business_license, bank_statement] }
+                      url:  { type: string, description: "S3 url" }
+      responses:
+        '201':
+          description: 已提交
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Application' }
+
+  /applications/{id}:
+    get:
+      summary: 查申请状态
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } }
+
+  /applications/{id}/decide:
+    post:
+      summary: ops 审核决策
+      security: [{ oauth2BearerJWT: [ops:write] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approved, rejected, needs_more_info] }
+                reason: { type: string }
+                conditions: { type: array, items: { type: string } }
+      responses:
+        '200': { description: 已决策 }
+
+components:
+  securitySchemes:
+    oauth2BearerJWT: { $ref: './_common.yaml#/components/securitySchemes/oauth2BearerJWT' }
+  schemas:
+    Application:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [kyb, kyc] }
+        applicant_id: { type: string }
+        status: { type: string, enum: [submitted, in_review, needs_more_info, approved, rejected] }
+        decision_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time }

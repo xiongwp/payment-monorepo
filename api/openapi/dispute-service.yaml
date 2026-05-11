@@ -1,0 +1,107 @@
+openapi: 3.0.3
+info:
+  title: Dispute Service API
+  description: 信用卡争议 (Chargeback) — 状态机 + 证据收集 + 决议。
+  version: 1.0.0
+servers:
+  - url: https://api.payment.example.com/disputes/v1
+  - url: http://localhost:18092
+
+security:
+  - oauth2BearerJWT: [dispute:read]
+
+paths:
+  /healthz: { get: { summary: liveness, security: [], responses: { '200': { description: ok } } } }
+
+  /disputes:
+    get:
+      summary: 列争议 (商户 / ops)
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [needs_response, under_review, won, lost, expired] } }
+        - { name: merchant_id, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Dispute' }
+
+  /disputes/{id}:
+    get:
+      summary: 查争议
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Dispute' } } } }
+
+  /disputes/{id}/evidence:
+    post:
+      summary: 提交证据 (商户答辩)
+      security: [{ oauth2BearerJWT: [dispute:write] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customer_communication: { type: string }
+                shipping_documentation: { type: string }
+                service_documentation:  { type: string }
+                receipt:                { type: string }
+                refund_policy:          { type: string }
+                attachments:
+                  type: array
+                  items: { type: string, description: "S3 url" }
+      responses:
+        '200': { description: 证据已提交 }
+        '409':
+          description: 状态不允许（已 expired / 已 lost / 已 won）
+          content: { application/json: { schema: { $ref: './_common.yaml#/components/schemas/Error' } } }
+
+  /disputes/{id}/accept:
+    post:
+      summary: 接受 chargeback (放弃答辩)
+      security: [{ oauth2BearerJWT: [dispute:write] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok }
+
+  /disputes/{id}/webhook:
+    post:
+      summary: 渠道回调 (Stripe / Adyen / Visa 等)
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: 渠道原始 payload，签名在 header
+      responses:
+        '200': { description: 已记录 }
+
+components:
+  securitySchemes:
+    oauth2BearerJWT: { $ref: './_common.yaml#/components/securitySchemes/oauth2BearerJWT' }
+  schemas:
+    Dispute:
+      type: object
+      properties:
+        id: { type: string, example: "dp_abc123" }
+        charge_id: { type: string }
+        payment_intent_id: { type: string }
+        amount: { $ref: './_common.yaml#/components/schemas/Money' }
+        reason: { type: string, enum: [duplicate, fraudulent, subscription_canceled, product_not_received, product_unacceptable, unrecognized, credit_not_processed, general] }
+        status: { type: string, enum: [needs_response, under_review, won, lost, expired, charge_refunded] }
+        evidence_due_by: { type: string, format: date-time }
+        evidence_submitted_at: { type: string, format: date-time }
+        merchant_id: { type: string }
+        created_at: { type: string, format: date-time }

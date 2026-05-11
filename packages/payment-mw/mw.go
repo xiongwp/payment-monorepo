@@ -205,15 +205,22 @@ type AuthConfig struct {
 
 	// ops API key
 	OpsKeys map[string]string // key → ops_email
+
+	// OAuth2 Bearer JWT 验签器（可选）— 配了就支持 Authorization: Bearer <jwt>
+	// 优先级: Bearer > X-API-Key > X-Internal-Token
+	BearerJWT *JWTVerifier
 }
 
 type actorKey struct{}
 
 // Actor 鉴权后的当事人信息。
 type Actor struct {
-	Type       string // "merchant" / "ops" / "internal" / "anonymous"
-	MerchantID string // type=merchant 时
-	OpsEmail   string // type=ops 时
+	Type       string   // "merchant" / "ops" / "internal" / "service" / "anonymous"
+	MerchantID string   // type=merchant 时
+	OpsEmail   string   // type=ops 时
+	ClientID   string   // OAuth2 client_id (Bearer 流来源)
+	ServiceID  string   // type=service 时 (owner_id of OAuth client)
+	Scopes     []string // OAuth2 scope list
 }
 
 // ActorFromCtx 业务代码取当事人。
@@ -226,11 +233,15 @@ func ActorFromCtx(ctx context.Context) Actor {
 
 // Auth 鉴权 middleware。
 //
-// 规则：
-//   public path → 允许 anonymous
-//   X-API-Key 在 MerchantKeys → actor=merchant
-//   X-API-Key 在 OpsKeys → actor=ops
-//   X-Internal-Token = INTERNAL_TOKEN env → actor=internal (服务间调用)
+// 规则 (按优先级):
+//   1. public path → 允许 anonymous
+//   2. Authorization: Bearer <jwt> + BearerJWT 配置 → OAuth2 验签
+//      claims.owner_type=merchant → actor=merchant
+//      claims.owner_type=service  → actor=service
+//      claims.owner_type=ops      → actor=ops
+//   3. X-API-Key 在 MerchantKeys → actor=merchant
+//   4. X-API-Key 在 OpsKeys → actor=ops
+//   5. X-Internal-Token = INTERNAL_TOKEN env → actor=internal (服务间调用，遗留)
 //   都没匹配 → 401
 func Auth(cfg AuthConfig) Middleware {
 	return func(next http.Handler) http.Handler {
@@ -243,17 +254,33 @@ func Auth(cfg AuthConfig) Middleware {
 					return
 				}
 			}
-			apikey := r.Header.Get("X-API-Key")
-			internalTok := r.Header.Get("X-Internal-Token")
-
 			var actor Actor
-			if internalTok != "" && internalTok == cfg.internalToken() {
-				actor = Actor{Type: "internal"}
-			} else if apikey != "" {
-				if mid, ok := cfg.MerchantKeys[apikey]; ok {
-					actor = Actor{Type: "merchant", MerchantID: mid}
-				} else if email, ok := cfg.OpsKeys[apikey]; ok {
-					actor = Actor{Type: "ops", OpsEmail: email}
+
+			// 1) Bearer JWT (OAuth2)
+			if cfg.BearerJWT != nil {
+				if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+					tok := strings.TrimPrefix(h, "Bearer ")
+					if claims, err := cfg.BearerJWT.Verify(tok); err == nil {
+						actor = actorFromClaims(claims)
+					} else {
+						http.Error(w, "invalid bearer token: "+err.Error(), http.StatusUnauthorized)
+						return
+					}
+				}
+			}
+
+			// 2) 遗留 API-Key / Internal-Token
+			if actor.Type == "" {
+				apikey := r.Header.Get("X-API-Key")
+				internalTok := r.Header.Get("X-Internal-Token")
+				if internalTok != "" && internalTok == cfg.internalToken() {
+					actor = Actor{Type: "internal"}
+				} else if apikey != "" {
+					if mid, ok := cfg.MerchantKeys[apikey]; ok {
+						actor = Actor{Type: "merchant", MerchantID: mid}
+					} else if email, ok := cfg.OpsKeys[apikey]; ok {
+						actor = Actor{Type: "ops", OpsEmail: email}
+					}
 				}
 			}
 			if actor.Type == "" {
@@ -264,6 +291,35 @@ func Auth(cfg AuthConfig) Middleware {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// actorFromClaims 把 JWT claims 映射到 Actor。
+func actorFromClaims(claims map[string]any) Actor {
+	cid, _ := claims["client_id"].(string)
+	ownerType, _ := claims["owner_type"].(string)
+	ownerID, _ := claims["owner_id"].(string)
+	scopeStr, _ := claims["scope"].(string)
+	scopes := []string{}
+	for _, s := range strings.Fields(strings.ReplaceAll(scopeStr, ",", " ")) {
+		if s != "" {
+			scopes = append(scopes, s)
+		}
+	}
+	a := Actor{ClientID: cid, Scopes: scopes}
+	switch ownerType {
+	case "merchant":
+		a.Type = "merchant"
+		a.MerchantID = ownerID
+	case "service":
+		a.Type = "service"
+		a.ServiceID = ownerID
+	case "ops":
+		a.Type = "ops"
+		a.OpsEmail = ownerID
+	default:
+		a.Type = ownerType
+	}
+	return a
 }
 
 func (c AuthConfig) internalToken() string {

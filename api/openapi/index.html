@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Payment Platform — API Portal</title>
+<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui.css">
+<style>
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #fafafa; }
+  header {
+    background: #1a1a2e; color: #fff; padding: 18px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header .nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  header .nav a {
+    color: #ccd; text-decoration: none; padding: 6px 12px; border-radius: 4px;
+    font-size: 13px; transition: background 0.15s;
+  }
+  header .nav a:hover { background: #2a2a4e; color: #fff; }
+  header .nav a.active { background: #4040c0; color: #fff; }
+  #swagger-ui { padding: 0; }
+  .topbar { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Payment Platform · API Portal</h1>
+  <nav class="nav" id="svc-nav"></nav>
+</header>
+<div id="swagger-ui"></div>
+
+<script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-bundle.js" crossorigin></script>
+<script>
+const SERVICES = [
+  { id: 'payment-gateway',  name: 'Payment Gateway',   url: './payment-gateway.yaml',  group: '业务核心' },
+  { id: 'refund-engine',    name: 'Refund Engine',     url: './refund-engine.yaml',    group: '业务核心' },
+  { id: 'dispute-service',  name: 'Dispute Service',   url: './dispute-service.yaml',  group: '业务核心' },
+  { id: 'billing-system',   name: 'Billing System',    url: './billing-system.yaml',   group: '资金' },
+  { id: 'merchant-webhook', name: 'Merchant Webhook',  url: './merchant-webhook.yaml', group: '集成' },
+  { id: 'kyc-service',      name: 'KYC / KYB',         url: './kyc-service.yaml',      group: '准入' },
+  { id: 'audit-log',        name: 'Audit Log',         url: './audit-log.yaml',        group: '基础' },
+  { id: 'oauth2-server',    name: 'OAuth2 Server',     url: './oauth2-server.yaml',    group: '基础' },
+  { id: 'biz-admin-web',    name: 'Biz Admin Web',     url: './biz-admin-web.yaml',    group: 'Ops' },
+  { id: 'payment-mw',       name: 'Payment MW (lib)',  url: './payment-mw.yaml',       group: '基础' },
+];
+
+const navEl = document.getElementById('svc-nav');
+SERVICES.forEach((svc, idx) => {
+  const a = document.createElement('a');
+  a.href = '#' + svc.id;
+  a.textContent = svc.name;
+  a.dataset.id = svc.id;
+  if (idx === 0) a.classList.add('active');
+  navEl.appendChild(a);
+});
+
+let ui;
+function loadSpec(svcID) {
+  const svc = SERVICES.find(s => s.id === svcID) || SERVICES[0];
+  document.querySelectorAll('#svc-nav a').forEach(a => {
+    a.classList.toggle('active', a.dataset.id === svc.id);
+  });
+  ui = SwaggerUIBundle({
+    url: svc.url,
+    dom_id: '#swagger-ui',
+    deepLinking: true,
+    presets: [SwaggerUIBundle.presets.apis],
+    plugins: [SwaggerUIBundle.plugins.DownloadUrl],
+    layout: 'BaseLayout',
+    docExpansion: 'list',
+    defaultModelsExpandDepth: 1,
+    persistAuthorization: true,
+  });
+}
+
+window.addEventListener('hashchange', () => {
+  const id = (location.hash || '#payment-gateway').slice(1);
+  loadSpec(id);
+});
+loadSpec((location.hash || '#payment-gateway').slice(1));
+</script>
+</body>
+</html>

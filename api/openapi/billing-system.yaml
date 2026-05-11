@@ -1,0 +1,116 @@
+openapi: 3.0.3
+info:
+  title: Billing System API
+  description: |
+    手续费计算 + 月结对账单聚合。
+    职责: charge → fee 规则匹配 → 月结明细 → 出账单。
+  version: 1.0.0
+servers:
+  - url: https://api.payment.example.com/billing/v1
+  - url: http://localhost:18090
+tags:
+  - { name: FeeRules,   description: 手续费规则 (admin) }
+  - { name: Statements, description: 商户对账单 }
+  - { name: Charges,    description: 计费明细回放 / 查询 }
+  - { name: Reports,    description: 日切 trial balance / 资金流水 }
+
+security:
+  - oauth2BearerJWT: [billing:read]
+
+paths:
+  /healthz: { get: { summary: liveness, security: [], responses: { '200': { description: ok } } } }
+
+  /fee-rules:
+    get:
+      tags: [FeeRules]
+      summary: 列规则 (按 priority)
+      security: [{ oauth2BearerJWT: [ops:read] }]
+      responses:
+        '200':
+          description: ok
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/FeeRule' } } } }
+    post:
+      tags: [FeeRules]
+      summary: 创建规则
+      security: [{ oauth2BearerJWT: [ops:write] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FeeRule' } } }
+      responses:
+        '201': { description: created }
+
+  /statements/{merchantID}:
+    get:
+      tags: [Statements]
+      summary: 查商户对账单 (单月)
+      security: [{ oauth2BearerJWT: [merchant:read, ops:read] }]
+      parameters:
+        - { name: merchantID, in: path, required: true, schema: { type: string } }
+        - { name: period, in: query, required: true, schema: { type: string, example: "2026-04" } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Statement' } } } }
+
+  /statements/{merchantID}/_aggregate:
+    post:
+      tags: [Statements]
+      summary: 触发月结聚合 (cron / 手动)
+      security: [{ oauth2BearerJWT: [ops:write] }]
+      parameters:
+        - { name: merchantID, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { period: { type: string, example: "2026-04" } }
+      responses:
+        '202': { description: accepted, content: { application/json: { schema: { $ref: '#/components/schemas/Statement' } } } }
+
+  /trial-balance:
+    get:
+      tags: [Reports]
+      summary: 日切 trial balance (资金流入 = 流出)
+      security: [{ oauth2BearerJWT: [ops:read] }]
+      parameters:
+        - { name: date, in: query, required: true, schema: { type: string, format: date } }
+      responses:
+        '200': { description: ok }
+
+components:
+  securitySchemes:
+    oauth2BearerJWT: { $ref: './_common.yaml#/components/securitySchemes/oauth2BearerJWT' }
+  schemas:
+    Error:     { $ref: './_common.yaml#/components/schemas/Error' }
+    Money:     { $ref: './_common.yaml#/components/schemas/Money' }
+    FeeRule:
+      type: object
+      properties:
+        id:           { type: integer }
+        name:         { type: string, example: "Visa Standard 2.9%+30c" }
+        priority:     { type: integer, example: 100 }
+        match:
+          type: object
+          properties:
+            payment_method: { type: string, example: "card_visa" }
+            currency:       { type: string, example: "USD" }
+            min_amount:     { type: integer }
+            max_amount:     { type: integer }
+        fee:
+          type: object
+          properties:
+            percent_bp:   { type: integer, description: "basis points (10000 = 100%)" }
+            fixed_minor:  { type: integer }
+            min_minor:    { type: integer }
+            max_minor:    { type: integer }
+    Statement:
+      type: object
+      properties:
+        merchant_id:    { type: string }
+        period:         { type: string, example: "2026-04" }
+        total_charges:  { type: integer }
+        total_volume:   { $ref: '#/components/schemas/Money' }
+        total_fee:      { $ref: '#/components/schemas/Money' }
+        net_payout:     { $ref: '#/components/schemas/Money' }
+        status:         { type: string, enum: [draft, finalized, paid] }
+        generated_at:   { type: string, format: date-time }

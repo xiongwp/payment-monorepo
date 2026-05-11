@@ -1,0 +1,113 @@
+openapi: 3.0.3
+info:
+  title: Merchant Webhook API
+  description: 商户出站 webhook 投递 — HMAC-SHA256 签名 + 重试 + DLQ。
+  version: 1.0.0
+servers:
+  - url: https://api.payment.example.com/webhooks/v1
+  - url: http://localhost:18093
+
+security:
+  - oauth2BearerJWT: [merchant:read]
+
+paths:
+  /healthz: { get: { summary: liveness, security: [], responses: { '200': { description: ok } } } }
+
+  /endpoints:
+    get:
+      summary: 列商户配置的 webhook 端点
+      parameters:
+        - { name: merchant_id, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WebhookEndpoint' }
+    post:
+      summary: 创建 webhook 端点
+      security: [{ oauth2BearerJWT: [merchant:write] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookEndpoint' }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/WebhookEndpoint'
+                  - type: object
+                    properties:
+                      signing_secret:
+                        type: string
+                        description: 仅展示 1 次！HMAC-SHA256 用
+
+  /endpoints/{id}:
+    delete:
+      summary: 删 endpoint
+      security: [{ oauth2BearerJWT: [merchant:write] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: deleted }
+
+  /events:
+    get:
+      summary: 列投递事件 (审计 / 重试查询)
+      parameters:
+        - { name: endpoint_id, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [pending, delivered, failed, dlq] } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DeliveryEvent' }
+
+  /events/{id}/replay:
+    post:
+      summary: 手动重试投递 (DLQ replay)
+      security: [{ oauth2BearerJWT: [ops:write] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '202': { description: replay 已加入队列 }
+
+components:
+  securitySchemes:
+    oauth2BearerJWT: { $ref: './_common.yaml#/components/securitySchemes/oauth2BearerJWT' }
+  schemas:
+    WebhookEndpoint:
+      type: object
+      required: [merchant_id, url, events]
+      properties:
+        id:          { type: string }
+        merchant_id: { type: string }
+        url:         { type: string, format: uri }
+        events:
+          type: array
+          items: { type: string, example: "charge.succeeded" }
+        description: { type: string }
+        active:      { type: boolean }
+        signing_secret_last4: { type: string }
+        created_at:  { type: string, format: date-time }
+    DeliveryEvent:
+      type: object
+      properties:
+        id: { type: string }
+        endpoint_id: { type: string }
+        event_type: { type: string }
+        payload: { type: object }
+        status: { type: string, enum: [pending, delivered, failed, dlq] }
+        attempts: { type: integer }
+        last_response_code: { type: integer }
+        next_attempt_at: { type: string, format: date-time }
+        delivered_at: { type: string, format: date-time }

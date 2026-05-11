@@ -1,0 +1,344 @@
+openapi: 3.0.3
+info:
+  title: Payment OAuth 2.0 Authorization Server
+  description: |
+    服务间 / 商户授权 OAuth 2.0 server。
+    Grant Types: client_credentials (RFC 6749 §4.4)
+    Token Format: RS256 JWT (RFC 7519)
+    Key Distribution: JWKS (RFC 7517)
+
+    ## 集成流程
+    1. **商户**: 后台创建 OAuth client → 拿 client_id + client_secret (仅展示 1 次)
+    2. **拿 token**: `POST /oauth2/token` with client_credentials
+    3. **调 API**: `Authorization: Bearer <access_token>` 调业务服务
+    4. **验签**: 业务服务用 /.well-known/jwks.json 公钥验签
+    5. **撤销**: `POST /oauth2/revoke` (jti 加黑名单)
+
+    ## Scope 列表
+    - `charge:write` / `charge:read`
+    - `refund:write` / `refund:read`
+    - `dispute:write` / `dispute:read`
+    - `kyc:read` / `kyc:write`
+    - `merchant:read` / `merchant:write`
+    - `ops:read` / `ops:write`
+  version: 1.0.0
+  contact:
+    name: Payment Platform Team
+    email: payments@example.com
+servers:
+  - url: https://oauth.payment.example.com
+    description: Production
+  - url: http://localhost:8087
+    description: Local dev
+
+tags:
+  - name: OAuth2
+    description: RFC 6749 / 7517 / 7662 endpoints
+  - name: Discovery
+    description: OIDC discovery + JWKS
+  - name: Admin
+    description: 客户端 + key 管理 (内网, 需 X-Admin-Token)
+
+paths:
+  /oauth2/token:
+    post:
+      tags: [OAuth2]
+      summary: 颁发 access_token (client_credentials grant)
+      description: RFC 6749 §4.4
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, client_id, client_secret]
+              properties:
+                grant_type:
+                  type: string
+                  enum: [client_credentials]
+                  example: client_credentials
+                client_id:
+                  type: string
+                  example: mer_merchant_001_a1b2c3d4e5f6
+                client_secret:
+                  type: string
+                  example: xxxxxxxxxxxxxxxxxxx
+                scope:
+                  type: string
+                  description: 空格分隔 scope 列表（可选；空 = 全部允许的 scope）
+                  example: "charge:write refund:write"
+      security:
+        - basicAuth: []  # RFC 6749 §2.3.1 也可走 Basic Auth
+      responses:
+        '200':
+          description: token 颁发成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/OAuthError'
+        '401':
+          $ref: '#/components/responses/OAuthError'
+
+  /oauth2/introspect:
+    post:
+      tags: [OAuth2]
+      summary: token introspection (RFC 7662)
+      description: 验签 + 检 exp/iss/aud + revocation。返 active=false 表示无效。
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                client_id:
+                  type: string
+                client_secret:
+                  type: string
+      responses:
+        '200':
+          description: introspect 结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntrospectResponse'
+
+  /oauth2/revoke:
+    post:
+      tags: [OAuth2]
+      summary: token revocation (RFC 7009)
+      description: 把 jti 加入黑名单。即使 token 无效也返 200 (按 RFC 7009)。
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        '200':
+          description: 已 revoke (或 token 无效 — 同样 200)
+
+  /.well-known/jwks.json:
+    get:
+      tags: [Discovery]
+      summary: JWKS 公钥分发 (RFC 7517)
+      description: 资源服务启动时拉，本地缓存 1h；key rotation 后 retired key 仍包含 30d。
+      responses:
+        '200':
+          description: JWKS
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JWKS'
+
+  /.well-known/openid-configuration:
+    get:
+      tags: [Discovery]
+      summary: OIDC discovery (issuer / endpoints / supported features)
+      responses:
+        '200':
+          description: discovery 文档
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /admin/clients:
+    get:
+      tags: [Admin]
+      summary: 列所有客户端
+      security: [{ adminToken: [] }]
+      responses:
+        '200':
+          description: 客户端列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Client'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Admin]
+      summary: 创建客户端 (返 secret 仅 1 次)
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, owner_type, owner_id, allowed_scopes]
+              properties:
+                name: { type: string, example: "Acme Corp - prod" }
+                owner_type:
+                  type: string
+                  enum: [merchant, service, ops]
+                owner_id: { type: string, example: "merchant_001" }
+                allowed_scopes:
+                  type: string
+                  example: "charge:write refund:write"
+                allowed_ips:
+                  type: string
+                  example: "1.2.3.4,5.6.7.8"
+                rate_limit_rps: { type: integer, example: 100 }
+                expires_in_days: { type: integer, example: 365 }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  client_id: { type: string }
+                  client_secret: { type: string, description: "仅展示 1 次！" }
+                  warning: { type: string }
+
+  /admin/clients/{clientID}/rotate-secret:
+    post:
+      tags: [Admin]
+      summary: 滚 secret (老 secret 失效)
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: clientID, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 新 secret }
+
+  /admin/clients/{clientID}/suspend:
+    post:
+      tags: [Admin]
+      summary: 冻结客户端
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: clientID, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 已冻结 }
+
+  /admin/keys/rotate:
+    post:
+      tags: [Admin]
+      summary: 轮换 RSA key (老 key 保留 30d 验签)
+      security: [{ adminToken: [] }]
+      responses:
+        '200':
+          description: key 已轮换
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  new_kid: { type: string }
+                  message: { type: string }
+
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+    adminToken:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+
+  responses:
+    OAuthError:
+      description: RFC 6749 §5.2 错误响应
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OAuthError'
+    Unauthorized:
+      description: admin token 不匹配
+      content:
+        text/plain:
+          schema: { type: string }
+
+  schemas:
+    TokenResponse:
+      type: object
+      properties:
+        access_token: { type: string, description: "RS256 JWT" }
+        token_type: { type: string, example: "Bearer" }
+        expires_in: { type: integer, example: 3600 }
+        scope: { type: string }
+
+    OAuthError:
+      type: object
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - invalid_client
+            - invalid_grant
+            - unauthorized_client
+            - unsupported_grant_type
+            - invalid_scope
+            - server_error
+        error_description: { type: string }
+
+    IntrospectResponse:
+      type: object
+      properties:
+        active: { type: boolean }
+        scope: { type: string }
+        client_id: { type: string }
+        owner_type: { type: string }
+        owner_id: { type: string }
+        token_type: { type: string }
+        exp: { type: integer, format: int64 }
+        iat: { type: integer, format: int64 }
+        sub: { type: string }
+
+    JWKS:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            properties:
+              kty: { type: string, example: "RSA" }
+              alg: { type: string, example: "RS256" }
+              use: { type: string, example: "sig" }
+              kid: { type: string }
+              n: { type: string, description: "RSA modulus, base64url" }
+              e: { type: string, description: "RSA exponent, base64url" }
+
+    Client:
+      type: object
+      properties:
+        client_id: { type: string }
+        secret_last4: { type: string }
+        name: { type: string }
+        owner_type:
+          type: string
+          enum: [merchant, service, ops]
+        owner_id: { type: string }
+        allowed_scopes: { type: string }
+        allowed_ips: { type: string }
+        rate_limit_rps: { type: integer }
+        status:
+          type: string
+          enum: [active, suspended, revoked]
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }

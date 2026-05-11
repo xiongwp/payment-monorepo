@@ -135,6 +135,30 @@ services:
       timeout: 3s
       retries: 5
 
+  oauth2-server:
+    image: oauth2-server:local
+    pull_policy: never
+    container_name: oauth2-server
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports: ["18087:8087"]
+    environment:
+      TZ: Asia/Shanghai
+      OAUTH2_ADDR: ":8087"
+      OAUTH2_ISSUER: "http://oauth2-server:8087"
+      OAUTH2_AUDIENCE: "payment-api"
+      OAUTH2_KEY_PATH: "/var/lib/oauth2/oauth-rsa.pem"
+      OAUTH2_ADMIN_TOKEN: "admintok-dev-CHANGE-IN-PROD"
+      OAUTH2_DEV_SEED: "1"
+      OAUTH2_TOKEN_TTL_SEC: "3600"
+    volumes:
+      - oauth2-keys:/var/lib/oauth2
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8087/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   biz-admin-web:
     image: biz-admin-web:local
     pull_policy: never
@@ -145,12 +169,17 @@ services:
     environment:
       TZ: Asia/Shanghai
       BIZ_ADMIN_HTTP_PORT: "8080"
-    depends_on: [billing-system, payment-gateway, dispute-service, merchant-webhook, refund-engine, kyc-service, audit-log]
+      OAUTH2_BASE_URL: "http://oauth2-server:8087"
+      OAUTH2_ADMIN_TOKEN: "admintok-dev-CHANGE-IN-PROD"
+    depends_on: [billing-system, payment-gateway, dispute-service, merchant-webhook, refund-engine, kyc-service, audit-log, oauth2-server]
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
       interval: 10s
       timeout: 3s
       retries: 5
+
+volumes:
+  oauth2-keys:
 
 networks:
   payment-stack:

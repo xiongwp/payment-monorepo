@@ -1,0 +1,43 @@
+// go.work — monorepo workspace 包含新旧所有包。
+//
+// 新包用 module path "reconcile-system/packages/*"
+// 老包用各自 module path (github.com/xiongwp/*)
+//
+// Go 允许不同 module path 共存于同一 workspace。
+//
+// 注意：临时 disable workspace 用 `GOWORK=off go run ./...`
+//      （场景：只想跑单 package，不需要跨 package replace）
+
+go 1.22
+
+use (
+	// ─── 本会话新建的 9 业务包 + 1 共享 lib ─────────────
+	./packages/billing-system
+	./packages/payment-gateway
+	./packages/dispute-service
+	./packages/merchant-webhook
+	./packages/refund-engine
+	./packages/kyc-service
+	./packages/audit-log
+	./packages/biz-admin-web
+	./packages/payment-mw
+	./packages/oauth2-server
+
+	// ─── 老业务包（让 go run 单服务测试时能找到） ───────
+	./packages/order-core
+	./packages/payment-core
+	./packages/payment-channel
+	./packages/accounting-system
+	./packages/accounting-grpc-api
+	./packages/user-merchant-core
+	./packages/card-center
+	./packages/card-payment
+	./packages/api-gateway
+	./packages/config-center
+	./packages/id-generator
+	./packages/kms-manage
+	./packages/payment-util
+	./packages/reconplatform
+	./packages/risk-manage
+	./packages/clearing-settlement
+)

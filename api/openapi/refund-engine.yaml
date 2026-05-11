@@ -1,0 +1,97 @@
+openapi: 3.0.3
+info:
+  title: Refund Engine API
+  description: 退款引擎 — 全额 / 部分 / 多笔。状态机 + 跨服务 webhook。
+  version: 1.0.0
+servers:
+  - url: https://api.payment.example.com/refunds/v1
+  - url: http://localhost:18094
+
+security:
+  - oauth2BearerJWT: [refund:read]
+
+paths:
+  /healthz: { get: { summary: liveness, security: [], responses: { '200': { description: ok } } } }
+
+  /refunds:
+    post:
+      summary: 发起退款
+      security: [{ oauth2BearerJWT: [refund:write] }]
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payment_intent_id, amount_minor]
+              properties:
+                payment_intent_id: { type: string }
+                amount_minor: { type: integer, description: "支持部分退款；不传 = 全额" }
+                reason:
+                  type: string
+                  enum: [requested_by_customer, duplicate, fraudulent, other]
+                metadata: { type: object, additionalProperties: { type: string } }
+      responses:
+        '201':
+          description: 退款已发起
+          content: { application/json: { schema: { $ref: '#/components/schemas/Refund' } } }
+        '400': { $ref: './_common.yaml#/components/responses/ServerError' }
+        '409':
+          description: 幂等冲突 / 超额退款
+          content: { application/json: { schema: { $ref: './_common.yaml#/components/schemas/Error' } } }
+
+    get:
+      summary: 列退款 (商户)
+      parameters:
+        - { name: merchant_id, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [pending, succeeded, failed, canceled] } }
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Refund' } }
+                  pagination: { $ref: './_common.yaml#/components/schemas/Pagination' }
+
+  /refunds/{id}:
+    get:
+      summary: 查退款
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Refund' } } } }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /refunds/{id}/cancel:
+    post:
+      summary: 撤销 pending 退款 (未发起渠道之前)
+      security: [{ oauth2BearerJWT: [refund:write] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok }
+
+components:
+  securitySchemes:
+    oauth2BearerJWT: { $ref: './_common.yaml#/components/securitySchemes/oauth2BearerJWT' }
+  schemas:
+    Error: { $ref: './_common.yaml#/components/schemas/Error' }
+    Money: { $ref: './_common.yaml#/components/schemas/Money' }
+    Refund:
+      type: object
+      properties:
+        id: { type: string, example: "rf_abc123" }
+        payment_intent_id: { type: string }
+        amount: { $ref: '#/components/schemas/Money' }
+        status: { type: string, enum: [pending, processing, succeeded, failed, canceled] }
+        reason: { type: string }
+        failure_code: { type: string }
+        merchant_id: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }

@@ -89,6 +89,21 @@ func Bootstrap(cfg BootstrapConfig) {
 	publics := append([]string{"/healthz", "/metrics"}, cfg.AuthCfg.PublicPaths...)
 	cfg.AuthCfg.PublicPaths = publics
 
+	// OAuth2 自动装载：env OAUTH2_JWKS_URL 配了就自动用 Bearer JWT
+	if cfg.AuthCfg.BearerJWT == nil {
+		if jwksURL := os.Getenv("OAUTH2_JWKS_URL"); jwksURL != "" {
+			cfg.AuthCfg.BearerJWT = NewJWTVerifier(JWTVerifierConfig{
+				JWKSURL:  jwksURL,
+				Issuer:   os.Getenv("OAUTH2_ISSUER"),
+				Audience: EnvOr("OAUTH2_AUDIENCE", "payment-api"),
+				Log:      logger,
+			})
+			logger.Info("OAuth2 Bearer JWT enabled",
+				zap.String("jwks_url", jwksURL),
+				zap.String("aud", EnvOr("OAUTH2_AUDIENCE", "payment-api")))
+		}
+	}
+
 	// 默认 CORS allow biz-admin-web
 	if len(cfg.CORSOrigins) == 0 {
 		cfg.CORSOrigins = []string{"*"} // dev 默认；生产收紧

@@ -1,0 +1,86 @@
+openapi: 3.0.3
+info:
+  title: Audit Log API
+  description: 全局统一审计日志 — 谁 / 何时 / 对什么 / 做了什么。哈希链防篡改。
+  version: 1.0.0
+servers:
+  - url: https://api.payment.example.com/audit/v1
+  - url: http://localhost:18096
+
+security:
+  - oauth2BearerJWT: [ops:read]
+
+paths:
+  /healthz: { get: { summary: liveness, security: [], responses: { '200': { description: ok } } } }
+
+  /events:
+    post:
+      summary: 写一条审计事件 (服务间调用)
+      security: [{ oauth2BearerJWT: [ops:write] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuditEvent' }
+      responses:
+        '201':
+          description: 已写入
+          content: { application/json: { schema: { $ref: '#/components/schemas/AuditEvent' } } }
+
+    get:
+      summary: 查审计事件
+      parameters:
+        - { name: actor, in: query, schema: { type: string } }
+        - { name: resource_type, in: query, schema: { type: string } }
+        - { name: resource_id, in: query, schema: { type: string } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: until, in: query, schema: { type: string, format: date-time } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AuditEvent' }
+
+  /verify:
+    get:
+      summary: 验证哈希链 (任意时间段)
+      parameters:
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: until, in: query, schema: { type: string, format: date-time } }
+      responses:
+        '200':
+          description: 验证结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_events: { type: integer }
+                  chain_valid: { type: boolean }
+                  first_invalid_id: { type: string }
+
+components:
+  securitySchemes:
+    oauth2BearerJWT: { $ref: './_common.yaml#/components/securitySchemes/oauth2BearerJWT' }
+  schemas:
+    AuditEvent:
+      type: object
+      required: [actor, action, resource_type, resource_id]
+      properties:
+        id: { type: string, readOnly: true }
+        occurred_at: { type: string, format: date-time, readOnly: true }
+        actor: { type: string, example: "ops@example.com / svc_payment_gateway" }
+        actor_type: { type: string, enum: [merchant, ops, service, internal] }
+        action: { type: string, example: "refund.create / client.rotate-secret" }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        before: { type: object, description: "状态机迁移前" }
+        after:  { type: object, description: "状态机迁移后" }
+        source_ip: { type: string }
+        trace_id: { type: string }
+        prev_hash: { type: string, readOnly: true }
+        hash: { type: string, readOnly: true }

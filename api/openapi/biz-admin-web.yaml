@@ -1,0 +1,90 @@
+openapi: 3.0.3
+info:
+  title: Biz Admin Web (Aggregated)
+  description: |
+    统一管理控制台 — 聚合 7 个业务服务的 ops 接口。
+    生产环境 SSO 登录后获取 ops:* scope token。
+  version: 1.0.0
+servers:
+  - url: https://admin.payment.example.com/api/v1
+  - url: http://localhost:18099
+
+security:
+  - oauth2BearerJWT: [ops:read]
+
+paths:
+  /healthz: { get: { summary: liveness, security: [], responses: { '200': { description: ok } } } }
+
+  /dashboard/overview:
+    get:
+      summary: 首页 KPI (charges / refunds / disputes / merchants)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  daily_volume: { type: object }
+                  pending_disputes: { type: integer }
+                  pending_kyc: { type: integer }
+                  webhook_dlq_count: { type: integer }
+                  trial_balance_status: { type: string, enum: [pass, fail, missing] }
+
+  /merchants:
+    get:
+      summary: 列商户 (跨 user-merchant-core + KYC 状态)
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/MerchantSummary' } }
+
+  /oauth-clients:
+    get:
+      summary: 列 OAuth 客户端 (代理到 oauth2-server admin)
+      responses:
+        '200': { description: ok }
+    post:
+      summary: 创建 OAuth 客户端
+      security: [{ oauth2BearerJWT: [ops:write] }]
+      responses:
+        '201': { description: ok }
+
+  /refunds/_search:
+    get:
+      summary: 多维搜退款 (跨服务索引)
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+      responses:
+        '200': { description: ok }
+
+  /disputes/queue:
+    get:
+      summary: 争议工作队列 (ops 处理)
+      responses:
+        '200': { description: ok }
+
+  /reports/eod:
+    get:
+      summary: 当日 EOD 对账 + trial balance
+      parameters:
+        - { name: date, in: query, schema: { type: string, format: date } }
+      responses:
+        '200': { description: ok }
+
+components:
+  securitySchemes:
+    oauth2BearerJWT: { $ref: './_common.yaml#/components/securitySchemes/oauth2BearerJWT' }
+  schemas:
+    MerchantSummary:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [pending_kyc, active, suspended, terminated] }
+        last_30d_volume: { type: integer }
+        open_disputes: { type: integer }

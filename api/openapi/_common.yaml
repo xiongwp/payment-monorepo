@@ -1,0 +1,148 @@
+# _common.yaml — 9 业务服务共享的 OpenAPI 组件 (securitySchemes / 错误格式 / 头)。
+#
+# 各服务自己的 openapi.yaml 用 $ref 引：
+#   security:
+#     - oauth2BearerJWT: [charge:write]
+#   components:
+#     $ref: ./_common.yaml#/components
+#
+# 部署: biz-admin-web 内置 Swagger UI 一键看 9 个 spec。
+
+openapi: 3.0.3
+info:
+  title: Payment Platform — Common Components
+  description: 9 业务服务共享的 OpenAPI 组件，请 $ref 引用而非复制。
+  version: 1.0.0
+
+components:
+  securitySchemes:
+    oauth2BearerJWT:
+      type: oauth2
+      description: |
+        OAuth 2.0 client_credentials grant (RFC 6749 §4.4)。
+        通过 https://oauth.payment.example.com/oauth2/token 拿 access_token。
+      flows:
+        clientCredentials:
+          tokenUrl: https://oauth.payment.example.com/oauth2/token
+          scopes:
+            charge:write:     创建 / 修改交易
+            charge:read:      读取交易
+            refund:write:     发起退款
+            refund:read:      读取退款
+            dispute:write:    处理争议
+            dispute:read:     读取争议
+            kyc:write:        提交 KYC 资料 / 决策
+            kyc:read:         读取 KYC 状态
+            merchant:write:   修改商户配置
+            merchant:read:    读取商户信息
+            ops:write:        ops 后台写操作
+            ops:read:         ops 后台读操作
+
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: 遗留 API key (商户 / ops)。生产推荐用 oauth2BearerJWT 替代。
+
+    internalToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Token
+      description: 内网服务间 token (遗留；推荐升级到 mTLS + Bearer JWT)。
+
+  parameters:
+    TraceIDHeader:
+      name: X-Trace-ID
+      in: header
+      schema: { type: string }
+      description: 请求 trace id (没传则后端自动生成)。
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      schema: { type: string }
+      description: 幂等 key (Stripe-style)。同 key 重放返第一次的结果。
+
+  headers:
+    X-RateLimit-Remaining:
+      schema: { type: integer }
+      description: 当前窗口剩余配额
+    X-RateLimit-Reset:
+      schema: { type: integer }
+      description: 窗口重置 UNIX timestamp
+
+  responses:
+    Unauthorized:
+      description: 缺 token / token 无效
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: scope 不足
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RateLimited:
+      description: 触发限流
+      headers:
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/X-RateLimit-Remaining'
+        X-RateLimit-Reset:
+          $ref: '#/components/headers/X-RateLimit-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServerError:
+      description: 服务端故障
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: invalid_argument
+          description: 业务错误码 (snake_case)
+        message:
+          type: string
+          example: "amount_minor must be > 0"
+        trace_id:
+          type: string
+          example: "abc123def456"
+        details:
+          type: object
+          additionalProperties: true
+
+    Money:
+      type: object
+      required: [amount_minor, currency]
+      properties:
+        amount_minor:
+          type: integer
+          format: int64
+          description: 最小单位 (分 / cents)。例如 $1.00 = 100。
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          example: USD
+
+    Pagination:
+      type: object
+      properties:
+        page: { type: integer, minimum: 1, default: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 200, default: 20 }
+        total: { type: integer }

@@ -1,0 +1,126 @@
+openapi: 3.0.3
+info:
+  title: Payment Gateway API
+  description: 统一收银台 — 接入 SDK / Hosted Checkout / Server-to-Server。
+  version: 1.0.0
+servers:
+  - url: https://api.payment.example.com/gw/v1
+  - url: http://localhost:18091
+
+security:
+  - oauth2BearerJWT: [charge:write]
+
+paths:
+  /healthz: { get: { summary: liveness, security: [], responses: { '200': { description: ok } } } }
+
+  /payment-intents:
+    post:
+      summary: 创建 PaymentIntent (server-to-server)
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount_minor, currency, payment_method]
+              properties:
+                amount_minor: { type: integer }
+                currency:     { type: string, example: USD }
+                payment_method:
+                  type: string
+                  enum: [card, applepay, googlepay, alipay, wechatpay, bank_transfer]
+                merchant_id:  { type: string }
+                customer_id:  { type: string }
+                description:  { type: string }
+                metadata:     { type: object, additionalProperties: { type: string } }
+                return_url:   { type: string, format: uri }
+      responses:
+        '201':
+          description: PaymentIntent 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+        '400': { $ref: './_common.yaml#/components/responses/ServerError' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '429': { $ref: './_common.yaml#/components/responses/RateLimited' }
+
+  /payment-intents/{id}:
+    get:
+      summary: 查 PaymentIntent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentIntent' } } } }
+
+  /payment-intents/{id}/confirm:
+    post:
+      summary: 确认支付 (前端拿到 payment_method_data 后)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                payment_method_data:
+                  type: object
+                  description: 卡 token / 钱包 token / 银行账号等
+      responses:
+        '200': { description: ok }
+
+  /checkout-sessions:
+    post:
+      summary: Hosted Checkout — 返跳转 URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [line_items, success_url, cancel_url]
+              properties:
+                line_items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:   { type: string }
+                      amount_minor: { type: integer }
+                      currency: { type: string }
+                      quantity: { type: integer }
+                success_url: { type: string, format: uri }
+                cancel_url:  { type: string, format: uri }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:    { type: string }
+                  url:   { type: string, format: uri }
+
+components:
+  securitySchemes:
+    oauth2BearerJWT: { $ref: './_common.yaml#/components/securitySchemes/oauth2BearerJWT' }
+  schemas:
+    Error:    { $ref: './_common.yaml#/components/schemas/Error' }
+    Money:    { $ref: './_common.yaml#/components/schemas/Money' }
+    PaymentIntent:
+      type: object
+      properties:
+        id:           { type: string, example: "pi_abc123" }
+        amount:       { $ref: '#/components/schemas/Money' }
+        payment_method: { type: string }
+        status:
+          type: string
+          enum: [requires_payment_method, requires_confirmation, processing, succeeded, canceled, failed]
+        client_secret: { type: string, description: "前端 SDK 用，不要 server-to-server 暴露" }
+        merchant_id:  { type: string }
+        customer_id:  { type: string }
+        created_at:   { type: string, format: date-time }
