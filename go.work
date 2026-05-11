@@ -1,12 +1,13 @@
-// go.work — 仅本会话新建的 9 业务包 (都 go 1.22 兼容)。
+// go.work — monorepo 所有包（go 1.26.1 = 老包最高要求）。
 //
-// 老包 (order-core/payment-core 等) 用 go 1.25/1.26 — 它们自己各自 go.mod 跑就行。
-// 想跑老包：cd packages/<svc> && GOWORK=off go run ./cmd/server
-// 或：先 mv go.work go.work.disabled 临时关 workspace。
+// 跑老包: cd packages/order-core && go run ./cmd/e2e-accounting
+// 跑新包: 同样可以从这里 go run packages/billing-system/cmd/server
+// 跨 import: 新包之间可 replace 互引（同 workspace 自动 resolve）
 
-go 1.22
+go 1.26.1
 
 use (
+	// ─── 本会话新建的 9 业务包 + 1 共享 lib ─────────────
 	./packages/billing-system
 	./packages/payment-gateway
 	./packages/dispute-service
@@ -17,4 +18,22 @@ use (
 	./packages/biz-admin-web
 	./packages/payment-mw
 	./packages/oauth2-server
+
+	// ─── 老业务包（让 go run 单服务测试时找得到） ───────
+	./packages/order-core
+	./packages/payment-core
+	./packages/payment-channel
+	./packages/accounting-system
+	./packages/accounting-grpc-api
+	./packages/user-merchant-core
+	./packages/card-center
+	./packages/card-payment
+	./packages/api-gateway
+	./packages/config-center
+	./packages/id-generator
+	./packages/kms-manage
+	./packages/payment-util
+	./packages/reconplatform
+	./packages/risk-manage
+	./packages/clearing-settlement
 )
