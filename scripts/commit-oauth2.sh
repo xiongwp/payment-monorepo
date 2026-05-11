@@ -19,7 +19,7 @@ git reset HEAD 2>/dev/null >/dev/null || true
 # ─────────────────────────────────────────────────────────
 # 1. oauth2-server: 完整实现
 # ─────────────────────────────────────────────────────────
-echo "▶ [1/16] oauth2-server"
+echo "▶ [1/17] oauth2-server"
 git add packages/oauth2-server/
 git commit -m "feat(oauth2-server): 完整实现 client_credentials + JWKS + admin
 
@@ -51,7 +51,7 @@ git commit -m "feat(oauth2-server): 完整实现 client_credentials + JWKS + adm
 # ─────────────────────────────────────────────────────────
 # 2. payment-mw: OAuth2 Bearer JWT 支持
 # ─────────────────────────────────────────────────────────
-echo "▶ [2/16] payment-mw"
+echo "▶ [2/17] payment-mw"
 git add packages/payment-mw/oauth_bearer.go packages/payment-mw/mw.go packages/payment-mw/bootstrap.go
 git commit -m "feat(payment-mw): OAuth2 Bearer JWT 验签 + scope RBAC
 
@@ -75,7 +75,7 @@ git commit -m "feat(payment-mw): OAuth2 Bearer JWT 验签 + scope RBAC
 # ─────────────────────────────────────────────────────────
 # 3. OpenAPI 3.0 specs (10 份)
 # ─────────────────────────────────────────────────────────
-echo "▶ [3/16] OpenAPI specs"
+echo "▶ [3/17] OpenAPI specs"
 git add api/
 git commit -m "docs(api): OpenAPI 3.0 specs — 10 服务标准化文档
 
@@ -99,7 +99,7 @@ git commit -m "docs(api): OpenAPI 3.0 specs — 10 服务标准化文档
 # ─────────────────────────────────────────────────────────
 # 4. 集成 demo + rollout docs
 # ─────────────────────────────────────────────────────────
-echo "▶ [4/16] integration demos + docs"
+echo "▶ [4/17] integration demos + docs"
 git add examples/ OAUTH2_ROLLOUT.md
 git commit -m "docs(oauth2): 端到端集成 demo + rollout 计划
 
@@ -123,7 +123,7 @@ OAUTH2_ROLLOUT.md:
 # ─────────────────────────────────────────────────────────
 # 5. deploy 集成 (biz-stack 加 oauth2-server)
 # ─────────────────────────────────────────────────────────
-echo "▶ [5/16] biz-stack compose 集成"
+echo "▶ [5/17] biz-stack compose 集成"
 git add packages/payment-admin-web/deploy/overrides/biz-stack.yml
 git commit -m "feat(deploy): biz-stack 集成 oauth2-server
 
@@ -137,7 +137,7 @@ git commit -m "feat(deploy): biz-stack 集成 oauth2-server
 # ─────────────────────────────────────────────────────────
 # 6. 优化 (metrics / rate-limit / audit / scope / introspect cache)
 # ─────────────────────────────────────────────────────────
-echo "▶ [6/16] OAuth2 生产化优化"
+echo "▶ [6/17] OAuth2 生产化优化"
 git add packages/oauth2-server/internal/metrics/ \
         packages/oauth2-server/internal/ratelimit/ \
         packages/oauth2-server/internal/audit/ \
@@ -191,7 +191,7 @@ echo "    如果需要忽略, 加 .gitignore: go.work.disabled, go.work.sum"
 # ─────────────────────────────────────────────────────────
 # 7. 修复 payment-admin-backend gRPC "no children" 问题
 # ─────────────────────────────────────────────────────────
-echo "▶ [7/16] 修 admin-backend grpc.NewClient 启动顺序问题"
+echo "▶ [7/17] 修 admin-backend grpc.NewClient 启动顺序问题"
 git add packages/payment-admin-web/backend/cmd/server/main.go \
         scripts/rebuild-admin-backend.sh
 git commit -m "fix(payment-admin-web): 修 grpc.NewClient 'no children to pick from'
@@ -214,7 +214,7 @@ scripts/rebuild-admin-backend.sh — 重 build + 部署 + 验证脚本."
 # ─────────────────────────────────────────────────────────
 # 8. P0 系统能力建设: 日志/合成监控/feature flag/备份/chaos/trace graph
 # ─────────────────────────────────────────────────────────
-echo "▶ [8/16] 系统能力补全 — observability + reliability"
+echo "▶ [8/17] 系统能力补全 — observability + reliability"
 git add docs/SYSTEM_GAPS_2026Q3.md docs/DR_PLAN.md \
         deploy/monitoring/loki/ deploy/monitoring/blackbox/ \
         deploy/monitoring/grafana/ \
@@ -263,7 +263,7 @@ chaos:
 # ─────────────────────────────────────────────────────────
 # 9. burn-rate + routing-tree (alerts/alertmanager 分目录)
 # ─────────────────────────────────────────────────────────
-echo "▶ [9/16] alert rules + routing"
+echo "▶ [9/17] alert rules + routing"
 git add deploy/alerts/burn-rate.yaml deploy/alertmanager/routing-tree.yml
 git commit -m "feat(alerts): SLO burn-rate + routing tree
 
@@ -277,7 +277,7 @@ git commit -m "feat(alerts): SLO burn-rate + routing tree
 # ─────────────────────────────────────────────────────────
 # 10. P2 系统进阶: async job / dep-graph / pool audit / RUM / blue-green / rollback
 # ─────────────────────────────────────────────────────────
-echo "▶ [10/16] P2 进阶能力"
+echo "▶ [10/17] P2 进阶能力"
 git add packages/payment-util/jobqueue/ \
         packages/payment-admin-web/frontend/rum.js \
         packages/payment-admin-web/backend/internal/handler/rum_ingest.go \
@@ -317,7 +317,7 @@ git commit -m "feat(platform): P2 高级运维能力
 # ─────────────────────────────────────────────────────────
 # 11. P2 终: multi-region + CDN + PCI 内部扫描
 # ─────────────────────────────────────────────────────────
-echo "▶ [11/16] multi-region / CDN / PCI"
+echo "▶ [11/17] multi-region / CDN / PCI"
 git add deploy/multi-region/ deploy/cdn/ \
         scripts/cdn-deploy.sh scripts/pci-self-check.sh \
         .github/workflows/security-scan.yml
@@ -353,7 +353,7 @@ CDN:
 # ─────────────────────────────────────────────────────────
 # 12. split-payment / Money Flow Graph 资金流编排服务
 # ─────────────────────────────────────────────────────────
-echo "▶ [12/16] split-payment + Money Flow Graph"
+echo "▶ [12/17] split-payment + Money Flow Graph"
 git add packages/split-payment/ examples/moneyflow-graphs/ \
         packages/payment-admin-web/frontend/moneyflow-designer.html
 git commit -m "feat(split-payment): Money Flow Graph 资金流编排服务
@@ -389,7 +389,7 @@ git commit -m "feat(split-payment): Money Flow Graph 资金流编排服务
 # ─────────────────────────────────────────────────────────
 # 13. Subscription 周期扣款 + FX 多币种
 # ─────────────────────────────────────────────────────────
-echo "▶ [13/16] subscription + fx-service"
+echo "▶ [13/17] subscription + fx-service"
 git add packages/subscription/ packages/fx-service/
 git commit -m "feat(business): subscription + fx-service — SaaS / 跨境支付能力
 
@@ -414,7 +414,7 @@ fx-service (多币种 + 汇率):
 # ─────────────────────────────────────────────────────────
 # 14. 业务能力 (k6 / wallet / subscription / fx / risk扩展)
 # ─────────────────────────────────────────────────────────
-echo "▶ [14/16] business capabilities"
+echo "▶ [14/17] business capabilities"
 git add test/k6/ \
         packages/wallet-service/ packages/subscription/ packages/fx-service/ \
         packages/risk-manage/internal/rules/velocity_geo_device.go \
@@ -430,7 +430,7 @@ risk-manage 扩展规则      VelocityChecker + GeoChecker + DeviceChecker + 9 �
 # ─────────────────────────────────────────────────────────
 # 15. 平台能力 (schema-registry + problem+json + service generator)
 # ─────────────────────────────────────────────────────────
-echo "▶ [15/16] platform capabilities"
+echo "▶ [15/17] platform capabilities"
 git add packages/payment-util/schema/ \
         packages/payment-util/problem/ \
         packages/payment-util/tenant/ \
@@ -463,14 +463,14 @@ packages/payment-util/tenant/    placeholder (用户决策: 多租户暂不需�
 
 echo ""
 echo "════════════════════════════════════════════"
-echo " ✅ 16 个 commit 完成"
+echo " ✅ 17 个 commit 完成"
 echo "════════════════════════════════════════════"
-git log --oneline -18
+git log --oneline -19
 
 # ─────────────────────────────────────────────────────────
 # 16. 修复 payment-util/serviceregistry — dns:/// 永久修复 (13 服务受益)
 # ─────────────────────────────────────────────────────────
-echo "▶ [16/16] payment-util/serviceregistry dns:/// 修复"
+echo "▶ [16/17] payment-util/serviceregistry dns:/// 修复"
 git add packages/payment-util/serviceregistry/dial.go
 git commit -m "fix(payment-util): DialWithFallback fallback 路径加 dns:/// 前缀
 
@@ -490,4 +490,37 @@ idle 重建时 re-resolve。
 - payment-util/configcenter 自身
 
 一处修, 全栈通。"
+
+
+# ─────────────────────────────────────────────────────────
+# 17. oauth2-server 分库分表 — 100 shard (跟 user-merchant-core 同 layout)
+# ─────────────────────────────────────────────────────────
+echo "▶ [17/17] oauth2-server 分库分表"
+git add packages/oauth2-server/internal/sharding/ \
+        packages/oauth2-server/internal/store/mysql_sharded.go \
+        packages/oauth2-server/database/init/01_schema_sharded.sql \
+        packages/oauth2-server/database/init/generate.sh
+git commit -m "feat(oauth2-server): clients / revoked_tokens / admin_audit 100 分片
+
+跟 user-merchant-core / order-core / accounting-system 同 layout:
+10 库 × 10 表 = 100 全局分片, FNV-1a hash, 跨服务同 key 落同分片号.
+
+分片对象:
+- clients         按 client_id hash → 100 shard
+- revoked_tokens  按 jti hash       → 100 shard (高频写, 必分)
+- admin_audit     按 actor hash     → 100 shard (跟 u-m-c admin_audit_log 同模式)
+
+不分:
+- rsa_keys (key 数量极少, 放 oauth2_db_0)
+- client_index 全局映射表 (client_id → (db,table), ops 反查用)
+
+文件:
+- internal/sharding/router.go        100 shard 路由 (4 个单测)
+- internal/store/mysql_sharded.go    ShardedMySQLStore (fan-out List/GC, 单点 Get/Put)
+- database/init/01_schema_sharded.sql 模板 + 首尾分片
+- database/init/generate.sh           ~5000 行完整 SQL 生成器
+
+切换:
+- cmd/server/main.go 把 NewMySQLStore 换 NewShardedMySQLStore + dsnFor func
+- env: OAUTH2_DB_DSN_PREFIX 自动拼 oauth2_db_<idx>"
 
