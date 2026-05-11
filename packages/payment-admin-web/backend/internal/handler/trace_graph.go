@@ -152,7 +152,7 @@ func (h *TraceGraphHandler) fetchJaegerTrace(ctx context.Context, traceID string
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return nil, nil, nil, 0, 0,
-			fmt.Errorf("jaeger %d: %s", resp.StatusCode, truncate(string(body), 200))
+			fmt.Errorf("jaeger %d: %s", resp.StatusCode, truncateStr(string(body), 200))
 	}
 	var jr struct {
 		Data []struct {
@@ -292,7 +292,7 @@ func (h *TraceGraphHandler) fetchLokiLogs(ctx context.Context, traceID string, s
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("loki %d: %s", resp.StatusCode, truncate(string(body), 200))
+		return nil, fmt.Errorf("loki %d: %s", resp.StatusCode, truncateStr(string(body), 200))
 	}
 	var lr struct {
 		Status string `json:"status"`
@@ -320,7 +320,7 @@ func (h *TraceGraphHandler) fetchLokiLogs(ctx context.Context, traceID string, s
 				Ts:      tsNs / 1_000_000,
 				Service: svc,
 				Level:   level,
-				Message: truncate(kv[1], 1000),
+				Message: truncateStr(kv[1], 1000),
 			})
 		}
 	}
@@ -328,7 +328,7 @@ func (h *TraceGraphHandler) fetchLokiLogs(ctx context.Context, traceID string, s
 	return out, nil
 }
 
-func truncate(s string, max int) string {
+func truncateStr(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
