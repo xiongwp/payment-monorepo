@@ -1,0 +1,196 @@
+# biz-ci.yml — 9 业务包 build + test + lint + security 检查。
+#
+# 触发：PR + push 到 main，且改了 packages/{biz-services}/** 才跑（path filter）。
+# 矩阵并发跑 9 个 service，单个失败不影响其它（fail-fast: false）。
+
+name: biz-ci
+
+on:
+  pull_request:
+    paths:
+      - 'packages/billing-system/**'
+      - 'packages/payment-gateway/**'
+      - 'packages/dispute-service/**'
+      - 'packages/merchant-webhook/**'
+      - 'packages/refund-engine/**'
+      - 'packages/kyc-service/**'
+      - 'packages/audit-log/**'
+      - 'packages/biz-admin-web/**'
+      - 'packages/payment-mw/**'
+      - 'go.work'
+      - '.github/workflows/biz-ci.yml'
+  push:
+    branches: [main]
+
+env:
+  GO_VERSION: '1.22'
+
+jobs:
+  # ─── go vet / build / test 矩阵 ─────────────────────────────────
+  go-checks:
+    name: ${{ matrix.pkg }} (go check)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg:
+          - billing-system
+          - payment-gateway
+          - dispute-service
+          - merchant-webhook
+          - refund-engine
+          - kyc-service
+          - audit-log
+          - biz-admin-web
+          - payment-mw
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: packages/${{ matrix.pkg }}/go.sum
+
+      - name: go mod tidy check
+        working-directory: packages/${{ matrix.pkg }}
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum || (echo "❌ go mod tidy produced changes; commit them" && exit 1)
+
+      - name: go vet
+        working-directory: packages/${{ matrix.pkg }}
+        run: go vet ./...
+
+      - name: go build
+        working-directory: packages/${{ matrix.pkg }}
+        run: go build ./...
+
+      - name: go test (race + cover)
+        working-directory: packages/${{ matrix.pkg }}
+        run: go test -race -cover -timeout 5m ./...
+
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: latest
+          working-directory: packages/${{ matrix.pkg }}
+        continue-on-error: true   # 渐进式：先告警，半年后变 hard fail
+
+  # ─── 安全扫描 ────────────────────────────────────────────────────
+  security:
+    name: security (govulncheck + gosec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          for pkg in billing-system payment-gateway dispute-service merchant-webhook \
+                     refund-engine kyc-service audit-log biz-admin-web payment-mw; do
+            echo "::group::$pkg"
+            (cd packages/$pkg && govulncheck ./...) || echo "❌ vuln in $pkg"
+            echo "::endgroup::"
+          done
+
+      - name: gosec
+        uses: securego/gosec@master
+        with:
+          args: -fmt sarif -out gosec-results.sarif ./packages/billing-system/... ./packages/payment-gateway/... ./packages/payment-mw/...
+        continue-on-error: true
+
+      - name: upload gosec results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gosec-results.sarif
+        continue-on-error: true
+
+  # ─── Docker build smoke test ─────────────────────────────────────
+  docker-build:
+    name: docker build (${{ matrix.pkg }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg:
+          - billing-system
+          - payment-gateway
+          - dispute-service
+          - merchant-webhook
+          - refund-engine
+          - kyc-service
+          - audit-log
+          - biz-admin-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build ${{ matrix.pkg }}
+        uses: docker/build-push-action@v5
+        with:
+          context: packages/${{ matrix.pkg }}
+          push: false
+          tags: ${{ matrix.pkg }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─── License + secret leak ───────────────────────────────────────
+  hygiene:
+    name: hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: gitleaks (secret leak detection)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: check shell scripts
+        run: |
+          if find packages -name "*.sh" | xargs shellcheck 2>&1 | tee /tmp/shellcheck.txt; then
+            echo "✓ shell scripts ok"
+          else
+            echo "::warning::shellcheck found issues (non-blocking)"
+          fi
+        continue-on-error: true
+
+  # ─── E2E smoke (在 PR + main 上跑) ─────────────────────────────
+  e2e:
+    name: e2e smoke
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: build 8 service images
+        run: |
+          for pkg in billing-system payment-gateway dispute-service merchant-webhook \
+                     refund-engine kyc-service audit-log biz-admin-web; do
+            docker build -t $pkg:local packages/$pkg
+          done
+
+      - name: bring up biz-stack
+        run: |
+          docker network create payment-stack 2>/dev/null || true
+          docker compose -f packages/payment-admin-web/deploy/overrides/biz-stack.yml \
+              -p ci-stack up -d
+
+      - name: wait healthy + run e2e
+        run: |
+          sleep 15
+          # CI 里端口不冲突就 18090..18099
+          bash packages/payment-admin-web/deploy/biz-e2e-test.sh
+
+      - name: tear down
+        if: always()
+        run: |
+          docker compose -f packages/payment-admin-web/deploy/overrides/biz-stack.yml \
+              -p ci-stack down -v
