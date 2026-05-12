@@ -606,8 +606,118 @@ cmd_debug_mysql() {
   docker logs shared-shard-0 2>&1 | grep -iE 'init|entrypoint|running' | head -10 || echo "  (没日志)"
 }
 
+# ─── 一键部署 ───────────────────────────────────────────────────
+#
+# 流程: prereq → KMS keys → build (并行) → infra (DB+kafka) → app → health → summary
+cmd_oneshot() {
+  local total_start=$(date +%s)
+
+  echo "═════════════════════════════════════════════════════"
+  echo "  一键部署: 整栈 ${#ALL_SERVICES[@]} 服务"
+  echo "═════════════════════════════════════════════════════"
+
+  if ! command -v docker >/dev/null; then
+    fatal "docker not installed"
+  fi
+  docker compose version >/dev/null 2>&1 || fatal "docker compose v2 required"
+
+  ensure_network
+
+  info "[1/6] KMS keys"
+  cmd_init_kms
+
+  info "[2/6] 并行 build 所有镜像"
+  local build_pids=()
+  local build_log_dir
+  build_log_dir=$(mktemp -d)
+  for svc in "${ALL_SERVICES[@]}"; do
+    case "$svc" in
+      shared-db|risk-stack) continue ;;
+    esac
+    (
+      local files
+      files=$(compose_files "$svc" 2>/dev/null || echo "")
+      [[ -z "$files" ]] && exit 0
+      local app
+      app=$(app_service_of "$svc")
+      $COMPOSE $files build $app > "$build_log_dir/$svc.log" 2>&1 \
+        && echo "  ✓ $svc" \
+        || { echo "  ✗ $svc — log: $build_log_dir/$svc.log"; exit 1; }
+    ) &
+    build_pids+=($!)
+  done
+  local build_fail=0
+  for pid in "${build_pids[@]}"; do
+    wait "$pid" || build_fail=$((build_fail+1))
+  done
+  [[ $build_fail -gt 0 ]] && fatal "$build_fail 镜像 build 失败 (logs $build_log_dir)"
+  info "  镜像全部构建完毕"
+
+  info "[3/6] Infra (MySQL + risk-stack)"
+  cmd_up shared-db
+  cmd_up risk-stack
+  info "  等 11 MySQL healthy..."
+  local mw=0
+  until [[ $(docker ps --filter "name=^shared-" --filter "health=healthy" --format '{{.Names}}' | wc -l) -ge 11 ]]; do
+    sleep 2; mw=$((mw+2))
+    [[ $mw -gt 180 ]] && fatal "MySQL 启动超时"
+  done
+  info "  ✓ 11 MySQL healthy"
+
+  info "[4/6] Apps (依赖顺序)"
+  cmd_up kms-manage
+  cmd_up config-center
+  cmd_up oauth2-server
+  cmd_up accounting-system
+  cmd_up risk-manage
+  cmd_up payment-channel order-core user-merchant-core
+  cmd_up payment-core
+  cmd_up card-center card-payment
+  cmd_up api-gateway
+  cmd_up reconplatform
+  cmd_up aml-screening tokenization-vault tax-reporting data-rights
+  cmd_up accounting-admin-web payment-admin-web
+
+  info "[5/6] Health check (sleep 5s before probe)"
+  sleep 5
+  cmd_check || warn "部分服务未通过 health check, 看 ./deploy.sh logs <svc>"
+
+  local total_end=$(date +%s)
+  local elapsed=$((total_end - total_start))
+
+  cat <<EOF
+
+═══════════════════════════════════════════════════════════════
+ ✓ 一键部署完成 — 总用时 ${elapsed}s
+═══════════════════════════════════════════════════════════════
+
+ 入口 URL:
+   admin 控制台:       http://localhost:8080
+   accounting admin:   http://localhost:8081
+   biz-admin P0 复核:  http://localhost:8082/p0
+   双人复核 UI:        http://localhost:8082/approval
+   API gateway pub:    http://localhost:18080
+
+ API endpoints (新建 P0 服务):
+   oauth2:           http://localhost:18087/healthz
+   AML 筛查:         http://localhost:18088/healthz
+   token vault:      http://localhost:18089/healthz
+   tax reporting:    http://localhost:18090/healthz
+   data rights:      http://localhost:18091/healthz
+   approval-service: http://localhost:18092/healthz
+
+ 常用:
+   ./deploy.sh status
+   ./deploy.sh logs <svc>
+   ./deploy.sh down
+   ./deploy.sh nuke
+═══════════════════════════════════════════════════════════════
+EOF
+}
+
 # ─── dispatch ───────────────────────────────────────────────────
 case "${1:-}" in
+  oneshot|all-in-one) shift; cmd_oneshot ;;
   init-kms)  shift; cmd_init_kms "$@" ;;
   up)        shift; cmd_up "$@" ;;
   down)      shift; cmd_down "$@" ;;
@@ -623,6 +733,7 @@ case "${1:-}" in
 用法: deploy.sh <命令> [参数]
 
 命令：
+  oneshot / all-in-one    ⭐ 一键部署 (build + infra + app + health, 全自动)
   init-kms                产生 KMS master key（全栈首次启动前必须跑一次）
   up [svc…]               启动全栈；可指定子集，如 `up kms-manage payment-channel`
   down [--volumes]        停止全栈；带 --volumes 连数据卷一起清

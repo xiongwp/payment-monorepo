@@ -24,7 +24,13 @@ pre.json { background: #1e293b; color: #e2e8f0; padding: 10px; border-radius: 6p
 <header class="bg-white shadow-sm border-b border-gray-200">
   <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
     <h1 class="text-lg font-semibold">🛡 P0 服务复核控制台</h1>
-    <div class="flex gap-2 text-xs">
+    <div class="flex gap-2 text-xs items-center">
+      <span class="flex items-center gap-1">
+        <span class="w-2 h-2 rounded-full inline-block"
+              :class="sseConnected ? 'bg-green-500' : 'bg-gray-400'"
+              style="animation: pulse 2s infinite"></span>
+        <span x-text="sseStatus"></span>
+      </span>
       <span class="px-3 py-1 bg-gray-100 rounded">admin_token: <input type="password" x-model="adminToken" class="ml-1 w-32 outline-none" placeholder="admintok"></span>
       <button @click="refresh()" class="px-3 py-1 bg-blue-600 text-white rounded">刷新全部</button>
     </div>
@@ -212,8 +218,31 @@ function p0Admin() {
     taxYear: new Date().getFullYear(), taxEligible: [],
     drFilter: '', drOverdue: false, drRequests: [],
     toast: { text: '', type: 'success' },
+    sse: { aml: null, dr: null },
+    sseConnected: false,
+    sseStatus: '未连接',
 
-    init() { this.refresh(); },
+    init() {
+      this.refresh();
+      this.connectSSE();
+    },
+
+    // SSE: AML + DR 后端各自有 /stream; aml-screening / data-rights 同样的 channel
+    connectSSE() {
+      try {
+        // AML: 新命中流; 数据来时刷 amlHits
+        this.sse.aml = new EventSource('/api/aml/admin/stream');
+        this.sse.aml.onopen = () => { this.sseConnected = true; this.sseStatus = '实时'; };
+        this.sse.aml.onerror = () => { this.sseConnected = false; this.sseStatus = '断线 (重连中)'; };
+        this.sse.aml.addEventListener('hit_new', () => { if (this.tab === 'aml') this.loadAML(); });
+
+        // DR: 工单状态变更流
+        this.sse.dr = new EventSource('/api/dr/admin/stream');
+        this.sse.dr.addEventListener('request_update', () => { if (this.tab === 'dr') this.loadDR(); });
+      } catch (e) {
+        this.sseStatus = '不支持 SSE';
+      }
+    },
 
     refresh() {
       localStorage.setItem('p0_admin_token', this.adminToken);
