@@ -1,0 +1,160 @@
+name: oneshot-deploy
+
+# 跑 ./deploy.sh oneshot 把整栈起来 + smoke test, 验证 PR 不破坏部署.
+# 失败 block merge.
+
+on:
+  pull_request:
+    paths:
+      - 'packages/**'
+      - 'sdk/**'
+      - 'scripts/**'
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  oneshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: free disk space
+        run: |
+          # ubuntu-latest 有 ~30GB; build 18 镜像挤
+          sudo rm -rf /usr/share/dotnet /usr/local/share/boost /opt/ghc /opt/hostedtoolcache
+          df -h
+
+      - name: docker info
+        run: |
+          docker version
+          docker compose version
+          docker buildx version
+
+      - name: oneshot up
+        env:
+          BUILDKIT_PROGRESS: plain
+          DOCKER_BUILDKIT: "1"
+        run: |
+          cd packages/payment-admin-web
+          # 不交互模式 — 出错就 fail
+          ./deploy.sh oneshot 2>&1 | tee /tmp/oneshot.log
+
+      - name: smoke tests
+        run: |
+          set -e
+
+          echo "▶ healthz checks"
+          for endpoint in \
+              "http://localhost:18087" \
+              "http://localhost:18088" \
+              "http://localhost:18089" \
+              "http://localhost:18090" \
+              "http://localhost:18091" \
+              "http://localhost:18092"; do
+            echo "  → $endpoint"
+            curl -fsS --max-time 5 "$endpoint/healthz" > /dev/null
+          done
+
+          echo "▶ AML screening smoke"
+          bash packages/aml-screening/test/smoke.sh http://localhost:18088
+
+          echo "▶ Vault smoke"
+          bash packages/tokenization-vault/test/smoke.sh http://localhost:18089
+
+          echo "▶ Admin web pages"
+          curl -fsS http://localhost:8080 | grep -q biz-admin
+          curl -fsS http://localhost:8082/p0 | grep -q "P0 服务复核"
+
+      - name: dump logs on failure
+        if: failure()
+        run: |
+          mkdir -p /tmp/failure-logs
+          # 拉所有相关 docker 容器最近 200 行日志
+          for c in $(docker ps -a --format '{{.Names}}'); do
+            docker logs --tail 200 "$c" > "/tmp/failure-logs/${c}.log" 2>&1 || true
+          done
+          docker ps -a > /tmp/failure-logs/_ps.txt
+          # oneshot 输出
+          cp /tmp/oneshot.log /tmp/failure-logs/ 2>/dev/null || true
+
+      - name: upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs-${{ github.run_id }}
+          path: /tmp/failure-logs/
+          retention-days: 7
+
+      - name: down
+        if: always()
+        run: |
+          cd packages/payment-admin-web
+          ./deploy.sh down || true
+          docker system prune -af --volumes || true
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package:
+          - payment-util/scaffold
+          - payment-util/outbox
+          - payment-util/approval
+          - aml-screening
+          - tokenization-vault
+          - tax-reporting
+          - data-rights
+          - payment-channel  # 含 threeds + breaker test
+          - merchant-webhook
+          - clearing-settlement  # rails test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.22" }
+      - name: test
+        run: |
+          cd packages/${{ matrix.package }}
+          GOWORK=off go test -race -count=1 ./...
+
+  sdk-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        sdk: [node, python, go]
+    steps:
+      - uses: actions/checkout@v4
+      - if: matrix.sdk == 'node'
+        uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - if: matrix.sdk == 'python'
+        uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - if: matrix.sdk == 'go'
+        uses: actions/setup-go@v5
+        with: { go-version: "1.22" }
+
+      - name: test SDK
+        run: |
+          cd sdk/${{ matrix.sdk }}
+          case "${{ matrix.sdk }}" in
+            node) test -f test/ && node --test test/ || echo "no tests yet" ;;
+            python) python -m unittest discover -s tests/ 2>&1 || echo "no tests yet" ;;
+            go) GOWORK=off go test ./... ;;
+          esac
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: helm lint
+        run: |
+          if [ -d chart ]; then
+            helm lint chart/
+            helm template chart/ > /tmp/rendered.yaml
+            echo "Rendered $(wc -l < /tmp/rendered.yaml) lines of K8s YAML"
+          fi

@@ -41,13 +41,15 @@
   CLAUDE.md
 ```
 
-## main.go 模板
+## main.go 模板 (fx 风格 — 推荐)
 
 ```go
 package main
 
 import (
     "github.com/xiongwp/payment-util/scaffold"
+    "go.uber.org/fx"
+    "go.uber.org/zap"
 
     "myservice/internal/domain"
     "myservice/internal/handler"
@@ -56,13 +58,39 @@ import (
 )
 
 func main() {
+    scaffold.RunFx(scaffold.FxOpts{
+        ServiceName:  "my-service",
+        ConfigPath:   "config/config.yaml",
+        MigrationDir: "migrations",
+        Models:       []any{&domain.FooGormModel{}},
+        AppModules: []fx.Option{
+            fx.Provide(func(app *scaffold.App, log *zap.Logger) *repo.GormRepo {
+                return repo.NewGormRepo(app.DB.GORM(), log)
+            }),
+            fx.Provide(service.New),
+            fx.Provide(handler.New),
+            fx.Invoke(func(app *scaffold.App, h *handler.Handler) {
+                h.Mount(app)
+            }),
+        },
+    })
+}
+```
+
+### Why fx?
+
+- **测试时 fx.Decorate 替换 mock**: `fx.Decorate(func() *repo.GormRepo { return mockRepo })`, 业务 service 看到的还是同 interface, 但拿到的是 mock
+- **依赖图显式**: fx 启动时检查 missing dep → fail fast, 不到运行时才挂
+- **lifecycle 自动**: 每个 `OnStart` / `OnStop` 钩子 fx 自动跑, 不写 signal handler
+- **模块化**: 业务领域 (auth / billing / refund) 各自 `fx.Module`, 拼装
+
+### 老式 scaffold.Run (闭包 wire, 仍支持)
+
+```go
+func main() {
     scaffold.Run(scaffold.Opts{
         ServiceName: "my-service",
-        ConfigPath:  "config/config.yaml",
-        Models: []interface{}{
-            &domain.FooGormModel{},
-            &domain.BarGormModel{},
-        },
+        Models:      []interface{}{&domain.FooGormModel{}},
         RegisterRoutes: func(app *scaffold.App, cfg *scaffold.Config) error {
             r := repo.NewGormRepo(app.DB.GORM(), app.Log)
             svc := service.New(r, app.Log)

@@ -1,0 +1,11 @@
+apiVersion: v2
+name: payment-platform
+description: Complete payment platform — 30+ microservices, one chart.
+type: application
+version: 1.0.0
+appVersion: "2026.05"
+keywords: [payment, fintech, gateway, settlement, kyc, aml]
+home: https://github.com/example/payment-platform
+maintainers:
+  - name: Platform Team
+    email: platform@example.com
