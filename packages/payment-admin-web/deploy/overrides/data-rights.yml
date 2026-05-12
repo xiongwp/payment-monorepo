@@ -1,0 +1,14 @@
+services:
+  data-rights:
+    networks:
+      - payment-stack
+    ports: !override
+      - "18091:8091"
+    environment:
+      TZ: Asia/Shanghai
+      DR_ADDR: ":8091"
+      DR_ADMIN_TOKEN: "${DR_ADMIN_TOKEN:-admintok-dev-CHANGE-IN-PROD}"
+
+networks:
+  payment-stack:
+    external: true

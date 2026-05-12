@@ -1,0 +1,115 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: aml-screening-config, namespace: payment }
+data:
+  AML_ADDR: ":8088"
+  AML_BLOCK_THRESH: "90"
+  AML_REVIEW_THRESH: "70"
+  AML_REFRESH_OFAC: "1"
+  AUDITLOG_URL: "http://audit-log.payment.svc:8087"
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: aml-screening-secrets, namespace: payment }
+type: Opaque
+stringData:
+  AML_ADMIN_TOKEN: "REPLACE_ME"
+  AML_MYSQL_DSN: "aml:CHANGE_PWD@tcp(mysql:3306)/aml_screening?charset=utf8mb4&parseTime=true"
+  AUDITLOG_TOKEN: "REPLACE_ME"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: aml-screening, namespace: payment, labels: { app: aml-screening } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: aml-screening } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } }
+  template:
+    metadata:
+      labels: { app: aml-screening }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8088"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532 }
+      containers:
+      - name: aml-screening
+        image: ghcr.io/example/aml-screening:latest
+        imagePullPolicy: IfNotPresent
+        ports: [{ containerPort: 8088, name: http }]
+        envFrom:
+        - configMapRef: { name: aml-screening-config }
+        - secretRef: { name: aml-screening-secrets }
+        readinessProbe:
+          httpGet: { path: /healthz, port: 8088 }
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: { path: /healthz, port: 8088 }
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        # 名单 70w+ 内存索引, 给足 memory
+        resources:
+          requests: { cpu: "200m", memory: "512Mi" }
+          limits:   { cpu: "2000m", memory: "2Gi" }
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: aml-screening, namespace: payment }
+spec:
+  selector: { app: aml-screening }
+  ports: [{ name: http, port: 8088, targetPort: 8088 }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: aml-screening, namespace: payment }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: aml-screening }
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+  - type: Resource
+    resource: { name: memory, target: { type: Utilization, averageUtilization: 80 } }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata: { name: aml-screening, namespace: payment }
+spec:
+  selector: { matchLabels: { app: aml-screening } }
+  endpoints: [{ port: http, path: /metrics, interval: 15s }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: aml-screening, namespace: payment }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: aml-screening } }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: aml-screening, namespace: payment }
+spec:
+  podSelector: { matchLabels: { app: aml-screening } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+  # KYB / clearing / payment-core 可调
+  - from:
+    - podSelector: { matchLabels: { app: kyc-service } }
+    - podSelector: { matchLabels: { app: clearing-settlement } }
+    - podSelector: { matchLabels: { app: payment-core } }
+    - podSelector: { matchLabels: { app: biz-admin-web } }
+    ports: [{ port: 8088, protocol: TCP }]
+  egress:
+  # MySQL + audit-log + OFAC SDN 外网
+  - to:
+    - podSelector: { matchLabels: { app: mysql } }
+    - podSelector: { matchLabels: { app: audit-log } }
+  - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }]  # OFAC / EU / UK 名单源
+    ports: [{ port: 443, protocol: TCP }]

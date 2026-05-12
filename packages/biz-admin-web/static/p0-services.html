@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>biz-admin · P0 服务复核 (AML / Vault / Tax / Data Rights)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+.tab.active { background: #1677ff; color: white; }
+pre.json { background: #1e293b; color: #e2e8f0; padding: 10px; border-radius: 6px; font-size: 11px; max-height: 300px; overflow: auto; }
+.badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+.badge-pass { background: #d1fae5; color: #065f46; }
+.badge-review { background: #fef3c7; color: #92400e; }
+.badge-block { background: #fee2e2; color: #991b1b; }
+.badge-pending { background: #dbeafe; color: #1e40af; }
+.badge-fulfilled { background: #d1fae5; color: #065f46; }
+.badge-overdue { background: #fee2e2; color: #991b1b; animation: pulse 2s infinite; }
+@keyframes pulse { 50% { opacity: 0.6; } }
+</style>
+</head>
+<body class="bg-gray-50 min-h-screen" x-data="p0Admin()" x-init="init()">
+
+<header class="bg-white shadow-sm border-b border-gray-200">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+    <h1 class="text-lg font-semibold">🛡 P0 服务复核控制台</h1>
+    <div class="flex gap-2 text-xs items-center">
+      <span class="flex items-center gap-1">
+        <span class="w-2 h-2 rounded-full inline-block"
+              :class="sseConnected ? 'bg-green-500' : 'bg-gray-400'"
+              style="animation: pulse 2s infinite"></span>
+        <span x-text="sseStatus"></span>
+      </span>
+      <span class="px-3 py-1 bg-gray-100 rounded">admin_token: <input type="password" x-model="adminToken" class="ml-1 w-32 outline-none" placeholder="admintok"></span>
+      <button @click="refresh()" class="px-3 py-1 bg-blue-600 text-white rounded">刷新全部</button>
+    </div>
+  </div>
+</header>
+
+<!-- Tab Navigation -->
+<nav class="max-w-7xl mx-auto px-4 py-3">
+  <div class="flex gap-2">
+    <template x-for="t in tabs" :key="t.id">
+      <button @click="tab=t.id; refresh()"
+              :class="{'tab active': tab===t.id, 'bg-white': tab!==t.id}"
+              class="px-4 py-2 text-sm border rounded transition-colors hover:bg-blue-50">
+        <span x-text="t.label"></span>
+        <span x-show="t.count" class="ml-1 text-xs opacity-75">(<span x-text="t.count"></span>)</span>
+      </button>
+    </template>
+  </div>
+</nav>
+
+<main class="max-w-7xl mx-auto px-4 pb-12">
+
+  <!-- ─── AML: 待复核命中 ─── -->
+  <section x-show="tab==='aml'" class="bg-white rounded-lg shadow-sm p-5">
+    <h2 class="text-base font-semibold mb-3">AML 待复核命中</h2>
+    <p class="text-xs text-gray-500 mb-4">screen 命中名单的 hit, 由 ops 决议: cleared (误报) / frozen (真命中, 业务冻结) / escalated (报送监管 SAR).</p>
+    <div class="overflow-x-auto">
+      <table class="min-w-full text-sm">
+        <thead class="text-xs text-gray-500 border-b">
+          <tr>
+            <th class="text-left py-2 px-2">Hit ID</th>
+            <th class="text-left py-2 px-2">Source</th>
+            <th class="text-left py-2 px-2">Matched Name</th>
+            <th class="text-right py-2 px-2">Confidence</th>
+            <th class="text-left py-2 px-2">Matched On</th>
+            <th class="text-left py-2 px-2">Program</th>
+            <th class="text-right py-2 px-2">动作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="h in amlHits" :key="h.hit_id">
+            <tr class="border-b hover:bg-gray-50">
+              <td class="py-2 px-2 text-xs font-mono" x-text="h.hit_id"></td>
+              <td class="py-2 px-2"><span class="badge badge-pending" x-text="h.list_entry.source"></span></td>
+              <td class="py-2 px-2" x-text="h.list_entry.primary_name"></td>
+              <td class="py-2 px-2 text-right font-semibold" x-text="h.confidence"></td>
+              <td class="py-2 px-2 text-xs" x-text="(h.matched_on||[]).join(',')"></td>
+              <td class="py-2 px-2 text-xs text-gray-600" x-text="h.list_entry.program"></td>
+              <td class="py-2 px-2 text-right">
+                <button @click="resolveAML(h.hit_id, 'cleared')" class="text-xs px-2 py-1 bg-green-100 text-green-800 rounded mr-1">误报</button>
+                <button @click="resolveAML(h.hit_id, 'frozen')" class="text-xs px-2 py-1 bg-red-100 text-red-800 rounded mr-1">冻结</button>
+                <button @click="resolveAML(h.hit_id, 'escalated')" class="text-xs px-2 py-1 bg-orange-100 text-orange-800 rounded">SAR</button>
+              </td>
+            </tr>
+          </template>
+          <tr x-show="!amlHits.length"><td colspan="7" class="text-center text-gray-400 py-6">无待复核命中</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ─── Vault: token 状态 ─── -->
+  <section x-show="tab==='vault'" class="bg-white rounded-lg shadow-sm p-5">
+    <h2 class="text-base font-semibold mb-3">Tokenization Vault — 商户活跃 token 数</h2>
+    <p class="text-xs text-gray-500 mb-4">网络代币 (VTS / MDES) 全平台健康概览. 单商户 token 数 + 各 provider 状态.</p>
+    <div class="grid grid-cols-3 gap-3 mb-4">
+      <template x-for="p in vaultProviders" :key="p.name">
+        <div class="bg-gray-50 p-3 rounded border">
+          <div class="text-xs text-gray-500" x-text="p.name.toUpperCase()"></div>
+          <div class="text-2xl font-semibold mt-1" x-text="p.status"></div>
+        </div>
+      </template>
+    </div>
+    <div class="mb-2 text-sm">
+      <input x-model="vaultMerchantQuery" placeholder="输入 merchant_id 查 active token 数"
+             class="border px-3 py-1.5 rounded text-sm w-72">
+      <button @click="queryMerchantCount()" class="ml-2 text-sm px-3 py-1.5 bg-blue-600 text-white rounded">查询</button>
+      <span x-show="vaultCountResult" class="ml-3 text-sm">→ active tokens: <strong x-text="vaultCountResult"></strong></span>
+    </div>
+  </section>
+
+  <!-- ─── Tax: 待生成 / 待 file 表单 ─── -->
+  <section x-show="tab==='tax'" class="bg-white rounded-lg shadow-sm p-5">
+    <h2 class="text-base font-semibold mb-3">Tax Reporting</h2>
+    <div class="mb-3 flex items-center gap-3">
+      <label class="text-sm">年:
+        <input x-model="taxYear" type="number" class="border px-2 py-1 rounded ml-1 w-24">
+      </label>
+      <button @click="loadEligible()" class="text-sm px-3 py-1 bg-blue-600 text-white rounded">看符合 1099-K 阈值的商户</button>
+      <button @click="bulkGenerate()" class="text-sm px-3 py-1 bg-orange-600 text-white rounded">批量生成 1099-K</button>
+    </div>
+    <table class="min-w-full text-sm">
+      <thead class="text-xs text-gray-500 border-b">
+        <tr>
+          <th class="text-left py-2">Merchant</th>
+          <th class="text-left py-2">Jurisdiction</th>
+          <th class="text-right py-2">Gross</th>
+          <th class="text-right py-2">Txn 笔数</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template x-for="m in taxEligible" :key="m.merchant_id">
+          <tr class="border-b hover:bg-gray-50">
+            <td class="py-2 font-mono text-xs" x-text="m.merchant_id"></td>
+            <td class="py-2" x-text="m.jurisdiction"></td>
+            <td class="py-2 text-right" x-text="'$' + (m.total_gross/100).toLocaleString('en-US', {minimumFractionDigits:2})"></td>
+            <td class="py-2 text-right" x-text="m.total_count"></td>
+          </tr>
+        </template>
+        <tr x-show="!taxEligible.length"><td colspan="4" class="text-center text-gray-400 py-6">点上面按钮加载</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ─── Data Rights: DSAR/RTBF 工单 ─── -->
+  <section x-show="tab==='dr'" class="bg-white rounded-lg shadow-sm p-5">
+    <h2 class="text-base font-semibold mb-3">Data Rights (DSAR / RTBF) 工单队列</h2>
+    <p class="text-xs text-gray-500 mb-4">30 天法定 SLA. <strong class="text-red-600">超期未处理 = 合规违规</strong>.</p>
+    <div class="mb-3 flex gap-2 text-sm">
+      <select x-model="drFilter" @change="loadDR()" class="border px-2 py-1 rounded">
+        <option value="">全部</option>
+        <option value="received">received</option>
+        <option value="verifying">verifying</option>
+        <option value="collecting">collecting</option>
+        <option value="review">review (ops 待审)</option>
+        <option value="fulfilled">fulfilled</option>
+      </select>
+      <label class="flex items-center text-xs"><input type="checkbox" x-model="drOverdue" @change="loadDR()" class="mr-1"> 仅看 overdue</label>
+    </div>
+    <table class="min-w-full text-sm">
+      <thead class="text-xs text-gray-500 border-b">
+        <tr>
+          <th class="text-left py-2 px-2">Request ID</th>
+          <th class="text-left py-2 px-2">Type</th>
+          <th class="text-left py-2 px-2">Subject</th>
+          <th class="text-left py-2 px-2">State</th>
+          <th class="text-left py-2 px-2">Deadline</th>
+          <th class="text-right py-2 px-2">动作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template x-for="r in drRequests" :key="r.request_id">
+          <tr class="border-b hover:bg-gray-50">
+            <td class="py-2 px-2 font-mono text-xs" x-text="r.request_id"></td>
+            <td class="py-2 px-2"><span class="badge badge-pending" x-text="r.type"></span></td>
+            <td class="py-2 px-2 text-xs" x-text="r.subject.type+':'+r.subject.id"></td>
+            <td class="py-2 px-2">
+              <span class="badge" :class="r.state==='fulfilled' ? 'badge-fulfilled' : (isOverdue(r) ? 'badge-overdue' : 'badge-pending')"
+                    x-text="r.state"></span>
+            </td>
+            <td class="py-2 px-2 text-xs" :class="isOverdue(r) ? 'text-red-600 font-semibold' : ''" x-text="fmtDate(r.deadline_at)"></td>
+            <td class="py-2 px-2 text-right space-x-1">
+              <button @click="drAction(r.request_id, 'verify')" class="text-xs px-2 py-1 bg-blue-100 text-blue-800 rounded">verify</button>
+              <button @click="drAction(r.request_id, 'approve')" class="text-xs px-2 py-1 bg-green-100 text-green-800 rounded">approve</button>
+              <button @click="drAction(r.request_id, 'reject', prompt('拒绝理由?'))" class="text-xs px-2 py-1 bg-red-100 text-red-800 rounded">reject</button>
+              <button @click="drAction(r.request_id, 'fulfill')" class="text-xs px-2 py-1 bg-purple-100 text-purple-800 rounded">fulfill</button>
+            </td>
+          </tr>
+        </template>
+        <tr x-show="!drRequests.length"><td colspan="6" class="text-center text-gray-400 py-6">无工单</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- Toast -->
+  <div x-show="toast.text" x-transition
+       class="fixed bottom-6 right-6 px-4 py-2 rounded shadow-lg text-white text-sm"
+       :class="toast.type==='error' ? 'bg-red-600' : 'bg-green-600'"
+       x-text="toast.text"></div>
+
+</main>
+
+<script>
+function p0Admin() {
+  return {
+    adminToken: localStorage.getItem('p0_admin_token') || 'admintok-dev-CHANGE-IN-PROD',
+    tab: 'aml',
+    tabs: [
+      { id: 'aml', label: '🔍 AML 命中', count: 0 },
+      { id: 'vault', label: '🔐 Vault', count: 0 },
+      { id: 'tax', label: '📑 Tax', count: 0 },
+      { id: 'dr', label: '⚖️ Data Rights', count: 0 },
+    ],
+    amlHits: [], vaultProviders: [], vaultMerchantQuery: '', vaultCountResult: 0,
+    taxYear: new Date().getFullYear(), taxEligible: [],
+    drFilter: '', drOverdue: false, drRequests: [],
+    toast: { text: '', type: 'success' },
+    sse: { aml: null, dr: null },
+    sseConnected: false,
+    sseStatus: '未连接',
+
+    init() {
+      this.refresh();
+      this.connectSSE();
+    },
+
+    // SSE: AML + DR 后端各自有 /stream; aml-screening / data-rights 同样的 channel
+    connectSSE() {
+      try {
+        // AML: 新命中流; 数据来时刷 amlHits
+        this.sse.aml = new EventSource('/api/aml/admin/stream');
+        this.sse.aml.onopen = () => { this.sseConnected = true; this.sseStatus = '实时'; };
+        this.sse.aml.onerror = () => { this.sseConnected = false; this.sseStatus = '断线 (重连中)'; };
+        this.sse.aml.addEventListener('hit_new', () => { if (this.tab === 'aml') this.loadAML(); });
+
+        // DR: 工单状态变更流
+        this.sse.dr = new EventSource('/api/dr/admin/stream');
+        this.sse.dr.addEventListener('request_update', () => { if (this.tab === 'dr') this.loadDR(); });
+      } catch (e) {
+        this.sseStatus = '不支持 SSE';
+      }
+    },
+
+    refresh() {
+      localStorage.setItem('p0_admin_token', this.adminToken);
+      if (this.tab==='aml') this.loadAML();
+      if (this.tab==='vault') this.loadVault();
+      if (this.tab==='tax') this.taxEligible=[];
+      if (this.tab==='dr') this.loadDR();
+    },
+
+    headers() { return { 'X-Admin-Token': this.adminToken, 'Content-Type': 'application/json' }; },
+
+    async loadAML() {
+      try {
+        const r = await fetch('/api/aml/admin/hits/pending?limit=50', { headers: this.headers() });
+        const data = await r.json();
+        this.amlHits = data.hits || [];
+        this.tabs[0].count = this.amlHits.length;
+      } catch (e) { this.show('AML 拉取失败: ' + e.message, 'error'); }
+    },
+
+    async resolveAML(hitID, decision) {
+      try {
+        await fetch(`/api/aml/admin/hits/${hitID}/resolve`, {
+          method: 'POST', headers: this.headers(),
+          body: JSON.stringify({ reviewer: 'biz-admin-web', decision, reason: 'manual review' })
+        });
+        this.show(`hit ${hitID} → ${decision}`);
+        this.loadAML();
+      } catch (e) { this.show('解决失败: ' + e.message, 'error'); }
+    },
+
+    async loadVault() {
+      try {
+        const r = await fetch('/api/vault/admin/health/providers', { headers: this.headers() });
+        const data = await r.json();
+        this.vaultProviders = Object.entries(data).map(([k,v]) => ({ name: k, status: v }));
+      } catch (e) { this.show('vault: ' + e.message, 'error'); }
+    },
+
+    async queryMerchantCount() {
+      try {
+        const r = await fetch(`/api/vault/admin/metrics/merchants/${this.vaultMerchantQuery}/count`,
+                              { headers: this.headers() });
+        const data = await r.json();
+        this.vaultCountResult = data.active_token_count;
+      } catch (e) { this.show('查询失败: ' + e.message, 'error'); }
+    },
+
+    async loadEligible() {
+      try {
+        const r = await fetch(`/api/tax/admin/eligible/${this.taxYear}`, { headers: this.headers() });
+        const data = await r.json();
+        this.taxEligible = data.eligible || [];
+        this.tabs[2].count = this.taxEligible.length;
+      } catch (e) { this.show('tax: ' + e.message, 'error'); }
+    },
+
+    async bulkGenerate() {
+      if (!confirm(`批量生成 ${this.taxYear} 年所有符合阈值的 1099-K?`)) return;
+      try {
+        const r = await fetch(`/api/tax/admin/bulk-generate/${this.taxYear}`, {
+          method: 'POST', headers: this.headers()
+        });
+        const data = await r.json();
+        this.show(`生成 ${data.generated} 份 1099-K`);
+      } catch (e) { this.show('生成失败: ' + e.message, 'error'); }
+    },
+
+    async loadDR() {
+      try {
+        let q = '?limit=50';
+        if (this.drFilter) q += '&state=' + this.drFilter;
+        if (this.drOverdue) q += '&overdue=1';
+        const r = await fetch('/api/dr/admin/requests' + q, { headers: this.headers() });
+        const data = await r.json();
+        this.drRequests = data.requests || [];
+        this.tabs[3].count = this.drRequests.length;
+      } catch (e) { this.show('dr: ' + e.message, 'error'); }
+    },
+
+    async drAction(reqID, action, reason) {
+      try {
+        await fetch(`/api/dr/admin/requests/${reqID}/${action}`, {
+          method: 'POST', headers: this.headers(),
+          body: JSON.stringify({ reviewer: 'biz-admin-web', reason: reason || '' })
+        });
+        this.show(`${reqID} → ${action}`);
+        this.loadDR();
+      } catch (e) { this.show('操作失败: ' + e.message, 'error'); }
+    },
+
+    isOverdue(r) {
+      if (r.state === 'fulfilled' || r.state === 'rejected') return false;
+      return new Date(r.deadline_at) < new Date();
+    },
+
+    fmtDate(d) {
+      if (!d) return '-';
+      const dt = new Date(d);
+      return dt.toLocaleDateString() + ' ' + dt.toLocaleTimeString().substring(0,5);
+    },
+
+    show(text, type='success') {
+      this.toast = { text, type };
+      setTimeout(()=>{ this.toast.text=''; }, 3000);
+    },
+  };
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+# 单服务 docker-compose — 给本地 dev / CI 起栈用.
+services:
+  aml-screening:
+    image: aml-screening:local
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aml-screening
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports:
+      - "8088:8088"
+    environment:
+      TZ: Asia/Shanghai
+      AML_ADDR: ":8088"
+      AML_ADMIN_TOKEN: "${AML_ADMIN_TOKEN:-admintok-dev-CHANGE-IN-PROD}"
+      AML_DEV_SEED: "${AML_DEV_SEED:-1}"
+      AML_REFRESH_OFAC: "${AML_REFRESH_OFAC:-0}"
+      AML_BLOCK_THRESH: "${AML_BLOCK_THRESH:-90}"
+      AML_REVIEW_THRESH: "${AML_REVIEW_THRESH:-70}"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8088/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+networks:
+  payment-stack:
+    external: true

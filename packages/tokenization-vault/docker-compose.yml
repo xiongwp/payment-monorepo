@@ -1,0 +1,29 @@
+services:
+  tokenization-vault:
+    image: tokenization-vault:local
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tokenization-vault
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports:
+      - "8089:8089"
+    environment:
+      TZ: Asia/Shanghai
+      VAULT_ADDR: ":8089"
+      VAULT_ADMIN_TOKEN: "${VAULT_ADMIN_TOKEN:-admintok-dev-CHANGE-IN-PROD}"
+      VAULT_TOKEN_ENV: "${VAULT_TOKEN_ENV:-test}"
+      # dev 用 deterministic key; prod 由 KMS 解 envelope 注入
+      VAULT_DEK_HEX: "${VAULT_DEK_HEX:-}"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8089/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+networks:
+  payment-stack:
+    external: true

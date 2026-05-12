@@ -140,7 +140,10 @@ func BuildTransport(cfg map[string]any) (Transport, error) {
 	return nil, fmt.Errorf("unknown transport type %q", typ)
 }
 
-// BuildParser 工厂；目前只 csv（最多见的对账文件）。
+// BuildParser 工厂；支持 csv / mt940 / camt053 (银行流水) 三类.
+//
+// MT940: SWIFT 银行结算文件
+// CAMT.053: ISO 20022 XML, SEPA 主流, 企业 Treasury 必备
 func BuildParser(cfg map[string]any) (Parser, error) {
 	typ, _ := cfg["type"].(string)
 	switch typ {
@@ -158,6 +161,10 @@ func BuildParser(cfg map[string]any) (Parser, error) {
 			HasHeader: header,
 			Timezone:  asString(cfg["timezone"]),
 		}, nil
+	case "mt940":
+		return NewMT940Parser(), nil
+	case "camt053", "camt.053", "iso20022":
+		return NewCAMT053Parser(), nil
 	}
 	return nil, fmt.Errorf("unknown parser type %q", typ)
 }

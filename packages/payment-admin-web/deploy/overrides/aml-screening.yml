@@ -1,0 +1,25 @@
+# aml-screening override — 加入 payment-stack network + 端口映射.
+#
+# 端口规则: 18088 host → 8088 container (跟 oauth2-server 18087 临近).
+#
+# 注意: 不能写 depends_on (跨 compose project 引用), deploy.sh 自己负责顺序.
+
+services:
+  aml-screening:
+    networks:
+      - payment-stack
+    ports: !override
+      - "18088:8088"
+    environment:
+      TZ: Asia/Shanghai
+      AML_ADDR: ":8088"
+      AML_ADMIN_TOKEN: "${AML_ADMIN_TOKEN:-admintok-dev-CHANGE-IN-PROD}"
+      AML_DEV_SEED: "${AML_DEV_SEED:-1}"
+      # 默认不联外网拉 OFAC; 跑通后再开 (会拖 ~80MB XML)
+      AML_REFRESH_OFAC: "${AML_REFRESH_OFAC:-0}"
+      AML_BLOCK_THRESH: "${AML_BLOCK_THRESH:-90}"
+      AML_REVIEW_THRESH: "${AML_REVIEW_THRESH:-70}"
+
+networks:
+  payment-stack:
+    external: true

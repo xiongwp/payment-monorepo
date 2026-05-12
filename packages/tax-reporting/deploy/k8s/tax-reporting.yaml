@@ -1,0 +1,131 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: tax-reporting-config, namespace: payment }
+data:
+  TAX_ADDR: ":8090"
+  TAX_FILER_NAME: "Payment Platform Inc."
+  TAX_FILER_TIN: "REPLACE_ME"
+  TAX_FILER_ADDRESS_LINE1: "1 Market St"
+  TAX_FILER_ADDRESS_CITY: "San Francisco"
+  TAX_FILER_ADDRESS_STATE: "CA"
+  TAX_FILER_ADDRESS_ZIP: "94105"
+  AUDITLOG_URL: "http://audit-log.payment.svc:8087"
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: tax-reporting-secrets, namespace: payment }
+type: Opaque
+stringData:
+  TAX_ADMIN_TOKEN: "REPLACE_ME"
+  TAX_MYSQL_DSN: "tax:CHANGE_PWD@tcp(mysql:3306)/tax_reporting?charset=utf8mb4&parseTime=true"
+  AVALARA_API_KEY: "REPLACE_ME"
+  IRS_FIRE_TCC: "REPLACE_ME"
+  AUDITLOG_TOKEN: "REPLACE_ME"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: tax-reporting, namespace: payment, labels: { app: tax-reporting } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: tax-reporting } }
+  template:
+    metadata:
+      labels: { app: tax-reporting }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8090"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532 }
+      containers:
+      - name: tax-reporting
+        image: ghcr.io/example/tax-reporting:latest
+        ports: [{ containerPort: 8090, name: http }]
+        envFrom:
+        - configMapRef: { name: tax-reporting-config }
+        - secretRef: { name: tax-reporting-secrets }
+        readinessProbe: { httpGet: { path: /healthz, port: 8090 }, periodSeconds: 5 }
+        livenessProbe:  { httpGet: { path: /healthz, port: 8090 }, periodSeconds: 30 }
+        resources:
+          requests: { cpu: "100m", memory: "256Mi" }
+          limits:   { cpu: "1000m", memory: "1Gi" }
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: tax-reporting, namespace: payment }
+spec:
+  selector: { app: tax-reporting }
+  ports: [{ name: http, port: 8090, targetPort: 8090 }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: tax-reporting, namespace: payment }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: tax-reporting }
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  - type: Resource
+    resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata: { name: tax-reporting, namespace: payment }
+spec:
+  selector: { matchLabels: { app: tax-reporting } }
+  endpoints: [{ port: http, path: /metrics, interval: 15s }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: tax-reporting, namespace: payment }
+spec: { minAvailable: 1, selector: { matchLabels: { app: tax-reporting } } }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: tax-1099k-bulk-generate, namespace: payment }
+spec:
+  # 每年 1/31 03:00 跑批量 1099-K 生成 (IRS 截止 1/31)
+  schedule: "0 3 31 1 *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: trigger
+            image: curlimages/curl:8.5.0
+            command:
+            - sh
+            - -c
+            - |
+              YEAR=$(date -d 'last year' +%Y)
+              curl -fsS -X POST \
+                -H "X-Admin-Token: $TAX_ADMIN_TOKEN" \
+                http://tax-reporting:8090/admin/bulk-generate/$YEAR
+            env:
+            - name: TAX_ADMIN_TOKEN
+              valueFrom: { secretKeyRef: { name: tax-reporting-secrets, key: TAX_ADMIN_TOKEN } }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: tax-reporting, namespace: payment }
+spec:
+  podSelector: { matchLabels: { app: tax-reporting } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+  - from:
+    - podSelector: { matchLabels: { app: clearing-settlement } }
+    - podSelector: { matchLabels: { app: billing-system } }
+    - podSelector: { matchLabels: { app: biz-admin-web } }
+    ports: [{ port: 8090, protocol: TCP }]
+  egress:
+  - to:
+    - podSelector: { matchLabels: { app: mysql } }
+    - podSelector: { matchLabels: { app: audit-log } }
+  - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }]
+    ports: [{ port: 443, protocol: TCP }]  # Avalara / IRS FIRE

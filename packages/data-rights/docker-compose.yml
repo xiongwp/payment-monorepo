@@ -1,0 +1,26 @@
+services:
+  data-rights:
+    image: data-rights:local
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: data-rights
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports:
+      - "8091:8091"
+    environment:
+      TZ: Asia/Shanghai
+      DR_ADDR: ":8091"
+      DR_ADMIN_TOKEN: "${DR_ADMIN_TOKEN:-admintok-dev-CHANGE-IN-PROD}"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8091/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+networks:
+  payment-stack:
+    external: true

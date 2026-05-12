@@ -1,0 +1,200 @@
+{{/*
+  Loop over .Values.services map and render Deployment + Service + (optional) HPA +
+  ServiceMonitor + PDB + NetworkPolicy.
+
+  per-service config:
+    enabled, replicas, port, resources, env, hpa, ingress, cron, podAntiAffinity, ...
+*/}}
+
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.global.namespace }}
+  labels:
+{{ include "pp.labels" (dict "name" $name "release" $.Release.Name "version" $.Chart.AppVersion) | indent 4 }}
+spec:
+  replicas: {{ default 1 $svc.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ $svc.port }}"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+{{ toYaml $.Values.global.securityContext | indent 8 }}
+      {{- if eq (default "" $svc.podAntiAffinity) "zone" }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: {{ $name }}
+              topologyKey: topology.kubernetes.io/zone
+      {{- end }}
+      containers:
+      - name: {{ $name }}
+        image: "{{ $.Values.global.image.registry }}/{{ $name }}:{{ default $.Values.global.image.tag $svc.tag }}"
+        imagePullPolicy: {{ $.Values.global.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ $svc.port }}
+        env:
+        # 全局共用 env
+        {{- range $k, $v := $.Values.global.commonEnv }}
+        - name: {{ $k }}
+          value: {{ $v | quote }}
+        {{- end }}
+        # service-specific env
+        {{- range $k, $v := $svc.env }}
+        - name: {{ $k }}
+          value: {{ $v | quote }}
+        {{- end }}
+        # secrets via secretRef (k8s secret created out-of-band)
+        envFrom:
+        - secretRef:
+            name: {{ $name }}-secrets
+            optional: true
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: {{ $svc.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: {{ $svc.port }}
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        resources:
+{{ toYaml (default (dict) $svc.resources) | indent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.global.namespace }}
+  labels:
+{{ include "pp.labels" (dict "name" $name "release" $.Release.Name "version" $.Chart.AppVersion) | indent 4 }}
+spec:
+  {{- if eq (default "" $svc.serviceAffinity) "clientIP" }}
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
+  {{- end }}
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+  - name: http
+    port: {{ $svc.port }}
+    targetPort: {{ $svc.port }}
+{{- if and $svc.hpa $svc.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.global.namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ default 2 $svc.hpa.minReplicas }}
+  maxReplicas: {{ default 10 $svc.hpa.maxReplicas }}
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ default 70 $svc.hpa.targetCPU }}
+{{- end }}
+{{- if $.Values.global.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.global.namespace }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: {{ $.Values.global.serviceMonitor.interval }}
+{{- end }}
+{{- if $.Values.global.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.global.namespace }}
+spec:
+  {{- if $svc.pdb }}
+  minAvailable: {{ default 1 $svc.pdb.minAvailable }}
+  {{- else }}
+  minAvailable: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+{{- end }}
+{{- if and $svc.ingress $svc.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.global.namespace }}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    {{- if $svc.ingress.tls }}
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    {{- end }}
+spec:
+  {{- if $svc.ingress.tls }}
+  tls:
+  - hosts: [{{ $svc.ingress.host }}]
+    secretName: {{ $name }}-tls
+  {{- end }}
+  rules:
+  - host: {{ $svc.ingress.host }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ $name }}
+            port:
+              number: {{ $svc.port }}
+{{- end }}
+{{- end }}
+{{- end }}

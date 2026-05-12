@@ -1,0 +1,7 @@
+.git
+.gitignore
+*.md
+bin/
+# vendor/ 不排除 — vendor 模式必须打进 build context
+test/
+docs/

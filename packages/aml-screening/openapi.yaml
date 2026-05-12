@@ -1,0 +1,276 @@
+openapi: 3.1.0
+info:
+  title: AML Screening API
+  version: "1.0.0"
+  description: |
+    OFAC SDN / EU consolidated / PEP 制裁名单实时筛查. 商户入网 (KYB) / 大额出款
+    / 跨境支付前都要过. Jaro-Winkler 模糊匹配 + 6 步标准化.
+  contact:
+    name: Compliance Team
+    email: compliance@example.com
+
+servers:
+  - url: https://api.payment.example.com/aml
+    description: Production
+  - url: https://api-sandbox.payment.example.com/aml
+    description: Sandbox
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Screening
+  - name: Admin
+    description: ops 复核 + 名单管理 (X-Admin-Token)
+
+paths:
+  /v1/screen:
+    post:
+      tags: [Screening]
+      summary: 同步筛查
+      description: |
+        商户 / 业务 service 调. 返 pass / review / block, 含每个 hit 详情.
+        幂等: request_id 1h 内同 ID 返同结果.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScreenRequest' }
+      responses:
+        '200':
+          description: 筛查结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScreenResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /v1/screen/{request_id}:
+    get:
+      tags: [Screening]
+      summary: 查历史结果 (幂等)
+      parameters:
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScreenResult' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/hits/pending:
+    get:
+      tags: [Admin]
+      summary: 待复核命中
+      security: [{ adminToken: [] }]
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 200 }
+        - in: query
+          name: offset
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hits:
+                    type: array
+                    items: { $ref: '#/components/schemas/HitInfo' }
+                  limit: { type: integer }
+                  offset: { type: integer }
+
+  /admin/hits/{hit_id}/resolve:
+    post:
+      tags: [Admin]
+      summary: ops 复核决策
+      security: [{ adminToken: [] }]
+      parameters:
+        - in: path
+          name: hit_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HitResolution' }
+      responses:
+        '200':
+          description: 解决
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/lists/{source}/count:
+    get:
+      tags: [Admin]
+      summary: 名单条目数
+      security: [{ adminToken: [] }]
+      parameters:
+        - in: path
+          name: source
+          required: true
+          schema:
+            type: string
+            enum: [ofac_sdn, ofac_cons, eu_cons, uk_hmt, un_sc, pep, adverse_media, internal_block]
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source: { type: string }
+                  count: { type: integer }
+
+  /admin/lists/{source}/refresh:
+    post:
+      tags: [Admin]
+      summary: 立即刷新名单
+      security: [{ adminToken: [] }]
+      parameters:
+        - in: path
+          name: source
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source: { type: string }
+                  refreshed: { type: integer }
+                  duration_ms: { type: integer }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    adminToken:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+
+  schemas:
+    ScreenRequest:
+      type: object
+      required: [name]
+      properties:
+        request_id: { type: string, description: 1h 幂等 key }
+        trigger:
+          type: string
+          enum: [kyb_onboarding, payout, high_value_tx, generic]
+        subject:
+          type: string
+          enum: [individual, entity, address, vessel, aircraft]
+          default: individual
+        name: { type: string }
+        dob: { type: string, format: date }
+        nationality: { type: string, description: ISO 3166-1 alpha-2 }
+        addresses:
+          type: array
+          items: { type: string }
+        id_number: { type: string, description: 调用方建议传 sha256 hash }
+        id_type: { type: string, enum: [PASSPORT, NID, TIN] }
+        id_country: { type: string }
+        merchant_id: { type: string }
+        order_id: { type: string }
+        amount: { type: integer, format: int64, description: "分" }
+        currency: { type: string, description: ISO 4217 }
+
+    ScreenResult:
+      type: object
+      required: [request_id, action]
+      properties:
+        request_id: { type: string }
+        action:
+          type: string
+          enum: [pass, review, block]
+        highest_hit: { type: integer, minimum: 0, maximum: 100 }
+        hits:
+          type: array
+          items: { $ref: '#/components/schemas/HitInfo' }
+        screened_at: { type: string, format: date-time }
+        sources:
+          type: array
+          items: { type: string }
+        latency_ms: { type: integer }
+
+    HitInfo:
+      type: object
+      properties:
+        hit_id: { type: string }
+        confidence: { type: integer }
+        matched_on:
+          type: array
+          items: { type: string }
+        algorithm: { type: string, example: jaro_winkler }
+        state:
+          type: string
+          enum: [pending_review, cleared, frozen, escalated]
+        list_entry:
+          $ref: '#/components/schemas/ListEntry'
+
+    ListEntry:
+      type: object
+      properties:
+        id: { type: string }
+        source: { type: string }
+        entity_type: { type: string }
+        primary_name: { type: string }
+        aliases:
+          type: array
+          items: { type: string }
+        dob: { type: string }
+        nationality:
+          type: array
+          items: { type: string }
+        program: { type: string }
+
+    HitResolution:
+      type: object
+      required: [reviewer, decision]
+      properties:
+        reviewer: { type: string }
+        decision:
+          type: string
+          enum: [cleared, frozen, escalated]
+        reason: { type: string }
+        evidence: { type: string }
+
+    Problem:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { type: string }
+        trace_id: { type: string }
+
+  responses:
+    BadRequest:
+      description: 请求错误
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: 未找到
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    InternalError:
+      description: 服务器错
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

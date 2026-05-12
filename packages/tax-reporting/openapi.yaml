@@ -1,0 +1,259 @@
+openapi: 3.1.0
+info:
+  title: Tax Reporting API
+  version: "1.0.0"
+  description: |
+    1099-K / W-9 / W-8 / VAT OSS. 商户年度收款流水 → 月度/年度 aggregate → 税表生成 + e-file.
+
+servers:
+  - url: https://tax.payment.example.com
+
+paths:
+  /v1/payouts:
+    post:
+      summary: Ingest payout event (idempotent)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PayoutEvent' }
+      responses:
+        '200': { description: accepted }
+
+  /v1/profile:
+    post:
+      summary: 商户 W-9 / W-8 / VAT 信息收集
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileUpsert' }
+      responses:
+        '200': { description: ok }
+    get:
+      summary: 看商户档案 (不返 TIN 明文)
+      parameters:
+        - in: query
+          name: merchant_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaxProfile' }
+
+  /v1/aggregate/{merchant_id}/{year}/{jurisdiction}:
+    get:
+      summary: 年度按月汇总
+      parameters:
+        - in: path
+          name: merchant_id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: year
+          required: true
+          schema: { type: integer }
+        - in: path
+          name: jurisdiction
+          required: true
+          schema: { type: string, enum: [US, EU, GB, OTHER] }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Aggregate' }
+
+  /v1/forms/1099k/{merchant_id}/{year}:
+    post:
+      summary: 生成 1099-K
+      parameters:
+        - in: path
+          name: merchant_id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: year
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaxForm' }
+        '400':
+          description: |
+            - below_threshold: 未达 1099-K 金额阈值
+            - w9_required: 商户没提交 W-9
+
+  /v1/forms/{form_id}/file:
+    post:
+      summary: e-file 提交 (IRS FIRE / Avalara)
+      parameters:
+        - in: path
+          name: form_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  form_id: { type: string }
+                  efile_id: { type: string }
+                  receipt: { type: string }
+                  filed_at: { type: string, format: date-time }
+
+  /v1/me/forms:
+    get:
+      summary: 商户拉自己历年税表
+      parameters:
+        - in: header
+          name: X-Merchant-Id
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TaxForm' }
+
+  /admin/eligible/{year}:
+    get:
+      summary: 触发 1099-K 阈值的商户
+      parameters:
+        - in: path
+          name: year
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  year: { type: integer }
+                  count: { type: integer }
+                  eligible:
+                    type: array
+                    items:
+                      type: object
+
+  /admin/bulk-generate/{year}:
+    post:
+      summary: 批量生成所有符合阈值的 1099-K
+      parameters:
+        - in: path
+          name: year
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  year: { type: integer }
+                  generated: { type: integer }
+
+components:
+  schemas:
+    PayoutEvent:
+      type: object
+      required: [event_id, merchant_id, occurred_at, gross_amount, currency, jurisdiction]
+      properties:
+        event_id: { type: string }
+        merchant_id: { type: string }
+        occurred_at: { type: string, format: date-time }
+        gross_amount: { type: integer, description: "分" }
+        net_amount: { type: integer }
+        fees_amount: { type: integer }
+        currency: { type: string }
+        jurisdiction: { type: string }
+        txn_count: { type: integer, default: 1 }
+        source: { type: string, enum: [billing, clearing, manual] }
+        channel: { type: string, example: visa }
+
+    ProfileUpsert:
+      type: object
+      required: [merchant_id, legal_name, country]
+      properties:
+        merchant_id: { type: string }
+        legal_name: { type: string }
+        country: { type: string }
+        business_address: { $ref: '#/components/schemas/Address' }
+        tax_class: { type: string }
+        w9:
+          type: object
+          properties:
+            tin: { type: string }
+            tin_type:
+              type: string
+              enum: [ein, ssn, itin]
+        w8:
+          type: object
+          properties:
+            w8_type:
+              type: string
+              enum: [W-8BEN, W-8BEN-E, W-8ECI, W-8IMY]
+        vat_number: { type: string }
+
+    Address:
+      type: object
+      properties:
+        line1: { type: string }
+        line2: { type: string }
+        city: { type: string }
+        state: { type: string }
+        zip: { type: string }
+        country: { type: string }
+
+    TaxProfile:
+      type: object
+      properties:
+        merchant_id: { type: string }
+        legal_name: { type: string }
+        country: { type: string }
+        tin_type: { type: string }
+        w9_submitted: { type: boolean }
+        w8_submitted: { type: boolean }
+
+    Aggregate:
+      type: object
+      properties:
+        merchant_id: { type: string }
+        year: { type: integer }
+        jurisdiction: { type: string }
+        currency: { type: string }
+        total_gross: { type: integer }
+        total_count: { type: integer }
+        monthly_gross:
+          type: array
+          items: { type: integer }
+        by_channel:
+          type: object
+          additionalProperties: { type: integer }
+
+    TaxForm:
+      type: object
+      properties:
+        form_id: { type: string }
+        form_type:
+          type: string
+          enum: [1099-k, w-9, w-8ben, w-8ben-e, vat-oss, uk-vat]
+        merchant_id: { type: string }
+        year: { type: integer }
+        gross_amount: { type: integer }
+        currency: { type: string }
+        status:
+          type: string
+          enum: [draft, ready, filed, corrected]
+        generated_at: { type: string, format: date-time }
+        filed_at: { type: string, format: date-time }
+        efile_id: { type: string }

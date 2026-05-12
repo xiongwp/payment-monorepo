@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: vault-config, namespace: payment }
+data:
+  VAULT_ADDR: ":8089"
+  VAULT_TOKEN_ENV: "live"
+  AUDITLOG_URL: "http://audit-log.payment.svc:8087"
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: vault-secrets, namespace: payment }
+type: Opaque
+stringData:
+  VAULT_ADMIN_TOKEN: "REPLACE_ME"
+  VAULT_DEK_HEX: "REPLACE_ME_64_HEX_CHARS"  # 真生产从 KMS envelope 拿
+  VAULT_VTS_SIGNING_KEY: "REPLACE_ME"
+  VAULT_MDES_SIGNING_KEY: "REPLACE_ME"
+  VAULT_MYSQL_DSN: "vault:CHANGE_PWD@tcp(mysql:3306)/tokenization_vault?charset=utf8mb4&parseTime=true"
+  AUDITLOG_TOKEN: "REPLACE_ME"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: tokenization-vault, namespace: payment, labels: { app: tokenization-vault } }
+spec:
+  replicas: 3   # PCI scope - 多副本 + zone 反亲和
+  selector: { matchLabels: { app: tokenization-vault } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } }
+  template:
+    metadata:
+      labels: { app: tokenization-vault }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8089"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532 }
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector: { matchLabels: { app: tokenization-vault } }
+              topologyKey: topology.kubernetes.io/zone
+      containers:
+      - name: tokenization-vault
+        image: ghcr.io/example/tokenization-vault:latest
+        imagePullPolicy: IfNotPresent
+        ports: [{ containerPort: 8089, name: http }]
+        envFrom:
+        - configMapRef: { name: vault-config }
+        - secretRef: { name: vault-secrets }
+        readinessProbe: { httpGet: { path: /healthz, port: 8089 }, periodSeconds: 5 }
+        livenessProbe:  { httpGet: { path: /healthz, port: 8089 }, periodSeconds: 30 }
+        resources:
+          requests: { cpu: "100m", memory: "256Mi" }
+          limits:   { cpu: "1000m", memory: "1Gi" }
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: tokenization-vault, namespace: payment }
+spec:
+  selector: { app: tokenization-vault }
+  ports: [{ name: http, port: 8089, targetPort: 8089 }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: tokenization-vault, namespace: payment }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: tokenization-vault }
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+  - type: Resource
+    resource: { name: cpu, target: { type: Utilization, averageUtilization: 60 } }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata: { name: tokenization-vault, namespace: payment }
+spec:
+  selector: { matchLabels: { app: tokenization-vault } }
+  endpoints: [{ port: http, path: /metrics, interval: 15s }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: tokenization-vault, namespace: payment }
+spec:
+  minAvailable: 2   # 高可用 — 至少 2 副本永远 ready
+  selector: { matchLabels: { app: tokenization-vault } }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: tokenization-vault, namespace: payment }
+spec:
+  podSelector: { matchLabels: { app: tokenization-vault } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+  # PCI 强约束 — 只允许卡支付链路 + admin (mTLS)
+  - from:
+    - podSelector: { matchLabels: { app: card-payment } }
+    - podSelector: { matchLabels: { app: payment-core } }
+    - podSelector: { matchLabels: { app: subscription } }
+    - podSelector: { matchLabels: { app: biz-admin-web } }
+    ports: [{ port: 8089, protocol: TCP }]
+  egress:
+  - to:
+    - podSelector: { matchLabels: { app: mysql } }
+    - podSelector: { matchLabels: { app: kms-manage } }
+    - podSelector: { matchLabels: { app: audit-log } }
+  - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }]  # VTS / MDES HTTPS
+    ports: [{ port: 443, protocol: TCP }]

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.payment_platform</groupId>
+    <artifactId>payment-platform-sdk</artifactId>
+    <version>0.1.0</version>
+    <packaging>jar</packaging>
+    <name>Payment Platform SDK</name>
+    <description>Official Java SDK for Payment Platform API. Zero deps; requires JDK 11+.</description>
+    <licenses>
+        <license><name>Apache-2.0</name></license>
+    </licenses>
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+</project>

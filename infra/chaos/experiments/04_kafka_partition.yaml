@@ -1,0 +1,25 @@
+# Kafka partition — outbox publisher 不能发送, 验证 backlog 不丢消息.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: kafka-partition-2min
+  namespace: payment
+spec:
+  action: partition
+  mode: all
+  duration: "2m"
+  selector:
+    namespaces: [payment]
+    labelSelectors:
+      "app.kubernetes.io/name":
+        "in":
+          - "clearing-settlement"
+          - "refund-engine"
+          - "payment-core"
+  direction: to
+  target:
+    selector:
+      namespaces: [kafka]
+      labelSelectors:
+        "app.kubernetes.io/name": "kafka"
+    mode: all

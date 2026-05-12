@@ -1,0 +1,15 @@
+services:
+  tokenization-vault:
+    networks:
+      - payment-stack
+    ports: !override
+      - "18089:8089"
+    environment:
+      TZ: Asia/Shanghai
+      VAULT_ADDR: ":8089"
+      VAULT_ADMIN_TOKEN: "${VAULT_ADMIN_TOKEN:-admintok-dev-CHANGE-IN-PROD}"
+      VAULT_TOKEN_ENV: "${VAULT_TOKEN_ENV:-test}"
+
+networks:
+  payment-stack:
+    external: true

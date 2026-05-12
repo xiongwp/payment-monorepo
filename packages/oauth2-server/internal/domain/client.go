@@ -41,10 +41,59 @@ type Client struct {
 	AllowedIPs   string    `db:"allowed_ips" json:"allowed_ips,omitempty"` // 可选 IP 白名单 CSV
 	RateLimitRPS int       `db:"rate_limit_rps" json:"rate_limit_rps"`  // 0 = 走 default
 	Status       string    `db:"status" json:"status"`                  // 'active'|'suspended'|'revoked'
+	Mode         ClientMode `db:"mode" json:"mode"`                     // 'test'|'live' — sandbox 切换
 	ExpiresAt    *time.Time `db:"expires_at" json:"expires_at,omitempty"` // 客户端凭据本身的过期
 	LastUsedAt   *time.Time `db:"last_used_at" json:"last_used_at,omitempty"`
 	CreatedAt    time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt    time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// ClientMode test (sandbox) vs live (生产).
+//
+// 同商户可同时有两套 client_id:
+//   pk_test_xxx — sandbox; payment-mw 路由所有调用到 *-mock 服务 / 隔离 DB
+//   pk_live_xxx — 生产; 真扣款 / 真出款
+//
+// 商户上线流程: 拿 test key 跑通 e2e → ops review → 颁 live key.
+// 商户 SDK 自动识别 key 前缀, 走对应 endpoint base URL.
+type ClientMode string
+
+const (
+	ClientModeTest ClientMode = "test"
+	ClientModeLive ClientMode = "live"
+)
+
+// ClientIDPrefix 根据 mode 决定 ID prefix.
+func ClientIDPrefix(mode ClientMode, ownerType ClientType) string {
+	switch {
+	case ownerType == ClientService:
+		return "svc_" + string(mode) + "_"
+	case ownerType == ClientOps:
+		return "ops_" + string(mode) + "_"
+	default:
+		return "pk_" + string(mode) + "_"
+	}
+}
+
+// ParseClientIDMode 从 client_id 反推 mode.
+// 用于 payment-mw 拦截 test key 不能调 live API.
+func ParseClientIDMode(clientID string) ClientMode {
+	switch {
+	case len(clientID) >= 8 && clientID[:8] == "pk_test_":
+		return ClientModeTest
+	case len(clientID) >= 8 && clientID[:8] == "pk_live_":
+		return ClientModeLive
+	case len(clientID) >= 9 && clientID[:9] == "svc_test_":
+		return ClientModeTest
+	case len(clientID) >= 9 && clientID[:9] == "svc_live_":
+		return ClientModeLive
+	case len(clientID) >= 9 && clientID[:9] == "ops_test_":
+		return ClientModeTest
+	case len(clientID) >= 9 && clientID[:9] == "ops_live_":
+		return ClientModeLive
+	}
+	// 老版本 client_id 没前缀, 兜底当 live (保守)
+	return ClientModeLive
 }
 
 // ClientType 客户端类型。

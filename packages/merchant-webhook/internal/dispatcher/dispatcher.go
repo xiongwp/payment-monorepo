@@ -60,6 +60,10 @@ type Dispatcher struct {
 	hc        *http.Client
 	log       *zap.Logger
 	apiVer    string // 写到 X-API-Version header + payload.api_version
+
+	// attRec 投递尝试记录器 (per-attempt append-only history).
+	// 由 SetAttemptRecorder 注入; 没设则 attempt history 不记录 (deliverOne 仍工作).
+	attRec AttemptRecorder
 }
 
 // New 构造。
@@ -207,7 +211,9 @@ func (d *Dispatcher) deliverOne(ctx context.Context, del *domain.Delivery) error
 	dur := time.Since(start)
 
 	if err != nil {
-		// 网络错 → 失败 + retry
+		// 网络错 → 失败 + retry; 记一次 attempt (request_sent=false 表示没收到响应)
+		d.recordAttempt(ctx, del, timestamp, 0, dur.Milliseconds(),
+			fmt.Sprintf("net error: %v", err), "", "primary", false)
 		return d.markFailed(ctx, del, endpoint, fmt.Sprintf("net error: %v", err),
 			0, "", dur)
 	}
@@ -224,6 +230,7 @@ func (d *Dispatcher) deliverOne(ctx context.Context, del *domain.Delivery) error
 				"duration_ms":  dur.Milliseconds(),
 			})
 		_ = d.repo.UpdateLastDelivery(ctx, endpoint.ID, now)
+		d.recordAttempt(ctx, del, timestamp, resp.StatusCode, dur.Milliseconds(), "", body, "primary", true)
 		d.log.Info("webhook delivered",
 			zap.Int64("delivery_id", del.ID),
 			zap.String("event_type", ev.EventType),
@@ -232,7 +239,9 @@ func (d *Dispatcher) deliverOne(ctx context.Context, del *domain.Delivery) error
 		return nil
 	}
 
-	// 非 2xx → 失败 + retry
+	// 非 2xx → 失败 + retry; markFailed 里再调一次 recordAttempt
+	d.recordAttempt(ctx, del, timestamp, resp.StatusCode, dur.Milliseconds(),
+		fmt.Sprintf("HTTP %d", resp.StatusCode), body, "primary", true)
 	return d.markFailed(ctx, del, endpoint,
 		fmt.Sprintf("HTTP %d: %s", resp.StatusCode, body),
 		resp.StatusCode, body, dur)

@@ -38,10 +38,10 @@ services:
     # 故意不写 container_name；scale=N 时会与现有名冲突。
     restart: unless-stopped
     ports:
-      # 端口 range：scale=N 时每个副本依次拿 8888 / 8889 / ... 作为 host port，
-      # 容器内仍是 8888。最多 10 副本（host 8888-8897 / 50051-50060）。
+      # 端口 range：scale=N 时每个副本依次拿 host port，容器内不变。
+      # 50051-50060 段被部分本机软件 (腾讯会议 / VPN / iperf 等) 占用; 改 51051+ 避开.
       - "8888-8897:8888"     # admin HTTP
-      - "50051-50060:50051"  # gRPC
+      - "51051-51060:50051"  # gRPC (原 50051-50060 撞 host)
     volumes:
       # 挂联栈版本的 config，覆盖镜像内 baked 的 config.yaml。
       - ./accounting-config.shared.yaml:/app/config/config.yaml:ro

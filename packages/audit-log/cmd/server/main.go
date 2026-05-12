@@ -59,6 +59,49 @@ func main() {
 		writeJSON(w, 201, e)
 	})
 
+	// ── batch ingest — 给 payment-util/auditlog 客户端用 ──
+	// 单次 POST 多条, 降低 HTTPSink 一条一条 POST 的开销.
+	// 限制: 单 batch ≤ 200 条; 整 body ≤ 1MB.
+	mux.HandleFunc("/api/v1/audit/batch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1024*1024) // 1 MB 上限
+		var body struct {
+			Entries []domain.AuditEntry `json:"entries"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		if len(body.Entries) == 0 || len(body.Entries) > 200 {
+			writeErr(w, 400, fmt.Errorf("entries count must be 1..200, got %d", len(body.Entries)))
+			return
+		}
+		// 服务端补字段 (跟单条 ingest 一致)
+		now := time.Now().UTC()
+		clientIP := r.RemoteAddr
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			clientIP = xff
+		}
+		for i := range body.Entries {
+			body.Entries[i].CreatedAt = now
+			if body.Entries[i].ActorIP == "" {
+				body.Entries[i].ActorIP = clientIP
+			}
+		}
+		// hash chain 必须序列化 append (并发安全由 repo 内 mutex 保证)
+		for i := range body.Entries {
+			repo.append(&body.Entries[i])
+		}
+		writeJSON(w, 201, map[string]any{
+			"accepted":     len(body.Entries),
+			"first_seq_id": body.Entries[0].SequenceID,
+			"last_seq_id":  body.Entries[len(body.Entries)-1].SequenceID,
+		})
+	})
+
 	mux.HandleFunc("/api/v1/audit/logs", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		filters := map[string]string{
