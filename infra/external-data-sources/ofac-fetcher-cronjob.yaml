@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ofac-sdn-fetcher
+  namespace: payment
+spec:
+  # 每天 02:00 UTC (OFAC 一般凌晨更新)
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 7
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: fetcher
+            image: ghcr.io/example/ofac-fetcher:latest
+            args:
+              - -aml-url=http://aml-screening:8088
+            env:
+            - name: AML_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aml-screening-secrets
+                  key: AML_ADMIN_TOKEN
+            - name: SLACK_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: alerting-secrets
+                  key: SLACK_WEBHOOK
+            resources:
+              requests: { cpu: 100m, memory: 256Mi }
+              limits:   { cpu: 500m, memory: 1Gi }
+---
+# EU consolidated list — 类似 cron
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: eu-sanctions-fetcher
+  namespace: payment
+spec:
+  schedule: "0 3 * * *"  # 1h 后跑, 避开 OFAC
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: fetcher
+            image: ghcr.io/example/eu-sanctions-fetcher:latest
+            env:
+            - name: EU_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: external-data-secrets
+                  key: EU_API_TOKEN

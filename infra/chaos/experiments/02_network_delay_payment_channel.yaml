@@ -1,0 +1,27 @@
+# network-delay — 给 payment-channel ↔ 卡组的网络注入 500ms 延迟.
+#
+# 期望: payment-channel 退化路径生效 (现有 task #10 已实现) — 不让上游超时.
+#       SLO p99 latency 不能爆.
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: net-delay-payment-channel
+  namespace: payment
+spec:
+  action: delay
+  mode: all
+  duration: "5m"
+  selector:
+    namespaces: [payment]
+    labelSelectors:
+      "app.kubernetes.io/name": "payment-channel"
+  delay:
+    latency: "500ms"
+    correlation: "25"     # 25% 抖动
+    jitter: "100ms"
+  # 只对外出流量加延迟 (模拟卡组慢)
+  direction: to
+  externalTargets:
+    - "api.visa.com"
+    - "api.mastercard.com"

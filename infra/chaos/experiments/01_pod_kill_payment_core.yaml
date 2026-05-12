@@ -1,0 +1,25 @@
+# pod-kill — 随机杀 1 个 payment-core pod 验证 HPA + service mesh 重路由.
+#
+# 期望:
+#   - 业务侧 5xx rate 不超过 0.5% (重试 + circuit breaker)
+#   - p99 latency 不超过 200ms
+#   - 30s 内 K8s reschedule + ready
+#
+# 跑:
+#   kubectl apply -f 01_pod_kill_payment_core.yaml
+#   # 观察 grafana
+#   kubectl delete podchaos pod-kill-payment-core
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: pod-kill-payment-core
+  namespace: payment
+spec:
+  action: pod-kill
+  mode: one
+  duration: "30s"
+  selector:
+    namespaces: [payment]
+    labelSelectors:
+      "app.kubernetes.io/name": "payment-core"
