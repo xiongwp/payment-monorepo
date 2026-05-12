@@ -1,4 +1,14 @@
-// main_fx.go — aml-screening uber/fx 版.
+// main_fx.go — aml-screening uber/fx 版 (reference).
+//
+// build tag "fx" 启用; 跟 main.go 二选一.
+//
+// 这只是骨架 — 实际迁移时需要把现有 stdlib net/http handler 桥到 fiber.
+// 桥方案:
+//   import "github.com/valyala/fasthttp/fasthttpadaptor"
+//   app.Fiber.All("/admin/*", func(c *fiber.Ctx) error {
+//       fasthttpadaptor.NewFastHTTPHandler(srv.Routes())(c.Context())
+//       return nil
+//   })
 
 //go:build fx
 
@@ -16,9 +26,6 @@ import (
 	"reconcile-system/packages/aml-screening/internal/store"
 )
 
-//go:embed ../../openapi.yaml
-// var openapiSpec []byte
-
 func main() {
 	scaffold.RunFx(scaffold.FxOpts{
 		ServiceName:  "aml-screening",
@@ -26,18 +33,17 @@ func main() {
 		MigrationDir: "migrations",
 
 		AppModules: []fx.Option{
-			// Store: memory (dev) / GORM (prod) — 跟 cfg.DB.DSN 走
+			// Store: MemStore (无 DB) / MySQL (有 DB)
 			fx.Provide(func(app *scaffold.App, log *zap.Logger) store.Store {
 				if app.DB != nil {
 					return store.NewMySQLStore(app.DB.SQL())
 				}
+				log.Info("using MemStore (no DB DSN)")
 				return store.NewMemStore()
 			}),
 
-			// 配置
-			fx.Provide(func() screening.Config { return screening.DefaultConfig() }),
+			fx.Provide(screening.DefaultConfig),
 
-			// audit sink
 			fx.Provide(func(cfg *scaffold.Config, log *zap.Logger) audit.Sink {
 				return audit.NewHTTPSink(audit.HTTPConfig{
 					BaseURL: cfg.Audit.BaseURL,
@@ -46,30 +52,27 @@ func main() {
 				}, log)
 			}),
 
-			// dev seed (test data)
+			// dev seed
 			fx.Invoke(func(s store.Store, log *zap.Logger) error {
-				return sources.SeedDev(s)
+				if err := sources.SeedDev(s); err != nil {
+					log.Warn("seed dev failed", zap.Error(err))
+				}
+				return nil
 			}),
 
-			// admin Server
-			fx.Provide(func(s store.Store, cfg *scaffold.Config, audSink audit.Sink, log *zap.Logger, scrCfg screening.Config) *adminhttp.Server {
+			fx.Provide(func(s store.Store, cfg *scaffold.Config, ad audit.Sink, log *zap.Logger, scrCfg screening.Config) *adminhttp.Server {
 				return &adminhttp.Server{
 					Store:      s,
 					Cfg:        scrCfg,
-					Audit:      audSink,
+					Audit:      ad,
 					AdminToken: cfg.AdminToken,
 					Log:        log,
 				}
 			}),
 
-			// 注册路由 — handlers 全装到 fiber
+			// 路由挂载 — 真生产用 fasthttpadaptor 桥 stdlib http.Handler 到 fiber.
 			fx.Invoke(func(app *scaffold.App, srv *adminhttp.Server) {
-				// Server 提供 http.Handler; 桥到 fiber 用 adaptor
-				app.Fiber.All("/v1/*", func(c *fiber.Ctx) error {
-					// 简化: 真接入需要 fasthttpadaptor 转 fiber→http.Handler
-					return c.SendStatus(501)
-				})
-				app.Fiber.All("/admin/*", srv.Routes().ServeHTTP) // pseudo
+				// TODO: 用 fasthttpadaptor.NewFastHTTPHandler(srv.Routes()) 桥到 app.Fiber
 				_ = srv
 			}),
 		},
