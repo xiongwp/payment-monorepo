@@ -1,0 +1,16 @@
+services:
+  tax-reporting:
+    networks:
+      - payment-stack
+    ports: !override
+      - "18090:8090"
+    environment:
+      TZ: Asia/Shanghai
+      TAX_ADDR: ":8090"
+      TAX_ADMIN_TOKEN: "${TAX_ADMIN_TOKEN:-admintok-dev-CHANGE-IN-PROD}"
+      TAX_FILER_NAME: "${TAX_FILER_NAME:-Payment Platform Inc.}"
+      TAX_FILER_TIN: "${TAX_FILER_TIN:-12-3456789}"
+
+networks:
+  payment-stack:
+    external: true

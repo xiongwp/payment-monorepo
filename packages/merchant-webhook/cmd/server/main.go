@@ -22,10 +22,13 @@ func main() {
 
 	repo := repository.NewMemoryRepo()
 	disp := dispatcher.New(repo, "2026-05-01", logger)
+	// 接 attempt 历史 (商户能看每次推送结果, DLQ 时排查用)
+	disp.SetAttemptRecorder(repo.AppendAttempt)
 
 	mux := http.NewServeMux()
 	api := adminhttp.New(repo, disp, logger)
 	api.Mount(mux)
+	api.MountDLQ(mux, envOr("MERCHANT_WEBHOOK_ADMIN_TOKEN", ""))
 	srv := &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

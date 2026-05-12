@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: approval-config, namespace: payment }
+data:
+  APPROVAL_ADDR: ":8092"
+  AUDITLOG_URL: "http://audit-log.payment.svc:8087"
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: approval-secrets, namespace: payment }
+type: Opaque
+stringData:
+  APPROVAL_MYSQL_DSN: "approval:CHANGE_PWD@tcp(mysql:3306)/approval?charset=utf8mb4&parseTime=true"
+  AUDITLOG_TOKEN: "REPLACE_ME"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: approval-service, namespace: payment, labels: { app: approval-service } }
+spec:
+  # SSE 长连接 → sticky 负载均衡或 ≤2 副本; 多副本时需要 redis pub/sub 让 SSE 广播
+  replicas: 2
+  selector: { matchLabels: { app: approval-service } }
+  template:
+    metadata:
+      labels: { app: approval-service }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8092"
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+      containers:
+      - name: approval-service
+        image: ghcr.io/example/approval-service:latest
+        ports: [{ containerPort: 8092, name: http }]
+        envFrom:
+        - configMapRef: { name: approval-config }
+        - secretRef: { name: approval-secrets }
+        readinessProbe: { httpGet: { path: /healthz, port: 8092 }, periodSeconds: 5 }
+        livenessProbe:  { httpGet: { path: /healthz, port: 8092 }, periodSeconds: 30 }
+        resources:
+          requests: { cpu: "50m", memory: "64Mi" }
+          limits:   { cpu: "500m", memory: "256Mi" }
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: approval-service, namespace: payment, annotations: { service.kubernetes.io/topology-aware-hints: "auto" } }
+spec:
+  selector: { app: approval-service }
+  # SSE → 同 client 想固定到同 pod (避免来回切 SSE 流断). 用 sessionAffinity.
+  sessionAffinity: ClientIP
+  sessionAffinityConfig: { clientIP: { timeoutSeconds: 3600 } }
+  ports: [{ name: http, port: 8092, targetPort: 8092 }]
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata: { name: approval-service, namespace: payment }
+spec:
+  selector: { matchLabels: { app: approval-service } }
+  endpoints: [{ port: http, path: /metrics, interval: 15s }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: approval-service, namespace: payment }
+spec:
+  podSelector: { matchLabels: { app: approval-service } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+  # 所有调 approval 的业务服务 + biz-admin-web
+  - from:
+    - podSelector: { matchLabels: { app: clearing-settlement } }
+    - podSelector: { matchLabels: { app: refund-engine } }
+    - podSelector: { matchLabels: { app: data-rights } }
+    - podSelector: { matchLabels: { app: aml-screening } }
+    - podSelector: { matchLabels: { app: tax-reporting } }
+    - podSelector: { matchLabels: { app: kms-manage } }
+    - podSelector: { matchLabels: { app: biz-admin-web } }
+    ports: [{ port: 8092, protocol: TCP }]
+  egress:
+  - to:
+    - podSelector: { matchLabels: { app: mysql } }
+    - podSelector: { matchLabels: { app: audit-log } }

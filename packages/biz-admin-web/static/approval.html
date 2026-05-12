@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>biz-admin · 双人复核 (Approval)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+.badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+.badge-pending  { background: #dbeafe; color: #1e40af; }
+.badge-reviewing { background: #fef3c7; color: #92400e; }
+.badge-approved { background: #d1fae5; color: #065f46; }
+.badge-rejected { background: #fee2e2; color: #991b1b; }
+.badge-executed { background: #ddd6fe; color: #5b21b6; }
+.badge-expired  { background: #f3f4f6; color: #6b7280; }
+pre.payload { background: #f9fafb; border: 1px solid #e5e7eb; padding: 8px; border-radius: 4px; font-size: 11px; max-height: 200px; overflow: auto; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: #10b981; display: inline-block; animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+</style>
+</head>
+<body class="bg-gray-50 min-h-screen" x-data="approvalUI()" x-init="init()">
+
+<header class="bg-white shadow-sm border-b border-gray-200">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+    <div>
+      <h1 class="text-lg font-semibold">👥 双人复核 — 4-Eyes Principle</h1>
+      <p class="text-xs text-gray-500">高风险动作: payout / RTBF / KMS rotation / 制裁解封 / 1099-K corrections</p>
+    </div>
+    <div class="flex items-center gap-3 text-xs">
+      <span><span class="live-dot"></span> <span class="ml-1" x-text="sseStatus"></span></span>
+      <span class="px-2 py-1 bg-gray-100 rounded">
+        reviewer: <input x-model="reviewer" class="ml-1 w-32 outline-none bg-transparent" placeholder="ops_alice">
+      </span>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-4 py-4">
+
+  <!-- 顶部 stats -->
+  <div class="grid grid-cols-5 gap-3 mb-4">
+    <template x-for="s in stats" :key="s.label">
+      <div class="bg-white p-3 rounded shadow-sm border">
+        <div class="text-xs text-gray-500" x-text="s.label"></div>
+        <div class="text-2xl font-semibold mt-1" :class="s.cls" x-text="s.count"></div>
+      </div>
+    </template>
+  </div>
+
+  <!-- Filter -->
+  <div class="bg-white rounded shadow-sm p-3 mb-3 flex gap-3 items-center text-sm">
+    <select x-model="filterState" @change="loadList()" class="border px-2 py-1 rounded">
+      <option value="">所有状态</option>
+      <option value="pending">pending</option>
+      <option value="reviewing">reviewing (待我复核)</option>
+      <option value="approved">approved (待执行)</option>
+      <option value="rejected">rejected</option>
+      <option value="executed">executed</option>
+    </select>
+    <select x-model="filterType" @change="loadList()" class="border px-2 py-1 rounded">
+      <option value="">所有类型</option>
+      <option value="payout_high_value">payout_high_value</option>
+      <option value="rtbf_erase">rtbf_erase</option>
+      <option value="sanction_unfreeze">sanction_unfreeze</option>
+      <option value="kms_rotate">kms_rotate</option>
+      <option value="tax_correction">tax_correction</option>
+    </select>
+    <button @click="loadList()" class="ml-auto px-3 py-1 bg-blue-600 text-white rounded">刷新</button>
+  </div>
+
+  <!-- Actions list -->
+  <div class="space-y-3">
+    <template x-for="a in actions" :key="a.id">
+      <div class="bg-white rounded shadow-sm border p-4">
+        <div class="flex items-start justify-between mb-2">
+          <div>
+            <div class="flex items-center gap-2 mb-1">
+              <span class="badge" :class="'badge-' + a.state" x-text="a.state"></span>
+              <span class="text-sm font-medium" x-text="a.type"></span>
+              <span class="text-xs text-gray-400 font-mono" x-text="a.id"></span>
+            </div>
+            <div class="text-xs text-gray-600">
+              Resource: <span class="font-mono" x-text="a.resource"></span>
+              · Requester: <span x-text="a.requester"></span>
+              · <span x-text="fmtAgo(a.requester_at)"></span>
+              · Required <span x-text="a.required_approvals"></span> approvals
+            </div>
+            <div x-show="a.request_note" class="text-xs text-gray-500 italic mt-1" x-text="'note: ' + a.request_note"></div>
+          </div>
+          <div class="text-right">
+            <div class="text-xs text-gray-500">approvals</div>
+            <div class="font-semibold">
+              <span x-text="(a.approvals || []).filter(p => p.decision === 'approve').length"></span>
+              / <span x-text="a.required_approvals"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Payload (if any) -->
+        <details x-show="a.payload" class="mb-2">
+          <summary class="text-xs text-blue-600 cursor-pointer">查看 payload</summary>
+          <pre class="payload mt-1" x-text="JSON.stringify(a.payload, null, 2)"></pre>
+        </details>
+
+        <!-- Approval history -->
+        <div x-show="(a.approvals||[]).length" class="border-t border-gray-100 pt-2 mb-2">
+          <div class="text-xs text-gray-500 mb-1">已审记录:</div>
+          <template x-for="p in (a.approvals||[])" :key="p.reviewed_at">
+            <div class="text-xs flex items-center gap-2 py-0.5">
+              <span class="badge" :class="p.decision === 'approve' ? 'badge-approved' : 'badge-rejected'"
+                    x-text="p.decision"></span>
+              <span class="font-medium" x-text="p.reviewer"></span>
+              <span class="text-gray-500" x-text="p.note || ''"></span>
+              <span class="text-gray-400 ml-auto" x-text="fmtAgo(p.reviewed_at)"></span>
+            </div>
+          </template>
+        </div>
+
+        <!-- Actions -->
+        <div x-show="canAct(a)" class="flex gap-2">
+          <input :id="'note_' + a.id" placeholder="复核说明 (可选)"
+                 class="border px-2 py-1.5 rounded text-sm flex-1">
+          <button @click="approve(a.id)" class="px-4 py-1.5 bg-green-600 text-white text-sm rounded">✓ Approve</button>
+          <button @click="reject(a.id)" class="px-4 py-1.5 bg-red-600 text-white text-sm rounded">✗ Reject</button>
+          <button x-show="a.requester === reviewer && (a.state === 'pending' || a.state === 'reviewing' || a.state === 'approved')"
+                  @click="cancel(a.id)" class="px-4 py-1.5 bg-gray-200 text-gray-700 text-sm rounded">撤回</button>
+        </div>
+        <div x-show="!canAct(a)" class="text-xs text-gray-400">
+          <span x-show="a.requester === reviewer && a.state !== 'approved'">你是 requester, 不能 self-approve</span>
+          <span x-show="hasMyApproval(a)">你已审过</span>
+          <span x-show="a.state === 'approved'">待业务侧执行</span>
+          <span x-show="a.state === 'executed'">已执行</span>
+          <span x-show="a.state === 'rejected'">已驳回</span>
+          <span x-show="a.state === 'expired'">已过期</span>
+        </div>
+      </div>
+    </template>
+    <div x-show="!actions.length" class="text-center text-gray-400 py-12">无待复核动作</div>
+  </div>
+
+  <!-- Toast -->
+  <div x-show="toast.text" x-transition
+       class="fixed bottom-6 right-6 px-4 py-2 rounded shadow-lg text-white text-sm"
+       :class="toast.type==='error' ? 'bg-red-600' : 'bg-green-600'"
+       x-text="toast.text"></div>
+
+</main>
+
+<script>
+function approvalUI() {
+  return {
+    reviewer: localStorage.getItem('approval_reviewer') || 'ops_alice',
+    filterState: '',
+    filterType: '',
+    actions: [],
+    stats: [
+      { label: '待复核',   count: 0, cls: 'text-yellow-600' },
+      { label: '审核中',   count: 0, cls: 'text-blue-600'   },
+      { label: '已批准',   count: 0, cls: 'text-green-600'  },
+      { label: '已驳回',   count: 0, cls: 'text-red-600'    },
+      { label: '已执行',   count: 0, cls: 'text-purple-600' },
+    ],
+    toast: { text: '', type: 'success' },
+    sse: null,
+    sseStatus: '连接中…',
+
+    init() {
+      this.loadList();
+      this.connectSSE();
+      // 持久化 reviewer
+      this.$watch('reviewer', v => localStorage.setItem('approval_reviewer', v));
+    },
+
+    async loadList() {
+      try {
+        let q = '?limit=100';
+        if (this.filterState) q += '&state=' + this.filterState;
+        if (this.filterType) q += '&type=' + this.filterType;
+        const r = await fetch('/api/approval/v1/actions' + q);
+        const data = await r.json();
+        this.actions = data.actions || [];
+        this.updateStats();
+      } catch (e) {
+        this.show('加载失败: ' + e.message, 'error');
+      }
+    },
+
+    updateStats() {
+      const counts = { pending:0, reviewing:0, approved:0, rejected:0, executed:0 };
+      for (const a of this.actions) counts[a.state] = (counts[a.state]||0) + 1;
+      const labels = ['pending','reviewing','approved','rejected','executed'];
+      this.stats.forEach((s, i) => s.count = counts[labels[i]] || 0);
+    },
+
+    connectSSE() {
+      try {
+        this.sse = new EventSource('/api/approval/v1/stream');
+        this.sse.onopen = () => { this.sseStatus = '实时'; };
+        this.sse.onerror = () => { this.sseStatus = '断线 (重连中)'; };
+        this.sse.addEventListener('action_update', (ev) => {
+          // 新事件来了刷新列表
+          this.loadList();
+        });
+      } catch (e) {
+        this.sseStatus = '不支持 SSE';
+      }
+    },
+
+    canAct(a) {
+      if (a.state !== 'pending' && a.state !== 'reviewing') return false;
+      if (a.requester === this.reviewer) return false;
+      if (this.hasMyApproval(a)) return false;
+      return true;
+    },
+
+    hasMyApproval(a) {
+      return (a.approvals || []).some(p => p.reviewer === this.reviewer);
+    },
+
+    async approve(actionID) {
+      const note = document.getElementById('note_' + actionID).value;
+      await this.review(actionID, 'approve', note);
+    },
+
+    async reject(actionID) {
+      const note = document.getElementById('note_' + actionID).value || prompt('拒绝理由 (必填)?');
+      if (!note) return;
+      await this.review(actionID, 'reject', note);
+    },
+
+    async review(actionID, dec, note) {
+      try {
+        const r = await fetch(`/api/approval/v1/actions/${actionID}/${dec}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reviewer: this.reviewer, note: note })
+        });
+        if (!r.ok) {
+          const e = await r.json();
+          throw new Error(e.error || ('HTTP ' + r.status));
+        }
+        this.show(`${actionID} → ${dec}`);
+        this.loadList();
+      } catch (e) {
+        this.show('操作失败: ' + e.message, 'error');
+      }
+    },
+
+    async cancel(actionID) {
+      if (!confirm('撤回这个动作?')) return;
+      try {
+        const r = await fetch(`/api/approval/v1/actions/${actionID}/cancel`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requester: this.reviewer, reason: 'changed mind' })
+        });
+        if (!r.ok) {
+          const e = await r.json();
+          throw new Error(e.error || ('HTTP ' + r.status));
+        }
+        this.show('已撤回');
+        this.loadList();
+      } catch (e) {
+        this.show('撤回失败: ' + e.message, 'error');
+      }
+    },
+
+    fmtAgo(ts) {
+      if (!ts) return '';
+      const dt = new Date(ts);
+      const diff = (Date.now() - dt.getTime()) / 1000;
+      if (diff < 60) return Math.floor(diff) + 's ago';
+      if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+      if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+      return Math.floor(diff/86400) + 'd ago';
+    },
+
+    show(text, type='success') {
+      this.toast = { text, type };
+      setTimeout(()=>{ this.toast.text=''; }, 3000);
+    },
+  };
+}
+</script>
+</body>
+</html>

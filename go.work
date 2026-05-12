@@ -18,6 +18,10 @@ use (
 	./packages/biz-admin-web
 	./packages/payment-mw
 	./packages/oauth2-server
+	./packages/aml-screening
+	./packages/tokenization-vault
+	./packages/tax-reporting
+	./packages/data-rights
 
 	// ─── 老业务包（让 go run 单服务测试时找得到） ───────
 	./packages/order-core

@@ -31,6 +31,12 @@ import (
 //go:embed ../../static/admin.html
 var adminHTML []byte
 
+//go:embed ../../static/p0-services.html
+var p0HTML []byte
+
+//go:embed ../../static/approval.html
+var approvalHTML []byte
+
 type backend struct {
 	prefix string // /api/billing/
 	target string // http://billing-system:8080
@@ -50,6 +56,12 @@ func main() {
 		{"/api/kyc/", envOr("KYC_URL", "http://kyc-service:8080")},
 		{"/api/audit/", envOr("AUDIT_URL", "http://audit-log:8080")},
 		{"/api/recon/", envOr("RECON_URL", "http://reconplatform-admin:8080")},
+		// P0 4 个新服务
+		{"/api/aml/", envOr("AML_URL", "http://aml-screening:8088")},
+		{"/api/vault/", envOr("VAULT_URL", "http://tokenization-vault:8089")},
+		{"/api/tax/", envOr("TAX_URL", "http://tax-reporting:8090")},
+		{"/api/dr/", envOr("DR_URL", "http://data-rights:8091")},
+		{"/api/approval/", envOr("APPROVAL_URL", "http://approval-service:8092")},
 	}
 
 	mux := http.NewServeMux()
@@ -60,6 +72,14 @@ func main() {
 		})
 	}
 	mux.HandleFunc("/health/all", healthAll(backends, logger))
+	mux.HandleFunc("/p0", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(p0HTML)
+	})
+	mux.HandleFunc("/approval", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(approvalHTML)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" && r.URL.Path != "/admin" {
 			http.NotFound(w, r)

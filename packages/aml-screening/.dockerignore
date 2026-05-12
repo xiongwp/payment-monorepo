@@ -1,0 +1,10 @@
+.git
+.gitignore
+.idea
+.vscode
+*.md
+bin/
+vendor/
+database/init/*_init.sql
+test/
+docs/

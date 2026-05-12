@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: data-rights-config, namespace: payment }
+data:
+  DR_ADDR: ":8091"
+  DR_OVERDUE_CRON_SEC: "3600"
+  AUDITLOG_URL: "http://audit-log.payment.svc:8087"
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: data-rights-secrets, namespace: payment }
+type: Opaque
+stringData:
+  DR_ADMIN_TOKEN: "REPLACE_ME"
+  DR_MYSQL_DSN: "dr:CHANGE_PWD@tcp(mysql:3306)/data_rights?charset=utf8mb4&parseTime=true"
+  AUDITLOG_TOKEN: "REPLACE_ME"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: data-rights, namespace: payment, labels: { app: data-rights } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: data-rights } }
+  template:
+    metadata:
+      labels: { app: data-rights }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8091"
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532 }
+      containers:
+      - name: data-rights
+        image: ghcr.io/example/data-rights:latest
+        ports: [{ containerPort: 8091, name: http }]
+        envFrom:
+        - configMapRef: { name: data-rights-config }
+        - secretRef: { name: data-rights-secrets }
+        readinessProbe: { httpGet: { path: /healthz, port: 8091 }, periodSeconds: 5 }
+        livenessProbe:  { httpGet: { path: /healthz, port: 8091 }, periodSeconds: 30 }
+        resources:
+          requests: { cpu: "50m", memory: "128Mi" }
+          limits:   { cpu: "500m", memory: "512Mi" }
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: data-rights, namespace: payment }
+spec:
+  selector: { app: data-rights }
+  ports: [{ name: http, port: 8091, targetPort: 8091 }]
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata: { name: data-rights, namespace: payment }
+spec:
+  selector: { matchLabels: { app: data-rights } }
+  endpoints: [{ port: http, path: /metrics, interval: 15s }]
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata: { name: data-rights-overdue, namespace: payment }
+spec:
+  groups:
+  - name: data-rights.compliance
+    rules:
+    # 法定违规告警 — 30 天没处理 = GDPR Art. 12 违反
+    - alert: DataRightsOverdueRequests
+      expr: data_rights_overdue > 0
+      for: 0m  # 立即触发
+      labels: { severity: critical, compliance: "GDPR-Art-12" }
+      annotations:
+        summary: "{{ $value }} DSAR/RTBF 工单超 30 天未处理 (法定违规)"
+        runbook: "https://wiki.example.com/runbook/data-rights-overdue"
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: data-rights, namespace: payment }
+spec:
+  podSelector: { matchLabels: { app: data-rights } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+  # 用户面 (商户后台 / 终端 SDK) + ops admin
+  - from:
+    - podSelector: { matchLabels: { app: api-gateway } }
+    - podSelector: { matchLabels: { app: biz-admin-web } }
+    ports: [{ port: 8091, protocol: TCP }]
+  egress:
+  - to:
+    - podSelector: { matchLabels: { app: mysql } }
+    - podSelector: { matchLabels: { app: audit-log } }
+    # fan-out 到所有支持 data-rights 的服务
+    - podSelector: { matchLabels: { app: user-merchant-core } }
+    - podSelector: { matchLabels: { app: order-core } }
+    - podSelector: { matchLabels: { app: payment-core } }
+    - podSelector: { matchLabels: { app: billing-system } }
+    - podSelector: { matchLabels: { app: kyc-service } }
+    - podSelector: { matchLabels: { app: tokenization-vault } }
+    - podSelector: { matchLabels: { app: merchant-webhook } }
+    - podSelector: { matchLabels: { app: subscription } }
+    - podSelector: { matchLabels: { app: wallet-service } }

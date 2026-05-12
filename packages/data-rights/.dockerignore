@@ -1,0 +1,7 @@
+.git
+.gitignore
+*.md
+bin/
+vendor/
+test/
+docs/

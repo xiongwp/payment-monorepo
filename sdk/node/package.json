@@ -1,0 +1,12 @@
+{
+  "name": "@payment-platform/sdk",
+  "version": "0.1.0",
+  "description": "Official Node.js SDK for Payment Platform API",
+  "main": "index.js",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "keywords": ["payment", "stripe-alternative", "sdk", "fintech"]
+}

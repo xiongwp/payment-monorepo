@@ -1,0 +1,28 @@
+services:
+  tax-reporting:
+    image: tax-reporting:local
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tax-reporting
+    restart: unless-stopped
+    networks: [payment-stack]
+    ports:
+      - "8090:8090"
+    environment:
+      TZ: Asia/Shanghai
+      TAX_ADDR: ":8090"
+      TAX_ADMIN_TOKEN: "${TAX_ADMIN_TOKEN:-admintok-dev-CHANGE-IN-PROD}"
+      TAX_FILER_NAME: "${TAX_FILER_NAME:-Payment Platform Inc.}"
+      TAX_FILER_TIN: "${TAX_FILER_TIN:-12-3456789}"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8090/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+networks:
+  payment-stack:
+    external: true

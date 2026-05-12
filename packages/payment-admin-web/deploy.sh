@@ -83,6 +83,10 @@ compose_files() {
     # 不引 base compose（base 起独立 redis/kafka，联栈下复用 risk-stack 的）。
     reconplatform)        echo "-p reconplatform      -f $OVR/reconplatform.yml" ;;
     oauth2-server)        echo "-p oauth2-server      -f $ROOT/oauth2-server/docker-compose.yml       -f $OVR/oauth2-server.yml" ;;
+    aml-screening)        echo "-p aml-screening      -f $ROOT/aml-screening/docker-compose.yml       -f $OVR/aml-screening.yml" ;;
+    tokenization-vault)   echo "-p tokenization-vault -f $ROOT/tokenization-vault/docker-compose.yml  -f $OVR/tokenization-vault.yml" ;;
+    tax-reporting)        echo "-p tax-reporting      -f $ROOT/tax-reporting/docker-compose.yml       -f $OVR/tax-reporting.yml" ;;
+    data-rights)          echo "-p data-rights        -f $ROOT/data-rights/docker-compose.yml         -f $OVR/data-rights.yml" ;;
     payment-admin-web)    echo "-p payment-admin-web  -f $HERE/docker-compose.yml                     -f $OVR/payment-admin-web.yml" ;;
     *) fatal "unknown service: $1" ;;
   esac
@@ -100,7 +104,7 @@ compose_files() {
 #   risk-stack         risk-redis + risk-kafka + clickhouse + nebula + 监控（accounting 复用 risk-redis）
 #   accounting-system  accounting-service + accounting-batchtask（复用 shared-db + risk-redis）
 #   risk-manage / payment-channel / order-core / user-merchant-core / payment-core / api-gateway / *-admin-web
-ALL_SERVICES=(shared-db config-center kms-manage risk-stack accounting-system risk-manage payment-channel order-core user-merchant-core payment-core card-center card-payment api-gateway reconplatform oauth2-server accounting-admin-web payment-admin-web)
+ALL_SERVICES=(shared-db config-center kms-manage risk-stack accounting-system risk-manage payment-channel order-core user-merchant-core payment-core card-center card-payment api-gateway reconplatform oauth2-server aml-screening tokenization-vault tax-reporting data-rights accounting-admin-web payment-admin-web)
 
 # scale_args_of 返回 --scale a=N --scale b=M ... 用来起多副本。前提：override
 # 文件里该 service 没有 container_name，端口用 range，否则会撞名 / 撞端口。
@@ -170,6 +174,10 @@ app_service_of() {
     # reconplatform: 同 image 跑 engine + admin 两个容器
     reconplatform)      echo "reconplatform-engine reconplatform-admin" ;;
     oauth2-server)      echo "oauth2-server" ;;
+    aml-screening)      echo "aml-screening" ;;
+    tokenization-vault) echo "tokenization-vault" ;;
+    tax-reporting)      echo "tax-reporting" ;;
+    data-rights)        echo "data-rights" ;;
     accounting-admin-web) echo "accounting-admin-web" ;;
     payment-admin-web)  echo "" ;;   # 两个 app 都要起
     *) echo "" ;;
@@ -472,6 +480,10 @@ cmd_up() {
   echo "  - kms-manage         →  grpc  127.0.0.1:9290"
   echo "  - risk-manage        →  grpc  127.0.0.1:9490"
   echo "  - oauth2-server      →  http  127.0.0.1:18087  (token/introspect/revoke/jwks/admin)"
+  echo "  - aml-screening      →  http  127.0.0.1:18088  (OFAC/EU/PEP screen + 复核)"
+  echo "  - tokenization-vault →  http  127.0.0.1:18089  (PAN↔internal_token↔VTS/MDES)"
+  echo "  - tax-reporting      →  http  127.0.0.1:18090  (1099-K / W-9 / W-8 / VAT OSS)"
+  echo "  - data-rights        →  http  127.0.0.1:18091  (GDPR/CCPA DSAR/RTBF 工单)"
   echo "  - shared MySQL       →  meta :3400 | shard0..9 :3410..3419（paychan_db_N + order_db_N + user_merchant_meta 同节点）"
 }
 
@@ -480,7 +492,7 @@ cmd_down() {
   [[ "${1:-}" == "--volumes" ]] && vol_flag="-v"
 
   # 反向顺序，admin 最先停，shared-db 最后停
-  for svc in payment-admin-web accounting-admin-web oauth2-server api-gateway payment-core user-merchant-core order-core payment-channel risk-manage accounting-system risk-stack kms-manage shared-db; do
+  for svc in payment-admin-web accounting-admin-web data-rights tax-reporting tokenization-vault aml-screening oauth2-server api-gateway payment-core user-merchant-core order-core payment-channel risk-manage accounting-system risk-stack kms-manage shared-db; do
     info "停止 $svc …"
     # shellcheck disable=SC2086
     $COMPOSE $(compose_files "$svc") down $vol_flag 2>/dev/null || true
@@ -554,6 +566,10 @@ cmd_check() {
     "admin-backend:19190"
     "admin-web:8080"
     "oauth2-server:18087"
+    "aml-screening:18088"
+    "tokenization-vault:18089"
+    "tax-reporting:18090"
+    "data-rights:18091"
   )
   for p in "${ports[@]}"; do
     local name=${p%:*} port=${p#*:}
