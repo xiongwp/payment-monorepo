@@ -4,7 +4,7 @@
 .vscode
 *.md
 bin/
-vendor/
+# vendor/ — 注意: 现走 vendor 模式, 必须包含 vendor 进 build context!
 database/init/*_init.sql
 test/
 docs/

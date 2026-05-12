@@ -1,7 +1,7 @@
 FROM golang:1.22-alpine AS build
 
-ENV GOPROXY=https://proxy.golang.org,direct \
-    GOSUMDB=sum.golang.org \
+ENV GOPROXY=https://goproxy.cn,https://goproxy.io,https://proxy.golang.org,direct \
+    GOSUMDB=off \
     CGO_ENABLED=0 \
     GOOS=linux
 
@@ -9,10 +9,10 @@ RUN apk add --no-cache git ca-certificates
 
 WORKDIR /src
 COPY go.mod go.sum* ./
-RUN go mod download
 
 COPY . .
-RUN go build -trimpath -ldflags="-s -w" -o /out/tokenization-vault ./cmd/server
+RUN go mod tidy && \
+    go build -trimpath -ldflags="-s -w" -o /out/tokenization-vault ./cmd/server
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata wget && \
