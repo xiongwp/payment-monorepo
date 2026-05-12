@@ -1,0 +1,160 @@
+openapi: 3.1.0
+info:
+  title: Data Rights (GDPR / CCPA) API
+  version: "1.0.0"
+  description: |
+    数据主体权利工单. DSAR (access) / RTBF (erasure) / 数据携带 / 改正 / 限制 /
+    反对. 法定 30 天 SLA. 跨服务编排.
+
+servers:
+  - url: https://data-rights.payment.example.com
+
+paths:
+  /v1/requests:
+    post:
+      summary: 提交 DSAR / RTBF
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RequestSubmit' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Request' }
+
+  /v1/requests/{id}:
+    get:
+      summary: 看工单
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Request' }
+
+  /admin/requests:
+    get:
+      summary: ops 列工单
+      parameters:
+        - in: query
+          name: state
+          schema:
+            type: string
+            enum: [received, verifying, collecting, review, approved, fulfilled, rejected, failed, expired]
+        - in: query
+          name: type
+          schema: { type: string }
+        - in: query
+          name: overdue
+          schema: { type: integer, enum: [0, 1] }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requests:
+                    type: array
+                    items: { $ref: '#/components/schemas/Request' }
+                  count: { type: integer }
+
+  /admin/requests/{id}/{action}:
+    post:
+      summary: ops 工单动作
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: action
+          required: true
+          schema:
+            type: string
+            enum: [verify, approve, reject, fulfill]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reviewer: { type: string }
+                reason: { type: string, description: reject 时必填 }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Request' }
+
+components:
+  schemas:
+    RequestSubmit:
+      type: object
+      required: [subject]
+      properties:
+        type:
+          type: string
+          enum: [access, erasure, portability, rectification, restriction, objection]
+          default: access
+        subject: { $ref: '#/components/schemas/Subject' }
+        jurisdiction:
+          type: string
+          enum: [EU, UK, CA, BR, CN, other]
+
+    Subject:
+      type: object
+      required: [type, id]
+      properties:
+        type:
+          type: string
+          enum: [merchant, customer, staff]
+        id: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string }
+        legal_name: { type: string }
+        country: { type: string }
+
+    Request:
+      type: object
+      properties:
+        request_id: { type: string, example: "dsar_..." }
+        type: { type: string }
+        subject: { $ref: '#/components/schemas/Subject' }
+        jurisdiction: { type: string }
+        state:
+          type: string
+          enum: [received, verifying, collecting, review, approved, fulfilled, rejected, failed, expired]
+        submitted_at: { type: string, format: date-time }
+        deadline_at:
+          type: string
+          format: date-time
+          description: 法定 30 天 (GDPR), 45 (CCPA), 15 (LGPD/PIPL)
+        service_statuses:
+          type: array
+          items: { $ref: '#/components/schemas/ServiceStatus' }
+        export_url: { type: string }
+        export_sha256: { type: string }
+
+    ServiceStatus:
+      type: object
+      properties:
+        service: { type: string }
+        state: { type: string }
+        attempts: { type: integer }
+        held:
+          type: boolean
+          description: 法律保留期内不能删的字段
+        hold_reason: { type: string }

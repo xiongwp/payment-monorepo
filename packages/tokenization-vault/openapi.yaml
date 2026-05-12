@@ -1,0 +1,185 @@
+openapi: 3.1.0
+info:
+  title: Tokenization Vault API
+  version: "1.0.0"
+  description: |
+    PCI 边界内的双层代币 vault. PAN → internal_token (商户 DB 用) → network_token
+    (VTS/MDES) + cryptogram. PCI scope reduction.
+
+servers:
+  - url: https://vault.payment.example.com
+    description: Production (mTLS only, internal)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/tokens/exchange:
+    post:
+      summary: PAN → internal_token (PCI 边界内)
+      description: |
+        只允许 PCI 受控网络调用. 商户走 hosted iframe / SDK, PAN 永远不进商户 server.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExchangeRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExchangeResponse' }
+
+  /v1/tokens/{token}:
+    get:
+      summary: 取 token meta (不返 PAN)
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenMeta' }
+    delete:
+      summary: 软删 token
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: deleted }
+
+  /v1/tokens/{token}/charge:
+    post:
+      summary: 生成 (network_token, cryptogram) 给 PSP
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChargeIntentRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChargeIntentResponse' }
+
+  /v1/tokens/{token}/provision:
+    post:
+      summary: 触发 VTS/MDES provisioning
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  provider: { type: string }
+                  network_ref:
+                    type: object
+
+  /v1/tokens/{token}/suspend:
+    post:
+      summary: 冻结
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '200': { description: suspended }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ExchangeRequest:
+      type: object
+      required: [pan, merchant_id]
+      properties:
+        pan: { type: string, description: 13-19 digit PAN }
+        exp_month: { type: integer }
+        exp_year: { type: integer }
+        cardholder: { type: string }
+        cvv: { type: string, description: 不存; 仅 first-tx 转发 }
+        merchant_id: { type: string }
+
+    ExchangeResponse:
+      type: object
+      properties:
+        token: { type: string, example: "tk_live_abc..." }
+        pan_last4: { type: string }
+        bin: { type: string }
+        brand:
+          type: string
+          enum: [visa, mastercard, amex, discover, jcb, unionpay, unknown]
+        exp_month: { type: integer }
+        exp_year: { type: integer }
+        status:
+          type: string
+          enum: [active, suspended, deleted, expired]
+        provisioned: { type: boolean }
+
+    ChargeIntentRequest:
+      type: object
+      required: [merchant_id, amount, currency]
+      properties:
+        merchant_id: { type: string }
+        amount: { type: integer, description: "分" }
+        currency: { type: string }
+        recurring: { type: boolean, description: true=MIT, false=CIT }
+        intent_id: { type: string, description: 幂等 key }
+
+    ChargeIntentResponse:
+      type: object
+      properties:
+        network_token: { type: string, description: DPAN/PAR 给卡组 }
+        cryptogram: { type: string, description: base64 TAVV/UCAF }
+        eci:
+          type: string
+          description: Visa 05/06/07, MC 02/01/00
+        token_expiry: { type: string, description: MMYY }
+        provider:
+          type: string
+          enum: [vts, mdes, inhouse]
+        intent_id: { type: string }
+
+    TokenMeta:
+      type: object
+      properties:
+        token: { type: string }
+        merchant_id: { type: string }
+        pan_last4: { type: string }
+        bin: { type: string }
+        brand: { type: string }
+        exp_month: { type: integer }
+        exp_year: { type: integer }
+        status: { type: string }
+        provisioned: { type: boolean }
+        provider: { type: string }
+        created_at: { type: string, format: date-time }
