@@ -1,0 +1,28 @@
+# scheduled.yaml — 周度自动跑 chaos 实验. 每周一 03:00 UTC (低流量).
+#
+# 实验列表轮换跑 4 周一循环:
+#   week 1: pod-kill   payment-core
+#   week 2: net-delay  payment-channel
+#   week 3: mysql-pause shard-0
+#   week 4: kafka-partition
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: Schedule
+metadata:
+  name: weekly-chaos-rotation
+  namespace: payment
+spec:
+  schedule: "0 3 * * 1"  # 每周一 03:00 UTC
+  historyLimit: 12       # 保留近 12 周历史
+  concurrencyPolicy: Forbid
+  type: Workflow
+  workflow:
+    entry: rotate
+    templates:
+      - name: rotate
+        templateType: Task
+        # 真生产用 argo-workflows 跑轮换逻辑
+        task:
+          container:
+            image: ghcr.io/example/chaos-rotator:latest
+            command: ["/rotate.sh"]

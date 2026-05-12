@@ -1,0 +1,20 @@
+# 暂停 MySQL pod 1 分钟. 测 GORM 连接池 + outbox publisher 重试.
+#
+# 期望:
+#   - 在 cluster 内 RDS 不行: 用 self-hosted MySQL (dev/staging)
+#   - 上游 service 5xx 不超过 5% (写操作 fail; 读走 cache)
+#   - MySQL 恢复后 60s 内 outbox publisher backlog 清完
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: mysql-pause-1min
+  namespace: payment
+spec:
+  action: pod-failure   # pause pod, 不删 (恢复快)
+  mode: one
+  duration: "60s"
+  selector:
+    namespaces: [database]
+    labelSelectors:
+      "app.kubernetes.io/name": "mysql-shard-0"
