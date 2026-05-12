@@ -1,4 +1,4 @@
-# 服务迁移指南: 接入统一脚手架 (scaffold + GORM + Fiber)
+# 服务迁移指南: 接入统一脚手架 (scaffold + GORM + Fiber + uber/fx)
 
 新脚手架 `payment-util/scaffold` 提供:
 - **GORM** 替代 raw `database/sql` + 手写 JSON marshal/unmarshal
