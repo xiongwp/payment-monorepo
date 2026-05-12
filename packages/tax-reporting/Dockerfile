@@ -1,16 +1,11 @@
 FROM golang:1.22-alpine AS build
 
-ENV GOPROXY=https://goproxy.cn,https://goproxy.io,https://proxy.golang.org,direct \
-    GOSUMDB=off \
-    CGO_ENABLED=0 \
-    GOOS=linux
+# vendor 模式: 容器零网络. 前提: 本地已跑 `GOWORK=off go mod vendor`.
+ENV CGO_ENABLED=0 GOOS=linux GOFLAGS=-mod=vendor
 
-RUN apk add --no-cache git ca-certificates
 WORKDIR /src
-COPY go.mod go.sum* ./
 COPY . .
-RUN go mod tidy && \
-    go build -trimpath -ldflags="-s -w" -o /out/tax-reporting ./cmd/server
+RUN go build -trimpath -ldflags="-s -w" -o /out/tax-reporting ./cmd/server
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata wget && \
