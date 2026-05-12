@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine AS build
+FROM golang:1.25-alpine AS build
 
 # vendor 模式: 容器零网络. 前提: 本地已跑 `GOWORK=off go mod vendor`.
 ENV CGO_ENABLED=0 GOOS=linux GOFLAGS=-mod=vendor
