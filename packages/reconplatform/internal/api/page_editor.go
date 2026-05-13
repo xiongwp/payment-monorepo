@@ -278,12 +278,15 @@ func (s *Server) pageEditor(w http.ResponseWriter, r *http.Request) {
       </button>
     </div>
 
-    <!-- 状态 strip -->
-    <div class="px-3 py-1 border-b border-slate-100 text-xs"
+    <!-- 状态 strip (running 状态可见) -->
+    <div class="px-3 py-1 border-b border-slate-100 text-xs flex items-center gap-2"
          :class="status === 'ok' ? 'text-emerald-600 bg-emerald-50' :
-                 status === 'err' ? 'text-red-600 bg-red-50' : 'text-slate-400 bg-slate-50'">
+                 status === 'err' ? 'text-red-600 bg-red-50' :
+                 status === 'running' ? 'text-blue-600 bg-blue-50' : 'text-slate-400 bg-slate-50'">
+      <span x-show="status === 'running'" class="inline-block animate-spin">⟳</span>
       <span x-text="status === 'ok' ? '✓ ' + diffsCount + ' diffs · ' + logs.length + ' logs' :
-                    status === 'err' ? '✗ 错误' : '未运行 — 点 Dry-run'"></span>
+                    status === 'err' ? '✗ ' + (errorMsg || '错误') :
+                    status === 'running' ? '运行中...' : '未运行 — 点 Dry-run'"></span>
     </div>
 
     <!-- 内容区 -->
@@ -699,27 +702,61 @@ function editorModel(scriptID) {
     },
 
     async dryRun() {
+      console.log('[editor] dryRun clicked');
+      // 1) Monaco 准备好了吗
+      if (!monacoEditor) {
+        this.status = 'err';
+        this.errorMsg = 'Monaco editor not ready yet (try refresh)';
+        return;
+      }
       const code = monacoEditor.getValue();
+      console.log('[editor] code length:', code.length);
+      if (!code || code.trim() === '') {
+        this.status = 'err';
+        this.errorMsg = '代码为空 — 在 Monaco 里写点东西再 Dry-run';
+        return;
+      }
+
+      // 2) 即时反馈: 跳到 Diffs tab + 显示 "Running..."
+      this.status = 'running';
+      this.errorMsg = '';
+      this.diffs = [];
+      this.diffsCount = 0;
+      this.logs = [];
+
       try {
-        const r = await fetch('/api/v1/scripts/_dry_run', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+        // 3) 发请求 + 显式状态码检查
+        const resp = await fetch('/api/v1/scripts/_dry_run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ code }),
-        }).then(r => r.json());
-        // logs 永远刷新 (即使出错,也能看到崩之前 print 了啥)
+        });
+        console.log('[editor] dryRun HTTP', resp.status);
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => '');
+          this.status = 'err';
+          this.errorMsg = 'HTTP ' + resp.status + ': ' + (text || resp.statusText);
+          return;
+        }
+        const r = await resp.json();
+        console.log('[editor] dryRun result:', r);
+
         this.logs = r.logs || [];
         if (r.error || r.status === 'error') {
           this.status = 'err';
           this.errorMsg = r.error || 'unknown error';
-          this.diffs = [];
-          this.diffsCount = 0;
-          // 错误时自动跳到 Console tab 让用户看上下文
+          // 出错时自动跳 Console (若有 log)
           if (this.logs.length > 0) this.rightTab = 'console';
         } else {
           this.status = 'ok';
           this.diffs = r.diffs || [];
           this.diffsCount = this.diffs.length;
         }
-      } catch (e) { this.status = 'err'; this.errorMsg = String(e); }
+      } catch (e) {
+        console.error('[editor] dryRun exception:', e);
+        this.status = 'err';
+        this.errorMsg = 'JS exception: ' + (e.message || e);
+      }
     },
 
     async save() {

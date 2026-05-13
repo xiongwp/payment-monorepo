@@ -234,7 +234,7 @@ type Result struct {
 	Error       string     `json:"error,omitempty"`
 	Diffs       []Diff     `json:"diffs"`
 	Stats       Stats      `json:"stats"`
-	Logs        []LogEntry `json:"logs,omitempty"`        // 脚本里 print() / ctx.log_* 的捕获
+	Logs        []LogEntry `json:"logs"`                  // 脚本里 print() / ctx.log_* 的捕获 (即使 0 条也返 [],便于前端调试)
 	TriggeredBy string     `json:"triggered_by"`          // "manual" / "cron" / "stream:<svc>:<table>"
 }
 

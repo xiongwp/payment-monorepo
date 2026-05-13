@@ -300,7 +300,11 @@ func (l *Loader) RunCode(ctx *Context, displayID, code, trigger string) *Result 
 	r.Diffs = append(r.Diffs, ctx.Diffs()...)
 	r.Diffs = append(r.Diffs, diffs...)
 	// 把脚本里 print() / ctx.log_* 的捕获日志带回, dry-run 端点会显示给编辑器 Console 面板.
+	// 即使为 nil 也兜底为 [] (JSON 字段不缺失,前端 r.logs.length 不报错).
 	r.Logs = ctx.GetLogs()
+	if r.Logs == nil {
+		r.Logs = []LogEntry{}
+	}
 	if runErr != nil {
 		r.Status = "error"
 		r.Error = runErr.Error()
