@@ -215,6 +215,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	//   /admin/approvals        → 4-eyes 审批工作流
 	//   /admin/legacy           → 旧单文件 SPA (兼容旧 bookmark)
 	mux.HandleFunc("/admin/dashboard", s.pageDashboard)
+	mux.HandleFunc("/admin/events", s.pageEvents)
 	mux.HandleFunc("/admin/diffs", s.pageDiffs)
 	mux.HandleFunc("/admin/incidents", s.pageIncident)
 	mux.HandleFunc("/admin/incidents/", s.pageIncident)

@@ -140,8 +140,9 @@ func sidebarHTML(current string) string {
   </div>
   <nav class="flex-1 px-2 py-3 space-y-0.5">
     ` + link("/admin/dashboard", "总览", "layout-dashboard", "dashboard") + `
+    ` + link("/admin/events", "实时事件", "activity", "events") + `
     ` + link("/admin/diffs", "差异", "alert-triangle", "diffs") + `
-    ` + link("/admin/incidents", "事件", "search-code", "incidents") + `
+    ` + link("/admin/incidents", "事件复盘", "search-code", "incidents") + `
     ` + link("/admin/catalog", "规则库", "library", "catalog") + `
     ` + link("/admin/editor", "编辑器", "code", "editor") + `
     ` + link("/admin/approvals", "审批", "shield-check", "approvals") + `
@@ -153,11 +154,18 @@ func sidebarHTML(current string) string {
 </aside>`
 }
 
-// topbarHTML 顶部导航条.
+// topbarHTML 顶部导航条 (含全局 + 新建规则 + 新建 fixture 操作).
 func topbarHTML(title string) string {
-	return `<header class="h-14 bg-white border-b border-slate-200 flex items-center px-6 gap-4 shrink-0">
+	return `<header class="h-14 bg-white border-b border-slate-200 flex items-center px-6 gap-4 shrink-0"
+        x-data="topbarActions()">
   <h1 class="text-base font-semibold text-slate-900">` + title + `</h1>
   <div class="flex-1"></div>
+
+  <!-- 全局操作: + 新建 -->
+  <button @click="openNewRule = true" class="btn btn-primary text-xs">
+    <i data-lucide="plus" class="icon w-3 h-3"></i> 新建规则
+  </button>
+
   <div class="text-xs text-slate-500 flex items-center gap-3">
     <span class="flex items-center gap-1">
       <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
@@ -165,7 +173,155 @@ func topbarHTML(title string) string {
     </span>
     <a href="/healthz" target="_blank" class="text-slate-400 hover:text-slate-600">health</a>
   </div>
-</header>`
+
+  <!-- "+ 新建规则" modal -->
+  <div x-show="openNewRule" x-cloak class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+       @click="openNewRule = false">
+    <div class="bg-white rounded-lg shadow-xl max-w-md w-full" @click.stop>
+      <div class="px-5 py-3 border-b border-slate-200 flex items-center justify-between">
+        <h2 class="text-sm font-semibold">新建对账规则</h2>
+        <button @click="openNewRule = false" class="text-slate-400 hover:text-slate-600">
+          <i data-lucide="x" class="icon"></i>
+        </button>
+      </div>
+      <form @submit.prevent="createRule()" class="p-5 space-y-3">
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">规则名 *</label>
+          <input type="text" x-model="newRule.name" required pattern="[a-z][a-z0-9_]*"
+                 placeholder="snake_case_only"
+                 class="w-full text-sm border border-slate-300 rounded px-2 py-1.5 mono focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+          <p class="text-[10px] text-slate-500 mt-1">仅小写字母 + 数字 + 下划线;创建后不可改</p>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">严重程度</label>
+          <select x-model="newRule.severity" class="w-full text-sm border border-slate-300 rounded px-2 py-1.5">
+            <option value="info">info — 长尾监控</option>
+            <option value="warning">warning — 业务异常</option>
+            <option value="critical">critical — 资金 / 合规</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">语言</label>
+          <div class="flex gap-2">
+            <label class="flex items-center gap-1 text-sm cursor-pointer">
+              <input type="radio" x-model="newRule.lang" value="starlark">
+              <span>Starlark (动态热更新)</span>
+            </label>
+            <label class="flex items-center gap-1 text-sm cursor-pointer">
+              <input type="radio" x-model="newRule.lang" value="go" disabled class="opacity-50">
+              <span class="opacity-50">Go (需 PR + 重启)</span>
+            </label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">起始模板</label>
+          <select x-model="newRule.template" class="w-full text-sm border border-slate-300 rounded px-2 py-1.5">
+            <option value="empty">空白</option>
+            <option value="duplicate">重复检测 (idempotency)</option>
+            <option value="amount_equality">跨服务金额相等</option>
+            <option value="missing_leg">跨服务存在性</option>
+            <option value="timing_lag">时间窗 / lag</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">一句话描述 (可选)</label>
+          <input type="text" x-model="newRule.description"
+                 class="w-full text-sm border border-slate-300 rounded px-2 py-1.5">
+        </div>
+        <div class="flex items-center justify-end gap-2 pt-2">
+          <button type="button" @click="openNewRule = false" class="btn btn-outline text-sm">取消</button>
+          <button type="submit" class="btn btn-primary text-sm">
+            <i data-lucide="check" class="icon w-3 h-3"></i> 创建 + 打开编辑器
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</header>
+<style>[x-cloak]{display:none!important}</style>
+<script>
+function topbarActions() {
+  return {
+    openNewRule: false,
+    newRule: { name: '', severity: 'warning', lang: 'starlark', template: 'empty', description: '' },
+    async createRule() {
+      const tpls = {
+        empty: '# ' + this.newRule.name + '\n# ' + this.newRule.description + '\n\n' +
+               'def check(ctx):\n    diffs = []\n    # TODO\n    return diffs\n',
+        duplicate:
+'# ' + this.newRule.name + ' — 同 idempotency_key 多笔 charge 检测.\n' +
+'\n' +
+'def check(ctx):\n' +
+'    diffs = []\n' +
+'    seen = {}\n' +
+'    for r in ctx.scan("payment-channel", "acquirer_tx", 1000):\n' +
+'        idk = r.after.get("idempotency_key", "")\n' +
+'        if not idk: continue\n' +
+'        if idk in seen:\n' +
+'            seen[idk].append(r.pk)\n' +
+'        else:\n' +
+'            seen[idk] = [r.pk]\n' +
+'    for k, ids in seen.items():\n' +
+'        if len(ids) > 1:\n' +
+'            diffs.append({"type":"' + this.newRule.name + '","key":k,"detail":{"charge_ids":ids,"count":len(ids)}})\n' +
+'    return diffs\n',
+        amount_equality:
+'# ' + this.newRule.name + ' — 跨服务金额相等.\n' +
+'\n' +
+'def check(ctx):\n' +
+'    diffs = []\n' +
+'    for pi in ctx.scan("order-core", "payment_intent", 1000):\n' +
+'        related = ctx.get_by_index("pi_id", pi.pk)\n' +
+'        tx = related.find("payment-channel", "acquirer_tx")\n' +
+'        if not tx or tx.after.get("amount") != pi.after.get("amount"):\n' +
+'            diffs.append({"type":"' + this.newRule.name + '","key":pi.pk,\n' +
+'                          "want":pi.after.get("amount"),\n' +
+'                          "got":(tx and tx.after.get("amount")) or None})\n' +
+'    return diffs\n',
+        missing_leg:
+'# ' + this.newRule.name + ' — 跨服务存在性.\n' +
+'\n' +
+'def check(ctx):\n' +
+'    diffs = []\n' +
+'    EXPECTED = ["order-core", "payment-channel", "accounting-system"]\n' +
+'    for pi in ctx.scan("order-core", "payment_intent", 1000):\n' +
+'        if pi.after.get("status") != "succeeded": continue\n' +
+'        related = ctx.get_by_index("pi_id", pi.pk)\n' +
+'        present = set(e.svc for e in related)\n' +
+'        missing = [s for s in EXPECTED if s not in present]\n' +
+'        if missing:\n' +
+'            diffs.append({"type":"' + this.newRule.name + '","key":pi.pk,"detail":{"missing":missing}})\n' +
+'    return diffs\n',
+        timing_lag:
+'# ' + this.newRule.name + ' — 时间窗 / lag 检测.\n' +
+'\n' +
+'def check(ctx):\n' +
+'    diffs = []\n' +
+'    threshold_sec = int(ctx.params.get("threshold_sec", "300"))\n' +
+'    # TODO: 对比相关事件 timestamp,超阈值则记 diff\n' +
+'    return diffs\n',
+      };
+      const code = tpls[this.newRule.template] || tpls.empty;
+      try {
+        const r = await fetch('/api/v1/scripts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: this.newRule.name,
+            severity: this.newRule.severity,
+            description: this.newRule.description,
+            code,
+          }),
+        });
+        if (!r.ok) { alert('创建失败: HTTP ' + r.status); return; }
+        const data = await r.json().catch(() => ({}));
+        const id = data.id || this.newRule.name;
+        location.href = '/admin/editor?id=' + encodeURIComponent(id);
+      } catch (e) { alert('创建失败: ' + e); }
+    },
+  };
+}
+</script>`
 }
 
 // adminIndexRedirect 默认 /admin 跳转到 dashboard.

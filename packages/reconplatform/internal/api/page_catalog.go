@@ -1,6 +1,6 @@
 // page_catalog.go — /admin/catalog 内置规则浏览.
 //
-// 按 severity 分组卡片 + 命中预览 + 一键 fork 为自定义规则.
+// 按 severity 分组卡片 + 命中预览 + 一键 fork + 操作菜单 (查看 / 运行 / Fork / 删除).
 //
 // 数据源:
 //   - GET /api/v1/scripts         拉所有已注册规则 (内置 + 用户)
@@ -17,8 +17,8 @@ func (s *Server) pageCatalog(w http.ResponseWriter, _ *http.Request) {
 <div x-data="catalogModel()" x-init="load()" class="space-y-6">
 
   <!-- 顶部:筛选 + 搜索 -->
-  <div class="flex items-center justify-between gap-4">
-    <div class="flex items-center gap-2">
+  <div class="flex items-center justify-between gap-4 flex-wrap">
+    <div class="flex items-center gap-2 flex-wrap">
       <template x-for="opt in filters" :key="opt.value">
         <button @click="filter = opt.value"
                 class="px-3 py-1.5 text-sm rounded-md border"
@@ -30,10 +30,15 @@ func (s *Server) pageCatalog(w http.ResponseWriter, _ *http.Request) {
         </button>
       </template>
     </div>
-    <div class="relative">
-      <input type="search" x-model="q" placeholder="搜索规则名 / 描述..."
-             class="pl-9 pr-3 py-1.5 text-sm border border-slate-300 rounded-md w-64 focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
-      <i data-lucide="search" class="icon absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+    <div class="flex items-center gap-2">
+      <div class="relative">
+        <input type="search" x-model="q" placeholder="搜索规则名 / 描述..."
+               class="pl-9 pr-3 py-1.5 text-sm border border-slate-300 rounded-md w-64 focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+        <i data-lucide="search" class="icon absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+      </div>
+      <a href="/admin/editor" class="btn btn-primary text-sm">
+        <i data-lucide="plus" class="icon w-3 h-3"></i> 新建
+      </a>
     </div>
   </div>
 
@@ -50,16 +55,18 @@ func (s *Server) pageCatalog(w http.ResponseWriter, _ *http.Request) {
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <template x-for="r in visibleInGroup(grp)" :key="r.id">
-          <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm hover:shadow-md transition cursor-pointer"
-               @click="openDetail(r.id)">
+          <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm hover:shadow-md transition group relative">
+            <!-- 卡片头 -->
             <div class="flex items-start justify-between mb-2">
-              <h3 class="text-sm font-semibold text-slate-900 mono" x-text="r.name"></h3>
+              <h3 class="text-sm font-semibold text-slate-900 mono truncate" x-text="r.name"></h3>
               <span class="badge"
                     :class="r.lang === 'starlark' ? 'badge-info' : 'badge-ok'"
                     x-text="r.lang"></span>
             </div>
+            <!-- 描述 -->
             <p class="text-xs text-slate-600 line-clamp-2 mb-3 min-h-[2rem]"
                x-text="r.description || '(暂无描述)'"></p>
+            <!-- 元信息 -->
             <div class="flex items-center justify-between text-xs text-slate-500 mb-3">
               <span class="flex items-center gap-1">
                 <i data-lucide="zap" class="icon w-3 h-3"></i>
@@ -70,15 +77,37 @@ func (s *Server) pageCatalog(w http.ResponseWriter, _ *http.Request) {
                 <span x-text="r.last_run || '从未运行'"></span>
               </span>
             </div>
+            <!-- 操作按钮组 -->
             <div class="flex items-center gap-1.5 pt-2 border-t border-slate-100">
-              <button @click.stop="openDetail(r.id)"
+              <button @click="open(r.id)"
                       class="btn btn-outline text-xs flex-1">
-                <i data-lucide="eye" class="icon w-3 h-3"></i> 查看
+                <i data-lucide="pen-line" class="icon w-3 h-3"></i> 编辑
               </button>
-              <button @click.stop="fork(r)"
+              <button @click="runNow(r)"
                       class="btn btn-outline text-xs flex-1">
-                <i data-lucide="git-fork" class="icon w-3 h-3"></i> Fork
+                <i data-lucide="play" class="icon w-3 h-3"></i> 试运行
               </button>
+              <div x-data="{ open: false }" class="relative">
+                <button @click="open = !open" class="btn btn-outline text-xs px-2">
+                  <i data-lucide="more-vertical" class="icon w-3 h-3"></i>
+                </button>
+                <div x-show="open" @click.outside="open = false"
+                     class="absolute right-0 mt-1 w-36 bg-white rounded shadow-lg border border-slate-200 z-10 text-xs">
+                  <button @click="fork(r); open = false" class="block w-full text-left px-3 py-1.5 hover:bg-slate-50">
+                    <i data-lucide="git-fork" class="icon w-3 h-3 inline-block mr-1"></i> Fork
+                  </button>
+                  <button @click="exportCode(r); open = false" class="block w-full text-left px-3 py-1.5 hover:bg-slate-50">
+                    <i data-lucide="download" class="icon w-3 h-3 inline-block mr-1"></i> 导出
+                  </button>
+                  <button @click="viewDiffs(r); open = false" class="block w-full text-left px-3 py-1.5 hover:bg-slate-50">
+                    <i data-lucide="alert-triangle" class="icon w-3 h-3 inline-block mr-1"></i> 看 diffs
+                  </button>
+                  <hr class="my-0.5 border-slate-100">
+                  <button @click="del(r); open = false" class="block w-full text-left px-3 py-1.5 text-red-600 hover:bg-red-50">
+                    <i data-lucide="trash-2" class="icon w-3 h-3 inline-block mr-1"></i> 删除
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </template>
@@ -88,7 +117,8 @@ func (s *Server) pageCatalog(w http.ResponseWriter, _ *http.Request) {
 
   <div x-show="rules.length === 0" class="text-center py-12 text-sm text-slate-400">
     <i data-lucide="package-x" class="w-8 h-8 mx-auto mb-2 opacity-50"></i>
-    <div>暂无规则。点击右上角"+"创建第一条。</div>
+    <div>暂无规则。</div>
+    <a href="/admin/editor" class="text-brand-600 hover:underline mt-2 inline-block">创建第一条 →</a>
   </div>
 </div>
 `
@@ -118,7 +148,6 @@ function catalogModel() {
       try {
         const list = await fetch('/api/v1/scripts').then(r => r.json());
         this.rules = Array.isArray(list) ? list : [];
-        // 默认填充 severity (若 API 没返,按 name 推断)
         this.rules.forEach(r => {
           if (!r.severity) {
             r.severity = r.name.includes('excess') || r.name.includes('duplicate') ? 'critical'
@@ -129,9 +158,7 @@ function catalogModel() {
             r.lang = r.code && r.code.includes('def check') ? 'starlark' : 'go';
           }
         });
-      } catch (e) {
-        console.error(e);
-      }
+      } catch (e) { console.error(e); }
     },
 
     countBy(filter) {
@@ -149,23 +176,57 @@ function catalogModel() {
       );
     },
 
-    openDetail(id) { window.location = '/admin/editor?id=' + encodeURIComponent(id); },
+    open(id) { window.location = '/admin/editor?id=' + encodeURIComponent(id); },
+
+    async runNow(r) {
+      try {
+        const resp = await fetch('/api/v1/scripts/' + r.id + '/run', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        alert(r.name + ' 完成 — ' + (data.diffs_count || (data.diffs || []).length || 0) + ' diffs');
+      } catch (e) { alert('试运行失败: ' + e); }
+    },
 
     async fork(r) {
-      const name = prompt('新规则名 (snake_case):', r.name + '_copy');
+      const name = prompt('Fork 为新规则名 (snake_case):', r.name + '_copy');
       if (!name) return;
       try {
         await fetch('/api/v1/scripts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            name, description: r.description + ' (forked from ' + r.name + ')',
+            name, description: (r.description || '') + ' (forked from ' + r.name + ')',
             severity: r.severity, code: r.code,
           }),
         });
-        alert('Fork 完成: ' + name);
         this.load();
       } catch (e) { alert('Fork 失败: ' + e); }
+    },
+
+    exportCode(r) {
+      const code = r.code || '';
+      const blob = new Blob([code], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = r.name + '.star';
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+
+    viewDiffs(r) {
+      window.location = '/admin/diffs?rule=' + encodeURIComponent(r.name);
+    },
+
+    async del(r) {
+      if (!confirm('确认删除规则 ' + r.name + '?\n该操作需要 4-eyes 审批 (会发起待审批流).')) return;
+      try {
+        const resp = await fetch('/api/v1/scripts/' + r.id, { method: 'DELETE' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        this.load();
+      } catch (e) { alert('删除失败: ' + e); }
     },
   };
 }
