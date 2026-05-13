@@ -1,13 +1,13 @@
 // page_editor.go — /admin/editor 升级版规则编辑器.
 //
-// 在共用 layout 内嵌入 Monaco + 现有 editor 功能,加:
-//   - 左侧栏 3 段: outline / 版本历史 / **DB Schema 浏览** (auto-load from /api/v1/meta/*)
-//   - 右侧:试运行 inline 预览 + lint 错误
-//   - 顶部:lint / dry-run / save / fork / 版本 diff
-//   - Monaco completion 自动注入 svc 名 / table 名 / column 名 / index key
-//     在脚本里输入 `ctx.scan(` / `ctx.get_by_index(` / `e.after["` 时弹补全
+// 左侧栏 4 段 (Tab 切换,不用 details 折叠以免布局塌陷):
+//   - 大纲 outline (代码符号)
+//   - 数据库 schema (auto-load + fallback 默认表)
+//   - 版本历史
+//   - 实时事件 mini (last 10 SSE events)
 //
-// 旧 editor_html.go (1627 行 SPA) 保留为 /admin/legacy 兼容旧 bookmark.
+// 中:Monaco editor + 顶 toolbar (lint / dry-run / save / more menu)
+// 右:运行预览 + 实时活动 mini (合并)
 package api
 
 import "net/http"
@@ -17,112 +17,189 @@ func (s *Server) pageEditor(w http.ResponseWriter, r *http.Request) {
 	body := `
 <div x-data="editorModel('` + scriptID + `')" x-init="load()" class="grid grid-cols-12 gap-4 h-[calc(100vh-7rem)]">
 
-  <!-- 左:outline + 历史 + DB schema (三段叠) -->
-  <aside class="col-span-2 bg-white rounded-lg border border-slate-200 overflow-hidden flex flex-col">
+  <!-- 左栏: 4 个 Tab -->
+  <aside class="col-span-3 bg-white rounded-lg border border-slate-200 flex flex-col overflow-hidden">
 
-    <!-- ▶ outline -->
-    <details open class="border-b border-slate-200">
-      <summary class="px-3 py-2 bg-slate-50 cursor-pointer text-xs font-semibold uppercase tracking-wider text-slate-500 select-none">
-        大纲 <span class="ml-1 text-slate-400 normal-case font-normal" x-text="'(' + outline.length + ')'"></span>
-      </summary>
-      <ul class="px-2 py-1 max-h-48 overflow-y-auto space-y-0.5 text-xs">
-        <template x-for="sym in outline" :key="sym.line">
-          <li class="flex items-center gap-1.5 px-2 py-1 hover:bg-slate-50 rounded cursor-pointer"
-              @click="jumpTo(sym.line)">
-            <i :data-lucide="sym.kind === 'function' ? 'square-function' : 'square-code'"
-               class="icon w-3 h-3 text-slate-400"></i>
-            <span class="mono truncate" x-text="sym.name"></span>
-            <span class="text-slate-400 ml-auto" x-text="sym.line"></span>
-          </li>
-        </template>
-        <li x-show="outline.length===0" class="text-slate-400 px-2 py-2">解析中...</li>
-      </ul>
-    </details>
-
-    <!-- ▶ 版本历史 -->
-    <details class="border-b border-slate-200">
-      <summary class="px-3 py-2 bg-slate-50 cursor-pointer text-xs font-semibold uppercase tracking-wider text-slate-500 select-none">
-        版本 <span class="ml-1 text-slate-400 normal-case font-normal" x-text="'(' + versions.length + ')'"></span>
-      </summary>
-      <ul class="px-2 py-1 max-h-40 overflow-y-auto space-y-1 text-xs">
-        <template x-for="v in versions" :key="v.id">
-          <li class="px-2 py-1 hover:bg-slate-50 rounded">
-            <div class="flex items-center justify-between">
-              <span class="mono" x-text="'v' + v.version"></span>
-              <span class="text-slate-400" x-text="v.age"></span>
-            </div>
-            <div class="flex items-center gap-2 mt-0.5 text-[10px]">
-              <button @click="diffWith(v)" class="text-brand-600 hover:underline">diff</button>
-              <button @click="rollback(v)" class="text-slate-500 hover:underline">rollback</button>
-            </div>
-          </li>
-        </template>
-        <li x-show="versions.length===0" class="text-slate-400 px-2 py-2">无历史</li>
-      </ul>
-    </details>
-
-    <!-- ▶ DB Schema (auto-load) -->
-    <details open class="flex-1 flex flex-col overflow-hidden">
-      <summary class="px-3 py-2 bg-slate-50 cursor-pointer text-xs font-semibold uppercase tracking-wider text-slate-500 select-none flex items-center">
-        <span>DB Schema</span>
-        <span class="ml-1 text-slate-400 normal-case font-normal" x-text="'(' + schemaTables.length + ')'"></span>
-        <button @click.prevent.stop="loadSchema()" class="ml-auto text-slate-400 hover:text-slate-600" title="刷新 schema">
-          <i data-lucide="refresh-cw" class="icon w-3 h-3"></i>
+    <!-- Tab header -->
+    <div class="flex border-b border-slate-200 shrink-0 bg-slate-50">
+      <template x-for="t in leftTabs" :key="t.value">
+        <button @click="leftTab = t.value"
+                class="flex-1 px-2 py-2 text-xs font-medium border-b-2 -mb-px transition relative"
+                :class="leftTab === t.value
+                  ? 'border-brand-600 text-brand-700 bg-white'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'">
+          <i :data-lucide="t.icon" class="icon w-3 h-3 inline-block align-text-bottom mr-1"></i>
+          <span x-text="t.label"></span>
+          <span x-show="t.badge" class="ml-1 text-[10px] bg-slate-200 text-slate-600 rounded-full px-1.5"
+                x-text="t.badge"></span>
         </button>
-      </summary>
-      <div class="px-2 py-1 border-b border-slate-100 shrink-0">
-        <input x-model="schemaFilter" type="search" placeholder="过滤 svc / table..."
-               class="w-full text-xs border border-slate-200 rounded px-2 py-1 focus:ring-1 focus:ring-brand-500 focus:border-brand-500">
-      </div>
-      <div class="flex-1 overflow-y-auto text-xs">
-        <template x-for="(grp, svc) in groupedSchema" :key="svc">
-          <div class="border-b border-slate-100">
-            <button @click="toggleSvc(svc)"
-                    class="w-full flex items-center px-2 py-1 hover:bg-slate-50 text-left">
-              <i :data-lucide="schemaOpen[svc] === false ? 'chevron-right' : 'chevron-down'"
-                 class="icon w-3 h-3 text-slate-400 mr-1"></i>
-              <span class="font-medium text-slate-700 truncate" x-text="svc"></span>
-              <span class="ml-auto text-slate-400" x-text="grp.length"></span>
-            </button>
-            <ul x-show="schemaOpen[svc] !== false" class="px-1 pb-1">
-              <template x-for="t in grp" :key="t.key">
-                <li class="group">
-                  <button @click="loadColumns(t)" @dblclick="insertScan(t)"
-                          class="w-full flex items-center px-3 py-1 hover:bg-slate-50 text-left mono text-[11px]"
-                          :class="t.key === activeTable && 'bg-brand-50'">
-                    <i data-lucide="table-2" class="icon w-3 h-3 text-slate-400 mr-1"></i>
-                    <span class="truncate" x-text="t.table"></span>
-                    <i data-lucide="plus" class="icon w-3 h-3 ml-auto opacity-0 group-hover:opacity-100 text-brand-600"
-                       title="双击插入 ctx.scan(...)"></i>
-                  </button>
-                  <ul x-show="t.columns && t.key === activeTable" class="ml-6 mb-1">
-                    <template x-for="c in (t.columns || [])" :key="c.name">
-                      <li class="flex items-center text-[10px] text-slate-500 py-0.5 mono cursor-pointer hover:text-slate-900"
-                          @click="insertColumn(c)" :title="'click 插入 ' + c.name">
-                        <i data-lucide="dot" class="icon w-3 h-3"></i>
-                        <span x-text="c.name"></span>
-                        <span class="ml-1 text-slate-400" x-text="c.type"></span>
-                      </li>
-                    </template>
-                  </ul>
-                </li>
-              </template>
-            </ul>
-          </div>
-        </template>
-        <div x-show="schemaTables.length === 0" class="text-slate-400 px-3 py-3">
-          schema 加载中...
+      </template>
+    </div>
+
+    <!-- Tab content -->
+    <div class="flex-1 overflow-hidden">
+
+      <!-- ▶ Tab: 大纲 -->
+      <section x-show="leftTab === 'outline'" class="h-full overflow-y-auto p-2">
+        <ul class="space-y-0.5 text-xs">
+          <template x-for="sym in outline" :key="sym.line">
+            <li class="flex items-center gap-1.5 px-2 py-1 hover:bg-slate-50 rounded cursor-pointer"
+                @click="jumpTo(sym.line)">
+              <i :data-lucide="sym.kind === 'function' ? 'square-function' : 'square-code'"
+                 class="icon w-3 h-3 text-slate-400"></i>
+              <span class="mono truncate" x-text="sym.name"></span>
+              <span class="text-slate-400 ml-auto" x-text="'L' + sym.line"></span>
+            </li>
+          </template>
+          <li x-show="outline.length === 0" class="text-slate-400 px-2 py-2">
+            (脚本内无 def function)
+          </li>
+        </ul>
+      </section>
+
+      <!-- ▶ Tab: 数据库 Schema -->
+      <section x-show="leftTab === 'schema'" class="h-full flex flex-col">
+        <!-- 状态条 -->
+        <div class="px-2 py-1.5 border-b border-slate-100 shrink-0 flex items-center gap-2">
+          <input x-model="schemaFilter" type="search" placeholder="过滤 svc / table..."
+                 class="flex-1 text-xs border border-slate-200 rounded px-2 py-1 focus:ring-1 focus:ring-brand-500 focus:border-brand-500">
+          <button @click="loadSchema(true)" class="text-slate-400 hover:text-slate-600" title="刷新">
+            <i data-lucide="refresh-cw" class="icon w-3 h-3"
+               :class="schemaState === 'loading' && 'animate-spin'"></i>
+          </button>
         </div>
-      </div>
-      <div class="px-2 py-1.5 border-t border-slate-100 text-[10px] text-slate-400 shrink-0">
-        <i data-lucide="info" class="icon w-3 h-3 inline-block align-text-bottom"></i>
-        点 table 看列;双击插入 <span class="mono">ctx.scan(...)</span>
-      </div>
-    </details>
+
+        <!-- 状态指示 -->
+        <div class="px-2 py-1 text-[10px] flex items-center gap-1 shrink-0"
+             :class="{
+               'text-slate-400': schemaState === 'loading',
+               'text-emerald-600': schemaState === 'ok',
+               'text-amber-600': schemaState === 'empty',
+               'text-red-600': schemaState === 'err',
+             }">
+          <span x-show="schemaState === 'loading'">⏳ 加载中...</span>
+          <span x-show="schemaState === 'ok'"
+                x-text="'✓ 已加载 ' + schemaTables.length + ' 张表 (' + Object.keys(groupedSchema).length + ' 个 service)'"></span>
+          <span x-show="schemaState === 'empty'">⚠ meta syncer 无数据 — 显示内置默认表</span>
+          <span x-show="schemaState === 'err'" x-text="'✗ ' + schemaErr"></span>
+        </div>
+
+        <!-- 表列表 -->
+        <div class="flex-1 overflow-y-auto text-xs">
+          <template x-for="svc in Object.keys(groupedSchema).sort()" :key="svc">
+            <div class="border-b border-slate-100">
+              <button @click="toggleSvc(svc)"
+                      class="w-full flex items-center px-2 py-1.5 hover:bg-slate-50 text-left sticky top-0 bg-white border-b border-slate-100">
+                <i :data-lucide="schemaClosed[svc] ? 'chevron-right' : 'chevron-down'"
+                   class="icon w-3 h-3 text-slate-400 mr-1"></i>
+                <span class="font-medium text-slate-700 truncate" x-text="svc"></span>
+                <span class="ml-auto text-slate-400" x-text="groupedSchema[svc].length"></span>
+              </button>
+              <ul x-show="!schemaClosed[svc]" class="pb-1">
+                <template x-for="t in groupedSchema[svc]" :key="t.key">
+                  <li class="group">
+                    <div class="flex items-center px-2 py-1 hover:bg-slate-50">
+                      <button @click="loadColumns(t)" @dblclick="insertScan(t)"
+                              class="flex-1 flex items-center text-left mono text-[11px]"
+                              :class="t.key === activeTable && 'text-brand-700 font-medium'">
+                        <i :data-lucide="t.key === activeTable ? 'folder-open' : 'table-2'"
+                           class="icon w-3 h-3 mr-1"
+                           :class="t.key === activeTable ? 'text-brand-600' : 'text-slate-400'"></i>
+                        <span class="truncate" x-text="t.table"></span>
+                      </button>
+                      <button @click="insertScan(t)"
+                              class="opacity-0 group-hover:opacity-100 text-brand-600 hover:bg-brand-50 rounded px-1"
+                              title="插入 ctx.scan(...)">
+                        <i data-lucide="plus" class="icon w-3 h-3"></i>
+                      </button>
+                    </div>
+                    <ul x-show="t.columns && t.key === activeTable" class="ml-5 pb-1">
+                      <template x-for="c in (t.columns || [])" :key="c.name">
+                        <li @click="insertColumn(c)"
+                            class="flex items-center text-[10px] py-0.5 px-2 mono cursor-pointer hover:bg-slate-50"
+                            :title="'click 插入 \"' + c.name + '\"'">
+                          <i data-lucide="minus" class="icon w-2.5 h-2.5 text-slate-300"></i>
+                          <span class="text-slate-700 ml-1" x-text="c.name"></span>
+                          <span class="text-slate-400 ml-auto" x-text="c.type"></span>
+                        </li>
+                      </template>
+                      <li x-show="!t.columns || t.columns.length === 0"
+                          class="text-[10px] text-slate-400 px-2 py-1">(列加载中或为空)</li>
+                    </ul>
+                  </li>
+                </template>
+              </ul>
+            </div>
+          </template>
+        </div>
+        <div class="px-2 py-1.5 border-t border-slate-100 text-[10px] text-slate-400 shrink-0">
+          点 table 看列;双击 / + 按钮插入 <span class="mono">ctx.scan(...)</span>
+        </div>
+      </section>
+
+      <!-- ▶ Tab: 版本历史 -->
+      <section x-show="leftTab === 'versions'" class="h-full overflow-y-auto p-2">
+        <ul class="space-y-1 text-xs">
+          <template x-for="v in versions" :key="v.id">
+            <li class="px-2 py-1.5 border border-slate-200 rounded">
+              <div class="flex items-center justify-between">
+                <span class="mono font-medium" x-text="'v' + v.version"></span>
+                <span class="text-slate-400" x-text="v.age"></span>
+              </div>
+              <div class="text-slate-500 mt-0.5" x-text="v.actor || '?'"></div>
+              <div class="flex items-center gap-2 mt-1">
+                <button @click="diffWith(v)" class="text-brand-600 hover:underline text-[10px]">diff</button>
+                <button @click="rollback(v)" class="text-slate-500 hover:underline text-[10px]">rollback</button>
+              </div>
+            </li>
+          </template>
+          <li x-show="versions.length === 0" class="text-slate-400 px-2 py-2">
+            (新建规则保存后会出现历史)
+          </li>
+        </ul>
+      </section>
+
+      <!-- ▶ Tab: 实时事件 (mini) -->
+      <section x-show="leftTab === 'events'" class="h-full flex flex-col">
+        <div class="px-2 py-1.5 border-b border-slate-100 text-[10px] flex items-center gap-2 shrink-0">
+          <span class="flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full"
+                  :class="liveStatus === 'open' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'"></span>
+            <span class="text-slate-500" x-text="liveStatus === 'open' ? 'streaming' : 'connecting'"></span>
+          </span>
+          <button @click="liveBuffer = []" class="ml-auto text-slate-400 hover:text-slate-600 text-[10px]">clear</button>
+        </div>
+        <ul class="flex-1 overflow-y-auto divide-y divide-slate-100 text-xs">
+          <template x-for="e in liveBuffer.slice(0, 50)" :key="e._uid">
+            <li class="px-2 py-1.5 hover:bg-slate-50">
+              <div class="flex items-center gap-1">
+                <span class="badge text-[9px] py-0"
+                      :class="e.op === 'INSERT' ? 'badge-ok' : e.op === 'UPDATE' ? 'badge-info' : 'badge-critical'"
+                      x-text="e.op || '?'"></span>
+                <span class="mono text-[10px] truncate flex-1" x-text="e.svc + ':' + e.table"></span>
+                <span class="text-slate-400 text-[9px]" x-text="formatTs(e.ts)"></span>
+              </div>
+              <div class="mono text-[10px] text-slate-500 truncate" x-text="e.pk"></div>
+            </li>
+          </template>
+          <li x-show="liveBuffer.length === 0 && liveStatus === 'open'"
+              class="px-2 py-4 text-center text-slate-400 text-[10px]">
+            等待 binlog 事件...
+          </li>
+          <li x-show="liveStatus !== 'open'"
+              class="px-2 py-4 text-center text-slate-400 text-[10px]">
+            <span x-text="liveStatus === 'err' ? '✗ 断开,自动重连中' : '⏳ 连接中'"></span>
+          </li>
+        </ul>
+        <div class="px-2 py-1.5 border-t border-slate-100 text-[10px] text-slate-400 shrink-0">
+          监听 /api/v1/events/stream — <a href="/admin/events" class="text-brand-600 hover:underline">查看全部</a>
+        </div>
+      </section>
+    </div>
   </aside>
 
   <!-- 中:编辑器 -->
-  <section class="col-span-7 flex flex-col">
+  <section class="col-span-6 flex flex-col">
     <div class="bg-white rounded-t-lg border border-b-0 border-slate-200 px-3 py-2 flex items-center gap-2 shrink-0">
       <input type="text" x-model="meta.name" placeholder="rule_name (snake_case)"
              class="mono text-sm border-0 outline-none px-1 py-0.5 flex-1 focus:bg-slate-50 rounded">
@@ -161,7 +238,7 @@ func (s *Server) pageEditor(w http.ResponseWriter, r *http.Request) {
     <div id="monaco" class="flex-1 border border-slate-200 bg-white rounded-b-lg overflow-hidden"></div>
   </section>
 
-  <!-- 右:试运行 / lint -->
+  <!-- 右:运行预览 -->
   <aside class="col-span-3 bg-white rounded-lg border border-slate-200 overflow-hidden flex flex-col">
     <div class="px-3 py-2 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
       <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-500">运行预览</h3>
@@ -187,6 +264,9 @@ func (s *Server) pageEditor(w http.ResponseWriter, r *http.Request) {
       <div x-show="status === 'ok' && diffs.length === 0" class="text-xs text-slate-400 text-center py-4">
         0 diffs (规则跑通,无命中)
       </div>
+      <div x-show="status === ''" class="text-xs text-slate-400 text-center py-4">
+        点 Dry-run 试跑这条规则
+      </div>
     </div>
   </aside>
 </div>
@@ -206,7 +286,7 @@ require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.46.0
 require(['vs/editor/editor.main'], function() {
   monacoEditor = monaco.editor.create(document.getElementById('monaco'), {
     value: starterCode(),
-    language: 'python',  // Starlark 与 Python 同语法
+    language: 'python',
     theme: 'vs',
     minimap: { enabled: false },
     fontFamily: 'JetBrains Mono, Menlo, monospace',
@@ -216,12 +296,11 @@ require(['vs/editor/editor.main'], function() {
   });
 });
 
-// 起始模板
 function starterCode() {
   return [
-    '# 新规则模板。',
-    '# 输入: ctx.scan(svc, table) / ctx.get_by_index(idx, val) / ctx.get(svc, table, pk)',
-    '# 输出: return [{"type": "...", "key": "...", "detail": {...}}, ...]',
+    '# 新规则模板',
+    '# - 输入: ctx.scan(svc, table) / ctx.get_by_index(idx, val) / ctx.get(svc, table, pk)',
+    '# - 输出: return [{"type": "...", "key": "...", "detail": {...}}, ...]',
     '',
     'def check(ctx):',
     '    diffs = []',
@@ -231,6 +310,43 @@ function starterCode() {
   ].join('\n');
 }
 
+// Fallback tables: meta API 没数据时也能用 autocomplete
+const FALLBACK_TABLES = [
+  // order-core
+  { svc: 'order-core', table: 'payment_intent' },
+  { svc: 'order-core', table: 'payment_method' },
+  { svc: 'order-core', table: 'refund_request' },
+  // payment-channel
+  { svc: 'payment-channel', table: 'acquirer_tx' },
+  { svc: 'payment-channel', table: 'channel_callback' },
+  { svc: 'payment-channel', table: 'refund' },
+  // accounting-system
+  { svc: 'accounting-system', table: 'ledger_entry' },
+  { svc: 'accounting-system', table: 'voucher' },
+  { svc: 'accounting-system', table: 'tcc_record' },
+  // user-merchant-core
+  { svc: 'user-merchant-core', table: 'merchant' },
+  { svc: 'user-merchant-core', table: 'user_card' },
+  // billing-system
+  { svc: 'billing-system', table: 'fee_event' },
+  { svc: 'billing-system', table: 'statement' },
+  // clearing-settlement
+  { svc: 'clearing-settlement', table: 'settlement_run' },
+  { svc: 'clearing-settlement', table: 'settlement_record' },
+  // risk-manage
+  { svc: 'risk-manage', table: 'decision_audit' },
+  // merchant-webhook
+  { svc: 'merchant-webhook', table: 'delivery' },
+  { svc: 'merchant-webhook', table: 'delivery_attempt' },
+  // dispute-service
+  { svc: 'dispute-service', table: 'dispute' },
+];
+
+const FALLBACK_IDX_KEYS = [
+  'pi_id', 'order_id', 'merchant_id', 'idempotency_key',
+  'transaction_id', 'user_id', 'customer_id', 'dispute_id',
+];
+
 function editorModel(scriptID) {
   return {
     scriptID,
@@ -239,12 +355,31 @@ function editorModel(scriptID) {
     diffs: [], errorMsg: '',
     status: '', diffsCount: 0,
 
-    // schema 状态
-    schemaTables: [],          // [{svc, table, key, columns?}]
-    schemaOpen: {},            // svc -> bool (折叠)
+    // 左栏 tab
+    leftTab: 'schema',  // 默认显示 schema (用户最关心)
+    get leftTabs() {
+      return [
+        { value: 'outline',  label: '大纲',     icon: 'list-tree',     badge: this.outline.length },
+        { value: 'schema',   label: 'Schema',  icon: 'database',      badge: this.schemaTables.length },
+        { value: 'versions', label: '版本',     icon: 'git-commit',    badge: this.versions.length },
+        { value: 'events',   label: '实时',     icon: 'activity',      badge: '' },
+      ];
+    },
+
+    // schema 状态 — 立即用 fallback 填充,保证第一帧就有内容,
+    // loadSchema() 跑完后再合并真实数据 (若有).
+    schemaTables: FALLBACK_TABLES.map(t => ({ ...t, key: t.svc + ':' + t.table })),
+    schemaClosed: {},
     schemaFilter: '',
-    activeTable: '',           // 当前展开列的 table key
-    indexKeys: [],
+    activeTable: '',
+    indexKeys: FALLBACK_IDX_KEYS,
+    schemaState: 'empty',  // 默认 empty (展示 fallback),loadSchema 后变 ok / err
+    schemaErr: '',
+
+    // live events (mini SSE,跟 /admin/events 共用 stream)
+    liveBuffer: [],
+    liveStatus: 'init',
+    liveSse: null,
 
     get groupedSchema() {
       const f = this.schemaFilter.toLowerCase();
@@ -257,17 +392,13 @@ function editorModel(scriptID) {
     },
 
     async load() {
-      // 并行: 1) 拉脚本 (若有 id) 2) 拉 schema 3) 拉 idx_keys
-      await Promise.all([this.loadScript(), this.loadSchema(), this.loadIndexKeys()]);
-      // 把 schema 注入 Monaco completion
+      await Promise.all([this.loadScript(), this.loadSchema(false), this.loadIndexKeys()]);
       this.registerCompletion();
+      this.connectLiveStream();
     },
 
     async loadScript() {
-      if (!this.scriptID) {
-        // 新建模式: 等 Monaco 起来,把起始模板放进去
-        return;
-      }
+      if (!this.scriptID) return;
       try {
         const r = await fetch('/api/v1/scripts/' + this.scriptID).then(r => r.json());
         this.meta.name     = r.name;
@@ -279,7 +410,6 @@ function editorModel(scriptID) {
             clearInterval(wait);
           }
         }, 50);
-        // 历史
         try {
           const v = await fetch('/api/v1/scripts/' + this.scriptID + '/versions').then(r => r.json());
           this.versions = v || [];
@@ -287,27 +417,42 @@ function editorModel(scriptID) {
       } catch (e) { console.error(e); }
     },
 
-    async loadSchema() {
+    async loadSchema(force) {
+      const prev = this.schemaState;
+      // 不重置 schemaTables — 让 fallback 一直可见,只在 ok 时替换
       try {
-        const list = await fetch('/api/v1/meta/tables').then(r => r.json()).catch(() => []);
-        // /api/v1/meta/tables 返 ["<svc>:<table>", ...]
+        const res = await fetch('/api/v1/meta/tables', { cache: force ? 'no-cache' : 'default' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const list = await res.json();
         const norm = (Array.isArray(list) ? list : []).map(s => {
           const [svc, table] = String(s).split(':');
           return { svc: svc || 'unknown', table: table || s, key: s };
-        }).sort((a, b) => a.svc.localeCompare(b.svc) || a.table.localeCompare(b.table));
-        this.schemaTables = norm;
-        // 默认折叠超过 3 个 service 的展示
-        const svcs = new Set(norm.map(t => t.svc));
-        if (svcs.size > 3) {
-          for (const s of svcs) this.schemaOpen[s] = false;
+        });
+        if (norm.length === 0) {
+          // meta 没数据 → 保持 fallback,state empty
+          this.schemaState = 'empty';
+        } else {
+          // 合并: 真实数据优先,fallback 补差
+          const realKeys = new Set(norm.map(t => t.key));
+          const fallbackExtra = FALLBACK_TABLES
+            .filter(t => !realKeys.has(t.svc + ':' + t.table))
+            .map(t => ({ ...t, key: t.svc + ':' + t.table }));
+          this.schemaTables = [...norm, ...fallbackExtra];
+          this.schemaState = 'ok';
         }
-      } catch (e) { console.error(e); }
+      } catch (e) {
+        console.warn('schema load failed:', e);
+        // 已经有 fallback,只更新 state
+        this.schemaState = 'err';
+        this.schemaErr = String(e).slice(0, 60);
+      }
+      this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
     },
 
     async loadIndexKeys() {
       try {
         const k = await fetch('/api/v1/meta/idx_keys').then(r => r.json()).catch(() => []);
-        this.indexKeys = Array.isArray(k) ? k : [];
+        if (Array.isArray(k) && k.length > 0) this.indexKeys = k;
       } catch (_) {}
     },
 
@@ -319,14 +464,20 @@ function editorModel(scriptID) {
         t.columns = (Array.isArray(cols) ? cols : []).map(c => ({
           name: c.name || c.column || c, type: c.type || ''
         }));
-        // Alpine 不会感知数组成员属性变化,touch 一下
-        this.schemaTables = [...this.schemaTables];
-        this.registerCompletion();
+        if (t.columns.length === 0) {
+          // 没列也加点占位 (用 fallback)
+          t.columns = [
+            { name: 'id', type: 'varchar' },
+            { name: 'created_at', type: 'datetime' },
+            { name: 'updated_at', type: 'datetime' },
+          ];
+        }
+        this.schemaTables = [...this.schemaTables];  // touch
       } catch (e) { console.error(e); }
     },
 
     toggleSvc(svc) {
-      this.schemaOpen[svc] = this.schemaOpen[svc] === false;
+      this.schemaClosed = { ...this.schemaClosed, [svc]: !this.schemaClosed[svc] };
     },
 
     insertScan(t) {
@@ -348,7 +499,6 @@ function editorModel(scriptID) {
       monacoEditor.focus();
     },
 
-    // 注册 Monaco completion provider, 把 svc / table / column / idx 都喂进去
     registerCompletion() {
       if (_completionRegistered || !window.monaco) return;
       _completionRegistered = true;
@@ -359,7 +509,6 @@ function editorModel(scriptID) {
           const line = model.getLineContent(position.lineNumber);
           const before = line.substring(0, position.column - 1);
           const items = [];
-          // ctx.scan("<svc>", "<table>")
           if (/ctx\.scan\(\s*["']$/.test(before)) {
             const seen = new Set();
             for (const t of self.schemaTables) {
@@ -368,10 +517,10 @@ function editorModel(scriptID) {
               items.push({ label: t.svc, kind: monaco.languages.CompletionItemKind.Module, insertText: t.svc });
             }
           } else if (/ctx\.scan\(\s*["'][^"']+["']\s*,\s*["']$/.test(before)) {
-            const svcMatch = before.match(/ctx\.scan\(\s*["']([^"']+)["']/);
-            if (svcMatch) {
+            const m = before.match(/ctx\.scan\(\s*["']([^"']+)["']/);
+            if (m) {
               for (const t of self.schemaTables) {
-                if (t.svc === svcMatch[1]) {
+                if (t.svc === m[1]) {
                   items.push({ label: t.table, kind: monaco.languages.CompletionItemKind.Struct, insertText: t.table });
                 }
               }
@@ -381,7 +530,6 @@ function editorModel(scriptID) {
               items.push({ label: k, kind: monaco.languages.CompletionItemKind.Field, insertText: k });
             }
           } else if (/\.(after|before)\[\s*["']$/.test(before) || /\.get\(\s*["']$/.test(before)) {
-            // 列名补全 (从当前展开 table 或所有列汇总)
             const colSet = new Set();
             for (const t of self.schemaTables) {
               if (t.columns) for (const c of t.columns) colSet.add(c.name);
@@ -390,12 +538,10 @@ function editorModel(scriptID) {
               items.push({ label: c, kind: monaco.languages.CompletionItemKind.Property, insertText: c });
             }
           } else if (/ctx\.$/.test(before)) {
-            // ctx 上的方法补全
-            for (const m of ['scan(', 'get(', 'get_by_index(', 'scan_index(', 'now', 'params']) {
+            for (const m of ['scan', 'get', 'get_by_index', 'scan_index', 'now', 'params']) {
               items.push({ label: m, kind: monaco.languages.CompletionItemKind.Method, insertText: m });
             }
           }
-          // Monaco 要求 range
           const word = model.getWordUntilPosition(position);
           const range = {
             startLineNumber: position.lineNumber, endLineNumber: position.lineNumber,
@@ -405,6 +551,36 @@ function editorModel(scriptID) {
           return { suggestions: items };
         }
       });
+    },
+
+    connectLiveStream() {
+      try {
+        if (this.liveSse) this.liveSse.close();
+        this.liveStatus = 'init';
+        this.liveSse = new EventSource('/api/v1/events/stream');
+        this.liveSse.onopen  = () => { this.liveStatus = 'open'; };
+        this.liveSse.onerror = () => {
+          this.liveStatus = 'err';
+          // 自动重连
+          setTimeout(() => this.connectLiveStream(), 3000);
+        };
+        this.liveSse.onmessage = (m) => {
+          try {
+            const e = JSON.parse(m.data);
+            e._uid = (e.svc || '?') + ':' + (e.table || '?') + ':' + (e.pk || '?') + ':' + (e.binlog_pos || Date.now());
+            this.liveBuffer.unshift(e);
+            if (this.liveBuffer.length > 100) this.liveBuffer.length = 100;
+          } catch (_) {}
+        };
+      } catch (e) { this.liveStatus = 'err'; }
+    },
+
+    formatTs(ts) {
+      if (!ts) return '';
+      try {
+        const d = new Date(ts);
+        return d.toTimeString().slice(0, 8);
+      } catch (_) { return String(ts).slice(11, 19); }
     },
 
     parseOutline(code) {
@@ -444,13 +620,8 @@ function editorModel(scriptID) {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ code }),
         }).then(r => r.json());
-        if (r.error) {
-          this.status = 'err'; this.errorMsg = r.error;
-        } else {
-          this.status = 'ok';
-          this.diffs = r.diffs || [];
-          this.diffsCount = this.diffs.length;
-        }
+        if (r.error) { this.status = 'err'; this.errorMsg = r.error; }
+        else { this.status = 'ok'; this.diffs = r.diffs || []; this.diffsCount = this.diffs.length; }
       } catch (e) { this.status = 'err'; this.errorMsg = String(e); }
     },
 
@@ -458,19 +629,15 @@ function editorModel(scriptID) {
       if (!this.meta.name) { alert('请填规则名'); return; }
       const code = monacoEditor.getValue();
       try {
-        const url = this.scriptID
-          ? '/api/v1/scripts/' + this.scriptID
-          : '/api/v1/scripts';
+        const url = this.scriptID ? '/api/v1/scripts/' + this.scriptID : '/api/v1/scripts';
         const method = this.scriptID ? 'PUT' : 'POST';
         const r = await fetch(url, {
-          method,
-          headers: { 'Content-Type': 'application/json' },
+          method, headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ...this.meta, code }),
         });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const data = await r.json().catch(() => ({}));
         if (!this.scriptID && data.id) {
-          // 新建后跳到带 id URL
           window.history.replaceState({}, '', '/admin/editor?id=' + encodeURIComponent(data.id));
           this.scriptID = data.id;
         }
@@ -506,7 +673,7 @@ function editorModel(scriptID) {
 
     async del() {
       if (!this.scriptID) { alert('未保存的规则,直接关闭页签即可'); return; }
-      if (!confirm('确认删除 ' + this.meta.name + '?该操作走 4-eyes 审批.')) return;
+      if (!confirm('确认删除 ' + this.meta.name + '?')) return;
       await fetch('/api/v1/scripts/' + this.scriptID, { method: 'DELETE' });
       location.href = '/admin/catalog';
     },
@@ -526,7 +693,6 @@ function editorModel(scriptID) {
   };
 }
 
-// 简易 toast
 function toast(msg) {
   const t = document.createElement('div');
   t.textContent = msg;
