@@ -28,6 +28,10 @@ func (s *Server) pageEvents(w http.ResponseWriter, _ *http.Request) {
       <button @click="clearStream()" class="btn btn-outline text-xs">
         <i data-lucide="eraser" class="icon w-3 h-3"></i> Clear
       </button>
+      <button @click="injectTestEvent()" class="btn btn-outline text-xs"
+              title="dev: 注入一条模拟事件验证渲染">
+        <i data-lucide="zap" class="icon w-3 h-3"></i> 注入测试
+      </button>
       <div class="h-5 w-px bg-slate-200 mx-1"></div>
       <select x-model="filterSvc" class="text-xs border border-slate-300 rounded px-2 py-1">
         <option value="">所有 service</option>
@@ -270,25 +274,69 @@ function eventsPage() {
         if (this.sse) this.sse.close();
         this.sse = new EventSource('/api/v1/events/stream');
         this.sse.onopen = () => { this.sseStatus = 'open'; };
-        this.sse.onerror = () => { this.sseStatus = 'err'; };
-        this.sse.onmessage = (m) => {
+        this.sse.onerror = () => {
+          this.sseStatus = 'err';
+          // 5s 后自动重连
+          setTimeout(() => this.connectSSE(), 5000);
+        };
+        // 服务器 connect 事件 (握手)
+        this.sse.addEventListener('connect', (m) => {
+          this.sseStatus = 'open';
+          console.log('[SSE] connected:', m.data);
+        });
+        // 真正的 binlog 事件 — 关键修复: 必须用 addEventListener('binlog'),
+        // 因为 server 端用了 "event: binlog" 命名事件,onmessage 收不到!
+        const onBinlog = (m) => {
           if (this.paused) return;
           try {
             const e = JSON.parse(m.data);
+            // 服务器把 Redis Stream 的 XADD 值平铺成 {key: value} 字典,
+            // 字段名是 svc/table/pk/op/ts/binlog_pos 等
             e._uid = (e.svc || '?') + ':' + (e.table || '?') + ':' + (e.pk || '?') + ':' + (e.binlog_pos || Date.now());
             e._highlight = true;
             this.buffer.unshift(e);
             if (this.buffer.length > 1000) this.buffer.length = 1000;
-            // 1.2s 后取消高亮
             setTimeout(() => { e._highlight = false; }, 1200);
-            // 自动补全 services / tables 下拉
             if (e.svc && !this.services.includes(e.svc)) this.services.push(e.svc);
-            const tk = e.table;
-            if (tk && !this.tables.includes(tk)) this.tables.push(tk);
-          } catch (e) { /* skip bad msg */ }
+            if (e.table && !this.tables.includes(e.table)) this.tables.push(e.table);
+          } catch (err) { console.warn('[SSE] bad msg:', err); }
         };
+        this.sse.addEventListener('binlog', onBinlog);
+        // 兜底: 部分 server 路径走默认 message (无 event: 头)
+        this.sse.onmessage = onBinlog;
       } catch (e) {
         this.sseStatus = 'err';
+      }
+    },
+
+    // 注入测试事件 (dev 用,绕过 binlog 真实数据流)
+    async injectTestEvent() {
+      const sample = {
+        svc: ['order-core', 'payment-channel', 'accounting-system'][Math.floor(Math.random()*3)],
+        table: ['payment_intent', 'acquirer_tx', 'ledger_entry'][Math.floor(Math.random()*3)],
+        pk: 'test_' + Math.floor(Math.random()*1e6),
+        op: ['INSERT', 'UPDATE', 'DELETE'][Math.floor(Math.random()*3)],
+        ts: new Date().toISOString(),
+        binlog_pos: Date.now(),
+        indexes: { pi_id: 'pi_test_' + Math.floor(Math.random()*100) },
+        after: { id: 'test', amount: Math.floor(Math.random()*10000) },
+      };
+      try {
+        const r = await fetch('/api/v1/events/stream/_inject', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sample),
+        });
+        if (!r.ok) {
+          // 后端没接 inject endpoint → 本地直接 push 到 buffer 模拟
+          sample._uid = sample.svc + ':' + sample.table + ':' + sample.pk;
+          sample._highlight = true;
+          this.buffer.unshift(sample);
+          if (!this.services.includes(sample.svc)) this.services.push(sample.svc);
+          if (!this.tables.includes(sample.table)) this.tables.push(sample.table);
+          setTimeout(() => { sample._highlight = false; }, 1200);
+        }
+      } catch (_) {
+        // 网络挂了也本地模拟
       }
     },
 

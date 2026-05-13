@@ -579,10 +579,11 @@ function editorModel(scriptID) {
         this.liveSse.onopen  = () => { this.liveStatus = 'open'; };
         this.liveSse.onerror = () => {
           this.liveStatus = 'err';
-          // 自动重连
-          setTimeout(() => this.connectLiveStream(), 3000);
+          setTimeout(() => this.connectLiveStream(), 5000);
         };
-        this.liveSse.onmessage = (m) => {
+        this.liveSse.addEventListener('connect', () => { this.liveStatus = 'open'; });
+        // 关键修复: server 端用 event: binlog 命名事件,onmessage 不会触发
+        const onBinlog = (m) => {
           try {
             const e = JSON.parse(m.data);
             e._uid = (e.svc || '?') + ':' + (e.table || '?') + ':' + (e.pk || '?') + ':' + (e.binlog_pos || Date.now());
@@ -590,6 +591,8 @@ function editorModel(scriptID) {
             if (this.liveBuffer.length > 100) this.liveBuffer.length = 100;
           } catch (_) {}
         };
+        this.liveSse.addEventListener('binlog', onBinlog);
+        this.liveSse.onmessage = onBinlog;  // 兜底
       } catch (e) { this.liveStatus = 'err'; }
     },
 

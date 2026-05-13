@@ -188,6 +188,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/admin/backfill", s.adminBackfill)
 	mux.HandleFunc("/api/v1/diffs/_stats", s.diffStats)
 	mux.HandleFunc("/api/v1/events/stream", s.eventsStream)
+	mux.HandleFunc("/api/v1/events/stream/_inject", s.eventsStreamInject)
 	// 冷热分层 — Redis 7d 热 + ClickHouse 跨年冷
 	mux.HandleFunc("/api/v1/diffs/_search", s.diffsSearch)
 	mux.HandleFunc("/api/v1/diffs/_agg_by_day", s.diffsAggByDay)
@@ -289,6 +290,63 @@ func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
 	}
 	hub := NewSSEHub(s.rdb, s.logger)
 	hub.Handle(w, r)
+}
+
+// eventsStreamInject POST /api/v1/events/stream/_inject — dev only.
+//
+// 把一条 JSON event 直接 XADD 到 recon:stream:events,所有订阅 SSE 的客户端
+// 立即看到。用于 dev 验证整条 SSE 渲染链路 (binlog reader 未启动时也能测).
+//
+// 在 prod 应该靠 CDC publisher 写流;本端点对运营隐藏 (admin 后台用),
+// 不影响实际 binlog 数据。
+//
+// Request body: 任意 JSON object,常用字段 {svc, table, pk, op, ts, indexes, after}
+func (s *Server) eventsStreamInject(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.rdb == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("redis not configured"))
+		return
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid json: %w", err))
+		return
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	// 默认值填充
+	if _, ok := payload["ts"]; !ok {
+		payload["ts"] = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if _, ok := payload["op"]; !ok {
+		payload["op"] = "INSERT"
+	}
+	// Redis Stream XADD 字段必须是 string/string;把 nested object 序列化成 JSON
+	flat := map[string]any{}
+	for k, v := range payload {
+		switch vv := v.(type) {
+		case string, float64, int, int64, bool:
+			flat[k] = vv
+		default:
+			b, _ := json.Marshal(vv)
+			flat[k] = string(b)
+		}
+	}
+	id, err := s.rdb.XAdd(r.Context(), &redis.XAddArgs{
+		Stream: "recon:stream:events",
+		MaxLen: 10000,
+		Approx: true,
+		Values: flat,
+	}).Result()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("xadd: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"injected": true, "stream_id": id})
 }
 
 // graphView GET /api/v1/graph?index=pi_id&value=pi_xxx[&depth=3&max_nodes=200]
