@@ -24,17 +24,20 @@ import (
 )
 
 // Script 已加载的单条脚本：源码 + Starlark 编译产物。
+//
+// JSON tag 保证 detail 端点 (/api/v1/scripts/:id) 返回小写字段名,
+// 与 list 端点 (/api/v1/scripts) 手工 map 出的字段名一致, 前端写一套即可.
 type Script struct {
-	ID        string
-	Name      string
-	Code      string
-	UpdatedAt time.Time
-	UpdatedBy string
-	Schedule  string   // cron 表达式（"*/5 * * * *"）；空 = 不走定时
-	Triggers  []string // ["order-core:payment_intents", "*"]；空 = 不走事件驱动
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Code      string    `json:"code"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UpdatedBy string    `json:"updated_by"`
+	Schedule  string    `json:"schedule"`   // cron 表达式（"*/5 * * * *"）；空 = 不走定时
+	Triggers  []string  `json:"triggers"`   // ["order-core:payment_intents", "*"]；空 = 不走事件驱动
 
 	// compiled Starlark 编译后产物，Run 时复用。
-	compiled *CompiledScript
+	compiled *CompiledScript `json:"-"`
 }
 
 // PostRunHook 脚本运行结束后的回调（main.go 注 notifier + diffstate.CreateOpen）。

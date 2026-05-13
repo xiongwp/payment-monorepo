@@ -419,20 +419,22 @@ function editorModel(scriptID) {
       if (!this.scriptID) return;
       try {
         const r = await fetch('/api/v1/scripts/' + this.scriptID).then(r => r.json());
-        this.meta.name     = r.name;
-        this.meta.severity = r.severity || 'warning';
+        // 双重防御:JSON tag 加了之后正常字段是小写,但保留大写兜底
+        this.meta.name     = r.name || r.Name || this.scriptID;
+        this.meta.severity = r.severity || r.Severity || 'warning';
+        const code = r.code || r.Code || '';
         const wait = setInterval(() => {
           if (monacoEditor) {
-            monacoEditor.setValue(r.code || starterCode());
-            this.parseOutline(r.code || '');
+            monacoEditor.setValue(code || starterCode());
+            this.parseOutline(code);
             clearInterval(wait);
           }
         }, 50);
         try {
-          const v = await fetch('/api/v1/scripts/' + this.scriptID + '/versions').then(r => r.json());
-          this.versions = v || [];
+          const vResp = await fetch('/api/v1/scripts/' + this.scriptID + '/versions').then(r => r.json());
+          this.versions = Array.isArray(vResp) ? vResp : (vResp.versions || []);
         } catch (_) {}
-      } catch (e) { console.error(e); }
+      } catch (e) { console.error('[editor] load failed:', e); }
     },
 
     async loadSchema(force) {
