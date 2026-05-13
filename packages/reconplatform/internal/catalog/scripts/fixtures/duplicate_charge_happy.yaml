@@ -1,0 +1,35 @@
+# duplicate_charge — Happy fixture.
+#
+# 一笔正常 charge,每个 idempotency_key 只对应 1 条 acquirer_tx.
+# 规则应输出 0 diff.
+
+events:
+  - svc: payment-channel
+    table: acquirer_tx
+    pk: tx_001
+    op: insert
+    ts: 2026-05-13T10:00:00Z
+    after:
+      id: tx_001
+      idempotency_key: idem_a
+      amount: 1000
+      currency: USD
+    indexes:
+      idempotency_key: idem_a
+      pi_id: pi_001
+
+  - svc: payment-channel
+    table: acquirer_tx
+    pk: tx_002
+    op: insert
+    ts: 2026-05-13T10:01:00Z
+    after:
+      id: tx_002
+      idempotency_key: idem_b
+      amount: 2000
+      currency: USD
+    indexes:
+      idempotency_key: idem_b
+      pi_id: pi_002
+
+expect_diffs: []

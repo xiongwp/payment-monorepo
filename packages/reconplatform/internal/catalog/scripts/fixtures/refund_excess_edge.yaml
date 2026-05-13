@@ -1,0 +1,44 @@
+# refund_excess — Edge: 退款总额超过 charge.
+#
+# 真实业务里可能是 webhook 乱序导致 / 风控放过 / 退款逻辑 bug.
+# 严重程度:critical (资金风险).
+
+events:
+  - svc: payment-channel
+    table: acquirer_tx
+    pk: tx_001
+    after:
+      id: tx_001
+      pi_id: pi_excess
+      amount: 5000
+    indexes:
+      pi_id: pi_excess
+
+  - svc: payment-channel
+    table: refund
+    pk: rf_a
+    after:
+      id: rf_a
+      pi_id: pi_excess
+      amount: 3000
+    indexes:
+      pi_id: pi_excess
+
+  - svc: payment-channel
+    table: refund
+    pk: rf_b
+    after:
+      id: rf_b
+      pi_id: pi_excess
+      amount: 3000        # 累计 6000 > 5000
+    indexes:
+      pi_id: pi_excess
+
+expect_diffs:
+  - type: refund_excess
+    key: pi_excess
+    want: 5000
+    got: 6000
+    detail:
+      refund_count: 2
+      overage: 1000

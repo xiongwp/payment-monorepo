@@ -1,0 +1,175 @@
+// page_catalog.go — /admin/catalog 内置规则浏览.
+//
+// 按 severity 分组卡片 + 命中预览 + 一键 fork 为自定义规则.
+//
+// 数据源:
+//   - GET /api/v1/scripts         拉所有已注册规则 (内置 + 用户)
+//   - 内置规则按 name 前缀分类:
+//       <pkg>:builtin:*          已内置 Go 规则
+//       <pkg>:catalog:*          仓库 catalog/scripts 内的 .star 规则
+//       <pkg>:user:*             用户编辑器创建的规则
+package api
+
+import "net/http"
+
+func (s *Server) pageCatalog(w http.ResponseWriter, _ *http.Request) {
+	body := `
+<div x-data="catalogModel()" x-init="load()" class="space-y-6">
+
+  <!-- 顶部:筛选 + 搜索 -->
+  <div class="flex items-center justify-between gap-4">
+    <div class="flex items-center gap-2">
+      <template x-for="opt in filters" :key="opt.value">
+        <button @click="filter = opt.value"
+                class="px-3 py-1.5 text-sm rounded-md border"
+                :class="filter === opt.value
+                  ? 'bg-brand-600 text-white border-brand-600'
+                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'">
+          <span x-text="opt.label"></span>
+          <span class="ml-1 text-[10px] opacity-75" x-text="'(' + countBy(opt.value) + ')'"></span>
+        </button>
+      </template>
+    </div>
+    <div class="relative">
+      <input type="search" x-model="q" placeholder="搜索规则名 / 描述..."
+             class="pl-9 pr-3 py-1.5 text-sm border border-slate-300 rounded-md w-64 focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+      <i data-lucide="search" class="icon absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+    </div>
+  </div>
+
+  <!-- 三组卡片: critical / warning / info -->
+  <template x-for="grp in groups" :key="grp.severity">
+    <section x-show="visibleInGroup(grp).length > 0">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="badge"
+              :class="grp.severity==='critical' ? 'badge-critical' :
+                       grp.severity==='warning' ? 'badge-warning' : 'badge-info'"
+              x-text="grp.severity.toUpperCase()"></span>
+        <h2 class="text-sm font-semibold text-slate-900" x-text="grp.label"></h2>
+        <span class="text-xs text-slate-500" x-text="'· ' + visibleInGroup(grp).length + ' 条'"></span>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <template x-for="r in visibleInGroup(grp)" :key="r.id">
+          <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm hover:shadow-md transition cursor-pointer"
+               @click="openDetail(r.id)">
+            <div class="flex items-start justify-between mb-2">
+              <h3 class="text-sm font-semibold text-slate-900 mono" x-text="r.name"></h3>
+              <span class="badge"
+                    :class="r.lang === 'starlark' ? 'badge-info' : 'badge-ok'"
+                    x-text="r.lang"></span>
+            </div>
+            <p class="text-xs text-slate-600 line-clamp-2 mb-3 min-h-[2rem]"
+               x-text="r.description || '(暂无描述)'"></p>
+            <div class="flex items-center justify-between text-xs text-slate-500 mb-3">
+              <span class="flex items-center gap-1">
+                <i data-lucide="zap" class="icon w-3 h-3"></i>
+                <span x-text="(r.hits_24h || 0) + ' 24h 命中'"></span>
+              </span>
+              <span class="flex items-center gap-1">
+                <i data-lucide="clock" class="icon w-3 h-3"></i>
+                <span x-text="r.last_run || '从未运行'"></span>
+              </span>
+            </div>
+            <div class="flex items-center gap-1.5 pt-2 border-t border-slate-100">
+              <button @click.stop="openDetail(r.id)"
+                      class="btn btn-outline text-xs flex-1">
+                <i data-lucide="eye" class="icon w-3 h-3"></i> 查看
+              </button>
+              <button @click.stop="fork(r)"
+                      class="btn btn-outline text-xs flex-1">
+                <i data-lucide="git-fork" class="icon w-3 h-3"></i> Fork
+              </button>
+            </div>
+          </div>
+        </template>
+      </div>
+    </section>
+  </template>
+
+  <div x-show="rules.length === 0" class="text-center py-12 text-sm text-slate-400">
+    <i data-lucide="package-x" class="w-8 h-8 mx-auto mb-2 opacity-50"></i>
+    <div>暂无规则。点击右上角"+"创建第一条。</div>
+  </div>
+</div>
+`
+
+	script := `
+<script>
+function catalogModel() {
+  return {
+    rules: [],
+    filter: 'all',
+    q: '',
+    filters: [
+      { value: 'all',      label: '全部' },
+      { value: 'critical', label: '严重' },
+      { value: 'warning',  label: '警告' },
+      { value: 'info',     label: '提示' },
+      { value: 'starlark', label: 'Starlark' },
+      { value: 'go',       label: 'Go 内建' },
+    ],
+    groups: [
+      { severity: 'critical', label: '严重 — 资金安全 / 合规阻断' },
+      { severity: 'warning',  label: '警告 — 业务异常需复核' },
+      { severity: 'info',     label: '提示 — 长尾监控 / 容量' },
+    ],
+
+    async load() {
+      try {
+        const list = await fetch('/api/v1/scripts').then(r => r.json());
+        this.rules = Array.isArray(list) ? list : [];
+        // 默认填充 severity (若 API 没返,按 name 推断)
+        this.rules.forEach(r => {
+          if (!r.severity) {
+            r.severity = r.name.includes('excess') || r.name.includes('duplicate') ? 'critical'
+                       : r.name.includes('lag') || r.name.includes('orphan') ? 'warning'
+                       : 'info';
+          }
+          if (!r.lang) {
+            r.lang = r.code && r.code.includes('def check') ? 'starlark' : 'go';
+          }
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    },
+
+    countBy(filter) {
+      if (filter === 'all') return this.rules.length;
+      return this.rules.filter(r =>
+        r.severity === filter || r.lang === filter).length;
+    },
+
+    visibleInGroup(grp) {
+      const q = this.q.toLowerCase();
+      return this.rules.filter(r =>
+        r.severity === grp.severity
+        && (this.filter === 'all' || this.filter === grp.severity || r.lang === this.filter)
+        && (!q || r.name.toLowerCase().includes(q) || (r.description || '').toLowerCase().includes(q))
+      );
+    },
+
+    openDetail(id) { window.location = '/admin/editor?id=' + encodeURIComponent(id); },
+
+    async fork(r) {
+      const name = prompt('新规则名 (snake_case):', r.name + '_copy');
+      if (!name) return;
+      try {
+        await fetch('/api/v1/scripts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name, description: r.description + ' (forked from ' + r.name + ')',
+            severity: r.severity, code: r.code,
+          }),
+        });
+        alert('Fork 完成: ' + name);
+        this.load();
+      } catch (e) { alert('Fork 失败: ' + e); }
+    },
+  };
+}
+</script>
+`
+	adminPage(w, "规则库", "catalog", body, "", script)
+}

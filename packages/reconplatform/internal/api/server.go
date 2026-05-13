@@ -204,8 +204,27 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/eod/reports/", s.eodSignOff)
 	mux.HandleFunc("/api/v1/approvals/pending", s.approvalsPending)
 	mux.HandleFunc("/api/v1/approvals/", s.approvalsByID)
-	mux.HandleFunc("/admin/", s.editorHTML)
-	mux.HandleFunc("/admin", s.editorHTML)
+	// 新一代多页 admin web (v2):
+	//   /admin                  → 重定向 dashboard
+	//   /admin/dashboard        → KPI 总览
+	//   /admin/diffs            → 差异列表
+	//   /admin/incidents        → incident 列表
+	//   /admin/incidents/{id}   → incident 详情 (state machine + Cytoscape)
+	//   /admin/catalog          → 规则库浏览
+	//   /admin/editor           → 升级版规则编辑器 (outline + history + dry-run preview)
+	//   /admin/approvals        → 4-eyes 审批工作流
+	//   /admin/legacy           → 旧单文件 SPA (兼容旧 bookmark)
+	mux.HandleFunc("/admin/dashboard", s.pageDashboard)
+	mux.HandleFunc("/admin/diffs", s.pageDiffs)
+	mux.HandleFunc("/admin/incidents", s.pageIncident)
+	mux.HandleFunc("/admin/incidents/", s.pageIncident)
+	mux.HandleFunc("/admin/catalog", s.pageCatalog)
+	mux.HandleFunc("/admin/editor", s.pageEditor)
+	mux.HandleFunc("/admin/approvals", s.pageApprovals)
+	mux.HandleFunc("/admin/legacy", s.editorHTML)
+	mux.HandleFunc("/admin/legacy/", s.editorHTML)
+	mux.HandleFunc("/admin/", s.adminIndexRedirect)
+	mux.HandleFunc("/admin", s.adminIndexRedirect)
 }
 
 // adminBackfill POST /api/v1/admin/backfill

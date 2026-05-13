@@ -1,0 +1,32 @@
+# missing_charge_leg — Edge: PI succeeded 但 accounting 没有对应 ledger.
+
+events:
+  - svc: order-core
+    table: payment_intent
+    pk: pi_lost
+    after:
+      id: pi_lost
+      status: succeeded
+      amount: 2500
+    indexes:
+      pi_id: pi_lost
+
+  - svc: payment-channel
+    table: acquirer_tx
+    pk: tx_lost
+    after:
+      id: tx_lost
+      pi_id: pi_lost
+      amount: 2500
+    indexes:
+      pi_id: pi_lost
+
+  # accounting-system 没记账 (outbox 丢了 / consumer 卡了)
+
+expect_diffs:
+  - type: missing_charge_leg
+    key: pi_lost
+    detail:
+      missing_in: accounting-system
+      pi_status: succeeded
+      amount: 2500

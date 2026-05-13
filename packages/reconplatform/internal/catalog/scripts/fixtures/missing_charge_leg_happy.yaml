@@ -1,0 +1,35 @@
+# missing_charge_leg — Happy: 每笔 PI 都有对应的 acquirer_tx + accounting leg.
+
+events:
+  - svc: order-core
+    table: payment_intent
+    pk: pi_001
+    after:
+      id: pi_001
+      status: succeeded
+      amount: 1000
+    indexes:
+      pi_id: pi_001
+
+  - svc: payment-channel
+    table: acquirer_tx
+    pk: tx_001
+    after:
+      id: tx_001
+      pi_id: pi_001
+      amount: 1000
+    indexes:
+      pi_id: pi_001
+
+  - svc: accounting-system
+    table: ledger_entry
+    pk: le_001
+    after:
+      id: le_001
+      pi_id: pi_001
+      side: debit
+      amount: 1000
+    indexes:
+      pi_id: pi_001
+
+expect_diffs: []

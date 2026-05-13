@@ -20,12 +20,25 @@ import (
 	"reconcile-system/internal/store"
 )
 
+// SearcherIface 是 Context 对底层数据源的最小依赖。
+//
+// 生产由 *store.Searcher 实现 (Redis-backed);
+// 本地 CLI 测试由 store.FixtureSearcher 实现 (内存 fixture-backed)。
+//
+// 抽接口后 Context 可在不起 Redis 的情况下被单测 / CLI 直接用。
+type SearcherIface interface {
+	SearchByIndex(ctx context.Context, idxName, value string) (store.EventList, error)
+	GetEvent(ctx context.Context, service, table, pk string) (*store.Event, error)
+	ScanService(ctx context.Context, service, table string, limit int) (store.EventList, error)
+	ScanIndex(ctx context.Context, idxName, prefix string, limit int) ([]string, error)
+}
+
 // Context 单次脚本运行的上下文。脚本通过 starlark_api.go 的 wrapContext 暴露给脚本侧。
 //
 // 不要把 Context 长期持有；每次 Run 时由 engine 构造新的实例。
 type Context struct {
 	// 内部依赖
-	searcher *store.Searcher
+	searcher SearcherIface
 	logger   Logger
 
 	// 调用环境
@@ -50,7 +63,9 @@ type Logger interface {
 }
 
 // NewContext engine 调用，给脚本运行时构造。
-func NewContext(ctx context.Context, searcher *store.Searcher, logger Logger, params map[string]string) *Context {
+//
+// searcher 接受 *store.Searcher (生产) 或 store.FixtureSearcher (CLI/单测)。
+func NewContext(ctx context.Context, searcher SearcherIface, logger Logger, params map[string]string) *Context {
 	if logger == nil {
 		logger = noopLogger{}
 	}
