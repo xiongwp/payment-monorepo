@@ -53,6 +53,7 @@ import (
 	"reconcile-system/internal/api"
 	"reconcile-system/internal/approval"
 	"reconcile-system/internal/archive"
+	"reconcile-system/internal/catalog/seed"
 	"reconcile-system/internal/cdc"
 	"reconcile-system/internal/diffstate"
 	"reconcile-system/internal/eod"
@@ -136,7 +137,24 @@ func main() {
 	cdcMgr.AddGlobalFilter(cdc.SkipShadowRowsFilter{})        // 影子流量数据不入 recon
 	cdcMgr.AddGlobalEnricher(cdc.MaskPIIEnricher{Cols: []string{"phone", "email", "id_card"}})
 
-	// ─── 启动期 reload 已存的脚本 ────────────────────────────
+	// ─── 启动期种入内建对账规则 (order ↔ channel ↔ accounting 三方对账 8 条)──
+	//
+	// 行为:
+	//   - 首次启动: 8 条都创建 (UpdatedBy = "system:seeder")
+	//   - 二次启动: 比 hash, 内建版本变了且用户没改过 → 自动升级
+	//   - 用户改过 (UpdatedBy 非 system:*) → 跳过, 尊重定制
+	//
+	// 升级新版规则只需:
+	//   1. 改 internal/catalog/seed/<id>.star + bump meta-version 注释
+	//   2. 重启 admin → 自动覆盖未被用户改过的副本
+	seed.MustValidate()
+	if n, err := seed.SeedBuiltins(ctx, scriptStore, logger, "system:seeder"); err != nil {
+		logger.Warn("seed builtins failed (continuing)", zap.Error(err))
+	} else if n > 0 {
+		logger.Info("seeded builtin rules", zap.Int("count", n))
+	}
+
+	// ─── 启动期 reload 已存的脚本 (含刚 seed 的) ────────────────
 	defs, err := scriptStore.ListDefs(ctx, 200)
 	if err != nil {
 		logger.Warn("load scripts on boot failed (continuing empty)", zap.Error(err))
