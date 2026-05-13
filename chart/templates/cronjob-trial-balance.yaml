@@ -1,0 +1,39 @@
+{{- if .Values.services.accounting-system.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trial-balance
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: trial-balance
+    payment.io/criticality: P0
+spec:
+  schedule: "55 23 * * *"     # 每日 UTC 23:55,日切前 5min
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 14
+  failedJobsHistoryLimit: 30   # 失败保留 30 天,便于回溯
+  jobTemplate:
+    spec:
+      backoffLimit: 0          # 不重试,失败 → CronJobFailed alert → page
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: trial-balance
+          containers:
+            - name: trial-balance
+              image: "{{ .Values.global.image.registry }}/accounting-trial-balance:{{ .Values.global.image.tag }}"
+              args:
+                - --currency=USD
+                - --tolerance=0
+              env:
+                - name: METADB_DSN
+                  valueFrom:
+                    secretKeyRef:
+                      name: accounting-credentials
+                      key: metadb-dsn
+                - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                  value: "tempo:4317"
+              resources:
+                requests: { cpu: 100m, memory: 256Mi }
+                limits:   { cpu: 1000m, memory: 1Gi }
+{{- end }}

@@ -1,0 +1,163 @@
+# OTel Collector 配置: tail-based sampling.
+#
+# 部署: kubectl apply -f deploy/monitoring/otel-collector-tail-sampling.yaml
+#
+# 关键策略 (优先级从高到低):
+#  1. error → 100% 保留
+#  2. slow (latency > 1s) → 100% 保留
+#  3. payment-core / accounting-system / kms-manage → 30% 保留
+#  4. 其他 → 5% 保留
+#
+# tail-sampling 在 collector 侧决定,head-sampling (sampler.go) 已经预过滤了,
+# 这两层叠加可达成"少量错/慢请求几乎不丢,大量正常流量节省存储"。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch:
+        timeout: 5s
+        send_batch_size: 1000
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 4096
+        spike_limit_mib: 1024
+
+      tail_sampling:
+        decision_wait: 10s
+        num_traces: 100000
+        expected_new_traces_per_sec: 2000
+        policies:
+          - name: keep-errors
+            type: status_code
+            status_code:
+              status_codes: [ERROR]
+          - name: keep-slow
+            type: latency
+            latency:
+              threshold_ms: 1000
+          - name: high-prio-services
+            type: and
+            and:
+              and_sub_policy:
+                - name: prio-service
+                  type: string_attribute
+                  string_attribute:
+                    key: service.name
+                    values:
+                      - payment-core
+                      - accounting-system
+                      - kms-manage
+                      - payment-channel
+                - name: prio-ratio
+                  type: probabilistic
+                  probabilistic:
+                    sampling_percentage: 30
+          - name: default-low-volume
+            type: probabilistic
+            probabilistic:
+              sampling_percentage: 5
+
+      resource:
+        attributes:
+          - key: cluster
+            value: payment-prod
+            action: upsert
+
+    exporters:
+      otlp/tempo:
+        endpoint: tempo:4317
+        tls: { insecure: true }
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 10000
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        namespace: otelcol
+      logging:
+        loglevel: info
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      zpages:
+        endpoint: 0.0.0.0:55679
+
+    service:
+      extensions: [health_check, zpages]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, tail_sampling, resource, batch]
+          exporters: [otlp/tempo]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [prometheus]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: monitoring
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: otel-collector } }
+              topologyKey: topology.kubernetes.io/zone
+      containers:
+        - name: otelcol
+          image: otel/opentelemetry-collector-contrib:0.96.0
+          args:
+            - --config=/etc/otelcol/config.yaml
+          ports:
+            - { containerPort: 4317, name: otlp-grpc }
+            - { containerPort: 4318, name: otlp-http }
+            - { containerPort: 8889, name: metrics }
+            - { containerPort: 13133, name: health }
+          volumeMounts:
+            - { name: config, mountPath: /etc/otelcol }
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits:   { cpu: 4000m, memory: 8Gi }
+          livenessProbe:
+            httpGet: { path: /, port: health }
+          readinessProbe:
+            httpGet: { path: /, port: health }
+      volumes:
+        - name: config
+          configMap: { name: otel-collector-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: monitoring
+spec:
+  selector: { app: otel-collector }
+  ports:
+    - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+    - { name: otlp-http, port: 4318, targetPort: 4318 }
+    - { name: metrics,   port: 8889, targetPort: 8889 }

@@ -1,0 +1,45 @@
+# air hot-reload config for payment-monorepo single-service dev.
+#
+# 用法 (在某个 packages/xxx 目录下):
+#   cd packages/payment-core
+#   air -c ../../.air.toml
+#
+# 改任意 internal/**/*.go,5 秒内自动 rebuild + restart.
+
+root = "."
+testdata_dir = "testdata"
+tmp_dir = ".air-tmp"
+
+[build]
+  args_bin = []
+  bin = ".air-tmp/server"
+  cmd = "go build -o .air-tmp/server ./cmd/server"
+  delay = 1500
+  exclude_dir = ["vendor", ".air-tmp", "testdata", ".git"]
+  exclude_file = []
+  exclude_regex = ["_test\\.go$"]
+  exclude_unchanged = false
+  follow_symlink = false
+  full_bin = ""
+  include_dir = []
+  include_ext = ["go", "tpl", "tmpl", "html", "yaml", "yml"]
+  kill_delay = "1s"
+  log = "build-errors.log"
+  send_interrupt = false
+  stop_on_root = false
+
+[color]
+  app = ""
+  build = "yellow"
+  main = "magenta"
+  runner = "green"
+  watcher = "cyan"
+
+[log]
+  time = true
+
+[misc]
+  clean_on_exit = true
+
+[screen]
+  clear_on_rebuild = true

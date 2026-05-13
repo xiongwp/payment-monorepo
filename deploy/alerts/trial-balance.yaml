@@ -1,0 +1,44 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: trial-balance-alerts
+  namespace: monitoring
+  labels:
+    prometheus: payment
+    role: alert-rules
+    severity: critical
+spec:
+  groups:
+    - name: trial-balance
+      interval: 1m
+      rules:
+        # CronJob 状态: 把 K8s job_status 转成可告警 metric
+        - alert: TrialBalanceCronFailed
+          expr: |
+            (time() - kube_cronjob_status_last_successful_time{cronjob="trial-balance"}) > 90000
+          for: 5m
+          labels:
+            severity: critical
+            team: fund-safety
+          annotations:
+            summary: "Daily trial balance CronJob has not succeeded in 25h"
+            description: |
+              Trial balance check has not completed successfully for 25 hours.
+              Likely fund safety incident: ledger ≠ settlement.
+              Runbook: docs/runbooks/RUNBOOK.md#CrossRegionTrialBalanceMismatch
+
+        # CronJob 最后一次 job 失败 (exit code != 0)
+        - alert: TrialBalanceJobFailed
+          expr: |
+            kube_job_status_failed{job_name=~"trial-balance-.*"} > 0
+          for: 1m
+          labels:
+            severity: critical
+            team: fund-safety
+          annotations:
+            summary: "Trial balance job failed — ledger imbalance suspected"
+            description: |
+              Job {{ $labels.job_name }} exited non-zero. Pull logs:
+                  kubectl -n payment logs job/{{ $labels.job_name }}
+              If "TRIAL_BALANCE_FAIL" appears, check reconplatform diff table.
+              Runbook: docs/runbooks/RUNBOOK.md#CrossRegionTrialBalanceMismatch
