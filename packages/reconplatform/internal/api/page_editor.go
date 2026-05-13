@@ -84,19 +84,25 @@ func (s *Server) pageEditor(w http.ResponseWriter, r *http.Request) {
           <span x-show="schemaState === 'err'" x-text="'✗ ' + schemaErr"></span>
         </div>
 
+        <!-- 调试信息: 直接显示 tables 数量 -->
+        <div class="px-2 py-1 text-[10px] text-slate-500 shrink-0 border-b border-slate-100">
+          debug: schemaTables.length = <span class="mono font-bold" x-text="schemaTables.length"></span>,
+          groups = <span class="mono font-bold" x-text="groupedSchema.length"></span>
+        </div>
+
         <!-- 表列表 -->
         <div class="flex-1 overflow-y-auto text-xs">
-          <template x-for="svc in Object.keys(groupedSchema).sort()" :key="svc">
+          <template x-for="grp in groupedSchema" :key="grp.svc">
             <div class="border-b border-slate-100">
-              <button @click="toggleSvc(svc)"
+              <button @click="toggleSvc(grp.svc)"
                       class="w-full flex items-center px-2 py-1.5 hover:bg-slate-50 text-left sticky top-0 bg-white border-b border-slate-100">
-                <i :data-lucide="schemaClosed[svc] ? 'chevron-right' : 'chevron-down'"
+                <i :data-lucide="schemaClosed[grp.svc] ? 'chevron-right' : 'chevron-down'"
                    class="icon w-3 h-3 text-slate-400 mr-1"></i>
-                <span class="font-medium text-slate-700 truncate" x-text="svc"></span>
-                <span class="ml-auto text-slate-400" x-text="groupedSchema[svc].length"></span>
+                <span class="font-medium text-slate-700 truncate" x-text="grp.svc"></span>
+                <span class="ml-auto text-slate-400" x-text="grp.tables.length"></span>
               </button>
-              <ul x-show="!schemaClosed[svc]" class="pb-1">
-                <template x-for="t in groupedSchema[svc]" :key="t.key">
+              <ul x-show="!schemaClosed[grp.svc]" class="pb-1">
+                <template x-for="t in grp.tables" :key="t.key">
                   <li class="group">
                     <div class="flex items-center px-2 py-1 hover:bg-slate-50">
                       <button @click="loadColumns(t)" @dblclick="insertScan(t)"
@@ -381,14 +387,18 @@ function editorModel(scriptID) {
     liveStatus: 'init',
     liveSse: null,
 
+    // groupedSchema 返数组形式 [{svc, tables}, ...] (排序好),
+    // 比 {svc: [tables]} 对象更可靠 — Alpine x-for 对 Object.keys() 反应不稳.
     get groupedSchema() {
-      const f = this.schemaFilter.toLowerCase();
-      const out = {};
+      const f = (this.schemaFilter || '').toLowerCase();
+      const map = {};
       for (const t of this.schemaTables) {
         if (f && !(t.svc.toLowerCase().includes(f) || t.table.toLowerCase().includes(f))) continue;
-        (out[t.svc] = out[t.svc] || []).push(t);
+        (map[t.svc] = map[t.svc] || []).push(t);
       }
-      return out;
+      return Object.entries(map)
+        .map(([svc, tables]) => ({ svc, tables }))
+        .sort((a, b) => a.svc.localeCompare(b.svc));
     },
 
     async load() {
