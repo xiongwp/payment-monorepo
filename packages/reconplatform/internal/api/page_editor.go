@@ -252,34 +252,93 @@ func (s *Server) pageEditor(w http.ResponseWriter, r *http.Request) {
     <div id="monaco" class="flex-1 border border-slate-200 bg-white rounded-b-lg overflow-hidden"></div>
   </section>
 
-  <!-- 右:运行预览 -->
+  <!-- 右:运行预览 + Console -->
   <aside class="col-span-3 bg-white rounded-lg border border-slate-200 overflow-hidden flex flex-col">
-    <div class="px-3 py-2 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-      <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-500">运行预览</h3>
-      <span class="text-xs"
-            :class="status === 'ok' ? 'text-emerald-600' :
-                    status === 'err' ? 'text-red-600' : 'text-slate-400'"
-            x-text="status === 'ok' ? '✓ ' + diffsCount + ' diffs' :
-                    status === 'err' ? '✗ 错误' : '未运行'"></span>
+    <!-- Tab header -->
+    <div class="flex border-b border-slate-200 shrink-0 bg-slate-50">
+      <button @click="rightTab = 'diffs'"
+              class="flex-1 px-3 py-2 text-xs font-medium border-b-2 -mb-px transition"
+              :class="rightTab === 'diffs'
+                ? 'border-brand-600 text-brand-700 bg-white'
+                : 'border-transparent text-slate-500 hover:text-slate-700'">
+        <i data-lucide="alert-triangle" class="icon w-3 h-3 inline-block align-text-bottom mr-1"></i>
+        Diffs
+        <span class="ml-1 text-[10px] bg-slate-200 text-slate-600 rounded-full px-1.5"
+              x-text="diffsCount"></span>
+      </button>
+      <button @click="rightTab = 'console'"
+              class="flex-1 px-3 py-2 text-xs font-medium border-b-2 -mb-px transition"
+              :class="rightTab === 'console'
+                ? 'border-brand-600 text-brand-700 bg-white'
+                : 'border-transparent text-slate-500 hover:text-slate-700'">
+        <i data-lucide="terminal" class="icon w-3 h-3 inline-block align-text-bottom mr-1"></i>
+        Console
+        <span class="ml-1 text-[10px] bg-slate-200 text-slate-600 rounded-full px-1.5"
+              x-text="logs.length"></span>
+      </button>
     </div>
+
+    <!-- 状态 strip -->
+    <div class="px-3 py-1 border-b border-slate-100 text-xs"
+         :class="status === 'ok' ? 'text-emerald-600 bg-emerald-50' :
+                 status === 'err' ? 'text-red-600 bg-red-50' : 'text-slate-400 bg-slate-50'">
+      <span x-text="status === 'ok' ? '✓ ' + diffsCount + ' diffs · ' + logs.length + ' logs' :
+                    status === 'err' ? '✗ 错误' : '未运行 — 点 Dry-run'"></span>
+    </div>
+
+    <!-- 内容区 -->
     <div class="flex-1 overflow-y-auto p-3">
-      <div x-show="status === 'err'" class="mono text-xs bg-red-50 border border-red-200 text-red-700 rounded p-2 whitespace-pre-wrap"
-           x-text="errorMsg"></div>
-      <template x-for="(d, i) in diffs" :key="i">
-        <div class="border-b border-slate-100 py-2">
-          <div class="flex items-center justify-between">
-            <span class="mono text-xs font-medium" x-text="d.type || 'diff'"></span>
-            <span class="text-xs text-slate-400" x-text="'#' + (i+1)"></span>
+
+      <!-- Diffs tab -->
+      <div x-show="rightTab === 'diffs'">
+        <div x-show="status === 'err'" class="mono text-xs bg-red-50 border border-red-200 text-red-700 rounded p-2 whitespace-pre-wrap"
+             x-text="errorMsg"></div>
+        <template x-for="(d, i) in diffs" :key="i">
+          <div class="border-b border-slate-100 py-2">
+            <div class="flex items-center justify-between">
+              <span class="mono text-xs font-medium" x-text="d.type || 'diff'"></span>
+              <span class="text-xs text-slate-400" x-text="'#' + (i+1)"></span>
+            </div>
+            <pre class="mono text-[11px] text-slate-600 mt-1 whitespace-pre-wrap"
+                 x-text="JSON.stringify(d, null, 2)"></pre>
           </div>
-          <pre class="mono text-[11px] text-slate-600 mt-1 whitespace-pre-wrap"
-               x-text="JSON.stringify(d, null, 2)"></pre>
+        </template>
+        <div x-show="status === 'ok' && diffs.length === 0" class="text-xs text-slate-400 text-center py-4">
+          0 diffs (规则跑通,无命中)
         </div>
-      </template>
-      <div x-show="status === 'ok' && diffs.length === 0" class="text-xs text-slate-400 text-center py-4">
-        0 diffs (规则跑通,无命中)
+        <div x-show="status === ''" class="text-xs text-slate-400 text-center py-4">
+          点 Dry-run 试跑这条规则
+        </div>
       </div>
-      <div x-show="status === ''" class="text-xs text-slate-400 text-center py-4">
-        点 Dry-run 试跑这条规则
+
+      <!-- Console tab: 捕获 print() / ctx.log_* 输出 -->
+      <div x-show="rightTab === 'console'">
+        <div x-show="logs.length === 0 && status === 'ok'"
+             class="text-xs text-slate-400 text-center py-4">
+          <p>无输出</p>
+          <p class="mt-2 mono text-[10px]">在脚本里加 <span class="bg-slate-100 px-1 rounded">print("...")</span> 或 <span class="bg-slate-100 px-1 rounded">ctx.log_info("msg", k="v")</span></p>
+        </div>
+        <div x-show="logs.length === 0 && status === ''"
+             class="text-xs text-slate-400 text-center py-4">
+          点 Dry-run 后,print() / ctx.log_* 输出会显示在这里
+        </div>
+        <template x-for="(log, i) in logs" :key="i">
+          <div class="flex items-start gap-2 py-1.5 border-b border-slate-100">
+            <span class="badge text-[9px] py-0 shrink-0 mt-0.5"
+                  :class="log.level === 'error' ? 'badge-critical' :
+                          log.level === 'warn' ? 'badge-warning' :
+                          log.level === 'print' ? 'bg-slate-200 text-slate-700' : 'badge-info'"
+                  x-text="log.level"></span>
+            <div class="flex-1 min-w-0">
+              <div class="mono text-[11px] text-slate-800 whitespace-pre-wrap break-words"
+                   x-text="log.msg"></div>
+              <template x-if="log.kv && Object.keys(log.kv).length > 0">
+                <pre class="mono text-[10px] text-slate-500 mt-0.5"
+                     x-text="JSON.stringify(log.kv, null, 2)"></pre>
+              </template>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
   </aside>
@@ -368,6 +427,9 @@ function editorModel(scriptID) {
     outline: [], versions: [],
     diffs: [], errorMsg: '',
     status: '', diffsCount: 0,
+    // 右侧 tab: 'diffs' | 'console'; logs 捕获 print() + ctx.log_*
+    rightTab: 'diffs',
+    logs: [],
 
     // 左栏 tab
     leftTab: 'schema',  // 默认显示 schema (用户最关心)
@@ -643,8 +705,20 @@ function editorModel(scriptID) {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ code }),
         }).then(r => r.json());
-        if (r.error) { this.status = 'err'; this.errorMsg = r.error; }
-        else { this.status = 'ok'; this.diffs = r.diffs || []; this.diffsCount = this.diffs.length; }
+        // logs 永远刷新 (即使出错,也能看到崩之前 print 了啥)
+        this.logs = r.logs || [];
+        if (r.error || r.status === 'error') {
+          this.status = 'err';
+          this.errorMsg = r.error || 'unknown error';
+          this.diffs = [];
+          this.diffsCount = 0;
+          // 错误时自动跳到 Console tab 让用户看上下文
+          if (this.logs.length > 0) this.rightTab = 'console';
+        } else {
+          this.status = 'ok';
+          this.diffs = r.diffs || [];
+          this.diffsCount = this.diffs.length;
+        }
       } catch (e) { this.status = 'err'; this.errorMsg = String(e); }
     },
 
