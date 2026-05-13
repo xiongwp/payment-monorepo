@@ -3,6 +3,14 @@
 // order-core 在 PI Confirm 路径调 CreatePaymentToken：把 user_card 的 stored_token
 // 转成绑定 pi_id 的一次性支付 token（TTL 30min），传给 payment-channel.adapter[card]
 // → card-payment → card-center.Detokenize → PAN → 卡组织。
+//
+// 注:cardcenterv1 proto stub 不在本模块直接 import (避免跨服务仓库 build context
+// 耦合); 调用方走通用 gRPC ClientConn。要切到强类型,把 cardcenter.pb.go +
+// cardcenter_grpc.pb.go vendor 进 packages/order-core/api/proto/cardcenter/v1/
+// 并把 import 切回 generated stub 即可。
+//
+// 当前实现:prod 配置 mTLS 后报"需要 vendor proto stub"显式错误,
+// dev / 测试用 NewStub() 路径不受影响 (调用方用 NewStub 注入)。
 package cardcenterclient
 
 import (
@@ -12,10 +20,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
-	cardcenterv1 "github.com/xiongwp/card-center/api/proto/cardcenter/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -24,7 +30,6 @@ import (
 // Client 调 card-center 的 gRPC 客户端
 type Client struct {
 	conn    *grpc.ClientConn
-	cli     cardcenterv1.CardCenterClient
 	timeout time.Duration
 }
 
@@ -80,51 +85,30 @@ func New(cfg Config) (*Client, error) {
 	if t <= 0 {
 		t = 5 * time.Second
 	}
-	return &Client{
-		conn:    conn,
-		cli:     cardcenterv1.NewCardCenterClient(conn),
-		timeout: t,
-	}, nil
+	return &Client{conn: conn, timeout: t}, nil
 }
 
 // Close
 func (c *Client) Close() error { return c.conn.Close() }
 
+// errProtoNotVendored 显式错误:启用真实 card-center 调用前必须把 cardcenterv1
+// proto stub vendor 进本模块。绝不静默成功。
+var errProtoNotVendored = errors.New(
+	"cardcenterclient: cardcenterv1 proto stubs not vendored into order-core " +
+		"— see package doc for vendoring instructions")
+
 // CreatePaymentToken 调 card-center.CreatePaymentToken
-func (c *Client) CreatePaymentToken(
-	ctx context.Context, req *CreatePaymentTokenRequest,
-) (*CreatePaymentTokenResponse, error) {
+//
+// 当前实现:返回 errProtoNotVendored 强制 prod 部署前 vendor 进 stub;
+// dev / 测试由调用方走 mock / stub 注入路径,不经过本函数。
+func (c *Client) CreatePaymentToken(ctx context.Context, req *CreatePaymentTokenRequest) (*CreatePaymentTokenResponse, error) {
 	if req == nil {
 		return nil, errors.New("cardcenterclient: request required")
 	}
 	if req.StoredToken == "" || req.PIID == "" {
 		return nil, errors.New("cardcenterclient: stored_token / pi_id required")
 	}
-	cctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
-	ttlSec := int32(req.TTL / time.Second)
-	if ttlSec <= 0 || ttlSec > 1800 {
-		ttlSec = 1800
-	}
-	resp, err := c.cli.CreatePaymentToken(cctx, &cardcenterv1.CreatePaymentTokenRequest{
-		StoredToken: req.StoredToken,
-		UserId:      strconv.FormatInt(req.UserID, 10),
-		PiId:        req.PIID,
-		Amount:      req.Amount,
-		Currency:    req.Currency,
-		TtlSeconds:  ttlSec,
-		TraceId:     req.TraceID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("CreatePaymentToken: %w", err)
-	}
-	return &CreatePaymentTokenResponse{
-		PaymentToken: resp.GetPaymentToken(),
-		ExpiresAt:    time.Unix(resp.GetExpiresAt(), 0),
-		MaskedPAN:    resp.GetMaskedPan(),
-		Network:      resp.GetNetwork(),
-	}, nil
+	return nil, errProtoNotVendored
 }
 
 func buildTLS(cfg Config) (*tls.Config, error) {

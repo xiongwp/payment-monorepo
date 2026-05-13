@@ -250,11 +250,13 @@ GROUP BY state
 		out[s] = n
 	}
 	// 还要算 overdue (next_retry_at 已过但仍 pending)
+	var overdue int
 	if err := q.db.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM payment_retry_queue WHERE state='pending' AND next_retry_at <= NOW()
-`).Scan(&out["overdue"]); err != nil {
+`).Scan(&overdue); err != nil {
 		return nil, err
 	}
+	out["overdue"] = overdue
 	return out, nil
 }
 

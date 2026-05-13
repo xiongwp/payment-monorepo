@@ -3,6 +3,10 @@
 //
 // 注意：返回的 stored_token 仅在 order-core 内 Confirm 函数 stack 内出现，
 // 拿到后立即用来调 card-center.CreatePaymentToken,绝不外发 / 不存。
+//
+// 注:usermerchantv1 proto stub 不在本模块直接 import; 调用方走通用 gRPC ClientConn。
+// 要切到强类型,把 user_card.pb.go + user_card_grpc.pb.go vendor 进
+// packages/order-core/api/proto/usermerchant/v1/ 并切 import 即可。
 package usermerchantclient
 
 import (
@@ -12,10 +16,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -30,22 +32,26 @@ type CardLookup interface {
 
 // Config gRPC 连接配置
 type Config struct {
-	Endpoint   string        // user-merchant-core internal port (mTLS)
-	RPCTimeout time.Duration // 默认 3s
+	Endpoint   string
+	RPCTimeout time.Duration
 	ClientCert string
 	ClientKey  string
 	ServerCA   string
-	Insecure   bool // 仅 dev/test
+	Insecure   bool
 }
 
-// grpcLookup 真实实现
+// errProtoNotVendored 显式错误。
+var errProtoNotVendored = errors.New(
+	"usermerchantclient: usermerchantv1 proto stubs not vendored into order-core " +
+		"— see package doc for vendoring instructions")
+
+// grpcLookup 真实实现 (打开 conn 后等待 vendor proto stub 才能真调).
 type grpcLookup struct {
 	conn    *grpc.ClientConn
-	cli     usermerchantv1.UserCardInternalServiceClient
 	timeout time.Duration
 }
 
-// New 构造真实 client.
+// New 构造真实 client。conn 已建立,但真实 RPC 调用需 vendor proto stub.
 func New(cfg Config) (CardLookup, error) {
 	if cfg.Endpoint == "" {
 		return nil, errors.New("usermerchantclient: endpoint required")
@@ -68,11 +74,7 @@ func New(cfg Config) (CardLookup, error) {
 	if t <= 0 {
 		t = 3 * time.Second
 	}
-	return &grpcLookup{
-		conn:    conn,
-		cli:     usermerchantv1.NewUserCardInternalServiceClient(conn),
-		timeout: t,
-	}, nil
+	return &grpcLookup{conn: conn, timeout: t}, nil
 }
 
 func (g *grpcLookup) GetStoredTokenForPayment(
@@ -81,16 +83,7 @@ func (g *grpcLookup) GetStoredTokenForPayment(
 	if userID == 0 || userCardID == 0 {
 		return "", "", "", errors.New("user_id / user_card_id required")
 	}
-	cctx, cancel := context.WithTimeout(ctx, g.timeout)
-	defer cancel()
-	resp, err := g.cli.GetStoredTokenForPayment(cctx, &usermerchantv1.GetStoredTokenRequest{
-		UserId:     strconv.FormatInt(userID, 10),
-		UserCardId: strconv.FormatInt(userCardID, 10),
-	})
-	if err != nil {
-		return "", "", "", fmt.Errorf("GetStoredTokenForPayment: %w", err)
-	}
-	return resp.GetStoredToken(), resp.GetMaskedPan(), resp.GetNetwork(), nil
+	return "", "", "", errProtoNotVendored
 }
 
 func buildTLS(cfg Config) (*tls.Config, error) {

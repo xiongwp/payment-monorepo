@@ -175,6 +175,11 @@ type AccountingService interface {
 	// GetAccount 根据账户号查询账户
 	GetAccount(ctx context.Context, accountNo string) (*model.Account, error)
 
+	// SetAccountStatus admin 操作:把账户状态置为 Active / Frozen / Disabled.
+	// 写完后失效本地 BalanceCache 以避免 stale read; 同步写 audit-log 由调用方
+	// (gRPC handler) 在 RPC 入口做。
+	SetAccountStatus(ctx context.Context, accountNo string, newStatus model.AccountStatus, operator, reason string) error
+
 	// GetAccountByUserAndBusinessType 根据 userId + businessType 查询账户
 	// 注意：多币种用户会有多条记录；本方法仅返回首条。要拿全部币种用
 	// ListAccountsByUserAndBusinessType。
@@ -3587,7 +3592,10 @@ func (s *accountingService) SetAccountStatus(
 	}
 	// Hot-path: 让 BalanceCache 失效,下次读拿新 status。
 	if s.balanceCache != nil {
-		s.balanceCache.Invalidate(accountNo)
+		if cerr := s.balanceCache.Invalidate(ctx, accountNo); cerr != nil {
+			s.logger.Warn("balance cache invalidate failed (non-fatal)",
+				zap.String("account_no", accountNo), zap.Error(cerr))
+		}
 	}
 	s.logger.Info("account status updated",
 		zap.String("account_no", accountNo),
