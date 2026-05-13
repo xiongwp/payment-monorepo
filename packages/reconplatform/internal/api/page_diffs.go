@@ -90,8 +90,9 @@ function diffsModel() {
       const r = await fetch('/api/v1/diffs?' + params.toString()).then(r => r.json()).catch(() => []);
       this.items = Array.isArray(r) ? r : [];
       if (this.rules.length === 0) {
-        const rs = await fetch('/api/v1/scripts').then(r => r.json()).catch(() => []);
-        this.rules = Array.isArray(rs) ? rs.map(s => s.name) : [];
+        const rs = await fetch('/api/v1/scripts').then(r => r.json()).catch(() => ({}));
+        const arr = Array.isArray(rs) ? rs : (rs.scripts || []);
+        this.rules = arr.map(s => s.name || s.Name || s.id || s.ID).filter(Boolean);
       }
       this.renderByDay();
     },

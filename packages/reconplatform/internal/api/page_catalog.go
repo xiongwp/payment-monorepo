@@ -42,6 +42,14 @@ func (s *Server) pageCatalog(w http.ResponseWriter, _ *http.Request) {
     </div>
   </div>
 
+  <!-- 调试信息: 直接显示数据是否加载 -->
+  <div class="text-[10px] text-slate-400 px-1">
+    debug: 已加载 <span class="mono font-bold" x-text="rules.length"></span> 条规则
+    (critical: <span x-text="rules.filter(r=>r.severity==='critical').length"></span>,
+     warning: <span x-text="rules.filter(r=>r.severity==='warning').length"></span>,
+     info: <span x-text="rules.filter(r=>r.severity==='info').length"></span>)
+  </div>
+
   <!-- 三组卡片: critical / warning / info -->
   <template x-for="grp in groups" :key="grp.severity">
     <section x-show="visibleInGroup(grp).length > 0">
@@ -146,19 +154,44 @@ function catalogModel() {
 
     async load() {
       try {
-        const list = await fetch('/api/v1/scripts').then(r => r.json());
-        this.rules = Array.isArray(list) ? list : [];
+        const resp = await fetch('/api/v1/scripts').then(r => r.json());
+        // API 返 {"scripts": [...]} 包装,兼容裸数组也行
+        const list = Array.isArray(resp) ? resp
+                    : Array.isArray(resp && resp.scripts) ? resp.scripts
+                    : [];
+        this.rules = list;
         this.rules.forEach(r => {
+          // 字段大小写兼容 (id/ID, name/Name 等)
+          r.id   = r.id   || r.ID   || '';
+          r.name = r.name || r.Name || r.id;
+          r.code = r.code || r.Code || '';
+          // severity: 根据 ID 关键词推断 (Name 可能是中文,关键词在 ID 里)
+          const idLower = (r.id || '').toLowerCase();
           if (!r.severity) {
-            r.severity = r.name.includes('excess') || r.name.includes('duplicate') ? 'critical'
-                       : r.name.includes('lag') || r.name.includes('orphan') ? 'warning'
-                       : 'info';
+            if (idLower.includes('three_way') || idLower.includes('excess') ||
+                idLower.includes('duplicate') || idLower.includes('refund') ||
+                idLower.includes('order_in_channel') || idLower.includes('channel_in_account')) {
+              r.severity = 'critical';
+            } else if (idLower.includes('orphan') || idLower.includes('lag') ||
+                       idLower.includes('mismatch') || idLower.includes('stuck')) {
+              r.severity = 'warning';
+            } else {
+              r.severity = 'info';
+            }
           }
+          // lang: 内建规则全是 starlark (list 接口不返 code,用其他线索)
           if (!r.lang) {
-            r.lang = r.code && r.code.includes('def check') ? 'starlark' : 'go';
+            const hasStarlarkCode = (r.code || '').includes('def check');
+            const hasStarlarkSchedule = !!(r.schedule || r.Schedule);
+            r.lang = (hasStarlarkCode || hasStarlarkSchedule || r.id) ? 'starlark' : 'go';
+          }
+          if (!r.description) {
+            r.description = r.Description || '';
           }
         });
-      } catch (e) { console.error(e); }
+      } catch (e) {
+        console.error('[catalog] load failed:', e);
+      }
     },
 
     countBy(filter) {

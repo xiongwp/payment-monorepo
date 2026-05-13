@@ -152,23 +152,28 @@ function dashboardModel() {
     async load() {
       try {
         // 各个 API 并行拉
-        const [stats, scripts, diffs] = await Promise.all([
+        const [stats, scriptsResp, diffsResp] = await Promise.all([
           fetch('/api/v1/diffs/_stats').then(r => r.ok ? r.json() : {}),
-          fetch('/api/v1/scripts').then(r => r.ok ? r.json() : []),
-          fetch('/api/v1/diffs?limit=5').then(r => r.ok ? r.json() : []),
+          fetch('/api/v1/scripts').then(r => r.ok ? r.json() : {}),
+          fetch('/api/v1/diffs?limit=5').then(r => r.ok ? r.json() : {}),
         ]);
+        // API 返 {scripts:[...]} / {diffs:[...]} 包装,兼容裸数组
+        const scripts = Array.isArray(scriptsResp) ? scriptsResp
+                      : Array.isArray(scriptsResp && scriptsResp.scripts) ? scriptsResp.scripts : [];
+        const diffs = Array.isArray(diffsResp) ? diffsResp
+                    : Array.isArray(diffsResp && diffsResp.diffs) ? diffsResp.diffs : [];
         // KPI 填充 (容错: API 没数据时显示 0)
         this.kpi.diffs_24h     = stats.last_24h || 0;
         this.kpi.diff_trend    = stats.trend_pct || 0;
         this.kpi.pending_approvals = stats.pending_approvals || 0;
         this.kpi.oldest_age    = stats.oldest_pending_age || '-';
-        this.kpi.rules         = Array.isArray(scripts) ? scripts.length : 0;
-        this.kpi.rules_starlark= scripts.filter ? scripts.filter(r => r.lang === 'starlark').length : 0;
+        this.kpi.rules         = scripts.length;
+        this.kpi.rules_starlark= scripts.filter(r => r.lang !== 'go').length;  // 默认 starlark
         this.kpi.rules_go      = this.kpi.rules - this.kpi.rules_starlark;
         this.kpi.slo_burn      = stats.slo_burn || 0;
 
         this.topRules    = (stats.top_rules || []).slice(0, 10);
-        this.recentDiffs = Array.isArray(diffs) ? diffs : [];
+        this.recentDiffs = diffs;
         this.approvals   = stats.pending_approvals_list || [];
 
         this.renderTrend(stats.hourly_buckets || []);
