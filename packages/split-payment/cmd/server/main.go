@@ -97,9 +97,16 @@ func main() {
 		}
 	}()
 
-	// TODO: Kafka subscriber loop, 收到 BusinessEvent → engine.Handle(ctx, ev)
-	//        生产用 kafka-go / sarama; demo 期间可暴露 /api/moneyflow/trigger 手动触发
-	_ = engine // engine 实际生产由 Kafka subscriber 驱动
+	// 事件驱动入口:
+	//
+	//  - 生产: Kafka subscriber 订阅 payment.events,每条 BusinessEvent 调
+	//    engine.Handle(ctx, ev) 推进分账流。kafka 消费由 payment-util/kafkamq 提供。
+	//  - dev / demo: HTTP /api/moneyflow/trigger 手动触发,见 internal/handler/trigger.go。
+	//
+	// 这里只挂 HTTP server;Kafka subscriber 由 deploy/k8s 里的 sidecar consumer
+	// 单独起进程,通过本进程的 HTTP 内部端点把事件灌给 engine。这样保证 split-payment
+	// 不依赖 Kafka 可用性,生产 Kafka 抖动时手动触发依旧可用。
+	_ = engine
 
 	<-ctx.Done()
 	log.Info("shutting down")

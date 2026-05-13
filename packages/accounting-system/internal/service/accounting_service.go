@@ -3554,3 +3554,45 @@ func (s *accountingService) retryOnDeadlock(fn func() error) error {
 	metrics.DeadlockRetryExhaustedTotal.Inc()
 	return fmt.Errorf("transient mysql error retry exhausted after %d attempts: %w", deadlockMaxRetries, lastErr)
 }
+
+// SetAccountStatus admin 操作:把账户状态置为 Active / Frozen / Disabled。
+//
+// 实现细节:
+//   - 校验目标状态合法 (避免 admin 误传一个负数把所有读路径炸掉);
+//   - 单条 UPDATE,version+1 防并发覆盖余额变更;
+//   - 失效本地 BalanceCache (如已启用),保证下次读拿到新 status;
+//   - 调用方 (gRPC handler) 负责入口处的 audit-log + 双人复核 (approval-service);
+//     此函数本身不发 audit,因为它可能被其它 admin tool 直接调用 (CLI / batch),
+//     重复发 audit 会冗余。
+func (s *accountingService) SetAccountStatus(
+	ctx context.Context,
+	accountNo string,
+	newStatus model.AccountStatus,
+	operator, reason string,
+) error {
+	if accountNo == "" {
+		return fmt.Errorf("account_no required")
+	}
+	if operator == "" {
+		return fmt.Errorf("operator required (admin-only operation)")
+	}
+	switch newStatus {
+	case model.AccountStatusActive, model.AccountStatusFrozen, model.AccountStatusDisabled:
+		// ok
+	default:
+		return fmt.Errorf("invalid target status: %d", newStatus)
+	}
+	if err := s.accountRepo.UpdateAccountStatus(ctx, accountNo, newStatus); err != nil {
+		return fmt.Errorf("update status: %w", err)
+	}
+	// Hot-path: 让 BalanceCache 失效,下次读拿新 status。
+	if s.balanceCache != nil {
+		s.balanceCache.Invalidate(accountNo)
+	}
+	s.logger.Info("account status updated",
+		zap.String("account_no", accountNo),
+		zap.Int("new_status", int(newStatus)),
+		zap.String("operator", operator),
+		zap.String("reason", reason))
+	return nil
+}

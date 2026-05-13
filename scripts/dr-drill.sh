@@ -37,8 +37,18 @@ if [ "$LAG" != "unknown" ] && [ "$LAG" -gt 60 ]; then
     exit 1
 fi
 
-# Kafka MirrorMaker lag
-log "- Kafka MM lag check (stub)"
+# Kafka MirrorMaker lag (lookup consumer group end-offset vs target end-offset)
+KAFKA_NS="${KAFKA_NAMESPACE:-kafka}"
+MM2_LAG=$(kubectl --context="$TARGET" -n "$KAFKA_NS" exec -it deploy/kafka-mirror-maker-2 -- \
+    bin/kafka-consumer-groups.sh \
+    --bootstrap-server localhost:9092 \
+    --describe --group "${TARGET}-mm2-consumer" 2>/dev/null \
+    | awk 'NR>1 && $5!="-" {sum+=$5} END{print sum+0}' || echo unknown)
+log "- Kafka MM lag: ${MM2_LAG} msgs (target < 1000)"
+if [ "$MM2_LAG" != "unknown" ] && [ "$MM2_LAG" -gt 1000 ]; then
+    log "  ⚠ MM2 lag $MM2_LAG > 1000, drill aborted (rebuild replication first)"
+    exit 1
+fi
 
 log ""
 log "## Phase 1: Failover (Target=$TARGET)"
@@ -65,10 +75,41 @@ log "**Phase 2 duration**: ${PHASE2_DUR}s"
 log ""
 log "## Phase 3: Smoke transactions"
 
-# 跑 5 笔模拟支付看链路
+# 跑 5 笔模拟支付看链路 (真实 HTTP call,带演练标记防止误进真实结算)
+DRILL_MERCHANT_ID="${DRILL_MERCHANT_ID:-m_dr_drill_99}"
+DRILL_API_KEY="${DRILL_API_KEY:-sk_test_dr_drill}"
+TEST_URL="https://api-${TARGET}.payment.example.com/v1/charges"
+SUCCESS=0
 for i in 1 2 3 4 5; do
-    log "  - test charge $i: stub"
+    BODY=$(cat <<JSON
+{
+  "amount": 100,
+  "currency": "USD",
+  "source": "tok_test_visa",
+  "merchant_id": "$DRILL_MERCHANT_ID",
+  "idempotency_key": "dr_drill_${DATE}_${i}",
+  "metadata": {"drill": "true", "phase": "smoke"}
+}
+JSON
+)
+    HTTP=$(curl -fsS -o /tmp/dr-resp-$i.json -w "%{http_code}" \
+        --max-time 10 \
+        -X POST "$TEST_URL" \
+        -H "Authorization: Bearer $DRILL_API_KEY" \
+        -H "X-Drill-Mode: true" \
+        -H "Content-Type: application/json" \
+        -d "$BODY" 2>/dev/null || echo "000")
+    if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+        log "  ✓ test charge $i: HTTP $HTTP"
+        SUCCESS=$((SUCCESS + 1))
+    else
+        log "  ✗ test charge $i: HTTP $HTTP (resp: $(cat /tmp/dr-resp-$i.json 2>/dev/null | head -c 200))"
+    fi
 done
+log "  smoke success: ${SUCCESS}/5"
+if [ $SUCCESS -lt 4 ]; then
+    log "  ⚠ smoke success < 4/5, marking drill as DEGRADED"
+fi
 
 log ""
 log "## Phase 4: Rollback"

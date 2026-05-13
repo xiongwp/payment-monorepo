@@ -3,13 +3,18 @@ module github.com/xiongwp/payment-channel
 go 1.25.0
 
 // trace 包从本仓 internal/trace 抽到 github.com/xiongwp/payment-util/trace。
+// card adapter 调 card-payment 的 cardpaymentv1 proto stubs,需 replace。
 // 本地 + docker 构建走同级目录 replace；CI/发布时可改为具体 tag。
-replace github.com/xiongwp/payment-util => ../payment-util
+replace (
+	github.com/xiongwp/card-payment => ../card-payment
+	github.com/xiongwp/payment-util => ../payment-util
+)
 
 require (
 	github.com/go-sql-driver/mysql v1.7.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/viper v1.19.0
+	github.com/xiongwp/card-payment v0.0.1
 	github.com/xiongwp/payment-util v0.0.1
 	go.uber.org/fx v1.20.1
 	go.uber.org/zap v1.27.0

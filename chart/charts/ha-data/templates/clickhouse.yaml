@@ -1,0 +1,80 @@
+{{- if .Values.clickhouse.enabled }}
+---
+# ClickHouseInstallation (CR managed by clickhouse-operator, already in cluster)
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: payment-ch
+  namespace: {{ .Values.global.namespace }}
+spec:
+  configuration:
+    clusters:
+      - name: payment
+        layout:
+          shardsCount: {{ .Values.clickhouse.shards }}
+          replicasCount: {{ .Values.clickhouse.replicas }}
+    zookeeper:
+      nodes:
+        - host: zookeeper-0.zookeeper.{{ .Values.global.namespace }}.svc.cluster.local
+          port: 2181
+        - host: zookeeper-1.zookeeper.{{ .Values.global.namespace }}.svc.cluster.local
+          port: 2181
+        - host: zookeeper-2.zookeeper.{{ .Values.global.namespace }}.svc.cluster.local
+          port: 2181
+    profiles:
+      default/max_memory_usage: "10000000000"
+      default/max_execution_time: 300
+    users:
+      default/networks/ip:
+        - "::/0"
+      reconplatform/networks/ip:
+        - "::/0"
+      reconplatform/password_sha256_hex:
+        valueFrom:
+          secretKeyRef:
+            name: ch-credentials
+            key: reconplatform-sha256
+    files:
+      remote_servers.xml: |
+        <yandex>
+          <remote_servers>
+            <payment>
+              {{- range $i, $_ := until (int .Values.clickhouse.shards) }}
+              <shard>
+                <internal_replication>true</internal_replication>
+                {{- range $j, $_ := until (int $.Values.clickhouse.replicas) }}
+                <replica>
+                  <host>chi-payment-ch-payment-{{ $i }}-{{ $j }}</host>
+                  <port>9000</port>
+                </replica>
+                {{- end }}
+              </shard>
+              {{- end }}
+            </payment>
+          </remote_servers>
+        </yandex>
+  templates:
+    podTemplates:
+      - name: ch-pod
+        spec:
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      clickhouse.altinity.com/chi: payment-ch
+                  topologyKey: topology.kubernetes.io/zone
+          containers:
+            - name: clickhouse
+              image: clickhouse/clickhouse-server:23.10
+              resources:
+                {{- toYaml .Values.clickhouse.resources | nindent 16 }}
+    volumeClaimTemplates:
+      - name: data-volume
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: {{ .Values.clickhouse.storage }}
+          storageClassName: {{ .Values.clickhouse.storageClass }}
+{{- end }}

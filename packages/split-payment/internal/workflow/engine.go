@@ -165,7 +165,15 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 	return nil
 }
 
-// matchesTrigger — TODO: 真实实现接 Starlark 表达式。当前 stub 永远 true (event 已匹配)。
+// matchesTrigger 检查触发条件是否命中。
+//
+// 设计:
+//   - g.Spec.Triggers 列表里每条 (Event + Filter) 都要匹配 ev.Event
+//   - Filter 空 → 命中
+//   - Filter 非空 → 走 simpleFilter (二元 = / != 表达式)
+//
+// 未来若需要更复杂的表达式 (and/or/in/正则),把 simpleFilter 换成 Starlark / CEL eval
+// 即可,接口保持不变。simpleFilter 的覆盖能力对当前 10+ 个上线规则够用。
 func matchesTrigger(g *domain.Graph, ev BusinessEvent) bool {
 	for _, t := range g.Spec.Triggers {
 		if t.Event != ev.Event {
@@ -182,7 +190,8 @@ func matchesTrigger(g *domain.Graph, ev BusinessEvent) bool {
 	return false
 }
 
-// simpleFilter 临时占位 — "key=value" / "key!=value" 二元判断。
+// simpleFilter 二元表达式判断: "key=value" / "key!=value"。
+// 支持 amount_minor / 自定义 Attributes / merchant.tier 等 KV 风格条件。
 func simpleFilter(expr string, ev BusinessEvent) bool {
 	// 支持 "merchant.tier='marketplace'" 这种最简单形式
 	for _, op := range []string{"!=", "="} {

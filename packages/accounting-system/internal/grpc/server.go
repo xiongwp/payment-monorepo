@@ -293,14 +293,42 @@ func (s *Server) GetAccount(ctx context.Context, req *accountingv1.GetAccountReq
 	}
 }
 
+// FreezeAccount 把账户状态从 Active 翻成 Frozen,后续所有出账被拒。
+//
+// 这是 admin 操作 (风控 / 合规):
+//   - 操作前必须有 audit-log + approval-service 双人复核 (网关层校验);
+//   - 余额本身不动,FrozenBalance 字段也不动 (那是订单级冻结,独立机制);
+//   - 已 in-flight 的 TCC 仍然能 confirm/cancel (按已 leg 上的 lock 走完);
+//   - 缓存(BalanceCache) 不需要清,下次读会拿到新 status.
 func (s *Server) FreezeAccount(ctx context.Context, req *accountingv1.FreezeAccountRequest) (*accountingv1.FreezeAccountResponse, error) {
-	// TODO: implement
-	return &accountingv1.FreezeAccountResponse{Code: 501, Message: "not implemented"}, nil
+	if req == nil || req.AccountNo == "" {
+		return &accountingv1.FreezeAccountResponse{Code: 400, Message: "account_no required"}, nil
+	}
+	if req.Operator == "" {
+		return &accountingv1.FreezeAccountResponse{Code: 400, Message: "operator required"}, nil
+	}
+	if err := s.accountingSvc.SetAccountStatus(ctx, req.AccountNo, model.AccountStatusFrozen, req.Operator, req.Reason); err != nil {
+		s.logger.Warn("FreezeAccount failed", zap.String("account_no", req.AccountNo), zap.Error(err))
+		return &accountingv1.FreezeAccountResponse{Code: 500, Message: err.Error()}, nil
+	}
+	return &accountingv1.FreezeAccountResponse{Code: 0, Message: "ok"}, nil
 }
 
+// UnfreezeAccount 把账户状态从 Frozen 翻回 Active。
+//
+// 同样要求 admin 审批;UpdateBalance / 取现等被禁的接口会立即可用.
 func (s *Server) UnfreezeAccount(ctx context.Context, req *accountingv1.UnfreezeAccountRequest) (*accountingv1.UnfreezeAccountResponse, error) {
-	// TODO: implement
-	return &accountingv1.UnfreezeAccountResponse{Code: 501, Message: "not implemented"}, nil
+	if req == nil || req.AccountNo == "" {
+		return &accountingv1.UnfreezeAccountResponse{Code: 400, Message: "account_no required"}, nil
+	}
+	if req.Operator == "" {
+		return &accountingv1.UnfreezeAccountResponse{Code: 400, Message: "operator required"}, nil
+	}
+	if err := s.accountingSvc.SetAccountStatus(ctx, req.AccountNo, model.AccountStatusActive, req.Operator, req.Reason); err != nil {
+		s.logger.Warn("UnfreezeAccount failed", zap.String("account_no", req.AccountNo), zap.Error(err))
+		return &accountingv1.UnfreezeAccountResponse{Code: 500, Message: err.Error()}, nil
+	}
+	return &accountingv1.UnfreezeAccountResponse{Code: 0, Message: "ok"}, nil
 }
 
 // ─── 记账操作 ─────────────────────────────────────────────────────────────────

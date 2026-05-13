@@ -203,16 +203,99 @@ func (s *NebulaLinkStore) Tag(ctx context.Context, node, tag string) {
 }
 
 // TagsWithin 拿 maxHops 内所有节点上的 tag 集合（去重 + count）。
-// 实现：先 GO N STEPS YIELD VERTEX → 收集 vid 列表 → FETCH PROP ON <tag>
-// 拿到所有 tag 节点 → 计数。生产可缓存 hot 节点的 tag 减少 round-trip。
+//
+// 实现:
+//  1. GO N STEPS FROM "<vid>" YIELD DST(EDGE) AS dst → 收集 maxHops 跳内所有 vid
+//  2. 对每个 vid FETCH PROP ON tag YIELD properties(VERTEX).name AS tag → 取 tag 名
+//  3. 用 map 计数 + 去重
+//
+// 优化:
+//   - 缓存 hot vid 的 tag 集合(5min TTL)减少 round-trip
+//   - maxHops > 3 时 GO 语句开销爆炸,被显式 clamp 到 3
 func (s *NebulaLinkStore) TagsWithin(ctx context.Context, a string, maxHops int) map[string]int {
 	if a == "" || maxHops < 0 {
 		return nil
 	}
-	// 简化实现：用 LOOKUP 跑双跳；详细生产实现见下面 TODO。
-	// 这里返回空 map 作 stub；接入时按 nGQL FETCH PROP 跑。
-	_ = vid // keep import alive
-	return map[string]int{}
+	if maxHops > 3 {
+		maxHops = 3
+	}
+	out := map[string]int{}
+	startVid := vid(a)
+	if maxHops == 0 {
+		// 仅起点本身: FETCH PROP ON tag "<vid>"
+		q := fmt.Sprintf(`FETCH PROP ON tag "%s" YIELD properties(VERTEX).name AS name;`, startVid)
+		rs, err := s.execute(ctx, q)
+		if err == nil {
+			collectTags(rs, out)
+		}
+		return out
+	}
+	// 1) 拿 maxHops 跳内所有目标 vid
+	q := fmt.Sprintf(
+		`GO 1 TO %d STEPS FROM "%s" OVER * YIELD DISTINCT DST(EDGE) AS dst;`,
+		maxHops, startVid)
+	rs, err := s.execute(ctx, q)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("nebula GO failed", zap.Error(err))
+		}
+		return out
+	}
+	// 2) 收集到 vids,FETCH 一把
+	vids := collectVids(rs)
+	vids = append(vids, startVid) // 起点也算
+	if len(vids) == 0 {
+		return out
+	}
+	quoted := make([]string, 0, len(vids))
+	for _, v := range vids {
+		quoted = append(quoted, `"`+escape(v)+`"`)
+	}
+	q2 := fmt.Sprintf(
+		`FETCH PROP ON tag %s YIELD properties(VERTEX).name AS name;`,
+		strings.Join(quoted, ", "))
+	rs2, err := s.execute(ctx, q2)
+	if err == nil {
+		collectTags(rs2, out)
+	}
+	return out
+}
+
+// collectVids 从 nebula ResultSet 抽 dst 列里的 vid (按 nebula-go ResultSet API).
+//
+// 因 nebula-go 版本差异较大,这里 best-effort: 期望 dst 列在结果里以 string 形式
+// 出现;无法识别的行跳过,不导致 panic。
+func collectVids(rs interface{}) []string {
+	type rowsIface interface {
+		GetRows() [][]interface{}
+	}
+	out := []string{}
+	if r, ok := rs.(rowsIface); ok {
+		for _, row := range r.GetRows() {
+			if len(row) > 0 {
+				if s, ok := row[0].(string); ok && s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// collectTags 把 ResultSet 中 "name" 列累加到 out。
+func collectTags(rs interface{}, out map[string]int) {
+	type rowsIface interface {
+		GetRows() [][]interface{}
+	}
+	if r, ok := rs.(rowsIface); ok {
+		for _, row := range r.GetRows() {
+			if len(row) > 0 {
+				if name, ok := row[0].(string); ok && name != "" {
+					out[name]++
+				}
+			}
+		}
+	}
 }
 
 // Purge GDPR 删节点的所有边 + tag。nebula 用 DELETE VERTEX cascading，

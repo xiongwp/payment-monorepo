@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
+	cardcenterv1 "github.com/xiongwp/card-center/api/proto/cardcenter/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -21,6 +23,7 @@ import (
 // Client 调 card-center 的 gRPC 客户端
 type Client struct {
 	conn    *grpc.ClientConn
+	cli     cardcenterv1.CardCenterClient
 	timeout time.Duration
 }
 
@@ -66,7 +69,11 @@ func New(cfg Config) (*Client, error) {
 	if t <= 0 {
 		t = 5 * time.Second
 	}
-	return &Client{conn: conn, timeout: t}, nil
+	return &Client{
+		conn:    conn,
+		cli:     cardcenterv1.NewCardCenterClient(conn),
+		timeout: t,
+	}, nil
 }
 
 // Close 关连接
@@ -74,11 +81,24 @@ func (c *Client) Close() error { return c.conn.Close() }
 
 // DeleteCard 调 card-center.DeleteCard（业务层 soft delete）
 func (c *Client) DeleteCard(ctx context.Context, userID int64, storedToken, reason, traceID string) error {
+	if storedToken == "" {
+		return errors.New("stored_token required")
+	}
+	if c.cli == nil {
+		return errors.New("cardcenterclient: not initialized")
+	}
 	cctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	_ = cctx
-	// TODO: cli.DeleteCard(...)
-	return errors.New("cardcenterclient: TODO wire cardcenterv1 stubs")
+	_, err := c.cli.DeleteCard(cctx, &cardcenterv1.DeleteCardRequest{
+		StoredToken: storedToken,
+		UserId:      strconv.FormatInt(userID, 10),
+		Reason:      reason,
+		TraceId:     traceID,
+	})
+	if err != nil {
+		return fmt.Errorf("DeleteCard: %w", err)
+	}
+	return nil
 }
 
 func buildTLS(cfg Config) (*tls.Config, error) {

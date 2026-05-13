@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: payment-recon-risk
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "15"
+spec:
+  project: payment-platform
+  source:
+    repoURL: https://github.com/example/payment-monorepo
+    targetRevision: HEAD
+    path: chart
+    helm:
+      releaseName: payment-recon-risk
+      valueFiles:
+        - values.yaml
+        - values-prod.yaml
+      values: |
+        services:
+          reconplatform:  { enabled: true }
+          risk-manage:    { enabled: true }
+          aml-screening:  { enabled: true, replicas: 3 }
+          audit-log:      { enabled: true }
+          approval-service:{ enabled: true }
+          dispute-service:{ enabled: true }
+          kyc-service:    { enabled: true }
+          refund-engine:  { enabled: true }
+          billing-system: { enabled: true }
+          clearing-settlement: { enabled: true }
+          tax-reporting:  { enabled: true }
+          data-rights:    { enabled: true }
+          fx-service:     { enabled: true }
+          split-payment:  { enabled: true }
+          subscription:   { enabled: true }
+          wallet-service: { enabled: true }
+          config-center:  { enabled: true }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payment
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

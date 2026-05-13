@@ -53,9 +53,12 @@ func InitOTel(ctx context.Context, serviceName, endpoint string) (func(context.C
 		return nil, fmt.Errorf("resource: %w", err)
 	}
 
+	// 采样: AdaptiveSampler 优先 (rules + error-always-sample);
+	// 没配规则时退化到 head-based fixed ratio。详见 sampler.go。
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp),
 		sdktrace.WithResource(res),
+		sdktrace.WithSampler(NewAdaptiveSampler(LoadSamplerOptsFromEnv())),
 	)
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(

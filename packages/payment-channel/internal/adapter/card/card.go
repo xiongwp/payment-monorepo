@@ -1,12 +1,13 @@
 // Package card 是 payment-channel 的"卡支付"渠道 adapter。
 //
-// 它**不直接**调 Visa / Mastercard，而是通过 mTLS gRPC 调隔离 DC 内的
-// card-payment 服务，由 card-payment 在 SAQ-D 范围内拿 PAN 调卡组织。
+// 它**不直接**调 Visa / Mastercard,而是通过 mTLS gRPC 调隔离 DC 内的
+// card-payment 服务,由 card-payment 在 SAQ-D 范围内拿 PAN 调卡组织。
 //
-// 跟现有 15 个 adapter (gcash / maya / ...) 同形：实现 channel.Adapter 接口。
+// 跟现有 15 个 adapter (gcash / maya / ...) 同形:实现 channel.Adapter 接口。
 //
-// payment-channel 自己**不见 PAN**：传入的 ChargeRequest 里 channel-token 字段
-// 应当是 card-center 颁发的 payment_token，本 adapter 只透传给 card-payment。
+// payment-channel 自己**不见 PAN**:传入的 ChargeRequest.Metadata["payment_token"]
+// 应当是 card-center 颁发的 payment_token (跟 pi_id AAD-bound),本 adapter 只透传给
+// card-payment。
 package card
 
 import (
@@ -16,8 +17,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	cardpaymentv1 "github.com/xiongwp/card-payment/api/proto/cardpayment/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -30,11 +33,11 @@ import (
 type Config struct {
 	// CardPaymentEndpoint card-payment 服务的 mTLS gRPC 地址
 	CardPaymentEndpoint string
-	// mTLS 客户端证书（payment-channel 调 card-payment 用）
+	// mTLS 客户端证书(payment-channel 调 card-payment 用)
 	ClientCert string
 	ClientKey  string
 	ServerCA   string
-	// dev 用 insecure；prod 必须 false
+	// dev 用 insecure;prod 必须 false
 	Insecure bool
 	// RPC 超时
 	RPCTimeout time.Duration
@@ -43,12 +46,13 @@ type Config struct {
 // Adapter 实现 channel.Adapter
 type Adapter struct {
 	conn    *grpc.ClientConn
+	cli     cardpaymentv1.CardPaymentClient
 	logger  *zap.Logger
 	timeout time.Duration
 	mocked  bool // dev / staging 路径无 card-payment 时 short-circuit
 }
 
-// New dial card-payment over mTLS（或 insecure for dev）
+// New dial card-payment over mTLS(或 insecure for dev)
 func New(cfg Config, logger *zap.Logger) (*Adapter, error) {
 	if cfg.RPCTimeout == 0 {
 		cfg.RPCTimeout = 30 * time.Second
@@ -72,89 +76,169 @@ func New(cfg Config, logger *zap.Logger) (*Adapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial card-payment: %w", err)
 	}
-	return &Adapter{conn: conn, logger: logger, timeout: cfg.RPCTimeout}, nil
+	return &Adapter{
+		conn:    conn,
+		cli:     cardpaymentv1.NewCardPaymentClient(conn),
+		logger:  logger,
+		timeout: cfg.RPCTimeout,
+	}, nil
 }
 
 // Name implements channel.Adapter
 func (a *Adapter) Name() string { return "card" }
 
-// Charge 把 ChargeRequest 转成 card-payment.AuthorizeRequest，然后等同步结果。
+// Charge 调 card-payment.Authorize 同步等结果。
 //
-// 关键约束：
-//   - req.ChannelToken 字段被复用为 card-center 颁发的 payment_token
-//     （payment_token 跟 pi_id 绑定，TTL 30min）
+// 关键约束:
+//   - req.Metadata["payment_token"] = card-center 颁发的 payment_token
+//     (跟 pi_id AAD-bound,TTL 30min)
 //   - 本 adapter 自身不见 PAN
+//   - card-payment 内部完成 Detokenize → 调卡组织 → 结果回写
 func (a *Adapter) Charge(ctx context.Context, req *channel.ChargeRequest) (*channel.ChargeResponse, error) {
 	if req.PiID == "" || req.IdempotencyKey == "" {
 		return nil, fmt.Errorf("card: pi_id / idempotency_key required")
 	}
-	paymentToken := req.ChannelToken
+	paymentToken := req.Metadata["payment_token"]
 	if paymentToken == "" {
-		return nil, fmt.Errorf("card: channel_token (= card-center payment_token) required")
+		return nil, fmt.Errorf("card: metadata[payment_token] (= card-center payment_token) required")
 	}
 
 	if a.mocked {
 		return &channel.ChargeResponse{
 			Result:        channel.ResultSucceeded,
 			ExternalRefNo: "vmock_" + req.IdempotencyKey,
-			AmountCaptured: req.Amount,
 		}, nil
 	}
 
-	// TODO: 接通 cardpaymentv1 generated stubs：
-	//
-	//   cli := cardpaymentv1.NewCardPaymentClient(a.conn)
-	//   resp, err := cli.Authorize(cctx, &cardpaymentv1.AuthorizeRequest{
-	//       PaymentToken: paymentToken,
-	//       PiId:         req.PiID,
-	//       Amount:       req.Amount,
-	//       Currency:     req.Currency,
-	//       Network:      "", // BIN 自动判断
-	//       MerchantDescriptor: req.MerchantName,
-	//   })
-	//   ...
-	//
-	// 当前 stub 直到 cardpaymentv1 proto 接通：
 	cctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
-	_ = cctx
-	return nil, errors.New("card adapter: cardpayment proto stubs not wired yet")
+	resp, err := a.cli.Authorize(cctx, &cardpaymentv1.AuthorizeRequest{
+		PaymentToken:       paymentToken,
+		PiId:               req.PiID,
+		Amount:             req.Amount,
+		Currency:           req.Currency,
+		Network:            req.Metadata["network"], // 空则 card-payment 自判
+		MerchantDescriptor: truncate(req.Description, 22),
+		TraceId:            req.Metadata["trace_id"],
+	})
+	if err != nil {
+		// 网络/超时 → ResultUnknown 让上层走 Query 推进,而不是 Failed
+		return &channel.ChargeResponse{
+			Result:         channel.ResultUnknown,
+			FailureCode:    "channel_call_error",
+			FailureMessage: err.Error(),
+		}, fmt.Errorf("card Authorize: %w", err)
+	}
+	return &channel.ChargeResponse{
+		Result:         mapStatusToResult(resp.GetStatus()),
+		ExternalRefNo:  resp.GetNetworkRefNo(),
+		FailureCode:    resp.GetDeclineCode(),
+		RawFailureCode: resp.GetDeclineCode(),
+		FailureMessage: resp.GetDeclineReason(),
+		Raw: map[string]string{
+			"masked_pan": resp.GetMaskedPan(),
+			"network":    resp.GetNetwork(),
+			"arn":        resp.GetArn(),
+		},
+	}, nil
 }
 
-// Capture / Void / Refund / Query 跟 Charge 同形，先全部走 mock or stub
 func (a *Adapter) Capture(ctx context.Context, req *channel.CaptureRequest) (*channel.OpResponse, error) {
 	if a.mocked {
-		return &channel.OpResponse{Result: channel.ResultSucceeded, ExternalRefNo: req.AcquirerTxID}, nil
+		return &channel.OpResponse{Result: channel.ResultSucceeded, ExternalRefNo: req.ExternalRefNo}, nil
 	}
-	return nil, errors.New("card adapter: capture stub")
+	cctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+	resp, err := a.cli.Capture(cctx, &cardpaymentv1.CaptureRequest{
+		NetworkRefNo: req.ExternalRefNo,
+		PiId:         req.PiID,
+		Amount:       req.Amount,
+	})
+	if err != nil {
+		return &channel.OpResponse{Result: channel.ResultUnknown, FailureMessage: err.Error()},
+			fmt.Errorf("card Capture: %w", err)
+	}
+	return &channel.OpResponse{
+		Result:        mapStatusToResult(resp.GetStatus()),
+		ExternalRefNo: resp.GetNetworkRefNo(),
+	}, nil
 }
 
 func (a *Adapter) Void(ctx context.Context, req *channel.VoidRequest) (*channel.OpResponse, error) {
 	if a.mocked {
-		return &channel.OpResponse{Result: channel.ResultSucceeded, ExternalRefNo: req.AcquirerTxID}, nil
+		return &channel.OpResponse{Result: channel.ResultSucceeded, ExternalRefNo: req.ExternalRefNo}, nil
 	}
-	return nil, errors.New("card adapter: void stub")
+	cctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+	resp, err := a.cli.Void(cctx, &cardpaymentv1.VoidRequest{
+		NetworkRefNo: req.ExternalRefNo,
+		PiId:         req.PiID,
+	})
+	if err != nil {
+		return &channel.OpResponse{Result: channel.ResultUnknown, FailureMessage: err.Error()},
+			fmt.Errorf("card Void: %w", err)
+	}
+	return &channel.OpResponse{
+		Result:        mapStatusToResult(resp.GetStatus()),
+		ExternalRefNo: req.ExternalRefNo,
+	}, nil
 }
 
 func (a *Adapter) Refund(ctx context.Context, req *channel.RefundRequest) (*channel.OpResponse, error) {
 	if a.mocked {
-		return &channel.OpResponse{Result: channel.ResultSucceeded, ExternalRefNo: "vrf_" + req.AcquirerTxID}, nil
+		return &channel.OpResponse{Result: channel.ResultSucceeded, ExternalRefNo: "vrf_" + req.ExternalRefNo}, nil
 	}
-	return nil, errors.New("card adapter: refund stub")
+	cctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+	resp, err := a.cli.Refund(cctx, &cardpaymentv1.RefundRequest{
+		NetworkRefNo: req.ExternalRefNo,
+		PiId:         req.PiID,
+		Amount:       req.Amount,
+		Reason:       req.Reason,
+	})
+	if err != nil {
+		return &channel.OpResponse{Result: channel.ResultUnknown, FailureMessage: err.Error()},
+			fmt.Errorf("card Refund: %w", err)
+	}
+	return &channel.OpResponse{
+		Result:        mapStatusToResult(resp.GetStatus()),
+		ExternalRefNo: resp.GetRefundRefNo(),
+	}, nil
 }
 
 func (a *Adapter) Query(ctx context.Context, req *channel.QueryRequest) (*channel.QueryResponse, error) {
 	if a.mocked {
-		return &channel.QueryResponse{Result: channel.ResultSucceeded, ExternalRefNo: req.AcquirerTxID}, nil
+		return &channel.QueryResponse{Result: channel.ResultSucceeded, ExternalRefNo: req.ExternalRefNo}, nil
 	}
-	return nil, errors.New("card adapter: query stub")
+	cctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+	resp, err := a.cli.Query(cctx, &cardpaymentv1.QueryRequest{
+		NetworkRefNo: req.ExternalRefNo,
+		PiId:         req.PiID,
+	})
+	if err != nil {
+		return &channel.QueryResponse{Result: channel.ResultUnknown},
+			fmt.Errorf("card Query: %w", err)
+	}
+	return &channel.QueryResponse{
+		Result:         mapStatusToResult(resp.GetStatus()),
+		ExternalRefNo:  resp.GetNetworkRefNo(),
+		AmountCaptured: resp.GetAmount(),
+		Raw: map[string]string{
+			"currency":     resp.GetCurrency(),
+			"decline_code": resp.GetDeclineCode(),
+		},
+	}, nil
 }
 
-// ParseWebhook 卡支付的 webhook 来源是 card-payment（独立 DC 通过 mTLS 推回）；
-// 本 adapter 不直接接 Visa / Mastercard webhook（那一层在 card-payment 内部消化）。
+// ParseWebhook 卡支付的 webhook 来源是 card-payment(独立 DC 通过 mTLS 推回);
+// 本 adapter 不直接接 Visa / Mastercard webhook(那一层在 card-payment 内部消化)。
 //
-// 当前留 stub。card-payment → payment-channel webhook 协议设计 phase 2。
+// payment-channel 暴露 /internal/card-payment/webhook 给 card-payment 服务 POST,
+// 走另一条独立路径,这里返回错防止误用。
 func (a *Adapter) ParseWebhook(headers map[string]string, body []byte) (*channel.WebhookEvent, error) {
+	_ = headers
+	_ = body
 	return nil, errors.New("card adapter: webhook should come from card-payment via internal channel, not direct from network")
 }
 
@@ -164,6 +248,43 @@ func (a *Adapter) Close() error {
 		return a.conn.Close()
 	}
 	return nil
+}
+
+// ─── helpers ──────────────────────────────────────────
+
+// mapStatusToResult 把 card-payment status 字符串映射到 channel.ResultType。
+//
+// card-payment 内部维护的状态机:
+//
+//	approved        -> succeeded   (Authorize 成功 / Capture 成功)
+//	declined        -> failed      (卡组织拒绝,DeclineCode 非空)
+//	pending         -> processing  (3DS challenge 中等 / 异步审核)
+//	refunded        -> succeeded
+//	voided          -> succeeded
+//	requires_action -> requires_action
+//	unknown / "" / 其它 -> unknown (走 Query 推进)
+func mapStatusToResult(s string) channel.ResultType {
+	switch strings.ToLower(s) {
+	case "approved", "succeeded", "refunded", "voided", "captured":
+		return channel.ResultSucceeded
+	case "authorized":
+		return channel.ResultAuthorized
+	case "declined", "failed":
+		return channel.ResultFailed
+	case "pending", "processing":
+		return channel.ResultProcessing
+	case "requires_action", "challenge_required":
+		return channel.ResultRequiresAction
+	default:
+		return channel.ResultUnknown
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 func buildTLS(cfg Config) (*tls.Config, error) {

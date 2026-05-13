@@ -1,0 +1,107 @@
+# ha-data sub-chart values. See Chart.yaml for component overview.
+
+global:
+  namespace: payment
+
+redisSentinel:
+  enabled: true
+  replicas: 3        # 1 master + 2 replicas
+  sentinels: 3       # 3 sentinel pods (quorum 2)
+  password: "REPLACE_VIA_EXTERNAL_SECRET"
+  image: "bitnami/redis:7.2-debian-11"
+  sentinelImage: "bitnami/redis-sentinel:7.2-debian-11"
+  storage:
+    size: 20Gi
+    storageClass: gp3
+  resources:
+    requests: { cpu: 200m, memory: 512Mi }
+    limits:   { cpu: 1000m, memory: 2Gi }
+  podAntiAffinity: zone     # 强制 3 副本跨 zone
+  pdb:
+    minAvailable: 2
+
+mysql:
+  enabled: true
+  primary:
+    replicas: 1
+    storage: 100Gi
+    resources:
+      requests: { cpu: 500m, memory: 2Gi }
+      limits:   { cpu: 4000m, memory: 8Gi }
+  replicas:
+    count: 2
+    storage: 100Gi
+    resources:
+      requests: { cpu: 500m, memory: 2Gi }
+      limits:   { cpu: 4000m, memory: 8Gi }
+  proxySql:
+    enabled: true
+    replicas: 2
+    image: "proxysql/proxysql:2.5.5"
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"  # 02:00 UTC 每日全量
+    retention: 30d
+    s3Bucket: payment-mysql-backups
+  pitr:
+    enabled: true
+    binlogRetention: 7d
+
+kafka:
+  enabled: true
+  brokers: 3
+  replicationFactor: 3
+  minInSyncReplicas: 2
+  storage: 200Gi
+  storageClass: gp3
+  resources:
+    requests: { cpu: 500m, memory: 2Gi }
+    limits:   { cpu: 4000m, memory: 8Gi }
+  topics:
+    - name: payment.events
+      partitions: 32
+      replicationFactor: 3
+      config:
+        retention.ms: "604800000"      # 7 day
+        cleanup.policy: delete
+    - name: payment.outbox
+      partitions: 16
+      replicationFactor: 3
+      config:
+        retention.ms: "1209600000"     # 14 day for outbox replay
+    - name: payment.webhook.dlq
+      partitions: 8
+      replicationFactor: 3
+      config:
+        retention.ms: "2592000000"     # 30 day DLQ
+    - name: payment.saga.events
+      partitions: 16
+      replicationFactor: 3
+      config:
+        retention.ms: "604800000"
+
+  mirrorMaker2:
+    enabled: true
+    image: "quay.io/strimzi/kafka:0.38.0-kafka-3.6.0"
+    sourceCluster: primary
+    targetCluster: dr
+    topics:
+      - "payment\\..*"
+    consumerGroup: payment-mm2
+
+clickhouse:
+  enabled: true
+  shards: 1
+  replicas: 2
+  storage: 500Gi
+  storageClass: gp3
+  zookeeper:
+    enabled: true        # ClickHouse Keeper 即可,这里走兼容模式
+    replicas: 3
+  resources:
+    requests: { cpu: 1000m, memory: 4Gi }
+    limits:   { cpu: 8000m, memory: 32Gi }
+  tables:
+    - reconplatform.diff_events
+    - accounting.fee_event
+    - audit.global_audit_log

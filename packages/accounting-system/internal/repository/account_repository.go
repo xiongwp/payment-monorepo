@@ -47,6 +47,10 @@ type AccountRepository interface {
 
 	// GetAccountForUpdate 查询账户并加锁
 	GetAccountForUpdate(ctx context.Context, tx *gorm.DB, accountNo string, dbIndex, tableIndex int) (*model.Account, error)
+
+	// UpdateAccountStatus 修改账户状态 (Active / Frozen / Disabled)。
+	// 由 admin 操作触发 (FreezeAccount / UnfreezeAccount gRPC),非业务热路径,直接 UPDATE。
+	UpdateAccountStatus(ctx context.Context, accountNo string, newStatus model.AccountStatus) error
 }
 
 type accountRepository struct {
@@ -270,4 +274,32 @@ func (r *accountRepository) GetAccountForUpdate(ctx context.Context, tx *gorm.DB
 	}
 
 	return &account, nil
+}
+
+// UpdateAccountStatus 修改账户状态 (Active / Frozen / Disabled)。
+//
+// 由 FreezeAccount / UnfreezeAccount gRPC 触发,admin 路径。
+// 同一账户号在 (userID 取自 account_no 派生) 单分片内只有一条记录,Where account_no UPDATE 安全。
+// 加 version+1 防止与 UpdateBalance 并发覆盖。
+func (r *accountRepository) UpdateAccountStatus(ctx context.Context, accountNo string, newStatus model.AccountStatus) error {
+	dbIndex, tableIndex := r.router.RouteByAccountNo(accountNo)
+	tableName := r.router.GetTableName("account", tableIndex)
+	db, err := r.dbManager.GetDB(dbIndex)
+	if err != nil {
+		return err
+	}
+	res := db.WithContext(ctx).Table(tableName).
+		Where("account_no = ?", accountNo).
+		Updates(map[string]interface{}{
+			"status":  newStatus,
+			"version": gorm.Expr("version + 1"),
+		})
+	if res.Error != nil {
+		return fmt.Errorf("update account status: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("account not found")
+	}
+	log.Printf("[account-repo] account=%s status=%d updated", accountNo, newStatus)
+	return nil
 }
