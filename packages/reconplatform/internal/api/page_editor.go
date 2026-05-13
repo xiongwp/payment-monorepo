@@ -137,6 +137,14 @@ func (s *Server) pageEditor(w http.ResponseWriter, r *http.Request) {
               </ul>
             </div>
           </template>
+          <div x-show="groupedSchema.length === 0 && schemaTables.length > 0"
+               class="px-3 py-4 text-center text-[10px] text-slate-400">
+            ⚠ 渲染错误: 有 <span x-text="schemaTables.length"></span> 张表但分组失败
+          </div>
+          <div x-show="schemaTables.length === 0"
+               class="px-3 py-4 text-center text-[10px] text-slate-400">
+            ⚠ schemaTables 为空 (检查 FALLBACK_TABLES 常量)
+          </div>
         </div>
         <div class="px-2 py-1.5 border-t border-slate-100 text-[10px] text-slate-400 shrink-0">
           点 table 看列;双击 / + 按钮插入 <span class="mono">ctx.scan(...)</span>
