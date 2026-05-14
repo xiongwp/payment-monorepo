@@ -32,6 +32,10 @@ func (s *Server) pageEvents(w http.ResponseWriter, _ *http.Request) {
               title="dev: 注入一条模拟事件验证渲染">
         <i data-lucide="zap" class="icon w-3 h-3"></i> 注入测试
       </button>
+      <button @click="injectBurst(10)" class="btn btn-outline text-xs"
+              title="dev: 一次性注入 10 条事件模拟流量">
+        <i data-lucide="rocket" class="icon w-3 h-3"></i> 批量×10
+      </button>
       <div class="h-5 w-px bg-slate-200 mx-1"></div>
       <select x-model="filterSvc" class="text-xs border border-slate-300 rounded px-2 py-1">
         <option value="">所有 service</option>
@@ -86,8 +90,27 @@ func (s *Server) pageEvents(w http.ResponseWriter, _ *http.Request) {
       <li x-show="filtered.length === 0 && sseStatus === 'open'"
           class="px-3 py-8 text-center text-sm text-slate-400">
         <i data-lucide="hourglass" class="w-6 h-6 mx-auto mb-2 opacity-50"></i>
-        <div>等待事件...</div>
-        <div class="text-xs mt-1">CDC 已连接,binlog 静止时间窗可能没行变更</div>
+        <div class="font-medium text-slate-600">等待事件...</div>
+        <div class="text-xs mt-1 text-slate-500">
+          SSE 已连接,但 binlog 静止或 CDC 未运行
+        </div>
+        <div class="mt-4 inline-flex flex-col gap-2 text-xs">
+          <button @click="injectTestEvent()" class="btn btn-primary text-xs">
+            <i data-lucide="zap" class="icon w-3 h-3"></i> 注入 1 条测试事件
+          </button>
+          <button @click="injectBurst(20)" class="btn btn-outline text-xs">
+            <i data-lucide="rocket" class="icon w-3 h-3"></i> 注入 20 条模拟流量
+          </button>
+          <button @click="autoInjectOn = !autoInjectOn"
+                  class="text-brand-600 hover:underline text-[11px]">
+            <span x-show="!autoInjectOn">每秒自动注入 1 条 (持续)</span>
+            <span x-show="autoInjectOn">⏸ 停止自动注入</span>
+          </button>
+        </div>
+        <div class="mt-3 text-[10px] text-slate-400 max-w-xs mx-auto">
+          注入是 dev 工具:通过 <span class="mono">POST /api/v1/events/stream/_inject</span>
+          直接 XADD 到 Redis stream,SSE 会立即推送
+        </div>
       </li>
       <li x-show="sseStatus === 'err'" class="px-3 py-4 text-center text-sm text-red-600">
         SSE 连接断开。<button @click="connectSSE()" class="underline">重连</button>
@@ -250,6 +273,10 @@ function eventsPage() {
     // detail modal
     detail: null,
 
+    // dev 自动注入开关 (默认关)
+    autoInjectOn: false,
+    _autoInjectTimer: null,
+
     // URL 预填 (从 /admin/events?idx=pi_id&val=pi_xxx 跳转过来)
     initFromQuery() {
       const u = new URL(location.href);
@@ -266,6 +293,10 @@ function eventsPage() {
       this.connectSSE();
       // CDC 状态每 10s 刷新
       setInterval(() => this.loadCDC(), 10_000);
+      // 自动注入循环: autoInjectOn=true 时每秒注入 1 条
+      setInterval(() => {
+        if (this.autoInjectOn && !this.paused) this.injectTestEvent();
+      }, 1000);
     },
 
     connectSSE() {
@@ -320,6 +351,14 @@ function eventsPage() {
         this.sse.onmessage = onBinlog;
       } catch (e) {
         this.sseStatus = 'err';
+      }
+    },
+
+    // 一键 burst 注入 N 条不同业务事件 (验证 batch render + 多 svc 过滤)
+    async injectBurst(n) {
+      for (let i = 0; i < n; i++) {
+        await this.injectTestEvent();
+        await new Promise(r => setTimeout(r, 50));  // 50ms 间隔
       }
     },
 

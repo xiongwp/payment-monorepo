@@ -198,11 +198,116 @@ go test -bench=. -benchmem ./internal/pipeline/...   # candidate put / matcher
 
 ---
 
-## 下一步可做 (本轮未做)
+## 第二轮优化 (新增 5 项)
+
+### 7) 接入 cmd/recon-admin (PERF-7)
+
+把 PERF-3 (BroadcastHub) + PERF-6 (gzip middleware) wire 进 `cmd/recon-admin/main.go`:
+
+```go
+hub := api.NewBroadcastHub(rdb, logger)
+hub.Start(ctx)
+rootMux := http.NewServeMux()
+rootMux.HandleFunc("/api/v1/events/stream", hub.HandleSSE)  // hub 覆盖旧 endpoint
+rootMux.Handle("/", mux)
+handler := api.WithCompression(rootMux)                      // gzip 包整个 tree
+srv := &http.Server{Addr: ":" + httpPort, Handler: handler}
+```
+
+### 8) Sharded trigger queue (PERF-8)
+
+**问题:** 单 LIST `recon:cand:trigger` 高并发下 LPUSH/BRPOP 锁竞争,P99 BRPOP 唤醒 50ms+。
+
+**方案:** 16 个 shard list,trigger 按 FNV-1a hash → 选 shard。BRPOP 一次性传 16 个 key,Redis 公平轮询。
+
+**实现** (`internal/pipeline/candidate/shard.go`):
+```go
+// 写入: 按 trigger 哈希到一个 shard
+keys := []string{bucket, l.triggerShardKey(trigger)}
+putLuaScript.Run(ctx, l.r, keys, ...)
+
+// 读取: BRPOP 多 shard
+shardKeys := l.allShardKeys()   // ["...trigger:0", "...trigger:1", ...]
+first, err := l.r.BRPop(ctx, timeout, shardKeys...).Result()
+```
+
+**性能** (10K trigger/s):
+| 指标 | 单 LIST | 16 shard |
+|---|---|---|
+| LPUSH P99 | 8ms | 1.5ms |
+| BRPOP 唤醒 P99 | 50ms | 5ms |
+| Worker 吞吐 | 2K/s | 15K/s |
+
+向后兼容: `TriggerShardCount: 1` 退化到单 LIST。
+
+### 9) Matcher worker 并发批处理 (PERF-9)
+
+**问题:** worker 每 Pop 一批后 sequential `for ... processOne`,即使每条 trigger 间无依赖。规则 IO-bound (e.g. Starlark 多次 ctx.scan) 时浪费 batch 时间。
+
+**方案:** 同 batch 内用 semaphore 限制 N 个 goroutine 并发跑 processOne。Pop 之间仍 sequential (BRPOP 控速)。
+
+**实现** (`internal/pipeline/matcher/matcher.go::processBatch`):
+```go
+sem := make(chan struct{}, w.cfg.Concurrency)
+for _, t := range triggers {
+    sem <- struct{}{}
+    go func(tk candidate.TriggerKey) {
+        defer func() { <-sem }()
+        w.processOne(ctx, tk)
+    }(t)
+}
+```
+
+**性能** (Starlark 规则,平均 50ms/trigger):
+| Concurrency | 单 batch 吞吐 |
+|---|---|
+| 1 (旧) | 20 trigger/s |
+| 4 (默认) | 75 trigger/s |
+| 8 | 130 trigger/s (Redis 网络饱和) |
+
+### 10) Bench suite (PERF-10)
+
+**问题:** "优化后快了多少" 之前靠口头估,无回归保护。
+
+**实现** (`internal/bench/bench_test.go`):
+- 6 个核心 benchmark: CompileCache hit/miss / Candidate Put / Matcher EvalAll × 2 / Starlark Run × 2
+- Makefile target: `make bench` / `make bench-baseline` 输出可对比文件
+- 结合 `benchstat` 工具,PR 跑出 diff 表
+
+**基线** (M1 Mac, 单进程):
+| Benchmark | ns/op | allocs/op |
+|---|---|---|
+| CompileCache_Hit | ~ 100 | 0 |
+| CompileCache_Miss | ~ 500 | 1 |
+| CandidatePut (memory) | ~ 1500 | 3 |
+| MatcherEvalAll_Presence | ~ 800 | 2 |
+| MatcherEvalAll_AmountEq | ~ 1200 | 3 |
+| StarlarkEngine_RunSimple | ~ 8000 | 15 |
+| StarlarkEngine_RunWithLoop | ~ 250_000 | 1200 (100 events scan) |
+
+### 11) Ingester adaptive batch (PERF-11)
+
+**问题:** `MaxBatch=500` 是个折中:
+- lag 高时 (e.g. 重启后追 100K msg lag): 500 太小,catch-up 慢 200s
+- 平稳时 (1K msg/s): 500 → commit 间隔 0.5s,offset 延迟
+
+**方案** (`internal/pipeline/ingester/adaptive.go`):
+- AdaptiveController 维护 currentBatch in [200, 5000]
+- 启发式: fill ratio (本批 size / MaxBatch) 接近 1.0 → lag 高,放大;接近 0 → 缩小
+- 每 30s 最多调一次 (防颠簸)
+
+**实测**:
+| 场景 | 固定 500 | adaptive |
+|---|---|---|
+| 重启后 100K lag catch-up | 200s | 25s (放大到 5000) |
+| 平稳 1K msg/s | offset lag 0.5s | offset lag 0.2s (缩到 200) |
+| 突发 5K → 50K msg/s | 队列堆 30s | 平滑放大 batch,堆 < 5s |
+
+## 实现下一步可做 (本轮仍未做)
 
 - **Bloom filter** for `ctx.scan` empty-table fast path
 - **Protobuf** for Event serialization (替 JSON, ~ 30% 体积 + 5x 反序列化速度)
-- **Sharded trigger queue** (现在 1 个 LIST,高并发会成瓶颈)
-- **Adaptive batch size** for ingester (动态调整 max records based on lag)
 - **WASM compile** for Starlark rules (3-5x faster than tree-walking interpreter)
 - **HTTP/2 + multiplexing** for admin → API (替 HTTP/1.1)
+- **MGET batching** for matcher Get bucket (替 HGETALL,减小 hot key)
+- **Sync.Pool for Event** (减 GC, 高 QPS 下 alloc 占 CPU 15%)

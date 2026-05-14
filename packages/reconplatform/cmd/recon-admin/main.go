@@ -417,9 +417,22 @@ func main() {
 		http.NotFound(w, r)
 	})
 
+	// ─── SSE BroadcastHub (PERF-3): 单 XREAD fan-out 替代 per-client ───
+	// 替换 api.Mount 注册的 /api/v1/events/stream 实现.
+	// 路由覆盖逻辑: 同 path 后注册会覆盖前面 — Go ServeMux 实际抛 panic,
+	// 因此用 wrapper mux 截到该 path 优先走 hub.
+	hub := api.NewBroadcastHub(rdb, logger)
+	hub.Start(ctx)
+	rootMux := http.NewServeMux()
+	rootMux.HandleFunc("/api/v1/events/stream", hub.HandleSSE)
+	rootMux.Handle("/", mux)
+
+	// PERF-6: gzip + ETag 中间件包整个 handler tree
+	handler := api.WithCompression(rootMux)
+
 	srv := &http.Server{
 		Addr:              ":" + httpPort,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

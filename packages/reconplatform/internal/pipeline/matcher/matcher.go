@@ -177,6 +177,12 @@ type WorkerConfig struct {
 	PollTimeout  time.Duration // 阻塞 Pop 多久,默认 5s
 	MatchTimeout time.Duration // 单条 trigger 跑规则超时,默认 10s
 	KeepHistory  bool          // 匹配完是否保留桶 (审计),默认 false
+
+	// Concurrency 一个 batch 内并发处理 trigger 的 goroutine 数.
+	//   <= 1: 顺序处理 (旧行为)
+	//   >= 2: 同 batch 内并发跑 processOne, 适合规则慢的场景 (e.g. Starlark 重 IO)
+	// 默认 4. 注意:不同 batch 之间仍是 sequential (Pop 是阻塞的).
+	Concurrency int
 }
 
 // DefaultWorkerConfig 默认.
@@ -185,6 +191,7 @@ func DefaultWorkerConfig(workerID string) WorkerConfig {
 		WorkerID: workerID, BatchSize: 10,
 		PollTimeout: 5 * time.Second, MatchTimeout: 10 * time.Second,
 		KeepHistory: false,
+		Concurrency: 4,
 	}
 }
 
@@ -218,6 +225,9 @@ func NewWorker(cfg WorkerConfig, layer candidate.Layer, reg *Registry, pub Publi
 	if cfg.MatchTimeout <= 0 {
 		cfg.MatchTimeout = 10 * time.Second
 	}
+	if cfg.Concurrency <= 0 {
+		cfg.Concurrency = 4
+	}
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -247,10 +257,40 @@ func (w *Worker) Run(ctx context.Context) error {
 			time.Sleep(time.Second)
 			continue
 		}
+		// 并发处理 batch: 用 semaphore 控制 Concurrency goroutines.
+		// 同 batch 内并发 → CPU + Redis I/O 重叠;
+		// batch 与 batch 之间仍 sequential (Pop 阻塞控速).
+		w.processBatch(ctx, triggers)
+	}
+}
+
+// processBatch 在 Concurrency 限制下并发跑 processOne.
+//
+// 比 sequential 在规则 IO-bound (e.g. Starlark 调 ctx.scan 多次) 时
+// 吞吐提升 ~Concurrency 倍; CPU-bound 规则提升 < Concurrency 倍 (受 GOMAXPROCS 限).
+func (w *Worker) processBatch(ctx context.Context, triggers []candidate.TriggerKey) {
+	if len(triggers) == 0 {
+		return
+	}
+	if w.cfg.Concurrency <= 1 || len(triggers) == 1 {
+		// 单线程路径 (避免 goroutine 开销)
 		for _, t := range triggers {
 			w.processOne(ctx, t)
 		}
+		return
 	}
+	sem := make(chan struct{}, w.cfg.Concurrency)
+	var wg sync.WaitGroup
+	for _, t := range triggers {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(tk candidate.TriggerKey) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			w.processOne(ctx, tk)
+		}(t)
+	}
+	wg.Wait()
 }
 
 // processOne 锁 + Get + Eval + Publish + Ack.

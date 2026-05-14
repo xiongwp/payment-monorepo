@@ -100,8 +100,18 @@ cover:  ## 跑测试 + 覆盖率
 cover-html: cover  ## 生成 HTML 覆盖率报告并打开
 	$(GO) tool cover -html=$(COVERAGE)
 
-bench:  ## 跑 benchmark
-	$(GO) test -bench=. -benchmem -run=^$$ ./...
+bench:  ## 跑 benchmark (聚焦 internal/bench)
+	$(GO) test -bench=. -benchmem -benchtime=2s -run=^$$ ./internal/bench/...
+
+bench-all:  ## 跑所有包的 benchmark
+	$(GO) test -bench=. -benchmem -benchtime=1s -run=^$$ ./...
+
+bench-baseline:  ## 跑 bench + 保存为基线 (用于 PR 对比)
+	@mkdir -p bench-results
+	$(GO) test -bench=. -benchmem -benchtime=2s -count=3 -run=^$$ ./internal/bench/... \
+		| tee bench-results/baseline-$$(date +%Y%m%d-%H%M%S).txt
+	@echo "  → 用 benchstat 对比: go install golang.org/x/perf/cmd/benchstat@latest"
+	@echo "  → benchstat bench-results/baseline-OLD.txt bench-results/baseline-NEW.txt"
 
 # ─── 规则开发 ─────────────────────────────────────────────────
 

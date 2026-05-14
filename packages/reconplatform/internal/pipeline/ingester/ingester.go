@@ -69,6 +69,9 @@ type Ingester struct {
 	layer  candidate.Layer
 	logger *zap.Logger
 
+	// 自适应 batch size (PERF-11): lag 高时放大, 平稳时缩小, 提升 catch-up + 减 offset 延迟.
+	adaptive *AdaptiveController
+
 	// metrics
 	consumedTotal atomic.Int64
 	putTotal      atomic.Int64
@@ -77,6 +80,9 @@ type Ingester struct {
 	dlqSent       atomic.Int64
 	triggers      atomic.Int64
 }
+
+// Adaptive 暴露给监控/调优 (Stats 抓 CurrentBatch).
+func (i *Ingester) Adaptive() *AdaptiveController { return i.adaptive }
 
 // New 构造 + dial.
 func New(cfg Config, layer candidate.Layer, logger *zap.Logger) (*Ingester, error) {
@@ -127,6 +133,7 @@ func New(cfg Config, layer candidate.Layer, logger *zap.Logger) (*Ingester, erro
 
 	return &Ingester{
 		cfg: cfg, cl: cl, dlqCl: dlqCl, layer: layer, logger: logger,
+		adaptive: NewAdaptiveController(cfg.MaxBatch),
 	}, nil
 }
 
@@ -150,7 +157,9 @@ func (i *Ingester) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		fetches := i.cl.PollRecords(ctx, i.cfg.MaxBatch)
+		// PERF-11: 用自适应 batch size (动态调节, 跟 lag 走)
+		curBatch := i.adaptive.CurrentBatch()
+		fetches := i.cl.PollRecords(ctx, curBatch)
 		if errs := fetches.Errors(); len(errs) > 0 {
 			// 单分区错误不致命;只 log,继续
 			for _, fe := range errs {
@@ -171,11 +180,24 @@ func (i *Ingester) Run(ctx context.Context) error {
 			}
 			toCommit = append(toCommit, rec)
 		}
-		if len(toCommit) > 0 {
+		batchSize := len(toCommit)
+		if batchSize > 0 {
 			if err := i.cl.CommitRecords(ctx, toCommit...); err != nil {
 				i.logger.Warn("commit failed", zap.Error(err))
 				// 不返,下轮再 commit;客户端会保留 in-memory offset
+			} else {
+				i.adaptive.RecordCommitted(batchSize)
 			}
+		}
+		i.adaptive.RecordConsumed(batchSize)
+		// 启发式估计 lag, 调整下一轮的 batch
+		fillRatio := float64(batchSize) / float64(curBatch)
+		approxLag := SuggestLagFromBatch(fillRatio, curBatch)
+		if newBatch := i.adaptive.Adjust(approxLag); newBatch != curBatch {
+			i.logger.Info("adaptive batch adjusted",
+				zap.Int("from", curBatch),
+				zap.Int("to", newBatch),
+				zap.Float64("fill_ratio", fillRatio))
 		}
 	}
 }
