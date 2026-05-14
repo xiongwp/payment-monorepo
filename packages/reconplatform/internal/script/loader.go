@@ -52,6 +52,12 @@ type Loader struct {
 	scripts   map[string]*Script
 	engine    *Engine
 	postHooks []PostRunHook
+
+	// compileCache LRU cache for ad-hoc Compile (RunCode / Validate).
+	// 已注册脚本的 compiled 字段仍用 Script.compiled 持有(永驻);
+	// cache 只服务 dry-run / batch 等"一次性 code 但可能重复"的路径,
+	// 命中典型节省 5-50ms/次.
+	compileCache *CompileCache
 }
 
 // NewLoader 构造 Loader。engine 默认是 NewEngine(0) — 用 maxSteps 默认值。
@@ -62,10 +68,14 @@ func NewLoader(e *Engine) *Loader {
 		e = NewEngine(0)
 	}
 	return &Loader{
-		scripts: make(map[string]*Script),
-		engine:  e,
+		scripts:      make(map[string]*Script),
+		engine:       e,
+		compileCache: NewCompileCache(128),
 	}
 }
+
+// CompileCache 暴露给 caller 抓 metrics (Prometheus).
+func (l *Loader) CompileCache() *CompileCache { return l.compileCache }
 
 // Engine 暴露给 caller（main.go）做动态 RegisterModule / 调 /symbols 端点。
 func (l *Loader) Engine() *Engine { return l.engine }
@@ -283,12 +293,20 @@ func (l *Loader) RunCode(ctx *Context, displayID, code, trigger string) *Result 
 		StartedAt:   time.Now(),
 		TriggeredBy: trigger,
 	}
-	cs, err := l.engine.Compile(displayID, code)
-	if err != nil {
-		r.Status = "error"
-		r.Error = "compile: " + err.Error()
-		r.FinishedAt = time.Now()
-		return r
+	// 优先查 cache: hit 命中省 5-50ms (Starlark Compile 是热路径瓶颈).
+	var cs *CompiledScript
+	if cached, ok := l.compileCache.Get(displayID, code); ok {
+		cs = cached
+	} else {
+		var err error
+		cs, err = l.engine.Compile(displayID, code)
+		if err != nil {
+			r.Status = "error"
+			r.Error = "compile: " + err.Error()
+			r.FinishedAt = time.Now()
+			return r
+		}
+		l.compileCache.Put(displayID, code, cs)
 	}
 	goCtx := ctx.Ctx
 	if goCtx == nil {
