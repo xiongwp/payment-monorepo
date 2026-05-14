@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
 
@@ -72,6 +73,12 @@ type Ingester struct {
 	// 自适应 batch size (PERF-11): lag 高时放大, 平稳时缩小, 提升 catch-up + 减 offset 延迟.
 	adaptive *AdaptiveController
 
+	// PERF-12: 双写到 Redis stream 让 SSE 监控看到实时流.
+	// 可选 — nil 即不写 (生产高吞吐场景可关).
+	sseRdb        redis.UniversalClient
+	sseStreamKey  string
+	sseStreamMaxLen int64
+
 	// metrics
 	consumedTotal atomic.Int64
 	putTotal      atomic.Int64
@@ -79,6 +86,27 @@ type Ingester struct {
 	candidateErr  atomic.Int64
 	dlqSent       atomic.Int64
 	triggers      atomic.Int64
+	sseWrites     atomic.Int64
+}
+
+// WithSSEStream 让 ingester 在处理每条 cdc event 时同时 XADD 到 Redis stream,
+// 给 /api/v1/events/stream SSE 监控提供数据源.
+//
+// streamKey 默认 "recon:stream:events" (与 BroadcastHub 期望一致).
+// maxLen 默认 10000 (Redis XADD MAXLEN ~ 控制内存).
+//
+// 关闭: 不调本方法即 nil sseRdb, 跳过双写.
+func (i *Ingester) WithSSEStream(rdb redis.UniversalClient, streamKey string, maxLen int64) *Ingester {
+	if streamKey == "" {
+		streamKey = "recon:stream:events"
+	}
+	if maxLen <= 0 {
+		maxLen = 10000
+	}
+	i.sseRdb = rdb
+	i.sseStreamKey = streamKey
+	i.sseStreamMaxLen = maxLen
+	return i
 }
 
 // Adaptive 暴露给监控/调优 (Stats 抓 CurrentBatch).
@@ -224,7 +252,56 @@ func (i *Ingester) handle(ctx context.Context, rec *kgo.Record) error {
 	}
 	i.putTotal.Add(1)
 	i.triggers.Add(int64(len(triggers)))
+
+	// PERF-12: 双写 SSE 监控流. 失败不阻塞主路径 (监控可降级).
+	// XADD MAXLEN ~ 用 approx 限长, Redis 内部用 listpack 优化, 几乎零开销.
+	if i.sseRdb != nil {
+		i.writeSSEStream(ctx, &cdcEvt)
+	}
 	return nil
+}
+
+// writeSSEStream XADD cdc event 到 Redis stream (供 BroadcastHub XREAD).
+//
+// 字段格式:
+//   svc / table / pk / op / ts / binlog_pos / indexes (JSON string) / before (JSON) / after (JSON)
+//
+// 失败仅 log warn, 不阻塞主流程 — SSE 监控是可观测性,丢一两条不算事故.
+func (i *Ingester) writeSSEStream(ctx context.Context, e *cdc.Event) {
+	if e == nil {
+		return
+	}
+	indexesJSON, _ := json.Marshal(e.Indexes)
+	beforeJSON, _ := json.Marshal(e.Before)
+	afterJSON, _ := json.Marshal(e.After)
+	values := map[string]interface{}{
+		"svc":         e.Service,
+		"table":       e.Table,
+		"pk":          e.PK,
+		"op":          string(e.Op),
+		"ts":          e.Timestamp.UTC().Format(time.RFC3339Nano),
+		"binlog_file": e.BinlogFile,
+		"binlog_pos":  e.BinlogPos,
+		"gtid":        e.GTID,
+		"indexes":     string(indexesJSON),
+		"before":      string(beforeJSON),
+		"after":       string(afterJSON),
+	}
+	// XADD 用 MAXLEN ~ 让 Redis 异步裁剪 (BLPOP 一样,不锁).
+	err := i.sseRdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: i.sseStreamKey,
+		MaxLen: i.sseStreamMaxLen,
+		Approx: true,
+		Values: values,
+	}).Err()
+	if err != nil {
+		// 不阻塞主流程, 仅记 metric + 偶尔 log
+		if i.sseWrites.Load()%1000 == 0 {
+			i.logger.Warn("sse XAdd failed (sample)", zap.Error(err))
+		}
+		return
+	}
+	i.sseWrites.Add(1)
 }
 
 // sendDLQ 失败消息送 dead-letter topic.
@@ -262,6 +339,7 @@ type Stats struct {
 	CandidateErr int64
 	DLQSent      int64
 	Triggers     int64
+	SSEWrites    int64
 }
 
 // Stats 取计数.
@@ -273,6 +351,7 @@ func (i *Ingester) Stats() Stats {
 		CandidateErr: i.candidateErr.Load(),
 		DLQSent:      i.dlqSent.Load(),
 		Triggers:     i.triggers.Load(),
+		SSEWrites:    i.sseWrites.Load(),
 	}
 }
 

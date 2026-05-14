@@ -110,6 +110,8 @@ func runIngester(ctx context.Context, logger *zap.Logger) {
 	if err != nil {
 		logger.Fatal("ingester init", zap.Error(err))
 	}
+	// PERF-12: 双写到 Redis stream 供 admin web SSE 实时监控
+	ing.WithSSEStream(rdb, "recon:stream:events", 10000)
 	if err := ing.Run(ctx); err != nil {
 		logger.Error("ingester run", zap.Error(err))
 	}

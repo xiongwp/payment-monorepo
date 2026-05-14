@@ -23,10 +23,22 @@ import (
 )
 
 // WithCompression 包装一个 handler,GET 响应自动 gzip + ETag.
+//
+// **重要**: SSE / streaming 路径必须 bypass — recordingResponseWriter 不实现
+// http.Flusher, SSE handler 会拒绝 streaming 并 500 "streaming not supported".
+// 已知 SSE 路径前缀:
+//   - /api/v1/events/stream   (binlog 实时流)
+//   - /api/v1/diffs/stream    (将来可能)
+// 任一前缀匹配 → 直接透传 underlying ResponseWriter, 保 http.Flusher 不丢.
 func WithCompression(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 非 GET / HEAD 直接透传 (POST 响应一般小)
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// SSE 路径 bypass — 保 http.Flusher
+		if isSSEPath(r.URL.Path) || strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -122,6 +134,12 @@ func copyHeaders(dst, src http.Header) {
 	for k, v := range src {
 		dst[k] = v
 	}
+}
+
+// isSSEPath SSE 端点列表 (硬编码避免每请求查全局 map).
+func isSSEPath(path string) bool {
+	return strings.HasPrefix(path, "/api/v1/events/stream") ||
+		strings.HasPrefix(path, "/api/v1/diffs/stream")
 }
 
 // 缓冲池 (减少 GC 压力).
