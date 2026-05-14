@@ -32,7 +32,7 @@ func (s *Server) pageCatalog(w http.ResponseWriter, _ *http.Request) {
     </div>
     <div class="flex items-center gap-2">
       <div class="relative">
-        <input type="search" x-model="q" placeholder="搜索规则名 / 描述..."
+        <input type="search" x-model="q" placeholder="搜索规则名 / 描述 / 标签..."
                class="pl-9 pr-3 py-1.5 text-sm border border-slate-300 rounded-md w-64 focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
         <i data-lucide="search" class="icon absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
       </div>
@@ -40,6 +40,25 @@ func (s *Server) pageCatalog(w http.ResponseWriter, _ *http.Request) {
         <i data-lucide="plus" class="icon w-3 h-3"></i> 新建
       </a>
     </div>
+  </div>
+
+  <!-- FEAT-1: tag 过滤芯片 -->
+  <div x-show="allTags.length > 0" class="flex items-center gap-2 flex-wrap">
+    <span class="text-xs text-slate-500">标签:</span>
+    <template x-for="tag in allTags" :key="tag">
+      <button @click="toggleTag(tag)"
+              class="text-xs px-2 py-1 rounded-full border transition"
+              :class="selectedTags.includes(tag)
+                ? 'bg-brand-100 border-brand-300 text-brand-700 font-medium'
+                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'">
+        <i data-lucide="tag" class="icon w-3 h-3 inline-block align-text-bottom mr-0.5"></i>
+        <span x-text="tag"></span>
+      </button>
+    </template>
+    <button x-show="selectedTags.length > 0" @click="selectedTags = []"
+            class="text-xs text-slate-500 hover:text-slate-700 ml-1">
+      <i data-lucide="x" class="icon w-3 h-3 inline-block"></i> 清除
+    </button>
   </div>
 
   <!-- 调试信息: 直接显示数据是否加载 -->
@@ -72,8 +91,22 @@ func (s *Server) pageCatalog(w http.ResponseWriter, _ *http.Request) {
                     x-text="r.lang"></span>
             </div>
             <!-- 描述 -->
-            <p class="text-xs text-slate-600 line-clamp-2 mb-3 min-h-[2rem]"
+            <p class="text-xs text-slate-600 line-clamp-2 mb-2 min-h-[2rem]"
                x-text="r.description || '(暂无描述)'"></p>
+            <!-- FEAT-1: tags 列 -->
+            <div x-show="r.tags && r.tags.length > 0" class="flex flex-wrap gap-1 mb-2">
+              <template x-for="tag in r.tags || []" :key="tag">
+                <span @click.stop="toggleTag(tag)"
+                      class="text-[10px] px-1.5 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-600 hover:bg-brand-50 hover:text-brand-700 cursor-pointer"
+                      x-text="tag"></span>
+              </template>
+            </div>
+            <!-- shadow 标 -->
+            <div x-show="r.mode === 'shadow'" class="mb-2">
+              <span class="badge bg-amber-100 text-amber-700 text-[10px]">
+                <i data-lucide="eye-off" class="icon w-3 h-3 inline-block"></i> SHADOW
+              </span>
+            </div>
             <!-- 元信息 -->
             <div class="flex items-center justify-between text-xs text-slate-500 mb-3">
               <span class="flex items-center gap-1">
@@ -138,6 +171,7 @@ function catalogModel() {
     rules: [],
     filter: 'all',
     q: '',
+    selectedTags: [],
     filters: [
       { value: 'all',      label: '全部' },
       { value: 'critical', label: '严重' },
@@ -188,6 +222,10 @@ function catalogModel() {
           if (!r.description) {
             r.description = r.Description || '';
           }
+          // FEAT-1 tags + UX-2 mode 字段, JSON tag 已配, 兼容 Capital fallback.
+          r.tags = Array.isArray(r.tags) ? r.tags
+                 : Array.isArray(r.Tags) ? r.Tags : [];
+          r.mode = r.mode || r.Mode || 'live';
         });
       } catch (e) {
         console.error('[catalog] load failed:', e);
@@ -202,11 +240,37 @@ function catalogModel() {
 
     visibleInGroup(grp) {
       const q = this.q.toLowerCase();
-      return this.rules.filter(r =>
-        r.severity === grp.severity
-        && (this.filter === 'all' || this.filter === grp.severity || r.lang === this.filter)
-        && (!q || r.name.toLowerCase().includes(q) || (r.description || '').toLowerCase().includes(q))
-      );
+      const tags = this.selectedTags;
+      return this.rules.filter(r => {
+        if (r.severity !== grp.severity) return false;
+        if (!(this.filter === 'all' || this.filter === grp.severity || r.lang === this.filter)) return false;
+        // FEAT-1: tag 过滤 (AND, 选中的所有 tag 必须都有)
+        if (tags.length > 0) {
+          const rt = r.tags || [];
+          for (const t of tags) {
+            if (!rt.includes(t)) return false;
+          }
+        }
+        if (q) {
+          const hay = (r.name + ' ' + (r.description || '') + ' ' + (r.tags || []).join(' ')).toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+    },
+
+    // FEAT-1: 所有规则上出现过的 tag, 去重 + 排序.
+    get allTags() {
+      const set = new Set();
+      for (const r of this.rules) {
+        for (const t of (r.tags || [])) set.add(t);
+      }
+      return Array.from(set).sort();
+    },
+    toggleTag(tag) {
+      const i = this.selectedTags.indexOf(tag);
+      if (i >= 0) this.selectedTags.splice(i, 1);
+      else this.selectedTags.push(tag);
     },
 
     open(id) { window.location = '/admin/editor?id=' + encodeURIComponent(id); },

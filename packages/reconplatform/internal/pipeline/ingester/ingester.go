@@ -79,6 +79,10 @@ type Ingester struct {
 	sseStreamKey  string
 	sseStreamMaxLen int64
 
+	// REL-2: 背压控制器, Redis 压力大时 pause 主 Kafka client.
+	// 可选 — 没挂即不暂停 (老行为).
+	backpressure *BackpressureController
+
 	// metrics
 	consumedTotal atomic.Int64
 	putTotal      atomic.Int64
@@ -111,6 +115,18 @@ func (i *Ingester) WithSSEStream(rdb redis.UniversalClient, streamKey string, ma
 
 // Adaptive 暴露给监控/调优 (Stats 抓 CurrentBatch).
 func (i *Ingester) Adaptive() *AdaptiveController { return i.adaptive }
+
+// WithBackpressure (REL-2) 挂背压控制器. Redis 压力大时自动 pause Kafka 消费.
+//
+// cfg 用 DefaultBackpressureConfig() 即可. Run() 启动期间会 spin 一个 goroutine
+// 周期检查 + pause/resume.
+func (i *Ingester) WithBackpressure(rdb redis.UniversalClient, layer candidate.Layer, cfg BackpressureConfig) *Ingester {
+	i.backpressure = NewBackpressureController(cfg, i.cl, rdb, layer, i.cfg.Topics, i.logger)
+	return i
+}
+
+// Backpressure 暴露给监控 (Stats / admin /metrics).
+func (i *Ingester) Backpressure() *BackpressureController { return i.backpressure }
 
 // New 构造 + dial.
 func New(cfg Config, layer candidate.Layer, logger *zap.Logger) (*Ingester, error) {
@@ -181,6 +197,11 @@ func (i *Ingester) Run(ctx context.Context) error {
 	defer i.cl.Close()
 	defer i.dlqCl.Close()
 
+	// REL-2: 启背压 goroutine (若挂了). 退出由本 ctx 取消触发.
+	if i.backpressure != nil {
+		go i.backpressure.Run(ctx)
+	}
+
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -231,17 +252,23 @@ func (i *Ingester) Run(ctx context.Context) error {
 }
 
 // handle 处理单条 record.
+//
+// PERF-13: cdc.Event 走 sync.Pool 复用 (含 Before/After/Indexes 三个 map).
+// 全函数同步完成 layer.Put + 可选 SSE 写后才归还到池, 期间持有的 storeEvt
+// 只在本函数栈上活,出函数即解引用,池化安全.
 func (i *Ingester) handle(ctx context.Context, rec *kgo.Record) error {
 	i.consumedTotal.Add(1)
 
-	var cdcEvt cdc.Event
-	if err := json.Unmarshal(rec.Value, &cdcEvt); err != nil {
+	cdcEvt := cdc.GetEvent()
+	defer cdc.PutEvent(cdcEvt)
+
+	if err := json.Unmarshal(rec.Value, cdcEvt); err != nil {
 		i.parseFailed.Add(1)
 		i.sendDLQ(ctx, rec, "parse_error: "+err.Error())
 		return nil // 不返错 → commit (跳过坏消息)
 	}
 
-	storeEvt := cdcToStore(&cdcEvt)
+	storeEvt := cdcToStore(cdcEvt)
 	triggers, err := i.layer.Put(ctx, storeEvt)
 	if err != nil {
 		i.logger.Warn("candidate.Put failed",
@@ -256,7 +283,7 @@ func (i *Ingester) handle(ctx context.Context, rec *kgo.Record) error {
 	// PERF-12: 双写 SSE 监控流. 失败不阻塞主路径 (监控可降级).
 	// XADD MAXLEN ~ 用 approx 限长, Redis 内部用 listpack 优化, 几乎零开销.
 	if i.sseRdb != nil {
-		i.writeSSEStream(ctx, &cdcEvt)
+		i.writeSSEStream(ctx, cdcEvt)
 	}
 	return nil
 }

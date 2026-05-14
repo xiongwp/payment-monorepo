@@ -138,6 +138,14 @@ func runMatcher(ctx context.Context, logger *zap.Logger) {
 	// 改规则不重启进程,Worker.EvalAll 拿到读锁后用旧 rule 跑完就不受影响.
 	dynReg := matcher.NewDynamicRegistry(nil)
 	reg := dynReg.Registry
+
+	// REL-3: 慢日志记录器 + 周期 publish 到 Redis,
+	// admin /admin/perf 读 recon:perf:slowlog 拿快照渲染 top-N 慢规则.
+	// 阈值 100ms / ring 100 — > 100ms 才记到环形缓冲.
+	slowLog := matcher.NewSlowLog(100, 100)
+	reg.WithSlowLog(slowLog)
+	go slowLog.PublishPeriodic(ctx, rdb, 10*time.Second)
+
 	// 内置 Go 规则 (编译期注册,运行时只读): payment-core 三方齐
 	reg.MustRegister(&matcher.CrossServicePresenceRule{
 		RuleName: "pi_three_way_presence",

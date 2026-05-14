@@ -63,6 +63,10 @@ type MatchResult struct {
 	MatchedAt   time.Time     `json:"matched_at"`
 	DurationMS  int64         `json:"duration_ms"`
 	WorkerID    string        `json:"worker_id"`
+
+	// UX-2 shadow mode: true 表示这条 result 来自 shadow 规则,
+	// publisher 不应该写主 Kafka topic,改写 Redis shadow 流给运营人工对比.
+	Shadow bool `json:"shadow,omitempty"`
 }
 
 // Rule 匹配规则接口. 内置 Go 规则 / Starlark 规则都实现这个.
@@ -78,11 +82,29 @@ type Rule interface {
 type Registry struct {
 	mu    sync.RWMutex
 	rules []Rule
+
+	// REL-3: 慢日志记录器 (可选, nil 即不记录).
+	slowLog *SlowLog
 }
 
 // NewRegistry 空注册表.
 func NewRegistry() *Registry {
 	return &Registry{}
+}
+
+// WithSlowLog (REL-3) 挂慢日志记录器. EvalAll 每条规则跑完都会 Record.
+func (r *Registry) WithSlowLog(sl *SlowLog) *Registry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.slowLog = sl
+	return r
+}
+
+// SlowLog 取挂的记录器 (admin /api/v1/perf/slow 用).
+func (r *Registry) SlowLog() *SlowLog {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.slowLog
 }
 
 // Register 注册规则 (重复名报错防误操作).
@@ -131,10 +153,14 @@ func (r *Registry) removeByName(name string) bool {
 }
 
 // EvalAll 对一个 trigger 跑所有规则,聚合 MatchResult 切片.
+//
+// REL-3: 每条规则跑完后写慢日志 (若挂了 SlowLog),
+// 用于 admin 页面排 top-N 慢规则.
 func (r *Registry) EvalAll(ctx context.Context, t candidate.TriggerKey, events []*store.Event) []MatchResult {
 	r.mu.RLock()
 	rules := make([]Rule, len(r.rules))
 	copy(rules, r.rules)
+	sl := r.slowLog
 	r.mu.RUnlock()
 
 	out := make([]MatchResult, 0, len(rules))
@@ -147,6 +173,9 @@ func (r *Registry) EvalAll(ctx context.Context, t candidate.TriggerKey, events [
 		if err != nil {
 			res.Verdict = VerdictError
 			res.Error = err.Error()
+		}
+		if sl != nil {
+			sl.Record(rule.Name(), t.String(), string(res.Verdict), res.DurationMS, len(events))
 		}
 		out = append(out, res)
 	}
@@ -268,14 +297,26 @@ func (w *Worker) Run(ctx context.Context) error {
 //
 // 比 sequential 在规则 IO-bound (e.g. Starlark 调 ctx.scan 多次) 时
 // 吞吐提升 ~Concurrency 倍; CPU-bound 规则提升 < Concurrency 倍 (受 GOMAXPROCS 限).
+//
+// PERF-14: 一次 RTT 预取整 batch 所有桶事件 (GetMany pipelined HGETALL),
+// goroutines 内不再各自 Get, 减 RTT (N RTT → 1 RTT).
+// 预取后另一 worker 可能并发 Ack 当前 trigger; 本 worker Lock 失败时跳过即可,
+// 数据正确性靠 Lock 保护 (不依赖预取的"瞬时一致").
 func (w *Worker) processBatch(ctx context.Context, triggers []candidate.TriggerKey) {
 	if len(triggers) == 0 {
 		return
 	}
+	// PERF-14 预取 (单个 trigger 不值得 GetMany; >1 才 batch).
+	var prefetched map[candidate.TriggerKey][]*store.Event
+	if len(triggers) > 1 {
+		if pf, err := w.layer.GetMany(ctx, triggers); err == nil {
+			prefetched = pf
+		}
+	}
 	if w.cfg.Concurrency <= 1 || len(triggers) == 1 {
 		// 单线程路径 (避免 goroutine 开销)
 		for _, t := range triggers {
-			w.processOne(ctx, t)
+			w.processOne(ctx, t, prefetched[t])
 		}
 		return
 	}
@@ -284,17 +325,20 @@ func (w *Worker) processBatch(ctx context.Context, triggers []candidate.TriggerK
 	for _, t := range triggers {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(tk candidate.TriggerKey) {
+		go func(tk candidate.TriggerKey, pre []*store.Event) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			w.processOne(ctx, tk)
-		}(t)
+			w.processOne(ctx, tk, pre)
+		}(t, prefetched[t])
 	}
 	wg.Wait()
 }
 
 // processOne 锁 + Get + Eval + Publish + Ack.
-func (w *Worker) processOne(ctx context.Context, t candidate.TriggerKey) {
+//
+// prefetched: 上游 processBatch GetMany 拿到的本 trigger 桶事件;
+// nil 表示没预取或预取失败,本函数兜底自取.
+func (w *Worker) processOne(ctx context.Context, t candidate.TriggerKey, prefetched []*store.Event) {
 	unlock, ok, err := w.layer.Lock(ctx, t)
 	if err != nil {
 		w.logger.Warn("lock failed", zap.Stringer("trigger", t), zap.Error(err))
@@ -309,10 +353,13 @@ func (w *Worker) processOne(ctx context.Context, t candidate.TriggerKey) {
 	matchCtx, cancel := context.WithTimeout(ctx, w.cfg.MatchTimeout)
 	defer cancel()
 
-	events, err := w.layer.Get(matchCtx, t.BizKey, t.Value)
-	if err != nil {
-		w.logger.Warn("layer.Get failed", zap.Stringer("trigger", t), zap.Error(err))
-		return
+	events := prefetched
+	if events == nil {
+		events, err = w.layer.Get(matchCtx, t.BizKey, t.Value)
+		if err != nil {
+			w.logger.Warn("layer.Get failed", zap.Stringer("trigger", t), zap.Error(err))
+			return
+		}
 	}
 
 	results := w.reg.EvalAll(matchCtx, t, events)

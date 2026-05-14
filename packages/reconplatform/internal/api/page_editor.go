@@ -173,6 +173,84 @@ func (s *Server) pageEditor(w http.ResponseWriter, r *http.Request) {
         </ul>
       </section>
 
+      <!-- ▶ Tab: Test (UX-1 单元测试) -->
+      <section x-show="leftTab === 'test'" class="h-full flex flex-col">
+        <!-- 用例列表 + 新增 -->
+        <div class="px-2 py-1.5 border-b border-slate-100 flex items-center gap-1 shrink-0 text-[10px]">
+          <select x-model.number="activeCaseIdx" class="flex-1 text-xs border border-slate-300 rounded px-1 py-0.5">
+            <template x-for="(c, i) in testCases" :key="i">
+              <option :value="i" x-text="c.name + (c.result ? (c.result.passed ? ' ✓' : ' ✗') : '')"></option>
+            </template>
+          </select>
+          <button @click="addTestCase()" class="text-slate-500 hover:text-slate-700">
+            <i data-lucide="plus" class="icon w-3 h-3"></i>
+          </button>
+          <button @click="removeTestCase()" x-show="testCases.length > 1"
+                  class="text-slate-500 hover:text-red-600">
+            <i data-lucide="trash" class="icon w-3 h-3"></i>
+          </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto px-2 py-2 space-y-2">
+          <div>
+            <label class="text-[10px] text-slate-500 uppercase">用例名</label>
+            <input type="text" x-model="activeCase.name"
+                   class="w-full text-xs border border-slate-300 rounded px-1.5 py-0.5 mono">
+          </div>
+          <div>
+            <label class="text-[10px] text-slate-500 uppercase flex items-center justify-between">
+              <span>Fixtures (events JSON)</span>
+              <span class="text-[9px] text-slate-400">喂给 FixtureSearcher</span>
+            </label>
+            <textarea x-model="activeCase.fixtures" rows="6"
+                      class="w-full text-[11px] mono border border-slate-300 rounded px-1.5 py-1 leading-tight"
+                      spellcheck="false"></textarea>
+          </div>
+          <div>
+            <label class="text-[10px] text-slate-500 uppercase flex items-center justify-between">
+              <span>Expected diffs JSON</span>
+              <span class="text-[9px] text-slate-400">subset 匹配</span>
+            </label>
+            <textarea x-model="activeCase.expected" rows="4"
+                      class="w-full text-[11px] mono border border-slate-300 rounded px-1.5 py-1 leading-tight"
+                      spellcheck="false"></textarea>
+          </div>
+          <div class="flex items-center gap-1.5 pt-1">
+            <button @click="runTest()" class="btn btn-primary text-xs px-2 py-1">
+              <i data-lucide="play" class="icon w-3 h-3"></i> Run Test
+            </button>
+            <button @click="runAllTests()" class="btn btn-outline text-xs px-2 py-1" x-show="testCases.length > 1">
+              <i data-lucide="list-checks" class="icon w-3 h-3"></i> Run All
+            </button>
+          </div>
+
+          <!-- 结果 -->
+          <div x-show="activeCase.result" class="border rounded p-2 text-xs"
+               :class="activeCase.result && activeCase.result.passed ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="font-semibold"
+                    :class="activeCase.result && activeCase.result.passed ? 'text-emerald-700' : 'text-red-700'"
+                    x-text="activeCase.result && activeCase.result.passed ? '✓ Passed' : '✗ Failed'"></span>
+              <span class="text-[10px] text-slate-500"
+                    x-text="activeCase.result ? activeCase.result.exec_ms + ' ms' : ''"></span>
+            </div>
+            <div x-show="activeCase.result && activeCase.result.error"
+                 class="mono text-[10px] text-red-700 mb-1"
+                 x-text="activeCase.result && activeCase.result.error"></div>
+            <div x-show="activeCase.result && activeCase.result.missing && activeCase.result.missing.length > 0">
+              <div class="text-[10px] text-slate-600 mt-1">缺失 (expected 没匹配上):</div>
+              <pre class="mono text-[10px] text-slate-700 bg-white p-1 rounded mt-1 max-h-40 overflow-y-auto"
+                   x-text="activeCase.result ? JSON.stringify(activeCase.result.missing, null, 2) : ''"></pre>
+            </div>
+            <div>
+              <div class="text-[10px] text-slate-600 mt-1">实际产出:</div>
+              <pre class="mono text-[10px] text-slate-700 bg-white p-1 rounded mt-1 max-h-40 overflow-y-auto"
+                   x-text="activeCase.result ? JSON.stringify(activeCase.result.actual, null, 2) : ''"></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- ▶ Tab: 实时事件 (mini) -->
       <section x-show="leftTab === 'events'" class="h-full flex flex-col">
         <div class="px-2 py-1.5 border-b border-slate-100 text-[10px] flex items-center gap-2 shrink-0">
@@ -222,6 +300,17 @@ func (s *Server) pageEditor(w http.ResponseWriter, r *http.Request) {
         <option value="warning">warning</option>
         <option value="critical">critical</option>
       </select>
+      <!-- UX-2: shadow mode toggle. shadow 时主 Kafka topic 不发 diff,
+           只写 Redis stream 给运营对比, 验证完再切 live. -->
+      <label class="flex items-center gap-1 text-xs"
+             title="Shadow 模式: 跑规则但 diff 不发主 Kafka topic,仅写 Redis shadow stream 供对比">
+        <input type="checkbox" :checked="meta.mode === 'shadow'"
+               @change="meta.mode = $event.target.checked ? 'shadow' : 'live'"
+               class="w-3 h-3">
+        <span class="text-slate-600">Shadow</span>
+        <span x-show="meta.mode === 'shadow'"
+              class="badge bg-amber-100 text-amber-700 text-[9px] py-0">SHADOW</span>
+      </label>
       <button @click="lint()" class="btn btn-outline text-xs">
         <i data-lucide="check-circle-2" class="icon w-3 h-3"></i> Lint
       </button>
@@ -426,7 +515,7 @@ const FALLBACK_IDX_KEYS = [
 function editorModel(scriptID) {
   return {
     scriptID,
-    meta: { name: '', severity: 'warning' },
+    meta: { name: '', severity: 'warning', mode: 'live', tags: [] },
     outline: [], versions: [],
     diffs: [], errorMsg: '',
     status: '', diffsCount: 0,
@@ -440,10 +529,25 @@ function editorModel(scriptID) {
       return [
         { value: 'outline',  label: '大纲',     icon: 'list-tree',     badge: this.outline.length },
         { value: 'schema',   label: 'Schema',  icon: 'database',      badge: this.schemaTables.length },
+        { value: 'test',     label: 'Test',    icon: 'beaker',        badge: this.testCases.length },
         { value: 'versions', label: '版本',     icon: 'git-commit',    badge: this.versions.length },
         { value: 'events',   label: '实时',     icon: 'activity',      badge: '' },
       ];
     },
+
+    // UX-1: 测试用例集 + 上一次测试结果. 多用例本地存,不持久化 (refresh 后清空).
+    // 一条 case = { name, fixtures (JSON string), expected (JSON string), result }
+    // 用 string 而非 object 让 textarea 双向绑定平滑.
+    testCases: [
+      {
+        name: 'sample_case_1',
+        fixtures: '[\n  {\n    "svc": "order-core", "table": "payment_intent", "pk": "pi_1",\n    "op": "INSERT", "indexes": { "pi_id": "pi_1" },\n    "after": { "id": "pi_1", "amount": 1000, "status": "CAPTURED" }\n  }\n]',
+        expected: '[\n  { "type": "missing_leg", "key": "pi_1" }\n]',
+        result: null,
+      },
+    ],
+    activeCaseIdx: 0,
+    get activeCase() { return this.testCases[this.activeCaseIdx]; },
 
     // schema 状态 — 立即用 fallback 填充,保证第一帧就有内容,
     // loadSchema() 跑完后再合并真实数据 (若有).
@@ -487,6 +591,8 @@ function editorModel(scriptID) {
         // 双重防御:JSON tag 加了之后正常字段是小写,但保留大写兜底
         this.meta.name     = r.name || r.Name || this.scriptID;
         this.meta.severity = r.severity || r.Severity || 'warning';
+        this.meta.mode     = r.mode || r.Mode || 'live';
+        this.meta.tags     = Array.isArray(r.tags) ? r.tags : (Array.isArray(r.Tags) ? r.Tags : []);
         const code = r.code || r.Code || '';
         const wait = setInterval(() => {
           if (monacoEditor) {
@@ -757,6 +863,55 @@ function editorModel(scriptID) {
         this.status = 'err';
         this.errorMsg = 'JS exception: ' + (e.message || e);
       }
+    },
+
+    // UX-1: 单元测试用例管理 + 运行.
+    addTestCase() {
+      const n = this.testCases.length;
+      this.testCases.push({
+        name: 'case_' + (n + 1),
+        fixtures: '[]',
+        expected: '[]',
+        result: null,
+      });
+      this.activeCaseIdx = n;
+    },
+    removeTestCase() {
+      if (this.testCases.length <= 1) return;
+      this.testCases.splice(this.activeCaseIdx, 1);
+      this.activeCaseIdx = Math.max(0, this.activeCaseIdx - 1);
+    },
+    async runTest() {
+      const c = this.activeCase;
+      if (!c) return;
+      let fixtures, expected;
+      try {
+        fixtures = JSON.parse(c.fixtures || '[]');
+        expected = JSON.parse(c.expected || '[]');
+      } catch (e) {
+        c.result = { passed: false, error: 'JSON parse: ' + e.message, actual: [], missing: [], extra: [] };
+        return;
+      }
+      const code = monacoEditor ? monacoEditor.getValue() : '';
+      try {
+        const r = await fetch('/api/v1/scripts/_test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code, fixtures, expected, match: 'subset' }),
+        });
+        c.result = await r.json();
+      } catch (e) {
+        c.result = { passed: false, error: 'request: ' + e.message };
+      }
+    },
+    async runAllTests() {
+      // 顺序跑避免编译重复 (compileCache 自动命中).
+      for (let i = 0; i < this.testCases.length; i++) {
+        this.activeCaseIdx = i;
+        await this.runTest();
+      }
+      const passed = this.testCases.filter(c => c.result && c.result.passed).length;
+      toast(passed + ' / ' + this.testCases.length + ' passed');
     },
 
     async save() {

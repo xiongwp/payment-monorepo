@@ -121,6 +121,73 @@ var BuiltinRules = []Rule{
 	},
 }
 
+// Template 一条可视模板 (FEAT-4): BuiltinRules 元数据 + 嵌入的 .star 源码.
+//
+// 给 /api/v1/templates 端点 + admin web 模板画廊用,
+// 用户点 "Use Template" 即把 Code 灌进编辑器.
+type Template struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Severity    string   `json:"severity"`
+	Schedule    string   `json:"schedule"`
+	Triggers    []string `json:"triggers"`
+	Code        string   `json:"code"`
+	// FEAT-1: 给默认 tag 让 catalog 一开就能过滤.
+	Tags []string `json:"tags,omitempty"`
+}
+
+// AllTemplates 返回内建规则全集 + 源码 (FEAT-4 模板画廊用).
+//
+// 失败 (读 embed FS 出错) 返空 + err.
+func AllTemplates() ([]Template, error) {
+	files, err := loadAllStarFiles()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Template, 0, len(BuiltinRules))
+	for _, r := range BuiltinRules {
+		code := files[r.ID+".star"]
+		tags := defaultTagsFor(r.ID)
+		out = append(out, Template{
+			ID:          r.ID,
+			Name:        r.Name,
+			Description: r.Description,
+			Severity:    r.Severity,
+			Schedule:    r.Schedule,
+			Triggers:    r.Triggers,
+			Code:        code,
+			Tags:        tags,
+		})
+	}
+	return out, nil
+}
+
+// defaultTagsFor 根据 ID 推断默认 tag (FEAT-1 默认值, 用户可改).
+func defaultTagsFor(id string) []string {
+	tags := []string{}
+	switch {
+	case strings.Contains(id, "three_way"):
+		tags = append(tags, "three-way")
+	case strings.Contains(id, "refund"):
+		tags = append(tags, "refund")
+	case strings.Contains(id, "orphan"):
+		tags = append(tags, "orphan")
+	case strings.Contains(id, "lag"):
+		tags = append(tags, "sync-lag")
+	}
+	if strings.Contains(id, "amount") {
+		tags = append(tags, "amount")
+	}
+	if strings.Contains(id, "status") {
+		tags = append(tags, "status")
+	}
+	if strings.Contains(id, "presence") || strings.Contains(id, "_in_") {
+		tags = append(tags, "presence")
+	}
+	return tags
+}
+
 // SeedBuiltins 把内建规则灌进 store. 重复调安全 (idempotent).
 //
 // actor 在 audit-log 里记 "由谁种入",通常传 "system:seeder".
@@ -160,7 +227,8 @@ func SeedBuiltins(ctx context.Context, store *script.Store, logger *zap.Logger, 
 					zap.String("last_updated_by", existing.UpdatedBy))
 				continue
 			}
-			if _, err := store.SaveDef(ctx, r.ID, r.Name, code, r.Schedule, r.Triggers, actor); err != nil {
+			if _, err := store.SaveDefWithMeta(ctx, r.ID, r.Name, code, r.Schedule, r.Triggers,
+				"live", defaultTagsFor(r.ID), actor); err != nil {
 				logger.Warn("seed: upgrade failed", zap.String("rule", r.ID), zap.Error(err))
 				continue
 			}
@@ -170,7 +238,8 @@ func SeedBuiltins(ctx context.Context, store *script.Store, logger *zap.Logger, 
 				zap.String("severity", r.Severity))
 			continue
 		}
-		if _, err := store.SaveDef(ctx, r.ID, r.Name, code, r.Schedule, r.Triggers, actor); err != nil {
+		if _, err := store.SaveDefWithMeta(ctx, r.ID, r.Name, code, r.Schedule, r.Triggers,
+			"live", defaultTagsFor(r.ID), actor); err != nil {
 			logger.Warn("seed: create failed", zap.String("rule", r.ID), zap.Error(err))
 			continue
 		}

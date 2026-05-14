@@ -36,6 +36,14 @@ type Script struct {
 	Schedule  string    `json:"schedule"`   // cron 表达式（"*/5 * * * *"）；空 = 不走定时
 	Triggers  []string  `json:"triggers"`   // ["order-core:payment_intents", "*"]；空 = 不走事件驱动
 
+	// UX-2 mode: "live" (默认 — 写主 Kafka topic) / "shadow" (写 Redis shadow stream).
+	// shadow 用于灰度新规则,运营看 24h 命中量 + 误报率再切 live.
+	Mode string `json:"mode,omitempty"`
+
+	// FEAT-1 tags: 用户给规则打的分类标签 (e.g. "three-way", "amount", "refund").
+	// catalog 页面按 tag 过滤; 同一规则可多个 tag.
+	Tags []string `json:"tags,omitempty"`
+
 	// compiled Starlark 编译后产物，Run 时复用。
 	compiled *CompiledScript `json:"-"`
 }

@@ -146,6 +146,10 @@ func sidebarHTML(current string) string {
     ` + link("/admin/catalog", "规则库", "library", "catalog") + `
     ` + link("/admin/editor", "编辑器", "code", "editor") + `
     ` + link("/admin/approvals", "审批", "shield-check", "approvals") + `
+    ` + link("/admin/perf", "性能", "gauge", "perf") + `
+    ` + link("/admin/audit", "审计", "scroll-text", "audit") + `
+    ` + link("/admin/alerts", "告警", "bell", "alerts") + `
+    ` + link("/admin/trends", "趋势", "trending-up", "trends") + `
   </nav>
   <div class="px-3 py-3 border-t border-slate-200 text-xs text-slate-500">
     <div>v2 · 多页架构</div>
@@ -214,13 +218,22 @@ func topbarHTML(title string) string {
           </div>
         </div>
         <div>
-          <label class="block text-xs font-medium text-slate-600 mb-1">起始模板</label>
+          <label class="block text-xs font-medium text-slate-600 mb-1 flex items-center justify-between">
+            <span>起始模板</span>
+            <button type="button" @click="browsingTemplates = true"
+                    class="text-[10px] text-brand-600 hover:underline">
+              <i data-lucide="library" class="icon w-3 h-3 inline-block"></i> 浏览全部 →
+            </button>
+          </label>
           <select x-model="newRule.template" class="w-full text-sm border border-slate-300 rounded px-2 py-1.5">
             <option value="empty">空白</option>
             <option value="duplicate">重复检测 (idempotency)</option>
             <option value="amount_equality">跨服务金额相等</option>
             <option value="missing_leg">跨服务存在性</option>
             <option value="timing_lag">时间窗 / lag</option>
+            <template x-for="t in serverTemplates" :key="t.id">
+              <option :value="'srv:' + t.id" x-text="'内建 · ' + t.name"></option>
+            </template>
           </select>
         </div>
         <div>
@@ -237,13 +250,68 @@ func topbarHTML(title string) string {
       </form>
     </div>
   </div>
+
+  <!-- FEAT-4: 模板画廊浏览器 (内建规则全部预览 + 一键 use) -->
+  <div x-show="browsingTemplates" x-cloak class="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4"
+       @click="browsingTemplates = false">
+    <div class="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[80vh] overflow-hidden flex flex-col" @click.stop>
+      <div class="px-5 py-3 border-b border-slate-200 flex items-center justify-between shrink-0">
+        <h2 class="text-sm font-semibold">规则模板</h2>
+        <button @click="browsingTemplates = false" class="text-slate-400 hover:text-slate-600">
+          <i data-lucide="x" class="icon"></i>
+        </button>
+      </div>
+      <div class="overflow-y-auto p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+        <template x-for="t in serverTemplates" :key="t.id">
+          <div class="border border-slate-200 rounded p-3 hover:bg-slate-50 cursor-pointer"
+               @click="useTemplate(t)">
+            <div class="flex items-start justify-between mb-1">
+              <h3 class="text-sm font-semibold mono" x-text="t.name"></h3>
+              <span class="badge text-[10px]"
+                    :class="t.severity==='critical' ? 'badge-critical' :
+                             t.severity==='warning' ? 'badge-warning' : 'badge-info'"
+                    x-text="t.severity"></span>
+            </div>
+            <p class="text-xs text-slate-600 mb-2" x-text="t.description"></p>
+            <div class="flex flex-wrap gap-1">
+              <template x-for="tag in t.tags || []" :key="tag">
+                <span class="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-600" x-text="tag"></span>
+              </template>
+            </div>
+            <pre class="mono text-[10px] text-slate-500 bg-slate-50 p-2 rounded mt-2 max-h-32 overflow-hidden"
+                 x-text="(t.code || '').split('\n').slice(0,8).join('\n') + '...'"></pre>
+          </div>
+        </template>
+        <div x-show="serverTemplates.length === 0" class="col-span-2 text-center text-sm text-slate-400 py-8">
+          加载模板中...
+        </div>
+      </div>
+    </div>
+  </div>
 </header>
 <style>[x-cloak]{display:none!important}</style>
 <script>
 function topbarActions() {
   return {
     openNewRule: false,
+    browsingTemplates: false,
+    serverTemplates: [],
     newRule: { name: '', severity: 'warning', lang: 'starlark', template: 'empty', description: '' },
+    init() { this.loadServerTemplates(); },
+    async loadServerTemplates() {
+      try {
+        const r = await fetch('/api/v1/templates');
+        if (r.ok) this.serverTemplates = await r.json();
+      } catch (_) {}
+    },
+    useTemplate(t) {
+      this.newRule.template = 'srv:' + t.id;
+      this.newRule.severity = t.severity || 'warning';
+      this.newRule.description = t.description || '';
+      if (!this.newRule.name) this.newRule.name = t.id;
+      this.browsingTemplates = false;
+      this.openNewRule = true;
+    },
     async createRule() {
       const tpls = {
         empty: '# ' + this.newRule.name + '\n# ' + this.newRule.description + '\n\n' +
@@ -301,7 +369,21 @@ function topbarActions() {
 '    # TODO: 对比相关事件 timestamp,超阈值则记 diff\n' +
 '    return diffs\n',
       };
-      const code = tpls[this.newRule.template] || tpls.empty;
+      // FEAT-4: 服务端模板 (srv:<id>) 优先, 命中即用服务端 code + tags.
+      let code = tpls[this.newRule.template] || tpls.empty;
+      let tags = [];
+      let triggers = [];
+      let schedule = '';
+      if ((this.newRule.template || '').startsWith('srv:')) {
+        const sid = this.newRule.template.slice(4);
+        const srv = (this.serverTemplates || []).find(t => t.id === sid);
+        if (srv) {
+          code = srv.code || code;
+          tags = srv.tags || [];
+          triggers = srv.triggers || [];
+          schedule = srv.schedule || '';
+        }
+      }
       try {
         const r = await fetch('/api/v1/scripts', {
           method: 'POST',
@@ -311,6 +393,9 @@ function topbarActions() {
             severity: this.newRule.severity,
             description: this.newRule.description,
             code,
+            tags,
+            triggers,
+            schedule,
           }),
         });
         if (!r.ok) { alert('创建失败: HTTP ' + r.status); return; }

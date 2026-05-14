@@ -26,11 +26,16 @@ import (
 //	3. matcher.Worker.processOne 时调 rule.Match()      // 每次 Run 都是 O(脚本长度)
 //	4. 热更新 (源码改):重新 Compile 得新 *CompiledScript,
 //	   通过 DynamicRegistry.Replace() 原子换掉旧 rule。
+//
+// UX-2 shadow mode: mode="shadow" 时, rule.Match() 返回的 MatchResult.Shadow=true,
+// 下游 publisher 跳过主 Kafka topic, 改写 Redis stream recon:shadow:diff:<rule>,
+// 用于灰度验证新规则 (24h 看 diff 命中数 + 误报率, 再切到 live).
 type StarlarkRule struct {
 	engine   *script.Engine
 	compiled *script.CompiledScript
 	ruleName string
 	bizKey   string // 该规则期望的 trigger.BizKey;不匹配则返 VerdictPending
+	mode     string // "live" (默认) / "shadow"
 }
 
 // NewStarlarkRule 构造.
@@ -43,8 +48,20 @@ func NewStarlarkRule(engine *script.Engine, compiled *script.CompiledScript, rul
 		compiled: compiled,
 		ruleName: ruleName,
 		bizKey:   bizKey,
+		mode:     "live",
 	}
 }
+
+// WithMode 设置 mode ("live" / "shadow"). 链式调用风格.
+func (r *StarlarkRule) WithMode(mode string) *StarlarkRule {
+	if mode == "shadow" || mode == "live" {
+		r.mode = mode
+	}
+	return r
+}
+
+// Mode 当前模式.
+func (r *StarlarkRule) Mode() string { return r.mode }
 
 // Name impl.
 func (r *StarlarkRule) Name() string { return r.ruleName }
@@ -82,6 +99,7 @@ func (r *StarlarkRule) Match(ctx context.Context, t candidate.TriggerKey, events
 			"diffs": diffs,
 			"count": len(diffs),
 		},
+		Shadow: r.mode == "shadow",
 	}
 	if len(diffs) == 0 {
 		res.Verdict = VerdictMatched

@@ -92,6 +92,20 @@ func (m *MemoryLayer) Get(_ context.Context, bizKey, val string) ([]*store.Event
 	return out, nil
 }
 
+// GetMany 实现 — 内存版没有 RTT 优势, 顺序拿即可.
+func (m *MemoryLayer) GetMany(ctx context.Context, ts []TriggerKey) (map[TriggerKey][]*store.Event, error) {
+	out := make(map[TriggerKey][]*store.Event, len(ts))
+	for _, t := range ts {
+		evs, err := m.Get(ctx, t.BizKey, t.Value)
+		if err != nil {
+			out[t] = nil
+			continue
+		}
+		out[t] = evs
+	}
+	return out, nil
+}
+
 // Pop 实现 (非阻塞;timeout 忽略).
 func (m *MemoryLayer) Pop(_ context.Context, count int, _ time.Duration) ([]TriggerKey, error) {
 	m.mu.Lock()

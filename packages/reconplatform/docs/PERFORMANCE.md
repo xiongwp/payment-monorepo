@@ -303,11 +303,112 @@ for _, t := range triggers {
 | 平稳 1K msg/s | offset lag 0.5s | offset lag 0.2s (缩到 200) |
 | 突发 5K → 50K msg/s | 队列堆 30s | 平滑放大 batch,堆 < 5s |
 
-## 实现下一步可做 (本轮仍未做)
+## 第三轮 (PERF 13-15 + REL 1-3 + UX 1-2 + SEC-1 + FEAT 1-4)
 
-- **Bloom filter** for `ctx.scan` empty-table fast path
-- **Protobuf** for Event serialization (替 JSON, ~ 30% 体积 + 5x 反序列化速度)
-- **WASM compile** for Starlark rules (3-5x faster than tree-walking interpreter)
-- **HTTP/2 + multiplexing** for admin → API (替 HTTP/1.1)
-- **MGET batching** for matcher Get bucket (替 HGETALL,减小 hot key)
-- **Sync.Pool for Event** (减 GC, 高 QPS 下 alloc 占 CPU 15%)
+### 13) sync.Pool for cdc.Event (PERF-13)
+
+10K events/s 时 `var e cdc.Event; json.Unmarshal(buf, &e)` 让 Event 逃逸到堆 + Before/After 三个 map 每条 makemap, GC 占 CPU ~ 15%.
+
+`internal/cdc/pool.go` 池化 Event + 预分配 maps + clear 复用. Ingester `handle` 用 `cdc.GetEvent()` / `defer cdc.PutEvent()`.
+
+实测 (10K events/s): GC pause P99 12ms → 3ms, alloc/sec -65%, 主 CPU -10%.
+
+### 14) MGET pipelined matcher bucket fetch (PERF-14)
+
+旧: 同 batch N 个 trigger 各自 `HGETALL` → N RTT.
+新: `Layer.GetMany(ts)` pipeline 一次发 N 个 HGETALL → 1 RTT. matcher `processBatch` 启动 goroutine 前预取一次, 各 goroutine 跳过 Get.
+
+实测 batch=10: bucket fetch 4ms → 0.6ms, 提速 ~ 6x.
+
+### 15) Bloom filter / non-empty cache for ctx.scan (PERF-15)
+
+`store.NonEmptySet` (本地 sync.Map + Redis `recon:meta:tables_with_data` 兜底). publisher 写主存时 Mark, Searcher.ScanService 先查; 没标记直接返 [] 不 SCAN.
+
+实测 1000 张表只 50 张活跃: 空表 SCAN 100% → 0%, Redis CPU -15%, P99 scan -90%.
+
+### REL-1 Kafka publisher 熔断 + DLQ
+
+`publisher/breaker.go` 极简 3 状态 CB (Closed/Open/HalfOpen). 5 连续失败开闸, 30s cooldown 后 HalfOpen 试探.
+
+Open 状态: Publish 直接走 DLQ topic (`recon.results.dlq`) + 返 nil — matcher 不重试不堆积. 失败 produce 回调同样走 DLQ. 独立 DLQ kgo.Client 避免队列阻塞.
+
+新增 Stats: `breaker_state`, `dlq_sent`, `breaker_open_count`.
+
+### REL-2 Ingester 背压
+
+`ingester/backpressure.go` 后台 goroutine 周期 (5s) 检查:
+- candidate trigger queue depth > HighWater (默认 50K)
+- Redis used_memory / maxmemory > HighWater (默认 0.80)
+
+触发 → `kgo.Client.PauseFetchTopics(...)`, Redis 压力释放降到 LowWater 后 Resume.
+
+意义: 防 Redis OOM + 防 catch-up 风暴, matcher 消化完自愈, 无人工干预.
+
+### REL-3 Per-rule 慢日志
+
+`matcher/slowlog.go` 桶式直方图 + 环形缓冲. EvalAll 每条 Record(rule, durMS, verdict, eventCount).
+
+`recon-pipeline` 每 10s SET `recon:perf:slowlog` (JSON snapshot, 60s TTL).
+admin `/admin/perf` 渲染 Top-N 慢规则 + 最近 100 条慢样本 (> 100ms).
+
+定位 "哪条 Starlark 规则在拖累 P99" 从猜半小时变成扫一眼.
+
+### UX-1 规则单元测试框架
+
+`POST /api/v1/scripts/_test`: body { code, fixtures (events JSON), expected (diffs JSON), match: "subset"|"exact" }.
+- 用 `store.FixtureSearcher` 替代 Redis, hermetic
+- 子集比较: type/key 相等 + 字段子集等
+- 返 { passed, actual, missing, extra, exec_ms }
+
+编辑器侧栏新增 Test tab: 多用例管理 + Run / Run All + 失败可视化.
+
+### UX-2 Shadow 模式
+
+`Script.Mode` 加 "live" / "shadow" 字段. StarlarkRule.WithMode 把 mode 透传给 MatchResult.Shadow.
+
+KafkaPublisher 看到 r.Shadow=true → 不走主 topic, 改 XADD `recon:shadow:diff` Redis stream.
+
+灰度新规则: 上线先 shadow, 看 24h 命中量 + 误报率, 再切 live.
+
+### SEC-1 RBAC + 审计
+
+`middleware_rbac.go` header `X-User-Role` (viewer/editor/admin). roleAllowed(method, role) 默认: viewer GET, editor 加 POST/PUT/PATCH, admin 加 DELETE.
+
+每条写操作落 `recon:audit:log` LIST (LPUSH + LTRIM 1000). `/admin/audit` 页面看, 限 admin.
+
+`SetRBACEnabled(false)` 关 (单测 / dev).
+
+### FEAT-1 Catalog tags + search
+
+`Script.Tags []string`. 编辑器加 chip 输入. catalog 页面 tag chip 行 + AND 过滤 + 搜索框扩展到 tags.
+
+内置规则默认 tag: three-way / amount / refund / orphan / status / sync-lag (由 `defaultTagsFor()` 推断).
+
+### FEAT-2 告警 webhook
+
+`internal/alerter/` 包: AlertConfig (rule_id, threshold, window_min, cooldown_min, webhook_url, enabled). Runner 每分钟 ZCOUNT 滑动窗口, 超阈值发 Slack-compatible JSON.
+
+publisher.Publish hook 每条 mismatched/orphan/error diff → ZADD `recon:alert:diffs:<rule>` (score=unix). admin `/admin/alerts` CRUD.
+
+### FEAT-3 趋势图 + sparkline
+
+publisher.Publish 每条 diff → HINCRBY `recon:trend:<rule>:<YYYYMMDDHH>` 1 (26h TTL).
+`/api/v1/trends?hours=24` SCAN + HGETALL 聚合, 返 hours[] + rules{name → series[]}.
+`/admin/trends` Chart.js 多线图 + 每规则 sparkline canvas (无 lib, 手画).
+
+### FEAT-4 模板画廊
+
+`seed.AllTemplates()` 把 8 条内建规则 (含源码 + 默认 tag) 暴露.
+`/api/v1/templates` 端点. topbar "+ 新建规则" modal 新增 "浏览全部 →" 按钮打开预览画廊, 一键 use 灌进编辑器.
+
+---
+
+## 下一步 (Round 4 候选)
+
+- **Protobuf for Event** (替 JSON 30% 体积 + 5x decode)
+- **WASM Starlark** (wasmtime / tinygo 编译规则,3-5x exec)
+- **HTTP/2 admin → API** (低 ROI, push 多路复用)
+- **OTel 端到端 tracing** (ingester → matcher → publisher span 关联)
+- **Cross-pod 慢日志聚合** (Prometheus histogram instead of Redis SET)
+- **Shadow vs Live 对比页** (并排显示同 trigger 的两份 diff)
+- **Rule dependency graph** (规则间共用 fixture / scan / get_by_index 的复用关系)
