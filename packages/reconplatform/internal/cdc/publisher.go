@@ -39,6 +39,11 @@ type Publisher struct {
 	// 可选 — nil 即不标记, 老行为.
 	nonEmpty *store.NonEmptySet
 
+	// AfterPublishHook 主写 Redis 成功后调一次,失败不调.
+	// PIPE-CDC-BRIDGE 用此把 Event 同时 fanout 到 Kafka (cdcbridge.KafkaSink).
+	// 失败不阻塞主路径 (hook 内部自己 log + metric).
+	AfterPublishHook func(ctx context.Context, e *Event)
+
 	// 指标计数（暴露给 prometheus）
 	OnPublish func(svc, table string, op Op, err error)
 }
@@ -156,6 +161,10 @@ func (p *Publisher) Publish(ctx context.Context, e *Event) error {
 	if p.nonEmpty != nil {
 		p.nonEmpty.Mark(ctx, p.r, e.Service, e.Table)
 	}
+	// PIPE-CDC-BRIDGE: 同时 fanout 到 Kafka (若挂了 hook). 失败不阻塞.
+	if p.AfterPublishHook != nil {
+		p.AfterPublishHook(ctx, e)
+	}
 	return nil
 }
 
@@ -253,6 +262,12 @@ func (p *Publisher) PublishBatch(ctx context.Context, events []*Event) error {
 			}
 			seen[k] = true
 			p.nonEmpty.Mark(ctx, p.r, e.Service, e.Table)
+		}
+	}
+	// PIPE-CDC-BRIDGE: 同时 fanout 到 Kafka.
+	if p.AfterPublishHook != nil {
+		for _, e := range events {
+			p.AfterPublishHook(ctx, e)
 		}
 	}
 	return nil

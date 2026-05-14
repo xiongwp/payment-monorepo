@@ -444,9 +444,18 @@ func main() {
 	}()
 
 	// ─── 启 CDC binlog runners ───────────────────────────────
-	cdcMgr.Reload(ctx, cfg.Sources)
-	logger.Info("CDC manager reloaded with sources",
-		zap.Int("sources", len(cfg.Sources)))
+	//
+	// PIPE-CDC-BRIDGE: 若启了独立 cdc-bridge 进程, 这里跳过 — 同一 MySQL
+	// server-id 只能有一个 binlog 消费者. 通过 RECON_ADMIN_DISABLE_CDC=1 关.
+	if strings.EqualFold(os.Getenv("RECON_ADMIN_DISABLE_CDC"), "1") ||
+		strings.EqualFold(os.Getenv("RECON_ADMIN_DISABLE_CDC"), "true") {
+		logger.Info("CDC manager disabled (RECON_ADMIN_DISABLE_CDC=1); " +
+			"binlog reading expected to be handled by recon-pipeline cdc-bridge role")
+	} else {
+		cdcMgr.Reload(ctx, cfg.Sources)
+		logger.Info("CDC manager reloaded with sources",
+			zap.Int("sources", len(cfg.Sources)))
+	}
 
 	// ─── OnChange 热更（config-center → cdc.sources / cdc.ttl）──
 	if ccCli != nil {

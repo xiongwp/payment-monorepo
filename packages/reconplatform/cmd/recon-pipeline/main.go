@@ -36,7 +36,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"reconcile-system/internal/cdc"
 	"reconcile-system/internal/pipeline/candidate"
+	"reconcile-system/internal/pipeline/cdcbridge"
 	"reconcile-system/internal/pipeline/ingester"
 	"reconcile-system/internal/pipeline/matcher"
 	"reconcile-system/internal/pipeline/publisher"
@@ -58,7 +60,8 @@ func main() {
 
 	switch role {
 	case "cdc-bridge":
-		runCDCBridge(ctx, logger)
+		wg.Add(1)
+		go func() { defer wg.Done(); runCDCBridge(ctx, logger) }()
 	case "ingester":
 		wg.Add(1)
 		go func() { defer wg.Done(); runIngester(ctx, logger) }()
@@ -66,7 +69,9 @@ func main() {
 		wg.Add(1)
 		go func() { defer wg.Done(); runMatcher(ctx, logger) }()
 	case "all":
-		wg.Add(2)
+		// "all" 推荐用于本地 dev,生产分开部署 (cdc-bridge 单 pod, ingester / matcher 各自水平扩展).
+		wg.Add(3)
+		go func() { defer wg.Done(); runCDCBridge(ctx, logger) }()
 		go func() { defer wg.Done(); runIngester(ctx, logger) }()
 		go func() { defer wg.Done(); runMatcher(ctx, logger) }()
 	default:
@@ -89,10 +94,80 @@ func main() {
 }
 
 // ─── cdc-bridge ───────────────────────────────────────────────
+//
+// PIPE-CDC-BRIDGE: 真接 binlog reader + Kafka sink.
+//
+// 数据流:
+//
+//	MySQL binlog → cdc.Canal → cdc.Publisher (写 Redis 主存 + 索引 + 位点 + recon:stream:events)
+//	                              ↓ AfterPublishHook fanout
+//	                          cdcbridge.KafkaSink → Kafka recon.cdc.<svc>
+//
+// 配置:
+//   RECON_CDC_SOURCES_YAML  YAML 文件路径 (默认 /app/configs/cdc.sources.yaml,
+//                           与 recon-admin 同 env, 复用同一份 sources 配置)
+//   RECON_REDIS_ADDR        Redis 地址 (主存 + 位点)
+//   RECON_KAFKA_BROKERS     Kafka brokers
+//   RECON_CDC_KAFKA_PREFIX  topic 前缀 (默认 recon.cdc)
+//
+// 部署注意:
+//   - 同一 MySQL DSN + server-id 只能有一个 binlog 消费者 — 跑 cdc-bridge 时
+//     **必须** 关 recon-admin 那侧的 cdc.Manager (admin 默认起 cdc.Manager).
+//   - 关法: 在 admin 启动 env 加 RECON_ADMIN_DISABLE_CDC=1 (admin main.go 检查).
+//   - 或者直接两个 cmd 用不同 server-id (Source.ServerID).
+func runCDCBridge(ctx context.Context, logger *zap.Logger) {
+	cfgPath := envOr("RECON_CDC_SOURCES_YAML", "/app/configs/cdc.sources.yaml")
+	cdcCfg, err := cdc.LoadFromFile(cfgPath)
+	if err != nil {
+		logger.Fatal("cdc-bridge: load config",
+			zap.String("path", cfgPath), zap.Error(err))
+	}
+	logger.Info("cdc-bridge: config loaded",
+		zap.String("path", cfgPath),
+		zap.Int("sources", len(cdcCfg.Sources)),
+		zap.Int("ttl_entries", len(cdcCfg.TTL)))
 
-func runCDCBridge(_ context.Context, logger *zap.Logger) {
-	logger.Info("cdc-bridge role: see cmd/recon-admin for binlog reader integration. " +
-		"KafkaSink can be plugged via cdcbridge.NewKafkaSink + cdc.Runner.SetSink().")
+	rdb := dialRedis()
+	defer rdb.Close()
+
+	// TTL provider — 默认 30d 兜底.
+	ttl := cdc.NewTTLProvider()
+	if invalid := ttl.Reload(cdcCfg.TTL); len(invalid) > 0 {
+		logger.Warn("cdc-bridge: ttl config has invalid entries",
+			zap.Strings("invalid", invalid))
+	}
+
+	pub := cdc.NewPublisher(rdb, ttl, logger)
+
+	// 装 Kafka sink (PIPE-CDC-BRIDGE 核心).
+	kafkaCfg := cdcbridge.DefaultConfig(brokers())
+	kafkaCfg.TopicPrefix = envOr("RECON_CDC_KAFKA_PREFIX", kafkaCfg.TopicPrefix)
+	sink, err := cdcbridge.NewKafkaSink(kafkaCfg, logger)
+	if err != nil {
+		logger.Fatal("cdc-bridge: kafka sink init", zap.Error(err))
+	}
+	defer sink.Close()
+
+	pub.AfterPublishHook = func(ctx context.Context, e *cdc.Event) {
+		// Kafka produce 异步, 失败已在 sink 内部回调 metric+log; 这里仅 fire-and-forget.
+		_ = sink.Publish(ctx, e)
+	}
+
+	mgr := cdc.NewManager(pub, nil /* canal 自带 schema cache */, logger)
+	// 跟 admin 一致的内置 enricher / filter — 至少把 trace_id 提到 Indexes.
+	mgr.AddGlobalEnricher(cdc.TraceIDEnricher{})
+	mgr.AddGlobalFilter(cdc.SkipShadowRowsFilter{})
+
+	mgr.Reload(ctx, cdcCfg.Sources)
+	logger.Info("cdc-bridge: manager started", zap.Int("sources", len(cdcCfg.Sources)))
+
+	<-ctx.Done()
+	logger.Info("cdc-bridge: stopping...")
+	mgr.Stop()
+	if err := sink.Flush(context.Background()); err != nil {
+		logger.Warn("cdc-bridge: kafka flush", zap.Error(err))
+	}
+	logger.Info("cdc-bridge: stopped")
 }
 
 // ─── ingester ─────────────────────────────────────────────────
