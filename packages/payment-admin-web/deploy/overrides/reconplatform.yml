@@ -15,6 +15,25 @@
 #   admin 单副本即可（写入操作不并发关键），engine 可 scale 独立消费 group 分区。
 
 services:
+  # reconplatform-cdc-bootstrap — oneshot 服务, 启栈时跑一次保证每个 MySQL shard
+  # 的 recon_cdc 用户存在 + 密码对. 解决 docker volume 持久化导致 init.sql 不重
+  # 跑的"密码漂移" → canal 1045 access denied. 见 deploy/shared-db/recon-cdc-bootstrap.sh.
+  reconplatform-cdc-bootstrap:
+    image: mysql:8.0
+    container_name: reconplatform-cdc-bootstrap
+    restart: "no"
+    networks:
+      - payment-stack
+    environment:
+      # 跟 shared-db/docker-compose.yml 的 MYSQL_ROOT_PASSWORD 对齐 (dev 默认 "password")
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-password}
+      - RECON_CDC_USER=${RECON_CDC_USER:-recon_cdc}
+      - RECON_CDC_PASS=${RECON_CDC_PASS:-recon_cdc_pwd}
+      - BOOTSTRAP_WAIT_TIMEOUT=120
+    entrypoint: ["sh", "/bootstrap.sh"]
+    volumes:
+      - ../shared-db/recon-cdc-bootstrap.sh:/bootstrap.sh:ro
+
   reconplatform-engine:
     build:
       # context 指向 reconplatform 自己的目录（默认 cmd/main.go）
@@ -60,7 +79,12 @@ services:
     entrypoint: ["/app/recon-admin"]
     command: []
     depends_on:
-      - reconplatform-engine    # 共用 image，触发 build；engine 不存在时跳过依赖
+      # 共用 image，触发 build；engine 不存在时跳过依赖
+      reconplatform-engine:
+        condition: service_started
+      # 保证 recon_cdc 用户已就绪再启 cdc.Manager (oneshot 服务跑完 exit 0)
+      reconplatform-cdc-bootstrap:
+        condition: service_completed_successfully
     ports:
       - "9180:8080"             # admin web + API + metrics
     environment:
