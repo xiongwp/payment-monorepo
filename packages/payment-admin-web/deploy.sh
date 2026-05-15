@@ -88,6 +88,9 @@ compose_files() {
     tax-reporting)        echo "-p tax-reporting      -f $ROOT/tax-reporting/docker-compose.yml       -f $OVR/tax-reporting.yml" ;;
     data-rights)          echo "-p data-rights        -f $ROOT/data-rights/docker-compose.yml         -f $OVR/data-rights.yml" ;;
     payment-admin-web)    echo "-p payment-admin-web  -f $HERE/docker-compose.yml                     -f $OVR/payment-admin-web.yml" ;;
+    # SP-AC-7: split-payment 是纯 gRPC 内部服务 (Graph CRUD / DryRun + Kafka subscriber).
+    # 联栈用 golang:1.23 image + bind mount monorepo, 不需要 Dockerfile.
+    split-payment)        echo "-p split-payment      -f $OVR/split-payment.yml" ;;
     *) fatal "unknown service: $1" ;;
   esac
 }
@@ -104,7 +107,7 @@ compose_files() {
 #   risk-stack         risk-redis + risk-kafka + clickhouse + nebula + 监控（accounting 复用 risk-redis）
 #   accounting-system  accounting-service + accounting-batchtask（复用 shared-db + risk-redis）
 #   risk-manage / payment-channel / order-core / user-merchant-core / payment-core / api-gateway / *-admin-web
-ALL_SERVICES=(shared-db config-center kms-manage risk-stack accounting-system risk-manage payment-channel order-core user-merchant-core payment-core card-center card-payment api-gateway reconplatform oauth2-server aml-screening tokenization-vault tax-reporting data-rights accounting-admin-web payment-admin-web)
+ALL_SERVICES=(shared-db config-center kms-manage risk-stack accounting-system risk-manage payment-channel order-core user-merchant-core payment-core card-center card-payment api-gateway reconplatform oauth2-server aml-screening tokenization-vault tax-reporting data-rights split-payment accounting-admin-web payment-admin-web)
 
 # scale_args_of 返回 --scale a=N --scale b=M ... 用来起多副本。前提：override
 # 文件里该 service 没有 container_name，端口用 range，否则会撞名 / 撞端口。
@@ -179,6 +182,7 @@ app_service_of() {
     tax-reporting)      echo "tax-reporting" ;;
     data-rights)        echo "data-rights" ;;
     accounting-admin-web) echo "accounting-admin-web" ;;
+    split-payment)      echo "split-payment" ;;
     payment-admin-web)  echo "" ;;   # 两个 app 都要起
     *) echo "" ;;
   esac
@@ -492,7 +496,7 @@ cmd_down() {
   [[ "${1:-}" == "--volumes" ]] && vol_flag="-v"
 
   # 反向顺序，admin 最先停，shared-db 最后停
-  for svc in payment-admin-web accounting-admin-web data-rights tax-reporting tokenization-vault aml-screening oauth2-server api-gateway payment-core user-merchant-core order-core payment-channel risk-manage accounting-system risk-stack kms-manage shared-db; do
+  for svc in payment-admin-web accounting-admin-web split-payment data-rights tax-reporting tokenization-vault aml-screening oauth2-server api-gateway payment-core user-merchant-core order-core payment-channel risk-manage accounting-system risk-stack kms-manage shared-db; do
     info "停止 $svc …"
     # shellcheck disable=SC2086
     $COMPOSE $(compose_files "$svc") down $vol_flag 2>/dev/null || true
@@ -565,6 +569,7 @@ cmd_check() {
     "api-gateway-admin:18081"
     "admin-backend:19190"
     "admin-web:8080"
+    "split-payment:9098"
     "oauth2-server:18087"
     "aml-screening:18088"
     "tokenization-vault:18089"
@@ -676,6 +681,7 @@ cmd_oneshot() {
   cmd_up api-gateway
   cmd_up reconplatform
   cmd_up aml-screening tokenization-vault tax-reporting data-rights
+  cmd_up split-payment
   cmd_up accounting-admin-web payment-admin-web
 
   info "[5/6] Health check (sleep 5s before probe)"

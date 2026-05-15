@@ -389,9 +389,9 @@ func main() {
 
 	<-ctx.Done()
 	log.Info("shutting down")
-	shutCtx, c := context.WithTimeout(context.Background(), 10*time.Second)
-	defer c()
-	_ = srv.Shutdown(shutCtx)
+	// gRPC server 在 runAdminGRPCServer goroutine 里监听 ctx.Done() 自己 GracefulStop,
+	// 这里只要等几百毫秒让正在跑的 RPC / Kafka subscriber 收尾即可.
+	time.Sleep(500 * time.Millisecond)
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────

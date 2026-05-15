@@ -1,0 +1,63 @@
+# split-payment 联栈模式 — SP-AC-7 纯 gRPC 内部服务.
+#
+# 方案选 "无 Dockerfile, 用官方 golang image + bind mount monorepo" 而不是写 Dockerfile:
+#   - split-payment 还没有自己的 Dockerfile, 联栈跑成本最低
+#   - go.mod 里 replace ../accounting-system 直接复用本机源码
+#   - 改完代码 `docker restart split-payment` 几秒就重跑, 不用 build image
+#
+# 生产部署应该独立 stripe-gateway 服务 / 真镜像; 本 override 仅供联栈 dev.
+#
+# 网络: payment-stack 共享网, 直接 DNS 找 accounting-system:50051.
+# 端口: 9098 暴露到 host (admin-web BFF 在 host 上跑时可达; 容器里直接 DNS).
+
+services:
+  split-payment:
+    image: golang:1.23
+    container_name: split-payment
+    restart: unless-stopped
+    networks:
+      - payment-stack
+    working_dir: /workspace/packages/split-payment
+    volumes:
+      # 整个 monorepo 挂进来 (split-payment go.mod 用 replace ../accounting-system 等
+      # 兄弟仓 path, 必须能看到 packages/ 同级).
+      # overrides/ → deploy/ → payment-admin-web/ → packages/ → monorepo root, 共 4 级.
+      - ../../../..:/workspace
+      - split-go-cache:/root/.cache/go-build
+      - split-go-mod:/go/pkg/mod
+    environment:
+      SPLIT_GRPC_PORT: "9098"
+      ACCOUNTING_GRPC_ADDR: "accounting-system:50051"
+      # MySQL 持久化 (跟 accounting-system 一样复用 shared-meta meta 库)
+      SPLIT_PAYMENT_DSN: "split_user:password@tcp(shared-meta:3306)/split_payment?parseTime=true&charset=utf8mb4"
+      # Kafka 事件订阅 (refund.completed) — 复用 risk-stack 的 kafka
+      SPLIT_PAYMENT_KAFKA_BROKERS: "risk-kafka:9092"
+      CGO_ENABLED: "0"
+      GOFLAGS: "-mod=mod"
+    command:
+      - sh
+      - -c
+      - |
+        # split-payment 需要 split_payment 库 (split-payment 自己会 EnsureSchema 建表;
+        # 但需要库存在). 起前先在 shared-meta 上幂等 create.
+        apt-get update -qq && apt-get install -y -qq default-mysql-client >/dev/null 2>&1 || true
+        until mysql -h shared-meta -uroot -ppassword -e \
+          "CREATE DATABASE IF NOT EXISTS split_payment DEFAULT CHARSET utf8mb4; \
+           CREATE USER IF NOT EXISTS 'split_user'@'%' IDENTIFIED BY 'password'; \
+           GRANT ALL ON split_payment.* TO 'split_user'@'%'; FLUSH PRIVILEGES;" 2>/dev/null; do
+          echo "waiting for shared-meta..."; sleep 2
+        done
+        echo "split_payment DB ready, starting service..."
+        cd /workspace/packages/split-payment
+        exec go run ./cmd/server
+    ports:
+      - "9098:9098"
+    depends_on: []
+
+volumes:
+  split-go-cache: {}
+  split-go-mod: {}
+
+networks:
+  payment-stack:
+    external: true
