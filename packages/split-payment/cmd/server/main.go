@@ -33,6 +33,7 @@ import (
 	"reconcile-system/packages/split-payment/internal/workflow"
 
 	_ "github.com/go-sql-driver/mysql" // MF-1: mysql driver
+	"github.com/twmb/franz-go/pkg/kgo" // SP-11 refund kafka subscriber
 	accountingv1 "github.com/xiongwp/accounting-system/api/proto/accounting/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -71,6 +72,18 @@ func main() {
 		runRepo   workflow.RunRepo
 		// SP-4 Stripe-style 资源对象 API (nil = memory 模式不挂)
 		stripeAPI *adminhttp.StripeAPIServer
+		// SP-6 typed repos 注到 engine 用 (nil = 跑老路径不持 typed 对象)
+		engAccRepo  workflow.AccountRepo
+		engTrRepo   workflow.TransferRepo
+		engFeeRepo  workflow.AppFeeRepo
+		engPoRepo   workflow.PayoutRepo
+		// SP-9 refund handler 用的扩展 repo
+		refundTrRepo  workflow.TransferReverseRepo
+		refundFeeRepo workflow.AppFeeRefundRepo
+		refundRvRepo  workflow.ReversalExtRepo
+		// SP-10 PayoutCron 用
+		cronAccRepo workflow.AccountListerRepo
+		cronPoRepo  workflow.PayoutInserterRepo
 	)
 	if dsn := os.Getenv("SPLIT_PAYMENT_DSN"); dsn != "" {
 		db, err := sql.Open("mysql", dsn)
@@ -96,6 +109,13 @@ func main() {
 			log.Fatal("ensure stripe schema", zap.Error(err))
 		}
 		ensureCancel2()
+		// SP-7: graph versioning schema
+		ensure3, ensureCancel3 := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := repo.EnsureVersioningSchema(ensure3, db); err != nil {
+			log.Warn("ensure versioning schema (continuing)", zap.Error(err))
+		}
+		ensureCancel3()
+
 		accRepo := repo.NewAccountRepo(db)
 		trRepo := repo.NewTransferRepo(db)
 		feeRepo := repo.NewAppFeeRepo(db)
@@ -106,6 +126,18 @@ func main() {
 			Accounts: accRepo, Transfers: trRepo, Fees: feeRepo,
 			Payouts: poRepo, Reversals: rvRepo, Log: log,
 		}
+		// SP-6: 注到 engine 走 capability gate + typed 对象持久化
+		engAccRepo = accRepo
+		engTrRepo = trRepo
+		engFeeRepo = feeRepo
+		engPoRepo = poRepo
+		// SP-9: refund handler 用
+		refundTrRepo = trRepo
+		refundFeeRepo = feeRepo
+		refundRvRepo = rvRepo
+		// SP-10: payout cron 用
+		cronAccRepo = accRepo
+		cronPoRepo = poRepo
 		log.Info("repos: mysql + stripe entities ready", zap.String("dsn_host", maskDSN(dsn)))
 	} else {
 		mg := repo.NewMemoryGraphRepo()
@@ -118,13 +150,40 @@ func main() {
 		log.Info("repos: memory (set SPLIT_PAYMENT_DSN to use MySQL)")
 	}
 
-	// 4. workflow engine
+	// SP-8: optional Kafka event publisher.
+	// SPLIT_PAYMENT_KAFKA_BROKERS 配了就连 Kafka, 没配走 NoopEventPublisher (dev / 单节点).
+	var eventPub workflow.EventPublisher = workflow.NoopEventPublisher{}
+	if brokers := envOr("SPLIT_PAYMENT_KAFKA_BROKERS", ""); brokers != "" {
+		evCfg := workflow.DefaultKafkaEventConfig(splitCSV(brokers))
+		evCfg.Topic = envOr("SPLIT_PAYMENT_EVENT_TOPIC", evCfg.Topic)
+		evCfg.LiveMode = envOr("RECON_ENV", "dev") != "dev"
+		kp, kerr := workflow.NewKafkaEventPublisher(evCfg, log)
+		if kerr != nil {
+			log.Warn("kafka event publisher init failed (using noop)",
+				zap.Error(kerr))
+		} else {
+			eventPub = kp
+			defer kp.Close()
+			log.Info("event publisher: kafka",
+				zap.String("topic", evCfg.Topic),
+				zap.Bool("livemode", evCfg.LiveMode))
+		}
+	} else {
+		log.Info("event publisher: noop (set SPLIT_PAYMENT_KAFKA_BROKERS to enable)")
+	}
+
+	// 4. workflow engine — SP-6 注入 typed repos + capability gate + event publisher
 	engine := &workflow.Engine{
-		GraphRepo:  graphRepo,
-		RunRepo:    runRepo,
-		Accounting: accClient,
-		Audit:      logAudit{log: log},
-		Log:        log,
+		GraphRepo:    graphRepo,
+		RunRepo:      runRepo,
+		Accounting:   accClient,
+		Audit:        logAudit{log: log},
+		Log:          log,
+		AccountRepo:  engAccRepo,
+		TransferRepo: engTrRepo,
+		AppFeeRepo:   engFeeRepo,
+		PayoutRepo:   engPoRepo,
+		Events:       eventPub,
 	}
 
 	// 5. HTTP server (admin API + dry-run + health)
@@ -160,16 +219,43 @@ func main() {
 		}
 	}()
 
+	// SP-10: PayoutCron 后台 goroutine, 周期扫账户余额 → 自动创建 Payout.
+	// 仅 MySQL 模式启用 (cronAccRepo / cronPoRepo nil → 跳过).
+	if cronAccRepo != nil && cronPoRepo != nil {
+		cron := &workflow.PayoutCron{
+			Cfg:      workflow.DefaultPayoutCronConfig(),
+			Accounts: cronAccRepo,
+			Payouts:  cronPoRepo,
+			Balances: workflow.StubBalanceQuerier{}, // Phase 3 接 accounting gRPC
+			Events:   eventPub,
+			Log:      log,
+		}
+		// LiveMode 由 env 控制, 默认 dev=false 只 log 不真创建
+		if envOr("SPLIT_PAYMENT_PAYOUT_LIVE", "") == "1" {
+			cron.Cfg.LiveMode = true
+		}
+		if interval := envOr("SPLIT_PAYMENT_PAYOUT_CRON_INTERVAL", ""); interval != "" {
+			if d, derr := time.ParseDuration(interval); derr == nil {
+				cron.Cfg.Interval = d
+			}
+		}
+		go cron.Run(ctx)
+	}
+
+	// SP-9: Kafka subscriber 订 refund-engine 的 refund.completed 事件 → engine.HandleRefund.
+	// 复用上面的 brokers env. SPLIT_PAYMENT_REFUND_TOPIC 配可改默认 topic.
+	if envOr("SPLIT_PAYMENT_KAFKA_BROKERS", "") != "" && refundTrRepo != nil && refundRvRepo != nil {
+		go runRefundSubscriber(ctx, engine, log,
+			refundTrRepo, refundFeeRepo, refundRvRepo)
+	} else {
+		log.Info("refund subscriber: disabled (set SPLIT_PAYMENT_KAFKA_BROKERS + MySQL mode to enable)")
+	}
+
 	// 事件驱动入口:
 	//
 	//  - 生产: Kafka subscriber 订阅 payment.events,每条 BusinessEvent 调
 	//    engine.Handle(ctx, ev) 推进分账流。kafka 消费由 payment-util/kafkamq 提供。
 	//  - dev / demo: HTTP /api/moneyflow/trigger 手动触发,见 internal/handler/trigger.go。
-	//
-	// 这里只挂 HTTP server;Kafka subscriber 由 deploy/k8s 里的 sidecar consumer
-	// 单独起进程,通过本进程的 HTTP 内部端点把事件灌给 engine。这样保证 split-payment
-	// 不依赖 Kafka 可用性,生产 Kafka 抖动时手动触发依旧可用。
-	_ = engine
 
 	<-ctx.Done()
 	log.Info("shutting down")
@@ -254,4 +340,118 @@ func (l logAudit) Write(_ context.Context, ev map[string]any) error {
 	b, _ := json.Marshal(ev)
 	l.log.Info("AUDIT", zap.ByteString("event", b))
 	return nil
+}
+
+// splitCSV "a,b, c" → ["a","b","c"]; 用于 brokers 配置.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	out := []string{}
+	cur := ""
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == ',' {
+			if cur != "" {
+				out = append(out, trimSpaces(cur))
+				cur = ""
+			}
+			continue
+		}
+		cur += string(c)
+	}
+	if cur != "" {
+		out = append(out, trimSpaces(cur))
+	}
+	return out
+}
+
+func trimSpaces(s string) string {
+	start, end := 0, len(s)
+	for start < end && (s[start] == ' ' || s[start] == '\t') {
+		start++
+	}
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
+		end--
+	}
+	return s[start:end]
+}
+
+// runRefundSubscriber SP-9: 订 refund-engine 的 refund.completed Kafka topic, 调 engine.HandleRefund.
+//
+// 用 franz-go 跟其它 Kafka client 风格对齐 (跟 reconplatform / KafkaEventPublisher 一致).
+// 单个进程一个 consumer group, 多副本部署时按 partition 自动分担.
+//
+// 失败处理:
+//   - 单条解析失败 → log error 跳过 (DLQ 留 Phase 3)
+//   - HandleRefund 返 err → log + 不 commit, 下次重试
+func runRefundSubscriber(
+	ctx context.Context,
+	engine *workflow.Engine,
+	log *zap.Logger,
+	trRepo workflow.TransferReverseRepo,
+	feeRepo workflow.AppFeeRefundRepo,
+	rvRepo workflow.ReversalExtRepo,
+) {
+	brokers := splitCSV(envOr("SPLIT_PAYMENT_KAFKA_BROKERS", ""))
+	topic := envOr("SPLIT_PAYMENT_REFUND_TOPIC", "recon.refund.events")
+	groupID := envOr("SPLIT_PAYMENT_REFUND_GROUP", "split-payment-refund-handler")
+	if len(brokers) == 0 {
+		return
+	}
+	cl, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers...),
+		kgo.ConsumerGroup(groupID),
+		kgo.ConsumeTopics(topic),
+		kgo.DisableAutoCommit(),
+		kgo.SessionTimeout(30*time.Second),
+	)
+	if err != nil {
+		log.Error("refund subscriber init failed", zap.Error(err))
+		return
+	}
+	defer cl.Close()
+	log.Info("refund subscriber started",
+		zap.Strings("brokers", brokers),
+		zap.String("topic", topic),
+		zap.String("group", groupID))
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		fetches := cl.PollFetches(ctx)
+		if errs := fetches.Errors(); len(errs) > 0 {
+			for _, fe := range errs {
+				log.Warn("refund kafka fetch err",
+					zap.String("topic", fe.Topic),
+					zap.Error(fe.Err))
+			}
+		}
+		var toCommit []*kgo.Record
+		iter := fetches.RecordIter()
+		for !iter.Done() {
+			rec := iter.Next()
+			var ev workflow.RefundEvent
+			if err := json.Unmarshal(rec.Value, &ev); err != nil {
+				log.Warn("refund event parse failed",
+					zap.String("topic", rec.Topic), zap.Error(err))
+				toCommit = append(toCommit, rec) // bad msg 跳过
+				continue
+			}
+			if err := engine.HandleRefund(ctx, ev, trRepo, feeRepo, rvRepo); err != nil {
+				log.Error("HandleRefund failed",
+					zap.String("refund_id", ev.RefundID),
+					zap.String("charge_id", ev.ChargeID),
+					zap.Error(err))
+				continue // 不 commit, 重试
+			}
+			toCommit = append(toCommit, rec)
+		}
+		if len(toCommit) > 0 {
+			if err := cl.CommitRecords(ctx, toCommit...); err != nil {
+				log.Warn("refund commit failed", zap.Error(err))
+			}
+		}
+	}
 }

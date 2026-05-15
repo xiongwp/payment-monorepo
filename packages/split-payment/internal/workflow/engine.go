@@ -21,12 +21,56 @@ import (
 )
 
 // Engine 主对象。
+//
+// SP-6 升级:
+//   - 持典 Stripe-style 资源对象 (Transfer / ApplicationFee / Payout) 的 repo,
+//     执行成功后落它们各自的表 (graph_run_id 关联回 RunPlan).
+//   - 执行前校验 ConnectedAccount.CanTransfer() / CanPayout(), capability 不通过
+//     的 movement 标 skipped (不发 accounting, 不阻塞其它).
+//
+// 所有 Stripe repo 字段可选 (nil = 老行为, 不持 typed 对象). 启动期若用 MySQL
+// 即应注入, 见 cmd/server/main.go.
 type Engine struct {
 	GraphRepo  GraphRepo
 	RunRepo    RunRepo
 	Accounting *clients.AccountingClient
 	Audit      AuditClient
 	Log        *zap.Logger
+
+	// SP-6 typed repo (可选). nil → 不落 Transfer/Fee/Payout 表, 跑老路径.
+	AccountRepo  AccountRepo
+	TransferRepo TransferRepo
+	AppFeeRepo   AppFeeRepo
+	PayoutRepo   PayoutRepo
+
+	// SP-8 webhook (可选). nil → 不 publish 事件.
+	Events EventPublisher
+}
+
+// AccountRepo workflow 视角 (SP-6 capability gate 用).
+type AccountRepo interface {
+	Get(ctx context.Context, id string) (*domain.ConnectedAccount, error)
+}
+
+// TransferRepo workflow 视角.
+type TransferRepo interface {
+	Insert(ctx context.Context, t *domain.Transfer) error
+	UpdateStatus(ctx context.Context, id, status string, postedAt time.Time) error
+}
+
+// AppFeeRepo workflow 视角.
+type AppFeeRepo interface {
+	Insert(ctx context.Context, f *domain.ApplicationFee) error
+}
+
+// PayoutRepo workflow 视角.
+type PayoutRepo interface {
+	Insert(ctx context.Context, p *domain.Payout) error
+}
+
+// EventPublisher SP-8 webhook events.
+type EventPublisher interface {
+	Publish(ctx context.Context, eventType string, payload any) error
 }
 
 // GraphRepo Graph 仓储。
@@ -121,6 +165,16 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 	}
 	plan.ID = id
 
+	// SP-6: capability gate — Transfer 前校验 destination account 能否收钱;
+	// 不能 → 把对应 movement 标 skipped, 不发 accounting.
+	if e.AccountRepo != nil {
+		e.applyCapabilityGate(ctx, plan)
+	}
+
+	// SP-6: 先把 typed 对象插表 (status=created/pending), 这样即使 accounting 失败也有审计痕迹.
+	// graph_run_id 回填到每条 typed 对象, 让运营反查 "这个 Transfer 来自哪次 run".
+	e.persistTypedObjects(ctx, plan)
+
 	// 2) PostBatch (accounting AtomicBatchBooking)
 	plan.Status = "executing"
 	_ = e.RunRepo.Update(ctx, plan)
@@ -148,6 +202,26 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 	plan.Status = "completed"
 	_ = e.RunRepo.Update(ctx, plan)
 
+	// SP-6: accounting 成功 → Transfer 状态 created → posted (附 PostedAt).
+	now := time.Now().UTC()
+	if e.TransferRepo != nil {
+		for _, t := range plan.Transfers {
+			if t.Status == domain.TransferStatusFailed {
+				continue // capability gate 已挡掉的
+			}
+			_ = e.TransferRepo.UpdateStatus(ctx, t.ID, domain.TransferStatusPosted, now)
+			e.publishEvent(ctx, "transfer.posted", t)
+		}
+	}
+	// AppFee posted → collected
+	for _, f := range plan.ApplicationFees {
+		e.publishEvent(ctx, "application_fee.collected", f)
+	}
+	// Payout 不在这里完成 (走 cron / 银行通道 worker), 这里只发 created 事件
+	for _, p := range plan.Payouts {
+		e.publishEvent(ctx, "payout.created", p)
+	}
+
 	// 3) Audit
 	if e.Audit != nil {
 		body, _ := json.Marshal(plan)
@@ -162,6 +236,100 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 		})
 	}
 	return nil
+}
+
+// applyCapabilityGate (SP-6) 把不满足 capability 的 Transfer 标 failed/skipped, 不发 accounting.
+//
+// 规则:
+//   - Transfer 看 destination account: !CanTransfer() → status=failed
+//   - Payout 看 source account: !CanPayout() → status=failed
+//   - 未知 account (Get 返 ErrNotFound) → 当作 failed, 资金安全优先
+//
+// 失败的 Transfer 在 plan.Transfers 中标记, 同时把 plan.Movements 对应行也标 skipped.
+func (e *Engine) applyCapabilityGate(ctx context.Context, plan *domain.RunPlan) {
+	for i := range plan.Transfers {
+		t := &plan.Transfers[i]
+		a, err := e.AccountRepo.Get(ctx, t.DestinationAccount)
+		if err != nil || a == nil || !a.CanTransfer() {
+			t.Status = domain.TransferStatusFailed
+			e.markMovementSkipped(plan, t.SourceAccount, t.DestinationAccount,
+				"capability gate: destination cannot receive transfer")
+		}
+	}
+	for i := range plan.Payouts {
+		p := &plan.Payouts[i]
+		a, err := e.AccountRepo.Get(ctx, p.Account)
+		if err != nil || a == nil || !a.CanPayout() {
+			p.Status = domain.PayoutStatusFailed
+			p.FailureCode = "capability_inactive"
+			p.FailureMessage = "account cannot payout (capability inactive or status not enabled)"
+			e.markMovementSkipped(plan, p.Account, "", "capability gate: cannot payout")
+		}
+	}
+}
+
+// markMovementSkipped 把 plan.Movements 里对应行 (按 fromAcc/toAcc) 状态置 skipped.
+func (e *Engine) markMovementSkipped(plan *domain.RunPlan, fromAcc, toAcc, reason string) {
+	for i := range plan.Movements {
+		m := &plan.Movements[i]
+		if m.Status != "pending" {
+			continue
+		}
+		if m.FromAccount == fromAcc && (toAcc == "" || m.ToAccount == toAcc) {
+			m.Status = "skipped"
+			m.Reason = reason
+			break
+		}
+	}
+}
+
+// persistTypedObjects 把 typed Transfer/AppFee/Payout 插表, graph_run_id 回填.
+//
+// 写失败仅 warn, 不阻塞 accounting (审计追溯属于次要路径).
+func (e *Engine) persistTypedObjects(ctx context.Context, plan *domain.RunPlan) {
+	if e.TransferRepo != nil {
+		for i := range plan.Transfers {
+			t := &plan.Transfers[i]
+			t.GraphRunID = plan.ID
+			if err := e.TransferRepo.Insert(ctx, t); err != nil {
+				e.Log.Warn("transfer insert failed",
+					zap.String("id", t.ID), zap.Error(err))
+			}
+		}
+	}
+	if e.AppFeeRepo != nil {
+		for i := range plan.ApplicationFees {
+			f := &plan.ApplicationFees[i]
+			f.GraphRunID = plan.ID
+			if err := e.AppFeeRepo.Insert(ctx, f); err != nil {
+				e.Log.Warn("application_fee insert failed",
+					zap.String("id", f.ID), zap.Error(err))
+			}
+		}
+	}
+	if e.PayoutRepo != nil {
+		for i := range plan.Payouts {
+			p := &plan.Payouts[i]
+			p.GraphRunID = plan.ID
+			if err := e.PayoutRepo.Insert(ctx, p); err != nil {
+				e.Log.Warn("payout insert failed",
+					zap.String("id", p.ID), zap.Error(err))
+			}
+		}
+	}
+}
+
+// publishEvent SP-8 把状态机迁移 fan-out 到 webhook dispatcher (kafka).
+//
+// EventPublisher nil → 静默跳过 (Phase 1 没接 Kafka 时不报错).
+func (e *Engine) publishEvent(ctx context.Context, evtType string, payload any) {
+	if e.Events == nil {
+		return
+	}
+	if err := e.Events.Publish(ctx, evtType, payload); err != nil {
+		e.Log.Warn("event publish failed",
+			zap.String("event", evtType), zap.Error(err))
+	}
 }
 
 // matchesTrigger 检查触发条件是否命中。
