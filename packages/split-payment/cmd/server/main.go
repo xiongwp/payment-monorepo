@@ -38,7 +38,6 @@ import (
 
 	_ "github.com/go-sql-driver/mysql" // MF-1: mysql driver
 	"github.com/twmb/franz-go/pkg/kgo" // SP-11 refund kafka subscriber
-	accountingv1 "github.com/xiongwp/accounting-system/api/proto/accounting/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -63,7 +62,9 @@ func main() {
 	}
 	defer conn.Close()
 
-	accClient := clients.NewAccountingClient(accountingv1.NewAccountingServiceClient(conn))
+	// SP-AC-7: legacy AccountingClient 是 stub (返 ErrAccountingNotWired), 业务调用走
+	// 同包内 AccountingGRPCClient → 新 TransactionService.
+	accClient := clients.NewAccountingClient(conn)
 
 	// 2. repos — MF-1: 优先 MySQL (SPLIT_PAYMENT_DSN 配了就走), fallback memory.
 	//
