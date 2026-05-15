@@ -40,34 +40,32 @@ services:
       GOWORK: "off"
       # 万一镜像 Go 版本比 go.mod 要求低, 允许自动下载匹配 toolchain.
       GOTOOLCHAIN: "auto"
-    # bash 比 sh 强: /dev/tcp 内置 TCP probe, 不需要装 nc.
+    # bash + /dev/tcp 内置 TCP probe, 不需要装 nc.
+    # 所有 shell 变量用 $$  转义, 避免 compose 解释 $i / $ok.
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
         set -u
-        echo "[bootstrap] waiting for shared-meta:3306 (via bash /dev/tcp, no external tool)"
+        echo "[bootstrap] waiting for shared-meta:3306"
         ok=0
-        for i in $(seq 1 60); do
+        for i in $$(seq 1 60); do
           if (echo > /dev/tcp/shared-meta/3306) 2>/dev/null; then
-            echo "[bootstrap] shared-meta:3306 reachable (took ${i}x2s)"
+            echo "[bootstrap] shared-meta:3306 reachable (took $${i}x2s)"
             ok=1
             break
           fi
-          echo "[bootstrap] waiting ... ($i/60)"
+          echo "[bootstrap] waiting ... ($$i/60)"
           sleep 2
         done
-        if [ "$ok" = "0" ]; then
+        if [ "$$ok" = "0" ]; then
           echo "[bootstrap] WARN: shared-meta unreachable after 120s, continuing anyway"
         fi
 
-        # 装 mariadb-client 给 DB bootstrap 用 (debian bookworm 默认源里有). 装失败也继续 ——
-        # split_payment DB 创建只跑一次, 失败下次手动补就行, 不卡服务启动.
         echo "[bootstrap] installing mariadb-client (best-effort)"
         apt-get update -qq 2>&1 | tail -2 || true
         apt-get install -y --no-install-recommends mariadb-client 2>&1 | tail -2 || true
 
         if command -v mariadb >/dev/null 2>&1; then
-          # --skip-ssl: mariadb-client 11 默认开 TLS, MySQL 8.0 自签证书会被拒
           mariadb --skip-ssl -h shared-meta -uroot -ppassword <<'SQL' 2>&1 | tail -5 || echo "[bootstrap] WARN: DB create failed"
         CREATE DATABASE IF NOT EXISTS split_payment DEFAULT CHARSET utf8mb4;
         CREATE USER IF NOT EXISTS 'split_user'@'%' IDENTIFIED BY 'password';
