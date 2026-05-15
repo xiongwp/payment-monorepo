@@ -72,6 +72,8 @@
   <input id="graph-name" placeholder="Graph 名称" style="min-width: 200px">
   <button id="save-btn">Save</button>
   <button id="export-btn" class="secondary">Export</button>
+  <button id="import-btn" class="secondary">Import</button>
+  <input id="import-file" type="file" accept=".json,application/json" style="display:none">
   <button id="dry-btn"    class="secondary">Dry Run</button>
 </header>
 
@@ -442,6 +444,71 @@ $('export-btn').onclick = () => {
   a.download = (currentGraph.key || 'graph') + '.json';
   a.click();
   URL.revokeObjectURL(a.href);
+};
+
+// Import — 读 .json 文件,塞进 React Flow setNodes/setEdges 重画.
+//   支持两种 shape:
+//     1. 完整 Graph: {key, name, spec: {nodes, edges, ...}}
+//     2. 裸 spec:   {nodes, edges, ...}
+//   缺坐标自动按 type 分四列布局; _doc / _sample_* 等下划线字段忽略.
+$('import-btn').onclick = () => $('import-file').click();
+$('import-file').onchange = async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  try {
+    const txt = await f.text();
+    const obj = JSON.parse(txt);
+    const g = obj.spec ? obj : { key: '', name: f.name.replace(/\.json$/, ''), version: '1.0.0', status: 'draft', spec: obj };
+    const spec = g.spec || {};
+    spec.nodes = spec.nodes || [];
+    spec.edges = spec.edges || [];
+    currentGraph = { id: g.id || 0, key: g.key || '', name: g.name || '', version: g.version || '1.0.0', status: g.status || 'draft' };
+    $('graph-name').value = currentGraph.name;
+    $('charge-strategy').value = spec.charge_strategy || 'separate';
+    if (spec.triggers && spec.triggers[0]) {
+      $('trigger-event').value = spec.triggers[0].event || '';
+      $('trigger-filter').value = spec.triggers[0].filter || '';
+    }
+    // 按 type 分四列自动布局
+    const colX = { input: 60, intermediate: 320, account: 580, output: 840 };
+    const rowY = {};
+    const reactNodes = spec.nodes.map((n, i) => {
+      const c = colX[n.type] || 320;
+      rowY[c] = (rowY[c] || 60) + 100;
+      return {
+        id: n.id,
+        type: 'money',
+        position: { x: c, y: rowY[c] },
+        data: {
+          type: n.type, label: n.label || n.id,
+          account_id_attr: n.account_id_attr || '',
+          amount_attr:     n.amount_attr     || '',
+          currency_attr:   n.currency_attr   || '',
+          auto_clear:      !!n.auto_clear,
+        },
+      };
+    });
+    const reactEdges = spec.edges.map(ed => ({
+      id: 'e_' + ed.from + '_' + ed.to,
+      source: ed.from, target: ed.to,
+      label: (ed.event_code ? '[' + ed.event_code + '] ' : '')
+           + ruleLabel(ed.rule)
+           + (ed.kind && ed.kind !== 'transfer' ? ' • ' + ed.kind : ''),
+      data: {
+        event_code: ed.event_code || '',
+        kind: ed.kind || 'transfer',
+        rule: ed.rule,
+        dest_currency: ed.dest_currency,
+      },
+    }));
+    window._designer.setNodes(reactNodes);
+    window._designer.setEdges(reactEdges);
+    alert(`imported ✓  nodes=${reactNodes.length} edges=${reactEdges.length}`);
+  } catch (err) {
+    alert('import failed: ' + err.message);
+  } finally {
+    e.target.value = '';
+  }
 };
 
 $('dry-btn').onclick = async () => {

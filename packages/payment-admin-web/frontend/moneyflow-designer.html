@@ -170,6 +170,8 @@
   <input id="graph-name" placeholder="Graph 名称 (e.g. marketplace 分账)" style="min-width:240px">
   <button id="save-btn">Save</button>
   <button id="export-btn" class="secondary">Export JSON</button>
+  <button id="import-btn" class="secondary">Import JSON</button>
+  <input id="import-file" type="file" accept=".json,application/json" style="display:none">
   <button id="test-btn" class="secondary">Dry Run...</button>
 </header>
 <main>
@@ -685,6 +687,52 @@ $('export-btn').onclick = () => {
   a.href = URL.createObjectURL(blob);
   a.download = (state.graph.key || 'graph') + '.json';
   a.click();
+};
+
+// Import — 读 .json 文件,塞进 state.graph 重画.
+//   支持两种 shape:
+//     1. 完整 Graph: {key, name, spec: {nodes, edges, ...}}
+//     2. 裸 spec:   {nodes, edges, ...}    (老 graph 没顶层包装)
+//   字段宽容: 缺 x/y 会自动布局, _doc / _sample_trigger_payload 等下划线开头字段忽略.
+$('import-btn').onclick = () => $('import-file').click();
+$('import-file').onchange = async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  try {
+    const txt = await f.text();
+    const obj = JSON.parse(txt);
+    const g = obj.spec ? obj : { key: '', name: f.name.replace(/\.json$/, ''), version: '1.0.0', status: 'draft', spec: obj };
+    g.spec = g.spec || {};
+    g.spec.nodes = g.spec.nodes || [];
+    g.spec.edges = g.spec.edges || [];
+    // 缺坐标自动布局: input/intermediate/account/output 分四列
+    const colX = { input: 60, intermediate: 280, account: 500, output: 720 };
+    const rowY = {};
+    g.spec.nodes.forEach(n => {
+      if (n.x == null || n.y == null) {
+        const c = colX[n.type] || 280;
+        rowY[c] = (rowY[c] || 60) + 80;
+        n.x = c; n.y = rowY[c];
+      }
+    });
+    state.graph = g;
+    $('graph-name').value = g.name || '';
+    if (g.spec.scenario) $('scenario').value = g.spec.scenario;
+    if (g.spec.triggers && g.spec.triggers[0]) {
+      $('trigger-event').value = g.spec.triggers[0].event || '';
+    }
+    state.selected = null;
+    $('prop-form').innerHTML = '<p style="color:#888">无</p>';
+    render();
+    if (typeof loadTransactionRules === 'function' && g.spec.scenario) {
+      await loadTransactionRules(g.spec.scenario);
+    }
+    alert(`imported ✓  nodes=${g.spec.nodes.length} edges=${g.spec.edges.length}`);
+  } catch (err) {
+    alert('import failed: ' + err.message);
+  } finally {
+    e.target.value = ''; // 允许重新选同一文件
+  }
 };
 
 $('test-btn').onclick = async () => {
