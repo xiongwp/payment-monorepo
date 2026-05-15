@@ -287,6 +287,45 @@ func findNode(nodes []domain.Node, id string) domain.Node {
 	return domain.Node{}
 }
 
+// resolveAccountType 把 Node 解析为有效的 AccountType code.
+//
+// 优先级:
+//   1. Node.AccountType 非空 → 直接用
+//   2. Node.AccountTemplate 匹配 ^[A-Z][A-Z0-9_]+$ (bare AccountType code, 不含 / 也不含 {placeholder})
+//      → 当 AccountType 用 (向后兼容: 用户把 AccountType code 填到老字段也认)
+//   3. 都不行 → 空字符串 (caller 自己处理 = 退化老 Movement 模型)
+//
+// SP-AC-1 引入新字段后, 老 graph (template 写 AccountType code) 直接能用而不用迁移.
+func resolveAccountType(n domain.Node) string {
+	if n.AccountType != "" {
+		return n.AccountType
+	}
+	tmpl := n.AccountTemplate
+	if tmpl == "" {
+		return ""
+	}
+	// 校验 bare AccountType: 全大写字母 + 数字 + 下划线
+	if !isBareAccountType(tmpl) {
+		return "" // 含 / 或 {placeholder} → 老 Movement 模型
+	}
+	return tmpl
+}
+
+func isBareAccountType(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+		if !ok {
+			return false
+		}
+	}
+	// 首字符必须是字母
+	return s[0] >= 'A' && s[0] <= 'Z'
+}
+
 // resolvePartyID 从 event.attributes 解析具体 party_id.
 //
 // Node.PartyIDAttr 为空 → 用 trigger.MerchantID 兜底 (platform 户 ID=0).
