@@ -34,6 +34,16 @@ import (
 //go:embed assets/moneyflow-designer.html
 var designerHTML []byte
 
+// resourcesHTML — SP-13 Stripe-style 资源管理页 (Accounts / Transfers / Fees / Payouts).
+//
+//go:embed assets/moneyflow-resources.html
+var resourcesHTML []byte
+
+// designerV2HTML — SP-3D React Flow 重写的 designer.
+//
+//go:embed assets/moneyflow-designer-v2.html
+var designerV2HTML []byte
+
 // MoneyflowHandler 注入 split-payment upstream.
 type MoneyflowHandler struct {
 	proxy    *httputil.ReverseProxy
@@ -76,6 +86,20 @@ func (h *MoneyflowHandler) Designer(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 	_, _ = w.Write(designerHTML)
+}
+
+// Resources GET /moneyflow/resources — SP-13 资源管理页.
+func (h *MoneyflowHandler) Resources(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+	_, _ = w.Write(resourcesHTML)
+}
+
+// DesignerV2 GET /moneyflow/v2 — SP-3D React Flow designer.
+func (h *MoneyflowHandler) DesignerV2(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+	_, _ = w.Write(designerV2HTML)
 }
 
 // Health GET /api/moneyflow/_health — admin BFF 探 split-payment 是否在线.

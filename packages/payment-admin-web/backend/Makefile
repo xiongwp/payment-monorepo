@@ -19,5 +19,7 @@ tidy:
 # go:embed 路径只能在 package 目录下, 所以 frontend/ 是源, assets/ 是 build-time 副本.
 sync-assets:
 	@mkdir -p internal/handler/assets
-	@cp -f ../frontend/moneyflow-designer.html internal/handler/assets/moneyflow-designer.html
-	@echo "synced moneyflow-designer.html → internal/handler/assets/"
+	@cp -f ../frontend/moneyflow-designer.html     internal/handler/assets/moneyflow-designer.html
+	@cp -f ../frontend/moneyflow-designer-v2.html  internal/handler/assets/moneyflow-designer-v2.html
+	@cp -f ../frontend/moneyflow-resources.html    internal/handler/assets/moneyflow-resources.html
+	@echo "synced moneyflow-{designer,designer-v2,resources}.html → internal/handler/assets/"

@@ -87,6 +87,10 @@ type Edge struct {
 	To   string   `json:"to"`
 	Kind string   `json:"kind,omitempty"` // transfer / application_fee / payout, 默认 transfer
 	Rule EdgeRule `json:"rule"`
+
+	// SP-3C: 跨币种支持. 空 → 与 trigger.Currency 相同;
+	// 配了 e.g. "EUR" → translator 调 FX 换算后写 Transfer.Currency.
+	DestCurrency string `json:"dest_currency,omitempty"`
 }
 
 // EdgeKind 常量.

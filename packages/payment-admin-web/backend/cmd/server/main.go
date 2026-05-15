@@ -224,14 +224,26 @@ func main() {
 	api.HandleFunc("/risk/mlscore/challengers/promote", riskH.ChallengerPromote).Methods("POST", "OPTIONS")
 	api.HandleFunc("/risk/mlscore/challengers/drop", riskH.ChallengerDrop).Methods("POST", "OPTIONS")
 
-	// MF-2: Money Flow Designer — reverse proxy → split-payment + 静态 serve designer html
+	// MF-2 + SP-13: Money Flow Designer + Stripe-style 资源 API + 资源管理页.
 	moneyflowH := handler.NewMoneyflowHandler()
 	api.HandleFunc("/moneyflow/_health", moneyflowH.Health).Methods("GET", "OPTIONS")
 	// /api/moneyflow/* (graphs / dry-run / runs/search) 透传到 split-payment
 	api.PathPrefix("/moneyflow/").HandlerFunc(moneyflowH.Proxy)
-	// /moneyflow → designer HTML (注: 走 root mux, 不进 /api auth — designer 内部仍要走 admin token)
+	// SP-13: Stripe-style 资源对象 API 也透传 (accounts / transfers / fees / payouts)
+	api.PathPrefix("/connected_accounts").HandlerFunc(moneyflowH.Proxy)
+	api.PathPrefix("/connected_accounts/").HandlerFunc(moneyflowH.Proxy)
+	api.PathPrefix("/transfers").HandlerFunc(moneyflowH.Proxy)
+	api.PathPrefix("/transfers/").HandlerFunc(moneyflowH.Proxy)
+	api.PathPrefix("/application_fees").HandlerFunc(moneyflowH.Proxy)
+	api.PathPrefix("/payouts").HandlerFunc(moneyflowH.Proxy)
+	// /moneyflow → designer HTML; /moneyflow/resources → 资源管理 (SP-13)
 	r.HandleFunc("/moneyflow", moneyflowH.Designer).Methods("GET")
 	r.HandleFunc("/moneyflow/", moneyflowH.Designer).Methods("GET")
+	r.HandleFunc("/moneyflow/resources", moneyflowH.Resources).Methods("GET")
+	r.HandleFunc("/moneyflow/resources/", moneyflowH.Resources).Methods("GET")
+	// SP-3D React Flow 重写版
+	r.HandleFunc("/moneyflow/v2", moneyflowH.DesignerV2).Methods("GET")
+	r.HandleFunc("/moneyflow/v2/", moneyflowH.DesignerV2).Methods("GET")
 
 	// health
 	r.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {

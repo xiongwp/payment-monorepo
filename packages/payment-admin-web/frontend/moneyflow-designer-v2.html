@@ -1,0 +1,469 @@
+<!doctype html>
+<!--
+  moneyflow-designer-v2.html — SP-3D React + React Flow rewrite of designer.
+  零 build chain: React/ReactDOM/ReactFlow 全部 ESM CDN, 单文件部署.
+  跟 v1 (vanilla SVG) 平行, 由 BFF 走 /moneyflow/v2 暴露.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Money Flow Designer v2 (React Flow)</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; background: #f7f8fa; color: #1a1a2e; }
+  header { background: #1a1a2e; color: #fff; padding: 10px 20px; display: flex; gap: 10px; align-items: center; }
+  header h1 { margin: 0; font-size: 15px; }
+  header a { color: #c8c8e8; text-decoration: none; padding: 4px 10px; border-radius: 4px; font-size: 12px; }
+  header a.active { background: #4040c0; color: #fff; }
+  header button, header input, header select {
+    padding: 5px 10px; border-radius: 4px; border: 0; font-size: 12px;
+  }
+  header button { background: #4040c0; color: #fff; cursor: pointer; font-weight: 500; }
+  header button.secondary { background: #555; color: #fff; }
+  header .spacer { flex: 1; }
+  main { display: grid; grid-template-columns: 220px 1fr 320px; height: calc(100vh - 48px); }
+  .panel { background: #fff; padding: 12px; overflow: auto; border-right: 1px solid #e0e2e8; }
+  .panel:last-child { border-right: 0; border-left: 1px solid #e0e2e8; }
+  .panel h2 { font-size: 11px; text-transform: uppercase; color: #6a7080; margin: 14px 0 6px; letter-spacing: 0.5px; }
+  .palette-item {
+    padding: 8px 10px; background: #f0f2f5; border-radius: 4px; margin-bottom: 6px;
+    cursor: grab; user-select: none; font-size: 12px; transition: background 0.1s;
+  }
+  .palette-item:hover { background: #e4e6eb; }
+  .palette-item.input        { border-left: 3px solid #4cb478; }
+  .palette-item.intermediate { border-left: 3px solid #c020c0; }
+  .palette-item.account      { border-left: 3px solid #4040c0; }
+  .palette-item.output       { border-left: 3px solid #c08040; }
+  .reactflow-wrap { background: #fafbff; }
+  label { display: block; margin: 8px 0 3px; color: #555; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+  input.field, select.field, textarea.field {
+    width: 100%; padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;
+  }
+  .json-preview {
+    background: #1a1a2e; color: #aabbcc; padding: 10px; border-radius: 4px;
+    font-family: ui-monospace, Menlo, monospace; font-size: 10px; max-height: 280px; overflow: auto;
+  }
+  /* React Flow node custom styling */
+  .rf-node {
+    padding: 8px 12px; border-radius: 6px; background: #fff; border: 2px solid #ccc;
+    min-width: 140px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .rf-node.input        { border-color: #4cb478; }
+  .rf-node.intermediate { border-color: #c020c0; border-style: dashed; }
+  .rf-node.account      { border-color: #4040c0; }
+  .rf-node.output       { border-color: #c08040; }
+  .rf-node .name { font-weight: 600; font-size: 12px; }
+  .rf-node .tmpl { font-size: 10px; color: #888; margin-top: 2px; font-family: ui-monospace, monospace; }
+  .rf-node.selected { box-shadow: 0 0 0 3px rgba(64,64,192,0.3); }
+</style>
+<link rel="stylesheet" href="https://esm.sh/reactflow@11.10.4/dist/style.css">
+</head>
+<body>
+
+<header>
+  <h1>💰 Money Flow Designer v2</h1>
+  <a href="/moneyflow">v1 (legacy)</a>
+  <a href="/moneyflow/v2" class="active">v2 (React Flow)</a>
+  <a href="/moneyflow/resources">Resources</a>
+  <div class="spacer"></div>
+  <select id="graph-key">
+    <option value="">[ new graph ]</option>
+  </select>
+  <input id="graph-name" placeholder="Graph 名称" style="min-width: 200px">
+  <button id="save-btn">Save</button>
+  <button id="export-btn" class="secondary">Export</button>
+  <button id="dry-btn"    class="secondary">Dry Run</button>
+</header>
+
+<main>
+  <!-- 左 palette -->
+  <aside class="panel">
+    <h2>Node types</h2>
+    <div class="palette-item input"        draggable="true" data-type="input">📥 Input</div>
+    <div class="palette-item intermediate" draggable="true" data-type="intermediate">🔄 Intermediate</div>
+    <div class="palette-item account"      draggable="true" data-type="account">💳 Account</div>
+    <div class="palette-item output"       draggable="true" data-type="output">📤 Output</div>
+
+    <h2>Charge strategy</h2>
+    <select id="charge-strategy" class="field">
+      <option value="separate">separate (默认)</option>
+      <option value="destination">destination</option>
+      <option value="direct">direct</option>
+    </select>
+
+    <h2>Trigger</h2>
+    <select id="trigger-event" class="field">
+      <option value="charge.succeeded">charge.succeeded</option>
+      <option value="refund.completed">refund.completed</option>
+      <option value="hold.expired">hold.expired</option>
+      <option value="dispute.lost">dispute.lost</option>
+    </select>
+    <input id="trigger-filter" class="field" placeholder='filter expr (e.g. merchant.tier == "marketplace")' style="margin-top: 5px">
+
+    <h2>Guards</h2>
+    <label>amount_min</label>
+    <input id="g-min" type="number" class="field" value="100">
+    <label>currency_in (csv)</label>
+    <input id="g-curr" class="field" value="USD,EUR,GBP">
+
+    <h2>Hold (days)</h2>
+    <input id="hold-days" type="number" class="field" value="0">
+  </aside>
+
+  <!-- 中: React Flow canvas (React 渲染到 #rf-root) -->
+  <div id="rf-root" class="reactflow-wrap"></div>
+
+  <!-- 右: properties + JSON preview -->
+  <aside class="panel">
+    <h2>Selected</h2>
+    <div id="prop-form">
+      <p style="color: #888; font-size: 11px">点节点或边查看属性</p>
+    </div>
+
+    <h2>JSON Preview</h2>
+    <pre id="json-preview" class="json-preview">{}</pre>
+  </aside>
+</main>
+
+<script type="module">
+import React from 'https://esm.sh/react@18.2.0';
+import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+import ReactFlow, {
+  ReactFlowProvider, MiniMap, Controls, Background,
+  applyNodeChanges, applyEdgeChanges, addEdge, Handle, Position,
+} from 'https://esm.sh/reactflow@11.10.4';
+
+const API = '/api';
+const $ = (id) => document.getElementById(id);
+
+// ─── 自定义节点组件 ───────────────────────────────────────────────
+function MoneyNode({ data, selected }) {
+  const cls = `rf-node ${data.type || 'account'} ${selected ? 'selected' : ''}`;
+  return React.createElement('div', { className: cls }, [
+    React.createElement(Handle, { key: 'h-in',  type: 'target', position: Position.Left }),
+    React.createElement('div', { key: 'name', className: 'name' }, data.label || data.id),
+    React.createElement('div', { key: 'tmpl', className: 'tmpl' }, data.account_template || ''),
+    React.createElement(Handle, { key: 'h-out', type: 'source', position: Position.Right }),
+  ]);
+}
+const nodeTypes = { money: MoneyNode };
+
+// ─── 主应用 ───────────────────────────────────────────────────────
+function App() {
+  const [nodes, setNodes] = React.useState([]);
+  const [edges, setEdges] = React.useState([]);
+  const [selected, setSelected] = React.useState(null); // { kind: 'node'|'edge', id }
+  const wrapRef = React.useRef(null);
+  const rfInstance = React.useRef(null);
+
+  const onNodesChange = React.useCallback((changes) => setNodes((ns) => applyNodeChanges(changes, ns)), []);
+  const onEdgesChange = React.useCallback((changes) => setEdges((es) => applyEdgeChanges(changes, es)), []);
+  const onConnect = React.useCallback((conn) => {
+    const newEdge = { ...conn, id: `e_${conn.source}_${conn.target}`, label: 'remainder',
+                      data: { kind: 'transfer', rule: { type: 'remainder' } } };
+    setEdges((es) => addEdge(newEdge, es));
+  }, []);
+
+  // palette drag-drop
+  const onDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
+  const onDrop = (e) => {
+    e.preventDefault();
+    const type = e.dataTransfer.getData('type');
+    if (!type || !rfInstance.current) return;
+    const pos = rfInstance.current.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+    const id = `${type}_${nodes.length + 1}`;
+    setNodes((ns) => ns.concat({
+      id,
+      type: 'money',
+      position: pos,
+      data: { type, label: id, account_template: type === 'input' ? 'platform_collected/{merchant_id}' : '' },
+    }));
+  };
+
+  // sync to global JSON preview + spec
+  React.useEffect(() => {
+    const spec = buildSpec(nodes, edges);
+    $('json-preview').textContent = JSON.stringify(spec, null, 2);
+    window._currentSpec = spec;
+  }, [nodes, edges]);
+
+  // selection → 右侧 prop form
+  const onSelChange = React.useCallback(({ nodes: selNs, edges: selEs }) => {
+    if (selNs && selNs.length > 0) {
+      setSelected({ kind: 'node', id: selNs[0].id });
+      renderNodeForm(selNs[0], setNodes);
+    } else if (selEs && selEs.length > 0) {
+      setSelected({ kind: 'edge', id: selEs[0].id });
+      renderEdgeForm(selEs[0], setEdges);
+    } else {
+      setSelected(null);
+      $('prop-form').innerHTML = '<p style="color:#888; font-size:11px">点节点或边查看属性</p>';
+    }
+  }, []);
+
+  // expose save / load / dryRun to window for button handlers
+  window._designer = { nodes, edges, setNodes, setEdges, rfInstance: rfInstance.current };
+
+  return React.createElement('div', {
+    ref: wrapRef,
+    style: { width: '100%', height: '100%' },
+    onDragOver, onDrop,
+  },
+    React.createElement(ReactFlowProvider, null,
+      React.createElement(ReactFlow, {
+        nodes, edges, onNodesChange, onEdgesChange, onConnect,
+        nodeTypes, fitView: true,
+        onInit: (inst) => { rfInstance.current = inst; window._designer.rfInstance = inst; },
+        onSelectionChange: onSelChange,
+        defaultEdgeOptions: { animated: false, style: { stroke: '#888', strokeWidth: 2 } },
+      }, [
+        React.createElement(Background,  { key: 'bg',   color: '#aaa', gap: 16 }),
+        React.createElement(MiniMap,     { key: 'mini', pannable: true, zoomable: true }),
+        React.createElement(Controls,    { key: 'ctrl' }),
+      ])
+    )
+  );
+}
+
+function buildSpec(nodes, edges) {
+  return {
+    charge_strategy: $('charge-strategy').value,
+    triggers: [{ event: $('trigger-event').value, filter: $('trigger-filter').value || undefined }],
+    nodes: nodes.map(n => ({
+      id: n.id, type: n.data.type, label: n.data.label,
+      account_template: n.data.account_template || '',
+      from_attr: n.data.from_attr || '',
+      optional: !!n.data.optional,
+    })),
+    edges: edges.map(e => ({
+      from: e.source, to: e.target,
+      kind: (e.data && e.data.kind) || 'transfer',
+      dest_currency: (e.data && e.data.dest_currency) || '',
+      rule: (e.data && e.data.rule) || { type: 'remainder' },
+    })),
+    guards: [
+      { kind: 'amount_min', value: parseInt($('g-min').value) || 0 },
+      { kind: 'currency_in', value: $('g-curr').value.split(',').map(s => s.trim()).filter(Boolean) },
+    ],
+    hold: parseInt($('hold-days').value) > 0
+      ? { days: parseInt($('hold-days').value), applies_to: [] }
+      : null,
+  };
+}
+
+function renderNodeForm(node, setNodes) {
+  const d = node.data;
+  $('prop-form').innerHTML = `
+    <label>ID</label><input class="field" value="${escapeHtml(node.id)}" disabled>
+    <label>Type</label>
+    <select class="field" id="p-type">
+      ${['input','intermediate','account','output'].map(t =>
+        `<option value="${t}" ${d.type===t?'selected':''}>${t}</option>`).join('')}
+    </select>
+    <label>Label</label><input class="field" id="p-label" value="${escapeHtml(d.label||'')}">
+    <label>Account template</label>
+    <input class="field" id="p-tmpl" value="${escapeHtml(d.account_template||'')}">
+    <label>From attribute (placeholder source)</label>
+    <input class="field" id="p-attr" value="${escapeHtml(d.from_attr||'')}">
+    <label><input type="checkbox" id="p-optional" ${d.optional?'checked':''}> optional (跳过 if missing)</label>
+  `;
+  ['p-type','p-label','p-tmpl','p-attr','p-optional'].forEach(k => {
+    const el = $(k);
+    el.oninput = el.onchange = () => {
+      setNodes((ns) => ns.map(n => n.id === node.id ? {
+        ...n,
+        data: {
+          ...n.data,
+          type: $('p-type').value,
+          label: $('p-label').value,
+          account_template: $('p-tmpl').value,
+          from_attr: $('p-attr').value,
+          optional: $('p-optional').checked,
+        },
+      } : n));
+    };
+  });
+}
+
+function renderEdgeForm(edge, setEdges) {
+  const d = edge.data || {};
+  d.kind = d.kind || 'transfer';
+  d.rule = d.rule || { type: 'remainder' };
+  $('prop-form').innerHTML = `
+    <label>Kind</label>
+    <select class="field" id="r-kind">
+      <option value="transfer"        ${d.kind==='transfer'?'selected':''}>transfer</option>
+      <option value="application_fee" ${d.kind==='application_fee'?'selected':''}>application_fee</option>
+      <option value="payout"          ${d.kind==='payout'?'selected':''}>payout</option>
+    </select>
+    <label>Rule type</label>
+    <select class="field" id="r-type">
+      <option value="percent"     ${d.rule.type==='percent'?'selected':''}>percent (bp)</option>
+      <option value="fixed_minor" ${d.rule.type==='fixed_minor'?'selected':''}>fixed (cents)</option>
+      <option value="remainder"   ${d.rule.type==='remainder'?'selected':''}>remainder</option>
+    </select>
+    <label>Value</label>
+    <input type="number" class="field" id="r-value" value="${d.rule.value || 0}">
+    <label>If missing</label>
+    <select class="field" id="r-missing">
+      <option value="skip"    ${d.rule.if_missing==='skip'?'selected':''}>skip</option>
+      <option value="fail"    ${d.rule.if_missing==='fail'?'selected':''}>fail</option>
+      <option value="default" ${d.rule.if_missing==='default'?'selected':''}>default</option>
+    </select>
+    <label>Dest currency (跨币种, 空 = 同 trigger)</label>
+    <input class="field" id="r-currency" value="${escapeHtml(d.dest_currency||'')}" placeholder="USD / EUR / CNY ...">
+  `;
+  ['r-kind','r-type','r-value','r-missing','r-currency'].forEach(k => {
+    const el = $(k);
+    el.oninput = el.onchange = () => {
+      setEdges((es) => es.map(e => e.id === edge.id ? {
+        ...e,
+        label: ruleLabel({ type: $('r-type').value, value: parseInt($('r-value').value) || 0 })
+             + ($('r-kind').value !== 'transfer' ? ' • ' + $('r-kind').value : ''),
+        data: {
+          ...e.data,
+          kind: $('r-kind').value,
+          dest_currency: $('r-currency').value,
+          rule: {
+            type: $('r-type').value,
+            value: parseInt($('r-value').value) || 0,
+            if_missing: $('r-missing').value,
+          },
+        },
+      } : e));
+    };
+  });
+}
+
+function ruleLabel(r) {
+  if (!r) return '';
+  if (r.type === 'percent')     return (r.value/100).toFixed(1) + '%';
+  if (r.type === 'fixed_minor') return '$' + (r.value/100).toFixed(2);
+  if (r.type === 'remainder')   return 'remainder';
+  return r.type;
+}
+
+function escapeHtml(s) {
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─── 顶部按钮 wire ────────────────────────────────────────────────
+let currentGraph = { id: 0, key: '', name: '', version: '1.0.0', status: 'draft' };
+async function loadGraphList() {
+  try {
+    const r = await fetch(API + '/moneyflow/graphs');
+    const j = await r.json();
+    const list = (j.data && j.data.data) || j.data || [];
+    const sel = $('graph-key');
+    sel.innerHTML = '<option value="">[ new graph ]</option>';
+    list.forEach(g => sel.innerHTML += `<option value="${g.key}">${g.name}</option>`);
+    sel.onchange = () => sel.value ? loadGraph(sel.value) : newGraph();
+  } catch (e) { console.warn('list graphs', e); }
+}
+async function loadGraph(key) {
+  try {
+    const r = await fetch(API + '/moneyflow/graphs/' + encodeURIComponent(key));
+    const j = await r.json();
+    const g = j.data || j;
+    currentGraph = g;
+    $('graph-name').value = g.name;
+    $('charge-strategy').value = (g.spec && g.spec.charge_strategy) || 'separate';
+    if (g.spec && g.spec.triggers && g.spec.triggers[0]) {
+      $('trigger-event').value = g.spec.triggers[0].event;
+      $('trigger-filter').value = g.spec.triggers[0].filter || '';
+    }
+    // 把 spec.nodes/edges 转 React Flow 节点
+    const reactNodes = (g.spec.nodes || []).map((n, i) => ({
+      id: n.id,
+      type: 'money',
+      position: { x: 100 + i * 240, y: 100 },
+      data: {
+        type: n.type, label: n.label || n.id,
+        account_template: n.account_template, from_attr: n.from_attr, optional: n.optional,
+      },
+    }));
+    const reactEdges = (g.spec.edges || []).map(e => ({
+      id: 'e_' + e.from + '_' + e.to,
+      source: e.from, target: e.to,
+      label: ruleLabel(e.rule) + (e.kind && e.kind !== 'transfer' ? ' • ' + e.kind : ''),
+      data: { kind: e.kind || 'transfer', rule: e.rule, dest_currency: e.dest_currency },
+    }));
+    window._designer.setNodes(reactNodes);
+    window._designer.setEdges(reactEdges);
+  } catch (e) { console.warn('load graph', e); }
+}
+function newGraph() {
+  currentGraph = { id: 0, key: '', name: '', version: '1.0.0', status: 'draft' };
+  $('graph-name').value = '';
+  window._designer.setNodes([]);
+  window._designer.setEdges([]);
+}
+
+$('save-btn').onclick = async () => {
+  const name = $('graph-name').value || 'untitled';
+  const key = currentGraph.key || name.toLowerCase().replace(/\s+/g,'-');
+  const body = { ...currentGraph, key, name, spec: window._currentSpec };
+  const r = await fetch(API + '/moneyflow/graphs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (r.ok) {
+    alert('saved ✓');
+    await loadGraphList();
+  } else {
+    alert('save failed: ' + await r.text());
+  }
+};
+
+$('export-btn').onclick = () => {
+  const blob = new Blob([JSON.stringify(window._currentSpec, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (currentGraph.key || 'graph') + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+$('dry-btn').onclick = async () => {
+  const charge = prompt('charge_id?', 'ch_test');
+  const amount = parseInt(prompt('amount cents?', '10000'));
+  if (!charge || !amount) return;
+  const sellerID = prompt('seller_id attribute?', 'acct_seller_001') || '';
+  const r = await fetch(API + '/moneyflow/dry-run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      graph: { ...currentGraph, spec: window._currentSpec },
+      event: {
+        event: $('trigger-event').value,
+        charge_id: charge,
+        amount_minor: amount,
+        currency: 'USD',
+        attributes: { seller_id: sellerID, referrer: 'ref_jane' },
+      },
+    }),
+  });
+  const txt = await r.text();
+  // 把 dry-run 结果展示在 prop-form
+  $('prop-form').innerHTML = `<h2>Dry-Run Result</h2><pre class="json-preview">${escapeHtml(txt)}</pre>`;
+};
+
+// 顶部 sidebar 字段同步 spec
+['charge-strategy','trigger-event','trigger-filter','g-min','g-curr','hold-days'].forEach(k => {
+  $(k).oninput = $(k).onchange = () => {
+    if (window._designer) {
+      window._designer.setNodes((ns) => [...ns]); // trigger re-render
+    }
+  };
+});
+
+// 渲染 React
+const root = createRoot($('rf-root'));
+root.render(React.createElement(App));
+
+// 启动期加载 graph 列表
+loadGraphList();
+</script>
+</body>
+</html>

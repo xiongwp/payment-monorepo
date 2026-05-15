@@ -39,11 +39,21 @@
   .edge-path { stroke: #888; stroke-width: 2; fill: none; }
   .edge-label { font-size: 11px; fill: #555; }
   .empty-canvas { color: #aaa; text-align: center; padding: 80px 20px; }
+  /* 节点上的拖拽连线 handle (右侧小圆) */
+  .node-handle { fill: #4040c0; stroke: #fff; stroke-width: 2; cursor: crosshair; }
+  .node-handle:hover { fill: #5a5ad0; r: 7; }
+  /* 拖线时的临时虚线 */
+  .drag-line { stroke: #4040c0; stroke-width: 2; stroke-dasharray: 4,3; fill: none; pointer-events: none; }
+  /* 节点 hover 高亮 */
+  .node-g:hover .node-rect { stroke-width: 2.5; }
+  .node-g.drop-target .node-rect { stroke: #4cb478; stroke-width: 3; }
 </style>
 </head>
 <body>
 <header>
   <h1>💰 Money Flow Designer</h1>
+  <a href="/moneyflow" style="color:#fff; background:#4040c0; padding:4px 10px; border-radius:4px; text-decoration:none; font-size:13px">Designer</a>
+  <a href="/moneyflow/resources" style="color:#c8c8e8; padding:4px 10px; text-decoration:none; font-size:13px">Resources</a>
   <select id="graph-key">
     <option value="">[ new graph ]</option>
   </select>
@@ -98,7 +108,7 @@
       <button id="add-edge-btn">+ Edge</button>
       <button id="del-btn" class="secondary">Delete selected</button>
       <button id="clear-btn" class="secondary">Clear all</button>
-      <span style="margin-left:auto; color:#888; font-size:11px">Drag node ↔ connect edges (click 2 nodes after pressing + Edge)</span>
+      <span style="margin-left:auto; color:#888; font-size:11px">💡 从节点右侧蓝色小圆点拖到另一节点直接连边</span>
     </div>
     <svg id="svg-canvas">
       <defs>
@@ -171,10 +181,15 @@ function render() {
       <rect class="node-rect ${n.type} ${sel ? 'selected' : ''}" x="${x}" y="${y}" width="180" height="44" rx="6"/>
       <text class="node-label" x="${x+10}" y="${y+18}" fill="#1a1a2e" font-weight="600">${escapeHtml(n.label||n.id)}</text>
       <text class="node-label" x="${x+10}" y="${y+34}" fill="#888" font-size="10">${escapeHtml(n.account_template||'')}</text>
+      <!-- 右侧拖线 handle: 直接从这个圆点拖到另一节点连边 -->
+      <circle class="node-handle" cx="${x+180}" cy="${y+22}" r="5" data-handle="${n.id}"/>
     `;
     let dragging = false, ox = 0, oy = 0;
-    g.querySelector('rect').onmousedown = (ev) => {
+    const rect = g.querySelector('rect');
+    const handle = g.querySelector('.node-handle');
+    rect.onmousedown = (ev) => {
       if (state.mode === 'add-edge') {
+        // 兼容老 +Edge 按钮路径
         if (!state.edgeFrom) {
           state.edgeFrom = n.id;
         } else if (state.edgeFrom !== n.id) {
@@ -189,16 +204,33 @@ function render() {
       dragging = true;
       ox = ev.offsetX - x;
       oy = ev.offsetY - y;
+      ev.stopPropagation();
     };
-    g.querySelector('rect').onmousemove = (ev) => {
+    rect.onmousemove = (ev) => {
       if (!dragging) return;
       n.x = ev.offsetX - ox;
       n.y = ev.offsetY - oy;
       render();
     };
-    g.querySelector('rect').onmouseup = () => { dragging = false; };
+    rect.onmouseup = () => { dragging = false; };
+    // 拖线 handle: mousedown 启动连线模式, mouseup 在另一节点上则连边
+    handle.onmousedown = (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      state.connecting = { from: n.id, x1: x + 180, y1: y + 22 };
+      render(); // 显示拖线
+    };
     svg.appendChild(g);
   });
+
+  // 渲染拖线中的临时虚线
+  if (state.connecting) {
+    const tip = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    tip.classList.add('drag-line');
+    tip.setAttribute('d',
+      `M ${state.connecting.x1} ${state.connecting.y1} L ${state.connecting.x2 || state.connecting.x1} ${state.connecting.y2 || state.connecting.y1}`);
+    svg.appendChild(tip);
+  }
 
   $('json-preview').textContent = JSON.stringify(state.graph.spec, null, 2);
 }
@@ -351,6 +383,38 @@ svg.ondrop = (e) => {
   render();
   selectNode(id);
 };
+
+// ─── 节点 handle 拖线 → 连边 ────────────────────────────────────────
+// 鼠标在 canvas 上移动时, 若有 connecting 状态则更新虚线终点;
+// 在另一节点 rect 上松开 → addEdge.
+svg.addEventListener('mousemove', (e) => {
+  if (!state.connecting) return;
+  const r = svg.getBoundingClientRect();
+  state.connecting.x2 = e.clientX - r.left;
+  state.connecting.y2 = e.clientY - r.top;
+  render();
+});
+svg.addEventListener('mouseup', (e) => {
+  if (!state.connecting) return;
+  // 看终点在不在某个节点 rect 上
+  const r = svg.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  let targetID = null;
+  for (const n of state.graph.spec.nodes) {
+    const nx = n.x ?? 100, ny = n.y ?? 100;
+    if (mx >= nx && mx <= nx + 180 && my >= ny && my <= ny + 44) {
+      if (n.id !== state.connecting.from) {
+        targetID = n.id;
+        break;
+      }
+    }
+  }
+  if (targetID) {
+    addEdge(state.connecting.from, targetID);
+  }
+  state.connecting = null;
+  render();
+});
 
 // ─── triggers / guards / hold sync from sidebar ────────────────────
 function syncSidebarToSpec() {

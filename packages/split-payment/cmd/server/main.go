@@ -20,6 +20,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -115,6 +116,12 @@ func main() {
 			log.Warn("ensure versioning schema (continuing)", zap.Error(err))
 		}
 		ensureCancel3()
+		// SP-3A: saga store schema
+		ensure4, ensureCancel4 := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := repo.EnsureSagaSchema(ensure4, db); err != nil {
+			log.Warn("ensure saga schema (continuing)", zap.Error(err))
+		}
+		ensureCancel4()
 
 		accRepo := repo.NewAccountRepo(db)
 		trRepo := repo.NewTransferRepo(db)
@@ -172,7 +179,7 @@ func main() {
 		log.Info("event publisher: noop (set SPLIT_PAYMENT_KAFKA_BROKERS to enable)")
 	}
 
-	// 4. workflow engine — SP-6 注入 typed repos + capability gate + event publisher
+	// 4. workflow engine — SP-6 + SP-3A
 	engine := &workflow.Engine{
 		GraphRepo:    graphRepo,
 		RunRepo:      runRepo,
@@ -184,6 +191,94 @@ func main() {
 		AppFeeRepo:   engFeeRepo,
 		PayoutRepo:   engPoRepo,
 		Events:       eventPub,
+
+		// SP-9 refund handler 用的 repo 引用
+		TransferReverseRepo: refundTrRepo,
+		AppFeeRefundRepo:    refundFeeRepo,
+		ReversalInsertRepo:  refundRvRepo,
+	}
+
+	// SP-3A: 接持久化 saga (MySQL 模式 + env SPLIT_PAYMENT_SAGA=1 才启).
+	// 默认 dev 走老路径方便调试,生产强烈建议开 saga (失败可恢复 + 自动 compensate).
+	if envOr("SPLIT_PAYMENT_SAGA", "") == "1" && engTrRepo != nil {
+		sagaDeps := workflow.StepDeps{
+			Accounting:      accClient,
+			TransferRepo:    engTrRepo,
+			AppFeeRepo:      engFeeRepo,
+			PayoutRepo:      engPoRepo,
+			TransferReverse: refundTrRepo,
+			ReversalInsert:  refundRvRepo,
+			Events:          eventPub,
+		}
+		var sagaStore workflow.SagaStore
+		if dsn := os.Getenv("SPLIT_PAYMENT_DSN"); dsn != "" {
+			db, _ := sql.Open("mysql", dsn)
+			sagaStore = repo.NewMySQLSagaStore(db)
+		} else {
+			sagaStore = workflow.NewMemorySagaStore()
+		}
+		engine.Saga = &workflow.SagaCoordinator{
+			Store:   sagaStore,
+			Factory: workflow.NewDefaultStepFactory(sagaDeps),
+			Logger:  zapSagaLogger{log: log},
+		}
+		engine.SagaDeps = &sagaDeps
+		log.Info("saga mode: enabled (SPLIT_PAYMENT_SAGA=1)")
+
+		// 启动期 resume 未完成的 saga (进程崩溃恢复)
+		go func() {
+			n, err := engine.Saga.ResumeUnfinished(context.Background(), 100)
+			if err != nil {
+				log.Warn("saga resume failed", zap.Error(err))
+				return
+			}
+			if n > 0 {
+				log.Info("saga resumed unfinished instances", zap.Int("count", n))
+			}
+		}()
+	} else {
+		log.Info("saga mode: disabled (set SPLIT_PAYMENT_SAGA=1 to enable persistent saga)")
+	}
+
+	// SP-3B: Risk + AML gate (optional, dev 默认走 AlwaysAllow 占位).
+	// 生产由 main.go 注入真实 RiskClient (gRPC 调 risk-manage / aml-screening 服务).
+	{
+		riskCfg := workflow.DefaultRiskGateConfig()
+		if v := envOr("SPLIT_PAYMENT_AML_THRESHOLD_CENTS", ""); v != "" {
+			var n int64
+			fmt.Sscanf(v, "%d", &n)
+			if n > 0 {
+				riskCfg.AMLThresholdMinor = n
+			}
+		}
+		if envOr("SPLIT_PAYMENT_RISK_FAIL_OPEN", "") == "1" {
+			riskCfg.FailSafeReject = false
+		}
+		engine.RiskGate = &workflow.RiskGate{
+			Cfg:  riskCfg,
+			Risk: workflow.AlwaysAllowRisk{}, // TODO: 注入真实 gRPC RiskClient
+			AML:  workflow.AlwaysAllowAML{},  // TODO: 注入真实 gRPC AMLClient
+			Log:  log,
+		}
+		log.Info("risk gate: enabled (using AlwaysAllow placeholder; wire real gRPC clients in main.go)",
+			zap.Int64("aml_threshold_cents", riskCfg.AMLThresholdMinor),
+			zap.Bool("fail_safe_reject", riskCfg.FailSafeReject))
+	}
+
+	// SP-3C: FX client (跨币种 Transfer). dev 用静态汇率, 生产替换为 GRPCFXClient.
+	{
+		engine.FX = workflow.StaticFXClient{
+			Rates: map[string]float64{
+				"USD-EUR": 0.92, "EUR-USD": 1.09,
+				"USD-CNY": 7.20, "CNY-USD": 0.139,
+				"USD-GBP": 0.79, "GBP-USD": 1.27,
+				"USD-JPY": 150.0, "JPY-USD": 0.0067,
+				"EUR-CNY": 7.83, "CNY-EUR": 0.128,
+			},
+		}
+		// FXSnapshotRepo: 没接 MySQL 表实现, 留 Phase 3D 加.
+		// 现在 snapshot 仅存 Transfer.Metadata["fx_snapshot_id"] 当审计踪迹.
+		log.Info("fx client: static rates (replace with GRPCFXClient in production)")
 	}
 
 	// 5. HTTP server (admin API + dry-run + health)
@@ -332,6 +427,13 @@ func maskDSN(dsn string) string {
 	}
 	return left[:colon] + ":***@" + dsn[at+1:]
 }
+
+// zapSagaLogger 适配 zap 到 workflow.Logger 接口 (kv 风格).
+type zapSagaLogger struct{ log *zap.Logger }
+
+func (z zapSagaLogger) Info(msg string, kv ...any)  { z.log.Sugar().Infow(msg, kv...) }
+func (z zapSagaLogger) Warn(msg string, kv ...any)  { z.log.Sugar().Warnw(msg, kv...) }
+func (z zapSagaLogger) Error(msg string, kv ...any) { z.log.Sugar().Errorw(msg, kv...) }
 
 // logAudit 简单把审计落 zap 日志 (生产换 audit-log service 客户端)。
 type logAudit struct{ log *zap.Logger }

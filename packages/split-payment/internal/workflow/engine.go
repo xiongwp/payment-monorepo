@@ -45,6 +45,25 @@ type Engine struct {
 
 	// SP-8 webhook (可选). nil → 不 publish 事件.
 	Events EventPublisher
+
+	// SP-3A 持久化 saga (可选). 非 nil → executeOne 走 saga 模式 (持久 + 失败自动 compensate);
+	// nil → 老路径 (直接 accounting.PostMovements + 写 typed repo).
+	Saga *SagaCoordinator
+	// SP-3A 给 saga 用的 step deps (Transfer/Fee/Payout repo refs).
+	// engine 启动期组装一次,后续 BuildSteps 重用.
+	SagaDeps *StepDeps
+
+	// SP-9 refund 用 (放 engine 上方便 worker 引用)
+	TransferReverseRepo TransferReverseRepo
+	AppFeeRefundRepo    AppFeeRefundRepo
+	ReversalInsertRepo  ReversalExtRepo
+
+	// SP-3B Risk + AML gate. 可选, nil → 跳过风控直接执行.
+	RiskGate *RiskGate
+
+	// SP-3C FX client + snapshot repo. 可选, nil → 不支持跨币种 Transfer (edge.dest_currency 报错).
+	FX     FXClient
+	FXRepo FXSnapshotRepo
 }
 
 // AccountRepo workflow 视角 (SP-6 capability gate 用).
@@ -157,7 +176,7 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 		_, _ = e.RunRepo.Save(ctx, failed)
 		return err
 	}
-	plan.Status = "created"
+	plan.Status = PlanStatusCreated
 	plan.CreatedAt = time.Now().UTC()
 	id, err := e.RunRepo.Save(ctx, plan)
 	if err != nil {
@@ -165,10 +184,52 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 	}
 	plan.ID = id
 
+	// SP-3B: Risk + AML gate (Translate 之后, 任何资金动作之前).
+	if e.RiskGate != nil {
+		decision, reason, rerr := e.RiskGate.Evaluate(ctx, tc, g.Key)
+		switch decision {
+		case RiskDeny:
+			plan.Status = PlanStatusRejected
+			plan.ErrorMsg = "risk gate denied: " + reason
+			_ = e.RunRepo.Update(ctx, plan)
+			e.publishEvent(ctx, EventFlowRejected, plan)
+			e.Log.Warn("plan rejected by risk gate",
+				zap.Int64("plan_id", plan.ID),
+				zap.String("reason", reason))
+			return nil // 不返 err — 业务侧风控拒绝是预期行为
+		case RiskReview:
+			plan.Status = PlanStatusAwaitingReview
+			plan.ErrorMsg = "awaiting manual review: " + reason
+			_ = e.RunRepo.Update(ctx, plan)
+			e.publishEvent(ctx, EventFlowAwaitingReview, plan)
+			e.Log.Info("plan awaiting review",
+				zap.Int64("plan_id", plan.ID),
+				zap.String("reason", reason))
+			return nil // 不执行, 等人工 admin UI 放行 (Phase 3D 加)
+		case RiskAllow:
+			// 继续
+		}
+		_ = rerr // err 已在 Evaluate 内按 FailSafe 策略处理
+	}
+
+	// SP-3C: 跨币种 Transfer 换汇 (translator 标了 fx_pending 的, 走 FX client 拿 rate).
+	if e.FX != nil {
+		e.applyFX(ctx, plan)
+	}
+
 	// SP-6: capability gate — Transfer 前校验 destination account 能否收钱;
 	// 不能 → 把对应 movement 标 skipped, 不发 accounting.
 	if e.AccountRepo != nil {
 		e.applyCapabilityGate(ctx, plan)
+	}
+
+	// SP-3A: 若挂了 SagaCoordinator → 走持久化 saga 路径 (推荐生产模式).
+	//
+	// Saga 每 step 落表, 失败自动 compensate, 进程重启可 resume.
+	// 走 saga 时跳过下面的 accounting.PostMovements + persistTypedObjects,
+	// 这些逻辑被 BuildSteps 拆到每个 step 的 Execute / Compensate.
+	if e.Saga != nil && e.SagaDeps != nil {
+		return e.runSaga(ctx, plan)
 	}
 
 	// SP-6: 先把 typed 对象插表 (status=created/pending), 这样即使 accounting 失败也有审计痕迹.
@@ -235,6 +296,88 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 			"detail":  string(body),
 		})
 	}
+	return nil
+}
+
+// applyFX (SP-3C) 遍历 plan.Transfers, 把 metadata["fx_pending"] 标记的换算成目标币种.
+//
+// translator 是纯函数不调网络, 这里 engine 调 FXClient 拿 rate 落 snapshot,
+// 然后改 Transfer.AmountMinor + Metadata["fx_snapshot_id"]/["fx_rate"].
+func (e *Engine) applyFX(ctx context.Context, plan *domain.RunPlan) {
+	for i := range plan.Transfers {
+		t := &plan.Transfers[i]
+		pending, ok := t.Metadata["fx_pending"]
+		if !ok || pending == "" {
+			continue
+		}
+		// pending = "USD->EUR"
+		var from, to string
+		_, _ = fmt.Sscanf(pending, "%[^-]->%s", &from, &to)
+		if from == "" || to == "" {
+			continue
+		}
+		srcAmtStr := t.Metadata["fx_source_amount_minor"]
+		var srcAmt int64
+		_, _ = fmt.Sscanf(srcAmtStr, "%d", &srcAmt)
+		if srcAmt <= 0 {
+			srcAmt = t.AmountMinor // fallback
+		}
+		converted, snap, err := ConvertAmount(ctx, e.FX, e.FXRepo, srcAmt, from, to, plan.ID)
+		if err != nil {
+			e.Log.Warn("fx convert failed",
+				zap.String("transfer", t.ID),
+				zap.String("from", from), zap.String("to", to),
+				zap.Error(err))
+			// 失败 → 标 transfer failed, capability gate 也会跳
+			t.Status = domain.TransferStatusFailed
+			continue
+		}
+		t.AmountMinor = converted
+		t.Currency = to
+		if snap != nil {
+			if t.Metadata == nil {
+				t.Metadata = map[string]string{}
+			}
+			t.Metadata["fx_snapshot_id"] = snap.ID
+			t.Metadata["fx_rate"] = fmt.Sprintf("%.6f", snap.Rate)
+			delete(t.Metadata, "fx_pending")
+			delete(t.Metadata, "fx_source_amount_minor")
+		}
+	}
+}
+
+// runSaga (SP-3A) 走持久化 saga 路径.
+//
+// BuildSteps 把 plan.Transfers/Fees/Payouts 编排成 SagaStep 序列, SagaCoordinator
+// 同步跑每一步, 落 SagaStore. 失败逆序 compensate 已成功 step (Transfer→Reversal).
+//
+// 进程崩了重启后, main.go 调 Saga.ResumeUnfinished() 会把 state=forwarding
+// 的 saga 接着跑 — 要求 Step 幂等 (idempotency_key 已保证).
+func (e *Engine) runSaga(ctx context.Context, plan *domain.RunPlan) error {
+	steps := BuildSteps(plan, *e.SagaDeps)
+	if len(steps) == 0 {
+		// 没事干, 直接完成
+		plan.Status = "completed"
+		_ = e.RunRepo.Update(ctx, plan)
+		return nil
+	}
+	inst := &SagaInstance{
+		SagaID:        fmt.Sprintf("saga_%d_%d", plan.ID, time.Now().UnixNano()),
+		GraphRunID:    plan.ID,
+		CorrelationID: plan.ChargeID,
+		Steps:         steps,
+	}
+	plan.Status = "executing"
+	_ = e.RunRepo.Update(ctx, plan)
+	err := e.Saga.Start(ctx, inst)
+	if err != nil {
+		plan.Status = "failed"
+		plan.ErrorMsg = err.Error()
+		_ = e.RunRepo.Update(ctx, plan)
+		return err
+	}
+	plan.Status = "completed"
+	_ = e.RunRepo.Update(ctx, plan)
 	return nil
 }
 

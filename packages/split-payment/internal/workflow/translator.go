@@ -187,16 +187,29 @@ func Translate(g *domain.Graph, tc TriggerContext) (*domain.RunPlan, error) {
 				CreatedAt:      now,
 			})
 		default: // EdgeKindTransfer (含老 graph 没填 kind 的)
+			// SP-3C: 跨币种支持 — 若 edge 指定 dest_currency 且不同于 tc.Currency,
+			// 调 FX 换算 (caller 通过 ConvertAmount 注入 FXClient, translator 是纯函数
+			// 不直接调 FX; 这里只透传字段, 让 engine 在执行前调换汇).
+			finalAmount := amount
+			finalCurrency := tc.Currency
+			meta := map[string]string{}
+			if e.DestCurrency != "" && e.DestCurrency != tc.Currency {
+				// 不在 translator 里直接调 FX (保持纯函数), 留个标记给 engine 处理.
+				finalCurrency = e.DestCurrency
+				meta["fx_pending"] = tc.Currency + "->" + e.DestCurrency
+				meta["fx_source_amount_minor"] = fmt.Sprintf("%d", amount)
+			}
 			transfers = append(transfers, domain.Transfer{
 				ID:                 genID("tr"),
 				TransferGroup:      plan.TransferGroup,
 				SourceAccount:      fromAcc,
 				DestinationAccount: toAcc,
-				AmountMinor:        amount,
-				Currency:           tc.Currency,
+				AmountMinor:        finalAmount,
+				Currency:           finalCurrency,
 				SourceTransaction:  tc.ChargeID,
 				Status:             domain.TransferStatusCreated,
 				IdempotencyKey:     genIdempotency(tc.ChargeID, e.From, e.To),
+				Metadata:           meta,
 				CreatedAt:          now,
 			})
 		}
