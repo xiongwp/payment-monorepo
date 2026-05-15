@@ -29,14 +29,27 @@ type Graph struct {
 }
 
 // GraphSpec 真正的图定义 (JSON-serializable)。
+//
+// SP-3 新增字段 (向后兼容):
+//   - ChargeStrategy: 三种 Stripe-like 模式 (direct / destination / separate).
+//                     trigger=charge.succeeded 时生效, 决定 Transfer/AppFee 怎么生成.
+//                     空值默认 separate (跟现有行为一致).
 type GraphSpec struct {
-	Triggers []Trigger `json:"triggers"`
-	Nodes    []Node    `json:"nodes"`
-	Edges    []Edge    `json:"edges"`
-	Guards   []Guard   `json:"guards,omitempty"`
-	Hold     *Hold     `json:"hold,omitempty"`
-	Reversal *Reversal `json:"reversal,omitempty"`
+	Triggers       []Trigger      `json:"triggers"`
+	Nodes          []Node         `json:"nodes"`
+	Edges          []Edge         `json:"edges"`
+	Guards         []Guard        `json:"guards,omitempty"`
+	Hold           *Hold          `json:"hold,omitempty"`
+	Reversal       *ReversalSpec  `json:"reversal,omitempty"` // 重命名 (跟新 Reversal 实体区分)
+	ChargeStrategy string         `json:"charge_strategy,omitempty"` // direct / destination / separate
 }
+
+// ChargeStrategy 常量.
+const (
+	ChargeStrategyDirect      = "direct"      // 顾客直付商户, 平台只抽 fee
+	ChargeStrategyDestination = "destination" // 平台收, 整笔 → 商户
+	ChargeStrategySeparate    = "separate"    // 平台收, 按 edge 规则分多个 Transfer (默认)
+)
 
 // Trigger 触发条件: 哪个事件 + 什么 filter 命中时执行此 graph.
 type Trigger struct {
@@ -45,9 +58,16 @@ type Trigger struct {
 }
 
 // Node 节点 — 通常是一个账户 (account_id 模板)。
+//
+// Type 分类 (translator 不区分语义,纯 UI 标记给运营看清资金路径):
+//   - input:        资金来源 (顾客 / 渠道入金)
+//   - intermediate: 中间过渡户 (escrow / clearing / holding / hold-period 暂留户)
+//   - account:      普通收款方 (商户余额 / 推广员 / 物流方)
+//   - output:       最终账户 (清结算 / 平台主账户)
+//   - pool:         资金池 (历史保留, intermediate 取代了大部分场景)
 type Node struct {
 	ID              string `json:"id"`              // 图内唯一
-	Type            string `json:"type"`            // input / account / output / pool
+	Type            string `json:"type"`            // input / intermediate / account / output / pool
 	Label           string `json:"label,omitempty"` // UI 显示
 	AccountTemplate string `json:"account_template"` // 渲染后是真实 account_id; 支持 {placeholder}
 	FromAttr        string `json:"from_attr,omitempty"` // 若 template 含 placeholder, 从 event payload attribute 取
@@ -55,10 +75,33 @@ type Node struct {
 }
 
 // Edge 一条资金流: from → to, 按 rule 决定金额。
+//
+// SP-3: Kind 决定本边产生什么类型的资金对象:
+//   - "transfer" (默认):   产生 Transfer (一笔正经分账)
+//   - "application_fee":   产生 ApplicationFee (平台抽成)
+//   - "payout":            产生 Payout (商户提现)
+//
+// 老 graph (没 Kind 字段) 兼容: 默认 "transfer".
 type Edge struct {
-	From string    `json:"from"` // node.id
-	To   string    `json:"to"`
-	Rule EdgeRule  `json:"rule"`
+	From string   `json:"from"` // node.id
+	To   string   `json:"to"`
+	Kind string   `json:"kind,omitempty"` // transfer / application_fee / payout, 默认 transfer
+	Rule EdgeRule `json:"rule"`
+}
+
+// EdgeKind 常量.
+const (
+	EdgeKindTransfer       = "transfer"
+	EdgeKindApplicationFee = "application_fee"
+	EdgeKindPayout         = "payout"
+)
+
+// ResolvedKind 返回有效 kind (空 → 默认 transfer).
+func (e *Edge) ResolvedKind() string {
+	if e.Kind == "" {
+		return EdgeKindTransfer
+	}
+	return e.Kind
 }
 
 // EdgeRule 边的金额规则。
@@ -85,15 +128,24 @@ type Hold struct {
 	// 实现: 落账时 to= account_template_unsettled/{id}, cron 到期搬到正式账户
 }
 
-// Reversal 退款 / 拒付时反向策略。
-type Reversal struct {
-	Strategy                string `json:"strategy"`                  // proportional / fixed_from_platform / fail_if_imbalance
-	PlatformCoversShortfall bool   `json:"platform_covers_shortfall"` // 卖家不够扣时平台垫付
+// ReversalSpec 退款 / 拒付时反向策略 (Graph 配置, 不是 Reversal 实体).
+//
+// 实际 Reversal 对象在 transfer.go 里定义.
+type ReversalSpec struct {
+	Strategy                string `json:"strategy"`                    // proportional / fixed_from_platform / fail_if_imbalance
+	PlatformCoversShortfall bool   `json:"platform_covers_shortfall"`   // 卖家不够扣时平台垫付
+	RefundApplicationFee    bool   `json:"refund_application_fee"`      // 同时退手续费 (SP-3 新)
 }
 
 // ─── 执行计划 (运行时实例化 Graph 后的产物) ────────────────────────────
 
 // RunPlan 一次具体执行: graph + 触发事件 + 实例化的金额。
+//
+// SP-3 升级: 除原 Movements (兼容视图) 外,additionally 持 typed objects:
+//   - Transfers       — edge.kind=transfer 的产物
+//   - ApplicationFees — edge.kind=application_fee 的产物
+//   - Payouts         — edge.kind=payout 的产物
+//   - TransferGroup   — 同 charge 派生的所有 Transfer/Fee 关联标识
 type RunPlan struct {
 	ID           int64     `db:"id" json:"id"`
 	GraphID      int64     `db:"graph_id" json:"graph_id"`
@@ -104,12 +156,22 @@ type RunPlan struct {
 	AmountMinor  int64     `db:"amount_minor" json:"amount_minor"`
 	Currency     string    `db:"currency" json:"currency"`
 	Attributes   map[string]string `db:"-" json:"attributes"` // event payload merge
-	Movements    []Movement `db:"-" json:"movements"`
-	Status       string    `db:"status" json:"status"` // created/executing/completed/failed/reversed
-	VoucherNo    string    `db:"voucher_no" json:"voucher_no"`
-	ErrorMsg     string    `db:"error_msg" json:"error_msg,omitempty"`
-	TraceID      string    `db:"trace_id" json:"trace_id"`
-	CreatedAt    time.Time `db:"created_at" json:"created_at"`
+
+	// 兼容视图: 所有 movement 的 union (Transfers + Fees + Payouts 摊平).
+	// 老 caller 仍可用; 新 caller 用下面的 typed 数组.
+	Movements []Movement `db:"-" json:"movements"`
+
+	// SP-3 typed 资金原语 (Stripe-style).
+	TransferGroup    string           `db:"transfer_group" json:"transfer_group,omitempty"`
+	Transfers        []Transfer       `db:"-" json:"transfers,omitempty"`
+	ApplicationFees  []ApplicationFee `db:"-" json:"application_fees,omitempty"`
+	Payouts          []Payout         `db:"-" json:"payouts,omitempty"`
+
+	Status    string    `db:"status" json:"status"` // created/executing/completed/failed/reversed
+	VoucherNo string    `db:"voucher_no" json:"voucher_no"`
+	ErrorMsg  string    `db:"error_msg" json:"error_msg,omitempty"`
+	TraceID   string    `db:"trace_id" json:"trace_id"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 
 // Movement 一条资金移动 (Graph.Edge 实例化的结果)。

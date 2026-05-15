@@ -224,6 +224,15 @@ func main() {
 	api.HandleFunc("/risk/mlscore/challengers/promote", riskH.ChallengerPromote).Methods("POST", "OPTIONS")
 	api.HandleFunc("/risk/mlscore/challengers/drop", riskH.ChallengerDrop).Methods("POST", "OPTIONS")
 
+	// MF-2: Money Flow Designer — reverse proxy → split-payment + 静态 serve designer html
+	moneyflowH := handler.NewMoneyflowHandler()
+	api.HandleFunc("/moneyflow/_health", moneyflowH.Health).Methods("GET", "OPTIONS")
+	// /api/moneyflow/* (graphs / dry-run / runs/search) 透传到 split-payment
+	api.PathPrefix("/moneyflow/").HandlerFunc(moneyflowH.Proxy)
+	// /moneyflow → designer HTML (注: 走 root mux, 不进 /api auth — designer 内部仍要走 admin token)
+	r.HandleFunc("/moneyflow", moneyflowH.Designer).Methods("GET")
+	r.HandleFunc("/moneyflow/", moneyflowH.Designer).Methods("GET")
+
 	// health
 	r.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

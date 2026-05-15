@@ -13,21 +13,33 @@
 package adminhttp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 
 	"reconcile-system/packages/split-payment/internal/domain"
-	"reconcile-system/packages/split-payment/internal/repo"
 	"reconcile-system/packages/split-payment/internal/workflow"
 
 	"go.uber.org/zap"
 )
 
+// GraphRepo adminhttp 抽象 (MemoryGraphRepo / MySQLGraphRepo 都满足).
+type GraphRepo interface {
+	Save(ctx context.Context, g *domain.Graph) (int64, error)
+	GetByKey(ctx context.Context, key string) (*domain.Graph, error)
+	List(ctx context.Context, status string) ([]*domain.Graph, error)
+}
+
+// RunRepo adminhttp 抽象.
+type RunRepo interface {
+	Search(ctx context.Context, eventLike string, limit int) ([]*domain.RunPlan, error)
+}
+
 // Server 注册路由。
 type Server struct {
-	Graphs *repo.MemoryGraphRepo
-	Runs   *repo.MemoryRunRepo
+	Graphs GraphRepo
+	Runs   RunRepo
 	Log    *zap.Logger
 }
 

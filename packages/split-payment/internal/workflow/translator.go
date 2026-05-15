@@ -19,10 +19,13 @@
 package workflow
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"reconcile-system/packages/split-payment/internal/domain"
 )
@@ -99,9 +102,16 @@ func Translate(g *domain.Graph, tc TriggerContext) (*domain.RunPlan, error) {
 		return edges[i].From+"->"+edges[i].To < edges[j].From+"->"+edges[j].To
 	})
 
-	// 4) 按 edge 算金额
+	// SP-3: 自动生成 transfer_group, 关联同一 charge 衍生的所有资金对象.
+	plan.TransferGroup = genTransferGroup(tc.ChargeID)
+
+	// 4) 按 edge 算金额 + 同时产出 typed Transfer/AppFee/Payout 对象 (SP-3).
 	remaining := tc.AmountMinor
 	movements := []domain.Movement{}
+	transfers := []domain.Transfer{}
+	appFees := []domain.ApplicationFee{}
+	payouts := []domain.Payout{}
+	now := time.Now().UTC()
 	for _, e := range edges {
 		// from / to 节点是否存在 (skipped 节点上的 edge 处理)
 		fromAcc, fromOK := nodeAccount[e.From]
@@ -151,6 +161,45 @@ func Translate(g *domain.Graph, tc TriggerContext) (*domain.RunPlan, error) {
 			FromAccount: fromAcc, ToAccount: toAcc,
 			AmountMinor: amount, Status: "pending",
 		})
+
+		// SP-3: 按 edge.kind 产出 typed 对象, 跟 movement 一对一对应.
+		switch e.ResolvedKind() {
+		case domain.EdgeKindApplicationFee:
+			appFees = append(appFees, domain.ApplicationFee{
+				ID:             genID("fee"),
+				Charge:         tc.ChargeID,
+				Account:        toAcc, // 抽哪个商户的 fee
+				AmountMinor:    amount,
+				Currency:       tc.Currency,
+				Status:         domain.AppFeeStatusPending,
+				IdempotencyKey: genIdempotency(tc.ChargeID, e.From, e.To),
+				CreatedAt:      now,
+			})
+		case domain.EdgeKindPayout:
+			payouts = append(payouts, domain.Payout{
+				ID:             genID("po"),
+				Account:        fromAcc,
+				AmountMinor:    amount,
+				Currency:       tc.Currency,
+				Method:         domain.PayoutMethodStandard,
+				Status:         domain.PayoutStatusPending,
+				IdempotencyKey: genIdempotency(tc.ChargeID, e.From, e.To),
+				CreatedAt:      now,
+			})
+		default: // EdgeKindTransfer (含老 graph 没填 kind 的)
+			transfers = append(transfers, domain.Transfer{
+				ID:                 genID("tr"),
+				TransferGroup:      plan.TransferGroup,
+				SourceAccount:      fromAcc,
+				DestinationAccount: toAcc,
+				AmountMinor:        amount,
+				Currency:           tc.Currency,
+				SourceTransaction:  tc.ChargeID,
+				Status:             domain.TransferStatusCreated,
+				IdempotencyKey:     genIdempotency(tc.ChargeID, e.From, e.To),
+				CreatedAt:          now,
+			})
+		}
 		remaining -= amount
 	}
 
@@ -165,7 +214,42 @@ func Translate(g *domain.Graph, tc TriggerContext) (*domain.RunPlan, error) {
 	}
 
 	plan.Movements = movements
+	plan.Transfers = transfers
+	plan.ApplicationFees = appFees
+	plan.Payouts = payouts
 	return plan, nil
+}
+
+// genTransferGroup tg_<chargeID 截断>_<rand4>; 同 charge 不同 run 拿不同 group.
+//
+// chargeID 空 (非 charge 事件触发, e.g. hold.expired) 时只用 rand 部分.
+func genTransferGroup(chargeID string) string {
+	rb := make([]byte, 4)
+	_, _ = rand.Read(rb)
+	suf := hex.EncodeToString(rb)
+	if chargeID == "" {
+		return "tg_" + suf
+	}
+	prefix := chargeID
+	if len(prefix) > 12 {
+		prefix = prefix[:12]
+	}
+	return "tg_" + prefix + "_" + suf
+}
+
+// genID 通用 ID 生成: <prefix>_<8 hex>.
+func genID(prefix string) string {
+	rb := make([]byte, 8)
+	_, _ = rand.Read(rb)
+	return prefix + "_" + hex.EncodeToString(rb)
+}
+
+// genIdempotency 同一 (charge, edge.from, edge.to) 复跑只产生一条记录.
+//
+// translator 是纯函数,每次调相同 charge+edge 产生相同 idempotency key,
+// 给下游 repo 做 ON DUPLICATE KEY UPDATE 防重保护.
+func genIdempotency(chargeID, from, to string) string {
+	return chargeID + "::" + from + "->" + to
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────

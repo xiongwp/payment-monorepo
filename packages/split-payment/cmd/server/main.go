@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -31,6 +32,7 @@ import (
 	"reconcile-system/packages/split-payment/internal/repo"
 	"reconcile-system/packages/split-payment/internal/workflow"
 
+	_ "github.com/go-sql-driver/mysql" // MF-1: mysql driver
 	accountingv1 "github.com/xiongwp/accounting-system/api/proto/accounting/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -57,12 +59,64 @@ func main() {
 
 	accClient := clients.NewAccountingClient(accountingv1.NewAccountingServiceClient(conn))
 
-	// 2. repos
-	graphRepo := repo.NewMemoryGraphRepo()
-	runRepo := repo.NewMemoryRunRepo()
-
-	// 3. 启动期 seed 示例 graphs (从 examples/ 目录读)
-	seedExampleGraphs(graphRepo, log)
+	// 2. repos — MF-1: 优先 MySQL (SPLIT_PAYMENT_DSN 配了就走), fallback memory.
+	//
+	//   SPLIT_PAYMENT_DSN 例:
+	//     "split_user:pwd@tcp(shared-meta:3306)/split_payment?parseTime=true&charset=utf8mb4"
+	//
+	// memory mode: 单进程,重启丢全部 graph (适合 dev / 单测).
+	// mysql  mode: 持久 + 多副本共享.
+	var (
+		graphRepo workflow.GraphRepo
+		runRepo   workflow.RunRepo
+		// SP-4 Stripe-style 资源对象 API (nil = memory 模式不挂)
+		stripeAPI *adminhttp.StripeAPIServer
+	)
+	if dsn := os.Getenv("SPLIT_PAYMENT_DSN"); dsn != "" {
+		db, err := sql.Open("mysql", dsn)
+		if err != nil {
+			log.Fatal("open mysql", zap.Error(err))
+		}
+		db.SetMaxOpenConns(20)
+		db.SetMaxIdleConns(5)
+		db.SetConnMaxLifetime(30 * time.Minute)
+		if err := db.PingContext(context.Background()); err != nil {
+			log.Fatal("ping mysql", zap.Error(err))
+		}
+		ensureCtx, ensureCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := repo.EnsureSchema(ensureCtx, db); err != nil {
+			log.Fatal("ensure schema", zap.Error(err))
+		}
+		ensureCancel()
+		graphRepo = repo.NewMySQLGraphRepo(db)
+		runRepo = repo.NewMySQLRunRepo(db)
+		// SP-4: Stripe-style 实体表 (connected_accounts / transfers / fees / payouts / reversals)
+		ensure2, ensureCancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := repo.EnsureStripeSchema(ensure2, db); err != nil {
+			log.Fatal("ensure stripe schema", zap.Error(err))
+		}
+		ensureCancel2()
+		accRepo := repo.NewAccountRepo(db)
+		trRepo := repo.NewTransferRepo(db)
+		feeRepo := repo.NewAppFeeRepo(db)
+		poRepo := repo.NewPayoutRepo(db)
+		rvRepo := repo.NewReversalRepo(db)
+		// 把 Stripe API server 也挂到 mux (会在下方 Register).
+		stripeAPI = &adminhttp.StripeAPIServer{
+			Accounts: accRepo, Transfers: trRepo, Fees: feeRepo,
+			Payouts: poRepo, Reversals: rvRepo, Log: log,
+		}
+		log.Info("repos: mysql + stripe entities ready", zap.String("dsn_host", maskDSN(dsn)))
+	} else {
+		mg := repo.NewMemoryGraphRepo()
+		mr := repo.NewMemoryRunRepo()
+		// 启动期 seed 示例 graphs (从 examples/ 目录读) — 仅 memory 模式;
+		// MySQL 模式由 admin UI / migrate 工具填.
+		seedExampleGraphs(mg, log)
+		graphRepo = mg
+		runRepo = mr
+		log.Info("repos: memory (set SPLIT_PAYMENT_DSN to use MySQL)")
+	}
 
 	// 4. workflow engine
 	engine := &workflow.Engine{
@@ -78,7 +132,16 @@ func main() {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("ok"))
 	})
-	(&adminhttp.Server{Graphs: graphRepo, Runs: runRepo, Log: log}).Register(mux)
+	// adminhttp.Server 接受 GraphRepo / RunRepo 接口 — workflow 包同名接口的子集.
+	// 这里把 workflow.* 实例换成 adminhttp 视角 (Save/GetByKey/List + Search).
+	// memory / mysql 实现都满足.
+	adminGraphs, _ := graphRepo.(adminhttp.GraphRepo)
+	adminRuns, _ := runRepo.(adminhttp.RunRepo)
+	(&adminhttp.Server{Graphs: adminGraphs, Runs: adminRuns, Log: log}).Register(mux)
+	if stripeAPI != nil {
+		stripeAPI.Register(mux)
+		log.Info("stripe-style API registered (/api/connected_accounts, /api/transfers, /api/application_fees, /api/payouts)")
+	}
 
 	srv := &http.Server{
 		Addr: ":" + port, Handler: mux,
@@ -152,6 +215,36 @@ func seedExampleGraphs(r *repo.MemoryGraphRepo, log *zap.Logger) {
 
 func endsWith(s, suffix string) bool {
 	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
+}
+
+// maskDSN 把 DSN 里的密码遮掉, 仅露 host:port 用于 log.
+//
+//	"user:pwd@tcp(host:3306)/db" → "user:***@host:3306/db"
+//	解析失败返 "***".
+func maskDSN(dsn string) string {
+	// 简化:找 @tcp(...) 部分
+	at := -1
+	for i := 0; i < len(dsn); i++ {
+		if dsn[i] == '@' {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return "***"
+	}
+	left := dsn[:at]
+	colon := -1
+	for i := 0; i < len(left); i++ {
+		if left[i] == ':' {
+			colon = i
+			break
+		}
+	}
+	if colon < 0 {
+		return left + "@" + dsn[at+1:]
+	}
+	return left[:colon] + ":***@" + dsn[at+1:]
 }
 
 // logAudit 简单把审计落 zap 日志 (生产换 audit-log service 客户端)。

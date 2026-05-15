@@ -12,7 +12,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"time"
 
 	"reconcile-system/packages/split-payment/internal/clients"
@@ -167,13 +166,17 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 
 // matchesTrigger 检查触发条件是否命中。
 //
-// 设计:
+// 设计 (MF-3 已升级为真表达式求值, 见 filter_expr.go):
 //   - g.Spec.Triggers 列表里每条 (Event + Filter) 都要匹配 ev.Event
 //   - Filter 空 → 命中
-//   - Filter 非空 → 走 simpleFilter (二元 = / != 表达式)
+//   - Filter 非空 → 走 EvalFilter, 支持:
+//       字段:  amount_minor / currency / event / charge_id / merchant_id /
+//             attr.<key> (Attributes 取) / "<key>" 含点也行 (e.g. merchant.tier)
+//       比较:  == != < <= > >=
+//       逻辑:  and / or / not / in (列表成员)
+//       例: merchant.tier == 'marketplace' and amount_minor > 10000
 //
-// 未来若需要更复杂的表达式 (and/or/in/正则),把 simpleFilter 换成 Starlark / CEL eval
-// 即可,接口保持不变。simpleFilter 的覆盖能力对当前 10+ 个上线规则够用。
+// 老 "k=v" 风格自动 upgrade 到 "k==v" — 向后兼容已上线规则.
 func matchesTrigger(g *domain.Graph, ev BusinessEvent) bool {
 	for _, t := range g.Spec.Triggers {
 		if t.Event != ev.Event {
@@ -182,55 +185,9 @@ func matchesTrigger(g *domain.Graph, ev BusinessEvent) bool {
 		if t.Filter == "" {
 			return true
 		}
-		// stub: 简易包含匹配 — 生产换 Starlark / CEL
-		if simpleFilter(t.Filter, ev) {
+		if EvalFilter(t.Filter, ev) {
 			return true
 		}
 	}
 	return false
-}
-
-// simpleFilter 二元表达式判断: "key=value" / "key!=value"。
-// 支持 amount_minor / 自定义 Attributes / merchant.tier 等 KV 风格条件。
-func simpleFilter(expr string, ev BusinessEvent) bool {
-	// 支持 "merchant.tier='marketplace'" 这种最简单形式
-	for _, op := range []string{"!=", "="} {
-		if i := indexOf(expr, op); i > 0 {
-			k := trim(expr[:i])
-			v := trimQuotes(trim(expr[i+len(op):]))
-			actual := ev.Attributes[k]
-			if k == "amount_minor" {
-				actual = strconv.FormatInt(ev.AmountMinor, 10)
-			}
-			if op == "=" {
-				return actual == v
-			}
-			return actual != v
-		}
-	}
-	return true
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
-}
-func trim(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		s = s[:len(s)-1]
-	}
-	return s
-}
-func trimQuotes(s string) string {
-	if len(s) >= 2 && (s[0] == '\'' || s[0] == '"') && s[len(s)-1] == s[0] {
-		return s[1 : len(s)-1]
-	}
-	return s
 }
