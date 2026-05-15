@@ -1,0 +1,100 @@
+{
+  "key": "user-topup-default",
+  "name": "用户充值标准流程",
+  "version": "1.0.0",
+  "status": "active",
+  "spec": {
+    "scenario": "user_topup",
+    "charge_strategy": "separate",
+    "triggers": [
+      { "event": "channel.settled" }
+    ],
+    "guards": [
+      { "kind": "amount_min", "value": 1, "msg": "充值金额必须 > 0" }
+    ],
+    "nodes": [
+      {
+        "id": "channel_receivable",
+        "type": "input",
+        "label": "平台应收-渠道",
+        "account_type": "PLATFORM_RECEIVABLE_CHANNEL",
+        "party_type": "platform"
+      },
+      {
+        "id": "suspense",
+        "type": "intermediate",
+        "label": "渠道入金挂账户",
+        "account_type": "CHANNEL_INBOUND_SUSPENSE",
+        "party_type": "platform",
+        "auto_clear": true
+      },
+      {
+        "id": "user_wallet",
+        "type": "account",
+        "label": "用户钱包",
+        "account_type": "USER_WALLET",
+        "party_type": "user",
+        "party_id_attr": "user_id"
+      },
+      {
+        "id": "fee_clearing",
+        "type": "intermediate",
+        "label": "平台待清算费用",
+        "account_type": "PLATFORM_FEE_CLEARING",
+        "party_type": "platform",
+        "auto_clear": true
+      },
+      {
+        "id": "channel_payable",
+        "type": "output",
+        "label": "应付渠道手续费",
+        "account_type": "CHANNEL_FEE_PAYABLE",
+        "party_type": "platform"
+      },
+      {
+        "id": "platform_revenue",
+        "type": "output",
+        "label": "平台手续费收入",
+        "account_type": "PLATFORM_FEE_REVENUE",
+        "party_type": "platform"
+      }
+    ],
+    "edges": [
+      {
+        "from": "channel_receivable",
+        "to": "suspense",
+        "kind": "transfer",
+        "event_code": "channel_settled_receivable",
+        "rule": { "type": "remainder" }
+      },
+      {
+        "from": "suspense",
+        "to": "user_wallet",
+        "kind": "transfer",
+        "event_code": "channel_settled_to_user",
+        "rule": { "type": "percent", "value": 9900 }
+      },
+      {
+        "from": "suspense",
+        "to": "fee_clearing",
+        "kind": "transfer",
+        "event_code": "channel_settled_fee_pending",
+        "rule": { "type": "remainder" }
+      },
+      {
+        "from": "fee_clearing",
+        "to": "channel_payable",
+        "kind": "transfer",
+        "event_code": "fee_cleared_to_channel_payable",
+        "rule": { "type": "percent", "value": 6000 }
+      },
+      {
+        "from": "fee_clearing",
+        "to": "platform_revenue",
+        "kind": "transfer",
+        "event_code": "fee_cleared_to_revenue",
+        "rule": { "type": "remainder" }
+      }
+    ]
+  }
+}

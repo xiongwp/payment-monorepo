@@ -4,49 +4,159 @@
 <meta charset="utf-8">
 <title>Money Flow Designer</title>
 <style>
-  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-  body { margin: 0; background: #f7f8fa; font-size: 13px; }
-  header { background: #1a1a2e; color: #fff; padding: 12px 24px; display: flex; gap: 12px; align-items: center; }
-  header h1 { margin: 0; font-size: 16px; flex: 1; }
-  header input, header select, header button { padding: 6px 10px; border: 0; border-radius: 4px; font-size: 13px; }
-  header button { background: #4040c0; color: #fff; cursor: pointer; font-weight: 500; }
-  header button:hover { background: #5050d0; }
-  header button.secondary { background: #555; }
-  main { display: grid; grid-template-columns: 280px 1fr 320px; gap: 0; height: calc(100vh - 56px); }
-  .panel { padding: 16px; overflow: auto; background: #fff; border-right: 1px solid #e0e2e8; }
-  .panel:last-child { border-right: 0; border-left: 1px solid #e0e2e8; }
-  #canvas { background: #fff; position: relative; }
-  h2 { font-size: 12px; text-transform: uppercase; color: #6a7080; margin: 16px 0 8px; letter-spacing: 0.5px; }
-  .palette-item { padding: 8px 10px; background: #f0f2f5; border-radius: 4px; margin-bottom: 6px; cursor: grab; user-select: none; font-size: 12px; }
-  .palette-item:hover { background: #e4e6eb; }
-  .palette-item.input { border-left: 3px solid #4cb478; }
-  .palette-item.intermediate { border-left: 3px solid #c020c0; }
-  .palette-item.account { border-left: 3px solid #4040c0; }
-  .palette-item.output { border-left: 3px solid #c08040; }
-  label { display: block; margin: 8px 0 4px; color: #555; font-size: 11px; text-transform: uppercase; }
-  input.field, select.field, textarea.field { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
-  .json-preview { background: #1a1a2e; color: #aabbcc; padding: 10px; border-radius: 4px; font-family: monospace; font-size: 11px; max-height: 320px; overflow: auto; }
-  .toolbar { display: flex; gap: 8px; padding: 8px 16px; border-bottom: 1px solid #e0e2e8; background: #f4f5f7; }
-  .toolbar button { padding: 4px 10px; font-size: 12px; }
-  #svg-canvas { width: 100%; height: calc(100% - 40px); }
-  .node-rect { fill: #fff; stroke: #ccc; stroke-width: 1.5; cursor: move; }
-  .node-rect.selected { stroke: #4040c0; stroke-width: 3; }
-  .node-rect.input { stroke: #4cb478; }
-  .node-rect.intermediate { stroke: #c020c0; stroke-dasharray: 5,3; }
-  .node-rect.account { stroke: #4040c0; }
-  .node-rect.output { stroke: #c08040; }
-  .node-label { font-size: 12px; pointer-events: none; user-select: none; }
-  .edge-path { stroke: #888; stroke-width: 2; fill: none; }
-  .edge-label { font-size: 11px; fill: #555; }
-  .empty-canvas { color: #aaa; text-align: center; padding: 80px 20px; }
-  /* 节点上的拖拽连线 handle (右侧小圆) */
-  .node-handle { fill: #4040c0; stroke: #fff; stroke-width: 2; cursor: crosshair; }
-  .node-handle:hover { fill: #5a5ad0; r: 7; }
-  /* 拖线时的临时虚线 */
-  .drag-line { stroke: #4040c0; stroke-width: 2; stroke-dasharray: 4,3; fill: none; pointer-events: none; }
-  /* 节点 hover 高亮 */
+  :root {
+    --bg: #f5f6fa; --panel: #fff; --border: #e2e8f0;
+    --text: #1e293b; --text-muted: #64748b; --text-faint: #94a3b8;
+    --brand: #6366f1; --brand-dark: #4f46e5; --brand-soft: #eef2ff;
+    --green: #10b981; --pink: #ec4899; --orange: #f97316;
+    --shadow-sm: 0 1px 2px rgba(15,23,42,0.04), 0 1px 3px rgba(15,23,42,0.04);
+    --shadow-md: 0 4px 10px rgba(15,23,42,0.06), 0 2px 4px rgba(15,23,42,0.04);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+
+  /* Header */
+  header {
+    background: linear-gradient(135deg, #1e1b4b 0%, #312e81 60%, #4338ca 100%);
+    color: #fff; padding: 14px 24px; display: flex; gap: 12px; align-items: center;
+    box-shadow: var(--shadow-md);
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  header input, header select, header button {
+    padding: 7px 12px; border: 0; border-radius: 6px; font-size: 13px; font-family: inherit;
+  }
+  header input, header select {
+    background: rgba(255,255,255,0.12); color: #fff;
+    border: 1px solid rgba(255,255,255,0.18);
+  }
+  header input::placeholder { color: rgba(255,255,255,0.5); }
+  header input:focus, header select:focus {
+    outline: none; background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.4);
+  }
+  header button {
+    background: #fff; color: var(--brand-dark); cursor: pointer; font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1); transition: all 0.15s ease;
+  }
+  header button:hover { transform: translateY(-1px); box-shadow: 0 4px 8px rgba(0,0,0,0.15); }
+  header button.secondary {
+    background: rgba(255,255,255,0.15); color: #fff;
+    border: 1px solid rgba(255,255,255,0.25); box-shadow: none;
+  }
+  header button.secondary:hover { background: rgba(255,255,255,0.25); }
+
+  /* Layout */
+  main { display: grid; grid-template-columns: 260px 1fr 320px; height: calc(100vh - 60px); }
+  .panel { padding: 18px 16px; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--border); }
+  .panel:last-child { border-right: 0; border-left: 1px solid var(--border); }
+  #canvas { background: var(--bg); position: relative; }
+
+  /* Section headings */
+  h2 {
+    font-size: 10px; text-transform: uppercase; color: var(--text-faint);
+    margin: 18px 0 8px; letter-spacing: 0.8px; font-weight: 700;
+  }
+  h2:first-child { margin-top: 0; }
+
+  /* Palette */
+  .palette-item {
+    padding: 10px 12px; border-radius: 8px; margin-bottom: 8px;
+    cursor: grab; user-select: none; font-size: 13px; font-weight: 500;
+    background: var(--bg); border: 1px solid var(--border);
+    transition: all 0.15s ease;
+  }
+  .palette-item:hover {
+    background: var(--panel); border-color: var(--brand);
+    transform: translateX(2px); box-shadow: var(--shadow-sm);
+  }
+  .palette-item:active { cursor: grabbing; }
+  .palette-item.input        { border-left: 3px solid var(--green); }
+  .palette-item.intermediate { border-left: 3px solid var(--pink); border-left-style: dashed; }
+  .palette-item.account      { border-left: 3px solid var(--brand); }
+  .palette-item.output       { border-left: 3px solid var(--orange); }
+
+  /* Form fields */
+  label { display: block; margin: 10px 0 4px; color: var(--text-muted); font-size: 11px; font-weight: 500; }
+  input.field, select.field, textarea.field {
+    width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 13px; color: var(--text); background: var(--panel);
+    transition: all 0.15s ease; font-family: inherit;
+  }
+  input.field:focus, select.field:focus, textarea.field:focus {
+    outline: none; border-color: var(--brand);
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  }
+
+  /* JSON preview */
+  .json-preview {
+    background: #0f172a; color: #cbd5e1; padding: 12px 14px; border-radius: 8px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px;
+    max-height: 320px; overflow: auto; line-height: 1.6; box-shadow: var(--shadow-sm);
+  }
+
+  /* Toolbar */
+  .toolbar {
+    display: flex; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--border);
+    background: var(--panel); align-items: center;
+  }
+  .toolbar button {
+    padding: 6px 12px; font-size: 12px; font-weight: 500;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; cursor: pointer; transition: all 0.15s ease;
+  }
+  .toolbar button:hover {
+    background: var(--brand-soft); border-color: var(--brand); color: var(--brand-dark);
+  }
+  .toolbar button.secondary { color: var(--text-muted); }
+  .toolbar .hint { margin-left: auto; color: var(--text-faint); font-size: 11px; }
+
+  /* SVG canvas with subtle dot grid */
+  #svg-canvas {
+    width: 100%; height: calc(100% - 42px);
+    background-image: radial-gradient(circle, #cbd5e1 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+
+  /* Nodes */
+  .node-rect {
+    fill: #fff; stroke: #cbd5e1; stroke-width: 1.5; cursor: move;
+    filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.06));
+    transition: stroke 0.15s ease, stroke-width 0.15s ease;
+  }
+  .node-rect.selected { stroke: var(--brand); stroke-width: 2.5; }
+  .node-rect.input        { stroke: var(--green); }
+  .node-rect.intermediate { stroke: var(--pink); stroke-dasharray: 6 4; }
+  .node-rect.account      { stroke: var(--brand); }
+  .node-rect.output       { stroke: var(--orange); }
+  .node-label { font-size: 12px; pointer-events: none; user-select: none; font-weight: 600; }
   .node-g:hover .node-rect { stroke-width: 2.5; }
-  .node-g.drop-target .node-rect { stroke: #4cb478; stroke-width: 3; }
+  .node-g.drop-target .node-rect { stroke: var(--green); stroke-width: 3; }
+
+  /* Edges */
+  .edge-path {
+    stroke: #94a3b8; stroke-width: 2; fill: none;
+    transition: stroke 0.15s ease, stroke-width 0.15s ease;
+  }
+  .edge-g:hover .edge-path { stroke: var(--brand); stroke-width: 2.5; }
+  .edge-label {
+    font-size: 11px; fill: var(--text); font-weight: 500;
+    paint-order: stroke; stroke: #fff; stroke-width: 4; stroke-linejoin: round;
+  }
+
+  /* Handle */
+  .node-handle {
+    fill: var(--brand); stroke: #fff; stroke-width: 2; cursor: crosshair;
+    transition: r 0.12s ease, fill 0.12s ease;
+  }
+  .node-handle:hover { fill: var(--brand-dark); r: 7; }
+
+  /* Drag line */
+  .drag-line {
+    stroke: var(--brand); stroke-width: 2.5;
+    stroke-dasharray: 6 4; fill: none; pointer-events: none; opacity: 0.7;
+  }
 </style>
 </head>
 <body>
@@ -70,6 +180,14 @@
     <div class="palette-item intermediate" data-type="intermediate" draggable="true">🔄 Intermediate (中间/过渡账户)</div>
     <div class="palette-item account" data-type="account" draggable="true">💳 Account (收款方)</div>
     <div class="palette-item output" data-type="output" draggable="true">📤 Output (最终账户)</div>
+
+    <h2>Scenario (= accounting product_code)</h2>
+    <select id="scenario" class="field">
+      <option value="">— 选 Scenario —</option>
+    </select>
+    <small style="color:var(--text-faint);font-size:10px;display:block;margin-top:4px">
+      绑定 accounting product_code, edge 的 event_code 从此 scenario 拉
+    </small>
 
     <h2>Charge strategy</h2>
     <select id="charge-strategy" class="field">
@@ -148,8 +266,8 @@ const API_BASE = window.PAYMENT_ADMIN_API || 'http://localhost:19190';
 
 // ─── 渲染 ──────────────────────────────────────────────────────────
 function render() {
-  // 清空
-  [...svg.querySelectorAll('.node-g, .edge-g')].forEach(el => el.remove());
+  // 清空 (含 drag-line 残影 — 之前漏清导致大量虚线累积)
+  [...svg.querySelectorAll('.node-g, .edge-g, .drag-line')].forEach(el => el.remove());
 
   // edges 先画 (在节点下)
   state.graph.spec.edges.forEach(e => {
@@ -218,19 +336,14 @@ function render() {
       ev.stopPropagation();
       ev.preventDefault();
       state.connecting = { from: n.id, x1: x + 180, y1: y + 22 };
-      render(); // 显示拖线
+      // 不调 render(), 避免 DOM churn 干扰当前 mousedown 的事件链;
+      // ensureDragLine 在第一次 mousemove 时创建 path.
     };
     svg.appendChild(g);
   });
 
-  // 渲染拖线中的临时虚线
-  if (state.connecting) {
-    const tip = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    tip.classList.add('drag-line');
-    tip.setAttribute('d',
-      `M ${state.connecting.x1} ${state.connecting.y1} L ${state.connecting.x2 || state.connecting.x1} ${state.connecting.y2 || state.connecting.y1}`);
-    svg.appendChild(tip);
-  }
+  // drag-line 不在 render() 里 — 见下方 ensureDragLine() 单独管理.
+  // (mousemove 高频触发,如果跟 render 绑会导致整图重绘 + 残影累积)
 
   $('json-preview').textContent = JSON.stringify(state.graph.spec, null, 2);
 }
@@ -269,9 +382,13 @@ function renderPropForm(kind, obj) {
   const form = $('prop-form');
   if (!obj) { form.innerHTML = '<p style="color:#888">无</p>'; return; }
   if (kind === 'node') {
+    // SP-AC-4: account_type 下拉从 /api/accounting/account_types 拉
+    const acctOpts = (window._accountTypes || []).map(a =>
+      `<option value="${a.account_type}" ${obj.account_type===a.account_type?'selected':''}>${a.account_type} — ${a.account_type_name||a.description||''}</option>`
+    ).join('');
     form.innerHTML = `
       <label>ID</label><input class="field" id="p-id" value="${obj.id}" disabled>
-      <label>Type</label>
+      <label>Type (UI 分类)</label>
       <select class="field" id="p-type">
         <option value="input"        ${obj.type==='input'?'selected':''}>input (资金来源)</option>
         <option value="intermediate" ${obj.type==='intermediate'?'selected':''}>intermediate (中间过渡户)</option>
@@ -279,16 +396,40 @@ function renderPropForm(kind, obj) {
         <option value="output"       ${obj.type==='output'?'selected':''}>output (最终账户)</option>
       </select>
       <label>Label</label><input class="field" id="p-label" value="${escapeHtml(obj.label||'')}">
-      <label>Account template (支持 {placeholder})</label>
+
+      <h2 style="margin-top:14px">accounting 绑定 (SP-AC)</h2>
+      <label>Account type (引用 AccountTypeInfo)</label>
+      <select class="field" id="p-acct">
+        <option value="">— 选 Account Type —</option>
+        ${acctOpts}
+      </select>
+      <label>Party type</label>
+      <select class="field" id="p-party">
+        <option value="">—</option>
+        <option value="user"     ${obj.party_type==='user'?'selected':''}>user</option>
+        <option value="merchant" ${obj.party_type==='merchant'?'selected':''}>merchant</option>
+        <option value="platform" ${obj.party_type==='platform'?'selected':''}>platform</option>
+      </select>
+      <label>Party ID attribute (event.attributes.&lt;key&gt;)</label>
+      <input class="field" id="p-party-attr" value="${escapeHtml(obj.party_id_attr||'')}" placeholder="e.g. user_id / seller_id">
+      <label><input type="checkbox" id="p-auto-clear" ${obj.auto_clear?'checked':''}> auto_clear (中间户立即清算)</label>
+
+      <h2 style="margin-top:14px">旧字段 (兼容)</h2>
+      <label>Account template</label>
       <input class="field" id="p-tmpl" value="${escapeHtml(obj.account_template||'')}">
-      <label>From attribute (placeholder 来源)</label>
+      <label>From attribute</label>
       <input class="field" id="p-attr" value="${escapeHtml(obj.from_attr||'')}">
       <label><input type="checkbox" id="p-optional" ${obj.optional?'checked':''}> optional</label>
     `;
-    ['p-type','p-label','p-tmpl','p-attr','p-optional'].forEach(k => {
+    ['p-type','p-label','p-acct','p-party','p-party-attr','p-auto-clear',
+     'p-tmpl','p-attr','p-optional'].forEach(k => {
       $(k).oninput = $(k).onchange = () => {
         obj.type = $('p-type').value;
         obj.label = $('p-label').value;
+        obj.account_type = $('p-acct').value;
+        obj.party_type = $('p-party').value;
+        obj.party_id_attr = $('p-party-attr').value;
+        obj.auto_clear = $('p-auto-clear').checked;
         obj.account_template = $('p-tmpl').value;
         obj.from_attr = $('p-attr').value;
         obj.optional = $('p-optional').checked;
@@ -298,6 +439,10 @@ function renderPropForm(kind, obj) {
   } else {
     obj.rule = obj.rule || { type: 'percent', value: 500 };
     obj.kind = obj.kind || 'transfer';
+    // SP-AC-4: event_code 下拉, 按当前 scenario 过滤
+    const eventOpts = (window._txnRules || []).map(r =>
+      `<option value="${r.event_code}" ${obj.event_code===r.event_code?'selected':''}>${r.event_code} — ${r.debit_subject_id} → ${r.credit_subject_id}</option>`
+    ).join('');
     form.innerHTML = `
       <label>Kind (SP-3: 决定产生什么资金对象)</label>
       <select class="field" id="r-kind">
@@ -305,6 +450,18 @@ function renderPropForm(kind, obj) {
         <option value="application_fee" ${obj.kind==='application_fee'?'selected':''}>application_fee (平台抽成, 产生 AppFee)</option>
         <option value="payout"          ${obj.kind==='payout'?'selected':''}>payout (提现到银行, 产生 Payout)</option>
       </select>
+
+      <h2 style="margin-top:14px">accounting 绑定 (SP-AC)</h2>
+      <label>Event code (引用 TransactionRule)</label>
+      <select class="field" id="r-event">
+        <option value="">— 选 Event Code —</option>
+        ${eventOpts}
+      </select>
+      <small style="color:var(--text-faint);font-size:10px;display:block;margin-top:2px">
+        必先在顶部选 Scenario, 这里才有规则列表
+      </small>
+
+      <h2 style="margin-top:14px">金额规则</h2>
       <label>Rule type</label>
       <select class="field" id="r-type">
         <option value="percent"     ${obj.rule.type==='percent'?'selected':''}>percent (basis points)</option>
@@ -320,9 +477,10 @@ function renderPropForm(kind, obj) {
         <option value="default" ${obj.rule.if_missing==='default'?'selected':''}>default</option>
       </select>
     `;
-    ['r-kind','r-type','r-value','r-missing'].forEach(k => {
+    ['r-kind','r-event','r-type','r-value','r-missing'].forEach(k => {
       $(k).oninput = $(k).onchange = () => {
         obj.kind = $('r-kind').value;
+        obj.event_code = $('r-event').value;
         obj.rule.type = $('r-type').value;
         obj.rule.value = parseInt($('r-value').value) || 0;
         obj.rule.if_missing = $('r-missing').value;
@@ -330,6 +488,23 @@ function renderPropForm(kind, obj) {
       };
     });
   }
+}
+
+// SP-AC-4: 启动期 + 选 Scenario 时拉 account_types / transaction_rules.
+async function loadAccountTypes() {
+  try {
+    const r = await fetch('/api/accounting/account_types');
+    if (!r.ok) { console.warn('account_types HTTP', r.status); return; }
+    window._accountTypes = await r.json();
+  } catch (e) { console.warn('account_types', e); window._accountTypes = []; }
+}
+async function loadTransactionRules(scenario) {
+  if (!scenario) { window._txnRules = []; return; }
+  try {
+    const r = await fetch('/api/accounting/transaction_rules?product=' + encodeURIComponent(scenario));
+    if (!r.ok) { console.warn('txn_rules HTTP', r.status); window._txnRules = []; return; }
+    window._txnRules = await r.json();
+  } catch (e) { console.warn('txn_rules', e); window._txnRules = []; }
 }
 
 function addNode(type) {
@@ -384,41 +559,72 @@ svg.ondrop = (e) => {
   selectNode(id);
 };
 
-// ─── 节点 handle 拖线 → 连边 ────────────────────────────────────────
-// 鼠标在 canvas 上移动时, 若有 connecting 状态则更新虚线终点;
-// 在另一节点 rect 上松开 → addEdge.
+// ─── 节点 handle 拖线 → 连边 (优化版, 单一 dragLineEl, 不动 DOM) ──────
+//
+// 之前 bug: mousemove 调 render() 重画全图, 导致 .drag-line 累积成一团乱麻.
+// 修复: 单独维护 dragLineEl 引用, mousemove 只 setAttribute('d', ...).
+//
+let dragLineEl = null;
+
+function ensureDragLine() {
+  if (dragLineEl && dragLineEl.parentNode) return dragLineEl;
+  dragLineEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  dragLineEl.classList.add('drag-line');
+  svg.appendChild(dragLineEl);
+  return dragLineEl;
+}
+
+function removeDragLine() {
+  if (dragLineEl && dragLineEl.parentNode) {
+    dragLineEl.parentNode.removeChild(dragLineEl);
+  }
+  dragLineEl = null;
+}
+
 svg.addEventListener('mousemove', (e) => {
   if (!state.connecting) return;
   const r = svg.getBoundingClientRect();
-  state.connecting.x2 = e.clientX - r.left;
-  state.connecting.y2 = e.clientY - r.top;
-  render();
+  const x2 = e.clientX - r.left, y2 = e.clientY - r.top;
+  const el = ensureDragLine();
+  el.setAttribute('d', `M ${state.connecting.x1} ${state.connecting.y1} L ${x2} ${y2}`);
 });
+
 svg.addEventListener('mouseup', (e) => {
-  if (!state.connecting) return;
-  // 看终点在不在某个节点 rect 上
+  if (!state.connecting) {
+    removeDragLine();
+    return;
+  }
+  // 必须先存 fromID, 下面要 null 掉 state.connecting
+  const fromID = state.connecting.from;
+  state.connecting = null;
+  removeDragLine();
+
+  // 找鼠标释放位置在哪个节点 rect 上
   const r = svg.getBoundingClientRect();
   const mx = e.clientX - r.left, my = e.clientY - r.top;
-  let targetID = null;
   for (const n of state.graph.spec.nodes) {
     const nx = n.x ?? 100, ny = n.y ?? 100;
     if (mx >= nx && mx <= nx + 180 && my >= ny && my <= ny + 44) {
-      if (n.id !== state.connecting.from) {
-        targetID = n.id;
-        break;
+      if (n.id !== fromID) {
+        addEdge(fromID, n.id);
+        return;
       }
     }
   }
-  if (targetID) {
-    addEdge(state.connecting.from, targetID);
+});
+
+// 鼠标释放在 svg 外 (header/panel) — 仅清理, 不抢 state (bubble 阶段, svg mouseup 已先跑过)
+window.addEventListener('mouseup', () => {
+  if (state.connecting) {
+    state.connecting = null;
+    removeDragLine();
   }
-  state.connecting = null;
-  render();
 });
 
 // ─── triggers / guards / hold sync from sidebar ────────────────────
 function syncSidebarToSpec() {
-  // SP-3: charge_strategy 写到 spec
+  // SP-3 + SP-AC: scenario / charge_strategy 写到 spec
+  state.graph.spec.scenario = $('scenario').value || undefined;
   state.graph.spec.charge_strategy = $('charge-strategy').value;
   state.graph.spec.triggers = [{
     event: $('trigger-event').value,
@@ -437,6 +643,39 @@ function syncSidebarToSpec() {
 ['charge-strategy','trigger-event','trigger-filter','g-min','g-curr','hold-days','hold-applies'].forEach(k => {
   $(k).oninput = $(k).onchange = syncSidebarToSpec;
 });
+
+// SP-AC-4: scenario 切换时拉对应 transaction_rules + 刷新 picker
+$('scenario').onchange = async () => {
+  syncSidebarToSpec();
+  await loadTransactionRules($('scenario').value);
+  // 当前选中如果是 edge, 重新渲染 prop-form 让 event_code 下拉刷新
+  if (state.selected && state.selected.kind === 'edge') {
+    const [f, t] = state.selected.id.split('->');
+    const e = state.graph.spec.edges.find(x => x.from === f && x.to === t);
+    if (e) renderPropForm('edge', e);
+  }
+};
+
+// 启动期拉 account_types + 初始化 scenario 下拉
+(async function initAccountingMeta() {
+  await loadAccountTypes();
+  // 已知 scenario 列表 (硬编码 + 后续可从 /api/accounting/transaction_rules 取 product_code 去重)
+  const scenarioSel = $('scenario');
+  // 拉所有 rule, 取 distinct product_code 填 scenario 下拉
+  try {
+    const r = await fetch('/api/accounting/transaction_rules');
+    if (r.ok) {
+      const rules = await r.json();
+      const set = new Set();
+      (rules || []).forEach(x => x.product_code && set.add(x.product_code));
+      [...set].sort().forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p; opt.textContent = p;
+        scenarioSel.appendChild(opt);
+      });
+    }
+  } catch (e) { console.warn('scenarios', e); }
+})();
 
 // ─── 工具栏按钮 ────────────────────────────────────────────────────
 $('add-node-btn').onclick = () => addNode('account');

@@ -22,4 +22,5 @@ sync-assets:
 	@cp -f ../frontend/moneyflow-designer.html     internal/handler/assets/moneyflow-designer.html
 	@cp -f ../frontend/moneyflow-designer-v2.html  internal/handler/assets/moneyflow-designer-v2.html
 	@cp -f ../frontend/moneyflow-resources.html    internal/handler/assets/moneyflow-resources.html
-	@echo "synced moneyflow-{designer,designer-v2,resources}.html → internal/handler/assets/"
+	@cp -f ../frontend/moneyflow-rules.html        internal/handler/assets/moneyflow-rules.html
+	@echo "synced moneyflow-{designer,designer-v2,resources,rules}.html → internal/handler/assets/"

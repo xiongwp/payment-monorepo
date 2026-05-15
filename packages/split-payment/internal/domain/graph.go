@@ -34,6 +34,11 @@ type Graph struct {
 //   - ChargeStrategy: 三种 Stripe-like 模式 (direct / destination / separate).
 //                     trigger=charge.succeeded 时生效, 决定 Transfer/AppFee 怎么生成.
 //                     空值默认 separate (跟现有行为一致).
+//
+// SP-AC-1 新增字段:
+//   - Scenario: 业务场景 = accounting product_code (e.g. "user_topup" / "marketplace_split").
+//               一个 scenario 下所有 edge 的 event_code 必须落在同一 product_code 的 rule 集.
+//               Engine 触发时把 (product_code, event_code) 传给 accounting.CreateTransaction.
 type GraphSpec struct {
 	Triggers       []Trigger      `json:"triggers"`
 	Nodes          []Node         `json:"nodes"`
@@ -42,6 +47,10 @@ type GraphSpec struct {
 	Hold           *Hold          `json:"hold,omitempty"`
 	Reversal       *ReversalSpec  `json:"reversal,omitempty"` // 重命名 (跟新 Reversal 实体区分)
 	ChargeStrategy string         `json:"charge_strategy,omitempty"` // direct / destination / separate
+
+	// SP-AC-1: 绑定到 accounting-system 的 product_code.
+	// 一个 scenario 包含多条 TransactionRule (一个 event 触发 N 笔分录).
+	Scenario string `json:"scenario,omitempty"` // = product_code
 }
 
 // ChargeStrategy 常量.
@@ -65,13 +74,34 @@ type Trigger struct {
 //   - account:      普通收款方 (商户余额 / 推广员 / 物流方)
 //   - output:       最终账户 (清结算 / 平台主账户)
 //   - pool:         资金池 (历史保留, intermediate 取代了大部分场景)
+//
+// SP-AC-1: 真实账务模型对接
+//   - AccountType:    引用 accounting-system AccountTypeInfo.account_type
+//                     e.g. "PLATFORM_RECEIVABLE_CHANNEL" / "USER_WALLET" / "PLATFORM_FEE_CLEARING"
+//   - PartyType:      "user" / "merchant" / "platform" — 配合 PartyIDAttr 找具体 account_no
+//   - PartyIDAttr:    从 event.attributes 取 party_id 的 key
+//                     party_type=platform 时为空 (平台户 owner_type=3/4 不需要 party_id)
+//   - AutoClear:      intermediate 节点标 true → 进金后立即触发下游 (实时清算)
+//                     false → 等独立 event 触发 (T+0 cron / 手动)
+//
+// 旧 AccountTemplate / FromAttr 字段保留兼容期, 优先级:
+//   AccountType 非空 → 走新模型 (accounting CreateTransaction)
+//   否则 → 走旧 Movement 拼分录
 type Node struct {
-	ID              string `json:"id"`              // 图内唯一
-	Type            string `json:"type"`            // input / intermediate / account / output / pool
-	Label           string `json:"label,omitempty"` // UI 显示
-	AccountTemplate string `json:"account_template"` // 渲染后是真实 account_id; 支持 {placeholder}
-	FromAttr        string `json:"from_attr,omitempty"` // 若 template 含 placeholder, 从 event payload attribute 取
-	Optional        bool   `json:"optional,omitempty"`  // attribute 缺失时整个节点跳过
+	ID    string `json:"id"`              // 图内唯一
+	Type  string `json:"type"`            // input / intermediate / account / output / pool
+	Label string `json:"label,omitempty"` // UI 显示
+
+	// SP-AC-1 新模型 (推荐)
+	AccountType  string `json:"account_type,omitempty"`   // FK accounting.account_type_info
+	PartyType    string `json:"party_type,omitempty"`     // user / merchant / platform
+	PartyIDAttr  string `json:"party_id_attr,omitempty"`  // event.attributes 里的 key
+	AutoClear    bool   `json:"auto_clear,omitempty"`     // intermediate 进金立即清算
+
+	// 旧模型 (兼容过渡期)
+	AccountTemplate string `json:"account_template,omitempty"` // 字符串模板, 支持 {placeholder}
+	FromAttr        string `json:"from_attr,omitempty"`         // template 里 placeholder 的 attr 来源
+	Optional        bool   `json:"optional,omitempty"`          // attribute 缺失时跳过此节点
 }
 
 // Edge 一条资金流: from → to, 按 rule 决定金额。
@@ -91,6 +121,14 @@ type Edge struct {
 	// SP-3C: 跨币种支持. 空 → 与 trigger.Currency 相同;
 	// 配了 e.g. "EUR" → translator 调 FX 换算后写 Transfer.Currency.
 	DestCurrency string `json:"dest_currency,omitempty"`
+
+	// SP-AC-1: 真实账务模型对接.
+	// EventCode 引用 accounting-system TransactionRule.event_code,
+	// 配合 GraphSpec.Scenario (= product_code) 唯一确定一条 rule.
+	// engine 触发时调 accounting.CreateTransaction(product=scenario, event=event_code, amount=...).
+	//
+	// 空 → 走旧路径 (Movement 直接拼分录).
+	EventCode string `json:"event_code,omitempty"`
 }
 
 // EdgeKind 常量.
@@ -170,6 +208,11 @@ type RunPlan struct {
 	Transfers        []Transfer       `db:"-" json:"transfers,omitempty"`
 	ApplicationFees  []ApplicationFee `db:"-" json:"application_fees,omitempty"`
 	Payouts          []Payout         `db:"-" json:"payouts,omitempty"`
+
+	// SP-AC-1: 真实账务对接 — translator 输出的 TransactionRequest 列表.
+	// 每条 → accounting.CreateTransaction → 借贷分录由 rule 自动拆.
+	// 与上面的 Movements 二选一: AccountType 模式走 Transactions, 旧 template 模式走 Movements.
+	Transactions []TransactionRequest `db:"-" json:"transactions,omitempty"`
 
 	Status    string    `db:"status" json:"status"` // created/executing/completed/failed/reversed
 	VoucherNo string    `db:"voucher_no" json:"voucher_no"`

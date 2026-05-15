@@ -44,6 +44,11 @@ var resourcesHTML []byte
 //go:embed assets/moneyflow-designer-v2.html
 var designerV2HTML []byte
 
+// rulesHTML — SP-AC-5 TransactionRule 管理页.
+//
+//go:embed assets/moneyflow-rules.html
+var rulesHTML []byte
+
 // MoneyflowHandler 注入 split-payment upstream.
 type MoneyflowHandler struct {
 	proxy    *httputil.ReverseProxy
@@ -100,6 +105,13 @@ func (h *MoneyflowHandler) DesignerV2(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 	_, _ = w.Write(designerV2HTML)
+}
+
+// Rules GET /moneyflow/rules — SP-AC-5 TransactionRule 管理页.
+func (h *MoneyflowHandler) Rules(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+	_, _ = w.Write(rulesHTML)
 }
 
 // Health GET /api/moneyflow/_health — admin BFF 探 split-payment 是否在线.

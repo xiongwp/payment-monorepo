@@ -276,6 +276,17 @@ func main() {
 			zap.Bool("fail_safe_reject", riskCfg.FailSafeReject))
 	}
 
+	// SP-AC-3: accounting HTTP-JSON client (ListAccountTypes + CreateTransaction).
+	// 跟 gRPC PostMovements 并存; engine 优先走 CreateTransaction (新 rule 模式).
+	var accountingMetaCli *clients.AccountingMetaClient
+	if u := envOr("ACCOUNTING_HTTP_URL", ""); u != "" {
+		accountingMetaCli = clients.NewAccountingMetaClient(u, envOr("ACCOUNTING_AUTH_TOKEN", ""))
+		engine.AccountingMeta = accountingMetaAdapter{cli: accountingMetaCli}
+		log.Info("accounting meta client: http", zap.String("url", u))
+	} else {
+		log.Info("accounting meta client: disabled (set ACCOUNTING_HTTP_URL to enable rule-based mode)")
+	}
+
 	// SP-3C + SP-FIN-1: FX client (env FX_HTTP_URL 配了走真实, 否则 static 占位).
 	if u := envOr("FX_HTTP_URL", ""); u != "" {
 		engine.FX = clients.NewHTTPFXClient(u, envOr("FX_AUTH_TOKEN", ""))
@@ -475,6 +486,25 @@ func maskDSN(dsn string) string {
 		return left + "@" + dsn[at+1:]
 	}
 	return left[:colon] + ":***@" + dsn[at+1:]
+}
+
+// accountingMetaAdapter — SP-AC-3 把 clients.AccountingMetaClient 适配成 workflow.AccountingMetaCaller.
+// 仅做返回类型转换 (clients.CreateTransactionResponse → workflow.AccountingTxResp).
+type accountingMetaAdapter struct {
+	cli *clients.AccountingMetaClient
+}
+
+func (a accountingMetaAdapter) CreateTransaction(ctx context.Context, req *domain.TransactionRequest) (*workflow.AccountingTxResp, error) {
+	resp, err := a.cli.CreateTransaction(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &workflow.AccountingTxResp{
+		VoucherNo: resp.VoucherNo,
+		TxIDs:     resp.TxIDs,
+		Status:    resp.Status,
+		Error:     resp.Error,
+	}, nil
 }
 
 // zapSagaLogger 适配 zap 到 workflow.Logger 接口 (kv 风格).

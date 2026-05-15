@@ -245,6 +245,14 @@ func main() {
 	r.HandleFunc("/moneyflow/v2", moneyflowH.DesignerV2).Methods("GET")
 	r.HandleFunc("/moneyflow/v2/", moneyflowH.DesignerV2).Methods("GET")
 
+	// SP-AC-4 accounting meta proxy (Designer picker / Rule 管理页用)
+	acctH := handler.NewAccountingMetaHandler()
+	api.PathPrefix("/accounting/").HandlerFunc(acctH.Proxy)
+
+	// SP-AC-5 TransactionRule 管理页
+	r.HandleFunc("/moneyflow/rules", moneyflowH.Rules).Methods("GET")
+	r.HandleFunc("/moneyflow/rules/", moneyflowH.Rules).Methods("GET")
+
 	// health
 	r.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

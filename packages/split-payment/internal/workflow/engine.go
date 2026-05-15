@@ -64,6 +64,24 @@ type Engine struct {
 	// SP-3C FX client + snapshot repo. 可选, nil → 不支持跨币种 Transfer (edge.dest_currency 报错).
 	FX     FXClient
 	FXRepo FXSnapshotRepo
+
+	// SP-AC-3 accounting rule 模式. 非 nil + plan.Transactions 非空 → 走 CreateTransaction 路径.
+	AccountingMeta AccountingMetaCaller
+}
+
+// AccountingMetaCaller — engine 视角的 accounting client 接口 (避免循环 import).
+//
+// 真实实现走 clients.AccountingMetaClient (HTTP-JSON).
+type AccountingMetaCaller interface {
+	CreateTransaction(ctx context.Context, req *domain.TransactionRequest) (*AccountingTxResp, error)
+}
+
+// AccountingTxResp 返回值.
+type AccountingTxResp struct {
+	VoucherNo string
+	TxIDs     []string
+	Status    string
+	Error     string
 }
 
 // AccountRepo workflow 视角 (SP-6 capability gate 用).
@@ -223,6 +241,14 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 		e.applyCapabilityGate(ctx, plan)
 	}
 
+	// SP-AC-3: accounting rule 模式 — 优先级最高.
+	// translator 输出了 plan.Transactions → 顺序调 CreateTransaction (accounting 内部按 rule 拆借贷).
+	// 失败 → 调过的事务不可逆 (accounting 自己负责跨 entry 原子), 标 plan failed 即可;
+	// 严格回滚靠 accounting 反向 event (e.g. user_topup.reversed) 由 caller 触发.
+	if e.AccountingMeta != nil && len(plan.Transactions) > 0 {
+		return e.runAccountingTransactions(ctx, plan)
+	}
+
 	// SP-3A: 若挂了 SagaCoordinator → 走持久化 saga 路径 (推荐生产模式).
 	//
 	// Saga 每 step 落表, 失败自动 compensate, 进程重启可 resume.
@@ -296,6 +322,56 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 			"detail":  string(body),
 		})
 	}
+	return nil
+}
+
+// runAccountingTransactions (SP-AC-3) 顺序调 accounting.CreateTransaction 提交每条 rule.
+//
+// 行为:
+//   - 顺序执行 (不并发, 保证审计顺序可读)
+//   - 任一失败 → plan.Status=failed, 不自动 compensate (accounting 反向用专门的 reversal 事件)
+//   - 成功 → 累加 voucher_no 到 plan.VoucherNo, 标各 tx posted
+//
+// 跟 saga 路径互斥 (engine 优先走 AccountingMeta != nil 这条).
+func (e *Engine) runAccountingTransactions(ctx context.Context, plan *domain.RunPlan) error {
+	plan.Status = PlanStatusExecuting
+	_ = e.RunRepo.Update(ctx, plan)
+
+	vouchers := []string{}
+	for i := range plan.Transactions {
+		tx := &plan.Transactions[i]
+		resp, err := e.AccountingMeta.CreateTransaction(ctx, tx)
+		if err != nil {
+			tx.Status = "failed"
+			tx.ErrorMsg = err.Error()
+			plan.Status = PlanStatusFailed
+			plan.ErrorMsg = fmt.Sprintf("tx %s (%s/%s) failed: %s",
+				tx.OrderNo, tx.ProductCode, tx.EventCode, err.Error())
+			_ = e.RunRepo.Update(ctx, plan)
+			e.Log.Error("accounting CreateTransaction failed",
+				zap.String("order_no", tx.OrderNo),
+				zap.String("event", tx.EventCode),
+				zap.Error(err))
+			return err
+		}
+		tx.Status = "posted"
+		tx.VoucherNo = resp.VoucherNo
+		if resp.VoucherNo != "" {
+			vouchers = append(vouchers, resp.VoucherNo)
+		}
+		e.Log.Info("accounting transaction posted",
+			zap.String("order_no", tx.OrderNo),
+			zap.String("event", tx.EventCode),
+			zap.String("voucher", resp.VoucherNo))
+	}
+	plan.Status = PlanStatusCompleted
+	if len(vouchers) > 0 {
+		plan.VoucherNo = vouchers[0] // 首张凭证号
+		if len(vouchers) > 1 {
+			plan.VoucherNo += "+" + fmt.Sprintf("%d", len(vouchers)-1) // 标记还有 N 张
+		}
+	}
+	_ = e.RunRepo.Update(ctx, plan)
 	return nil
 }
 

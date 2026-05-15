@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Transaction Rules</title>
+<style>
+  :root {
+    --bg: #f5f6fa; --panel: #fff; --border: #e2e8f0;
+    --text: #1e293b; --text-muted: #64748b; --text-faint: #94a3b8;
+    --brand: #6366f1; --brand-dark: #4f46e5; --brand-soft: #eef2ff;
+    --green: #10b981; --amber: #f59e0b; --red: #ef4444;
+    --shadow-sm: 0 1px 2px rgba(15,23,42,0.04), 0 1px 3px rgba(15,23,42,0.04);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px;
+         font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+  header { background: linear-gradient(135deg, #1e1b4b 0%, #312e81 60%, #4338ca 100%);
+           color: #fff; padding: 14px 24px; display: flex; gap: 14px; align-items: center;
+           box-shadow: 0 4px 10px rgba(15,23,42,0.06); }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  header a { color: rgba(255,255,255,0.7); text-decoration: none; padding: 6px 12px;
+             border-radius: 6px; font-size: 13px; }
+  header a:hover { background: rgba(255,255,255,0.1); color: #fff; }
+  header a.active { background: rgba(255,255,255,0.18); color: #fff; font-weight: 500; }
+  header .spacer { flex: 1; }
+  main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+  .toolbar { display: flex; gap: 10px; margin-bottom: 14px; align-items: center; flex-wrap: wrap; }
+  .toolbar select, .toolbar input, .toolbar button {
+    padding: 7px 11px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
+    background: var(--panel); color: var(--text); font-family: inherit;
+  }
+  .toolbar button.primary { background: var(--brand); color: #fff; border-color: var(--brand);
+                            cursor: pointer; font-weight: 600; }
+  .toolbar button.primary:hover { background: var(--brand-dark); }
+  .toolbar .gap { flex: 1; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px;
+          overflow: hidden; box-shadow: var(--shadow-sm); }
+  th, td { padding: 11px 14px; text-align: left; font-size: 12px; border-bottom: 1px solid var(--border); }
+  th { background: #f8fafc; font-weight: 600; color: var(--text-muted);
+       font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; }
+  tr:hover td { background: #fafbff; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; }
+  .product { display: inline-block; padding: 2px 8px; background: var(--brand-soft);
+             color: var(--brand-dark); border-radius: 4px; font-weight: 600; font-size: 11px; }
+  .subject { font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+             padding: 2px 6px; background: #f1f5f9; border-radius: 3px; }
+  .dir { display: inline-block; padding: 1px 7px; border-radius: 3px;
+         font-size: 10px; font-weight: 600; text-transform: uppercase; }
+  .dir.debit  { background: #fee2e2; color: #b91c1c; }
+  .dir.credit { background: #d1fae5; color: #047857; }
+  .actions button { margin-right: 4px; padding: 4px 10px; font-size: 11px; border: 1px solid var(--border);
+                    border-radius: 4px; background: #fff; cursor: pointer; }
+  .actions button.danger { color: var(--red); border-color: var(--red); }
+  .empty { padding: 80px 20px; text-align: center; color: var(--text-faint); }
+
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex;
+           align-items: center; justify-content: center; z-index: 100; }
+  .modal.hidden { display: none; }
+  .modal-content { background: #fff; border-radius: 8px; width: 620px; max-width: 90vw;
+                   max-height: 85vh; overflow: auto; padding: 22px 26px; }
+  .modal-content h2 { margin: 0 0 14px; font-size: 17px; }
+  .modal-content label { display: block; margin: 10px 0 4px; color: var(--text-muted);
+                          font-size: 11px; font-weight: 500; }
+  .modal-content input, .modal-content select, .modal-content textarea {
+    width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 13px; font-family: inherit;
+  }
+  .modal-content .row { display: flex; gap: 10px; }
+  .modal-content .row > * { flex: 1; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+  .modal-actions button { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--border);
+                          background: #fff; cursor: pointer; font-size: 13px; }
+  .modal-actions button.primary { background: var(--brand); color: #fff; border-color: var(--brand); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📒 Transaction Rules</h1>
+  <a href="/moneyflow">Designer</a>
+  <a href="/moneyflow/resources">Resources</a>
+  <a href="/moneyflow/rules" class="active">Rules</a>
+  <div class="spacer"></div>
+  <span style="font-size:11px;color:rgba(255,255,255,0.7)">accounting product_code + event_code → 借贷科目</span>
+</header>
+
+<main>
+  <div class="toolbar">
+    <select id="product-filter">
+      <option value="">— All Products —</option>
+    </select>
+    <input id="search-input" placeholder="搜 event_code / subject..." style="min-width: 240px">
+    <button onclick="loadRules()">↻ Refresh</button>
+    <div class="gap"></div>
+    <button class="primary" onclick="openNewRuleModal()">+ New Rule</button>
+  </div>
+
+  <table id="rules-table">
+    <thead><tr>
+      <th>Product</th>
+      <th>Event Code</th>
+      <th>Debit Subject (借方)</th>
+      <th>Credit Subject (贷方)</th>
+      <th>From Dir</th>
+      <th>To Dir</th>
+      <th>Actions</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</main>
+
+<!-- New / Edit Rule Modal -->
+<div id="modal-rule" class="modal hidden">
+  <div class="modal-content">
+    <h2 id="modal-title">+ New Transaction Rule</h2>
+    <div class="row">
+      <div>
+        <label>Product Code (= Scenario)</label>
+        <input id="m-product" placeholder="e.g. user_topup">
+      </div>
+      <div>
+        <label>Event Code</label>
+        <input id="m-event" placeholder="e.g. channel_settled_to_user">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Debit Subject (借方科目)</label>
+        <select id="m-debit" class="acct-select"></select>
+      </div>
+      <div>
+        <label>Credit Subject (贷方科目)</label>
+        <select id="m-credit" class="acct-select"></select>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>From Direction</label>
+        <select id="m-from-dir">
+          <option value="debit">debit (from 方走借方)</option>
+          <option value="credit">credit (from 方走贷方)</option>
+        </select>
+      </div>
+      <div>
+        <label>To Direction</label>
+        <select id="m-to-dir">
+          <option value="credit">credit (to 方走贷方)</option>
+          <option value="debit">debit (to 方走借方)</option>
+        </select>
+      </div>
+    </div>
+    <label>Description</label>
+    <input id="m-desc" placeholder="规则用途描述 (审计用)">
+    <div class="modal-actions">
+      <button onclick="closeModal()">取消</button>
+      <button class="primary" onclick="saveRule()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let allRules = [];
+let accountTypes = [];
+let editingID = null;
+
+async function init() {
+  // 拉 account_types 给 select 用
+  try {
+    const r = await fetch('/api/accounting/account_types');
+    if (r.ok) accountTypes = await r.json();
+  } catch (e) { console.warn('account_types', e); }
+  populateAccountSelects();
+  await loadRules();
+  populateProductFilter();
+}
+
+function populateAccountSelects() {
+  const opts = accountTypes.map(a =>
+    `<option value="${a.account_type}">${a.account_type} — ${a.account_type_name || ''}</option>`
+  ).join('');
+  document.querySelectorAll('.acct-select').forEach(s => {
+    s.innerHTML = '<option value="">— 选 Account Type —</option>' + opts;
+  });
+}
+
+function populateProductFilter() {
+  const set = new Set();
+  allRules.forEach(r => r.product_code && set.add(r.product_code));
+  const sel = document.getElementById('product-filter');
+  sel.innerHTML = '<option value="">— All Products —</option>';
+  [...set].sort().forEach(p => {
+    sel.innerHTML += `<option value="${p}">${p}</option>`;
+  });
+}
+
+async function loadRules() {
+  const tbody = document.querySelector('#rules-table tbody');
+  tbody.innerHTML = '<tr><td colspan="7" class="empty">Loading…</td></tr>';
+  try {
+    const product = document.getElementById('product-filter').value;
+    const url = '/api/accounting/transaction_rules' + (product ? '?product=' + encodeURIComponent(product) : '');
+    const r = await fetch(url);
+    if (!r.ok) {
+      tbody.innerHTML = `<tr><td colspan="7" class="empty">HTTP ${r.status}: accounting-system 不可达</td></tr>`;
+      return;
+    }
+    allRules = await r.json() || [];
+    renderRules();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function renderRules() {
+  const q = (document.getElementById('search-input').value || '').toLowerCase();
+  const tbody = document.querySelector('#rules-table tbody');
+  const filtered = allRules.filter(r => {
+    if (!q) return true;
+    return (r.event_code + r.debit_subject_id + r.credit_subject_id).toLowerCase().includes(q);
+  });
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">无 rule. 点 + New 创建.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = filtered.map(r => `
+    <tr>
+      <td><span class="product">${r.product_code}</span></td>
+      <td class="mono">${r.event_code}</td>
+      <td><span class="subject">${r.debit_subject_id}</span></td>
+      <td><span class="subject">${r.credit_subject_id}</span></td>
+      <td><span class="dir ${r.from_direction}">${r.from_direction}</span></td>
+      <td><span class="dir ${r.to_direction}">${r.to_direction}</span></td>
+      <td class="actions">
+        <button onclick='editRule(${JSON.stringify(r)})'>Edit</button>
+        <button class="danger" onclick="deleteRule(${r.id})">Delete</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+document.getElementById('search-input').oninput = renderRules;
+document.getElementById('product-filter').onchange = loadRules;
+
+function openNewRuleModal() {
+  editingID = null;
+  document.getElementById('modal-title').textContent = '+ New Transaction Rule';
+  ['m-product','m-event','m-desc'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('m-debit').value = '';
+  document.getElementById('m-credit').value = '';
+  document.getElementById('m-from-dir').value = 'debit';
+  document.getElementById('m-to-dir').value = 'credit';
+  document.getElementById('modal-rule').classList.remove('hidden');
+}
+
+function editRule(r) {
+  editingID = r.id;
+  document.getElementById('modal-title').textContent = 'Edit Rule #' + r.id;
+  document.getElementById('m-product').value = r.product_code;
+  document.getElementById('m-event').value = r.event_code;
+  document.getElementById('m-debit').value = r.debit_subject_id;
+  document.getElementById('m-credit').value = r.credit_subject_id;
+  document.getElementById('m-from-dir').value = r.from_direction;
+  document.getElementById('m-to-dir').value = r.to_direction;
+  document.getElementById('m-desc').value = r.description || '';
+  document.getElementById('modal-rule').classList.remove('hidden');
+}
+
+function closeModal() {
+  document.getElementById('modal-rule').classList.add('hidden');
+}
+
+async function saveRule() {
+  const body = {
+    product_code: document.getElementById('m-product').value.trim(),
+    event_code: document.getElementById('m-event').value.trim(),
+    debit_subject_id: document.getElementById('m-debit').value,
+    credit_subject_id: document.getElementById('m-credit').value,
+    from_direction: document.getElementById('m-from-dir').value,
+    to_direction: document.getElementById('m-to-dir').value,
+    description: document.getElementById('m-desc').value.trim(),
+  };
+  if (!body.product_code || !body.event_code || !body.debit_subject_id || !body.credit_subject_id) {
+    alert('product / event / debit / credit 必填'); return;
+  }
+  body.hash_key = body.product_code + ':' + body.event_code;
+  const method = editingID ? 'PUT' : 'POST';
+  const url = '/api/accounting/transaction_rules' + (editingID ? '/' + editingID : '');
+  try {
+    const r = await fetch(url, {
+      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!r.ok) { alert('保存失败: HTTP ' + r.status); return; }
+    closeModal();
+    await loadRules();
+    populateProductFilter();
+  } catch (e) { alert('请求出错: ' + e.message); }
+}
+
+async function deleteRule(id) {
+  if (!confirm('确认删除 rule #' + id + '?')) return;
+  try {
+    const r = await fetch('/api/accounting/transaction_rules/' + id, { method: 'DELETE' });
+    if (!r.ok) { alert('删除失败: HTTP ' + r.status); return; }
+    await loadRules();
+  } catch (e) { alert('请求出错: ' + e.message); }
+}
+
+window.onclick = (e) => {
+  if (e.target.classList.contains('modal')) closeModal();
+};
+
+init();
+</script>
+</body>
+</html>

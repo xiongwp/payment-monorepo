@@ -105,12 +105,18 @@ func Translate(g *domain.Graph, tc TriggerContext) (*domain.RunPlan, error) {
 	// SP-3: 自动生成 transfer_group, 关联同一 charge 衍生的所有资金对象.
 	plan.TransferGroup = genTransferGroup(tc.ChargeID)
 
+	// SP-AC-1: 检测是否走"accounting rule"模式 (任一 edge 有 event_code + spec 有 scenario).
+	// 走新模式: 输出 TransactionRequest, engine 调 accounting.CreateTransaction;
+	// 否则: 走旧 Movement / Transfer 模型 (兼容期).
+	useAccountingMode := spec.Scenario != "" && anyEdgeHasEventCode(edges)
+
 	// 4) 按 edge 算金额 + 同时产出 typed Transfer/AppFee/Payout 对象 (SP-3).
 	remaining := tc.AmountMinor
 	movements := []domain.Movement{}
 	transfers := []domain.Transfer{}
 	appFees := []domain.ApplicationFee{}
 	payouts := []domain.Payout{}
+	transactions := []domain.TransactionRequest{} // SP-AC-1
 	now := time.Now().UTC()
 	for _, e := range edges {
 		// from / to 节点是否存在 (skipped 节点上的 edge 处理)
@@ -161,6 +167,33 @@ func Translate(g *domain.Graph, tc TriggerContext) (*domain.RunPlan, error) {
 			FromAccount: fromAcc, ToAccount: toAcc,
 			AmountMinor: amount, Status: "pending",
 		})
+
+		// SP-AC-1: 走 accounting rule 模式 — 输出 TransactionRequest 给 engine 调 CreateTransaction.
+		if useAccountingMode && e.EventCode != "" {
+			fromNode := findNode(spec.Nodes, e.From)
+			toNode := findNode(spec.Nodes, e.To)
+			tx := domain.TransactionRequest{
+				OrderNo:       fmt.Sprintf("%s_%s_%s", tc.ChargeID, e.From, e.To),
+				BusinessNo:    tc.ChargeID,
+				BusinessType:  spec.Scenario,
+				ProductCode:   spec.Scenario,
+				EventCode:     e.EventCode,
+				FromPartyID:   resolvePartyID(fromNode, tc),
+				FromPartyType: orDefault(fromNode.PartyType, "platform"),
+				ToPartyID:     resolvePartyID(toNode, tc),
+				ToPartyType:   orDefault(toNode.PartyType, "platform"),
+				Amount:        fmt.Sprintf("%d", amount), // accounting 用 string 保精度 (单位 minor)
+				Currency:      tc.Currency,
+				TraceID:       tc.TraceID,
+				EdgeFromNode:  e.From,
+				EdgeToNode:    e.To,
+				Status:        "pending",
+				CreatedAt:     now,
+			}
+			transactions = append(transactions, tx)
+			remaining -= amount
+			continue // accounting 模式不再生成 Transfer/AppFee/Payout
+		}
 
 		// SP-3: 按 edge.kind 产出 typed 对象, 跟 movement 一对一对应.
 		switch e.ResolvedKind() {
@@ -230,8 +263,58 @@ func Translate(g *domain.Graph, tc TriggerContext) (*domain.RunPlan, error) {
 	plan.Transfers = transfers
 	plan.ApplicationFees = appFees
 	plan.Payouts = payouts
+	plan.Transactions = transactions // SP-AC-1
 	return plan, nil
 }
+
+// anyEdgeHasEventCode 任一 edge 配了 event_code → accounting rule 模式.
+func anyEdgeHasEventCode(edges []domain.Edge) bool {
+	for _, e := range edges {
+		if e.EventCode != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// findNode 按 ID 找 (没找到返空 Node).
+func findNode(nodes []domain.Node, id string) domain.Node {
+	for _, n := range nodes {
+		if n.ID == id {
+			return n
+		}
+	}
+	return domain.Node{}
+}
+
+// resolvePartyID 从 event.attributes 解析具体 party_id.
+//
+// Node.PartyIDAttr 为空 → 用 trigger.MerchantID 兜底 (platform 户 ID=0).
+// Node.PartyType=platform → 总是 0 (accounting 用 owner_type 找平台户, 不需 party_id).
+// Attribute 缺失 → 0 (Node.Optional 时调用方应已 skip).
+func resolvePartyID(n domain.Node, tc TriggerContext) int64 {
+	if n.PartyType == "platform" {
+		return 0
+	}
+	if n.PartyIDAttr == "" {
+		// 兜底: 如果是 merchant 用 tc.MerchantID
+		if n.PartyType == "merchant" && tc.MerchantID != "" {
+			var n int64
+			_, _ = fmt.Sscanf(tc.MerchantID, "%d", &n)
+			return n
+		}
+		return 0
+	}
+	v, ok := tc.Attributes[n.PartyIDAttr]
+	if !ok || v == "" {
+		return 0
+	}
+	var id int64
+	_, _ = fmt.Sscanf(v, "%d", &id)
+	return id
+}
+
+// orDefault 已在文件下方定义,这里不重复.
 
 // genTransferGroup tg_<chargeID 截断>_<rand4>; 同 charge 不同 run 拿不同 group.
 //
