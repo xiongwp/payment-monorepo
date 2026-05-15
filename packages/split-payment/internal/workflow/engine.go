@@ -71,16 +71,18 @@ type Engine struct {
 
 // AccountingMetaCaller — engine 视角的 accounting client 接口 (避免循环 import).
 //
-// 真实实现走 clients.AccountingMetaClient (HTTP-JSON).
+// 真实实现走 clients.AccountingGRPCClient (gRPC TransactionService).
+// HTTP 路径已废弃, 只剩 ops/admin UI 用 HTTP.
 type AccountingMetaCaller interface {
 	CreateTransaction(ctx context.Context, req *domain.TransactionRequest) (*AccountingTxResp, error)
 }
 
 // AccountingTxResp 返回值.
+//
+// Status 沿用 accounting-system 编码: 0=pending / 1=processing / 2=success / 3=failed.
 type AccountingTxResp struct {
 	VoucherNo string
-	TxIDs     []string
-	Status    string
+	Status    int8
 	Error     string
 }
 

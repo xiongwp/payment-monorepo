@@ -25,11 +25,13 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Server gRPC 服务实现（同时实现 AccountingService、AccountingAdminService 和 FreezeService）
+// Server gRPC 服务实现（同时实现 AccountingService、AccountingAdminService、
+// FreezeService 和 SP-AC-7 TransactionService）
 type Server struct {
 	accountingv1.UnimplementedAccountingServiceServer
 	accountingv1.UnimplementedAccountingAdminServiceServer
 	accountingv1.UnimplementedFreezeServiceServer
+	UnimplementedTransactionServiceServer // SP-AC-7 multi-leg + 元数据查询
 	accountingSvc     service.AccountingService
 	transactionSvc    service.TransactionService
 	dayCutSvc         service.DayCutService
@@ -39,6 +41,7 @@ type Server struct {
 	freezeSvc         service.FreezeService
 	adjustmentSvc     service.AdjustmentService
 	transactionRepo   repository.TransactionRepository
+	ruleRepo          repository.TransactionRuleRepository // SP-AC-7: ListAccountTypes / ListTransactionRules
 	hotAccountRepo    repository.HotAccountRepository
 	bufferAccountRepo repository.BufferAccountRepository
 	logger            *zap.Logger // API 层日志（api.log）
@@ -115,6 +118,7 @@ func NewServer(
 	freezeSvc service.FreezeService,
 	adjustmentSvc service.AdjustmentService,
 	transactionRepo repository.TransactionRepository,
+	ruleRepo repository.TransactionRuleRepository,
 	hotAccountRepo repository.HotAccountRepository,
 	bufferAccountRepo repository.BufferAccountRepository,
 	loggers *logging.Loggers,
@@ -129,6 +133,7 @@ func NewServer(
 		freezeSvc:         freezeSvc,
 		adjustmentSvc:     adjustmentSvc,
 		transactionRepo:   transactionRepo,
+		ruleRepo:          ruleRepo,
 		hotAccountRepo:    hotAccountRepo,
 		bufferAccountRepo: bufferAccountRepo,
 		logger:            loggers.API,
@@ -205,6 +210,7 @@ func (s *Server) ListenAndServe(ctx context.Context, port int, loadShed LoadShed
 	accountingv1.RegisterAccountingServiceServer(srv, s)
 	accountingv1.RegisterAccountingAdminServiceServer(srv, s)
 	accountingv1.RegisterFreezeServiceServer(srv, s)
+	RegisterTransactionServiceServer(srv, s) // SP-AC-7
 	reflection.Register(srv)
 
 	s.grpcSrv = srv

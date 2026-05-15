@@ -142,7 +142,7 @@ function MoneyNode({ data, selected }) {
   return React.createElement('div', { className: cls }, [
     React.createElement(Handle, { key: 'h-in',  type: 'target', position: Position.Left }),
     React.createElement('div', { key: 'name', className: 'name' }, data.label || data.id),
-    React.createElement('div', { key: 'tmpl', className: 'tmpl' }, data.account_template || ''),
+    React.createElement('div', { key: 'aid', className: 'tmpl' }, data.account_id_attr || ''),
     React.createElement(Handle, { key: 'h-out', type: 'source', position: Position.Right }),
   ]);
 }
@@ -176,7 +176,7 @@ function App() {
       id,
       type: 'money',
       position: pos,
-      data: { type, label: id, account_template: type === 'input' ? 'platform_collected/{merchant_id}' : '' },
+      data: { type, label: id, account_id_attr: '', amount_attr: '', currency_attr: '', auto_clear: false },
     }));
   };
 
@@ -231,15 +231,17 @@ function buildSpec(nodes, edges) {
     triggers: [{ event: $('trigger-event').value, filter: $('trigger-filter').value || undefined }],
     nodes: nodes.map(n => ({
       id: n.id, type: n.data.type, label: n.data.label,
-      account_template: n.data.account_template || '',
-      from_attr: n.data.from_attr || '',
-      optional: !!n.data.optional,
+      account_id_attr: n.data.account_id_attr || '',
+      amount_attr:    n.data.amount_attr    || '',
+      currency_attr:  n.data.currency_attr  || '',
+      auto_clear:     !!n.data.auto_clear,
     })),
     edges: edges.map(e => ({
       from: e.source, to: e.target,
-      kind: (e.data && e.data.kind) || 'transfer',
+      event_code:    (e.data && e.data.event_code)    || '',
+      kind:          (e.data && e.data.kind)          || 'transfer',
       dest_currency: (e.data && e.data.dest_currency) || '',
-      rule: (e.data && e.data.rule) || { type: 'remainder' },
+      rule:          (e.data && e.data.rule)          || { type: 'remainder' },
     })),
     guards: [
       { kind: 'amount_min', value: parseInt($('g-min').value) || 0 },
@@ -253,6 +255,7 @@ function buildSpec(nodes, edges) {
 
 function renderNodeForm(node, setNodes) {
   const d = node.data;
+  // SP-AC-7: 三件套 attr key — caller 在 event/request 里按 key 提供 (account_id, amount, currency).
   $('prop-form').innerHTML = `
     <label>ID</label><input class="field" value="${escapeHtml(node.id)}" disabled>
     <label>Type</label>
@@ -261,13 +264,17 @@ function renderNodeForm(node, setNodes) {
         `<option value="${t}" ${d.type===t?'selected':''}>${t}</option>`).join('')}
     </select>
     <label>Label</label><input class="field" id="p-label" value="${escapeHtml(d.label||'')}">
-    <label>Account template</label>
-    <input class="field" id="p-tmpl" value="${escapeHtml(d.account_template||'')}">
-    <label>From attribute (placeholder source)</label>
-    <input class="field" id="p-attr" value="${escapeHtml(d.from_attr||'')}">
-    <label><input type="checkbox" id="p-optional" ${d.optional?'checked':''}> optional (跳过 if missing)</label>
+
+    <h2 style="margin-top:14px;font-size:12px;color:#475569">Event/request 三件套 attr key</h2>
+    <label>Account ID attr <small style="color:#94a3b8">attributes[key] = account_id</small></label>
+    <input class="field" id="p-aid" value="${escapeHtml(d.account_id_attr||'')}" placeholder="e.g. user_id_account">
+    <label>Amount attr <small style="color:#94a3b8">默认 &lt;aid&gt;_amount</small></label>
+    <input class="field" id="p-amt" value="${escapeHtml(d.amount_attr||'')}" placeholder="留空走默认">
+    <label>Currency attr <small style="color:#94a3b8">默认 &lt;aid&gt;_currency</small></label>
+    <input class="field" id="p-cur" value="${escapeHtml(d.currency_attr||'')}" placeholder="留空走默认">
+    <label><input type="checkbox" id="p-auto-clear" ${d.auto_clear?'checked':''}> auto_clear (中间户立即清算)</label>
   `;
-  ['p-type','p-label','p-tmpl','p-attr','p-optional'].forEach(k => {
+  ['p-type','p-label','p-aid','p-amt','p-cur','p-auto-clear'].forEach(k => {
     const el = $(k);
     el.oninput = el.onchange = () => {
       setNodes((ns) => ns.map(n => n.id === node.id ? {
@@ -276,9 +283,10 @@ function renderNodeForm(node, setNodes) {
           ...n.data,
           type: $('p-type').value,
           label: $('p-label').value,
-          account_template: $('p-tmpl').value,
-          from_attr: $('p-attr').value,
-          optional: $('p-optional').checked,
+          account_id_attr: $('p-aid').value,
+          amount_attr: $('p-amt').value,
+          currency_attr: $('p-cur').value,
+          auto_clear: $('p-auto-clear').checked,
         },
       } : n));
     };
@@ -289,13 +297,19 @@ function renderEdgeForm(edge, setEdges) {
   const d = edge.data || {};
   d.kind = d.kind || 'transfer';
   d.rule = d.rule || { type: 'remainder' };
+  // SP-AC-7: event_code 是核心字段 — 多 edge 共享同一 event_code = 一次原子账务操作.
   $('prop-form').innerHTML = `
+    <label>Event code (TransactionRule 名字, 多 edge 同 code = 一次原子操作)</label>
+    <input class="field" id="r-event" value="${escapeHtml(d.event_code||'')}" placeholder="e.g. channel_settled / fee_cleared">
+
     <label>Kind</label>
     <select class="field" id="r-kind">
       <option value="transfer"        ${d.kind==='transfer'?'selected':''}>transfer</option>
       <option value="application_fee" ${d.kind==='application_fee'?'selected':''}>application_fee</option>
       <option value="payout"          ${d.kind==='payout'?'selected':''}>payout</option>
     </select>
+
+    <h2 style="margin-top:14px;font-size:12px;color:#475569">金额规则 (caller 未在 attrs 提供 amount 时兜底)</h2>
     <label>Rule type</label>
     <select class="field" id="r-type">
       <option value="percent"     ${d.rule.type==='percent'?'selected':''}>percent (bp)</option>
@@ -304,30 +318,25 @@ function renderEdgeForm(edge, setEdges) {
     </select>
     <label>Value</label>
     <input type="number" class="field" id="r-value" value="${d.rule.value || 0}">
-    <label>If missing</label>
-    <select class="field" id="r-missing">
-      <option value="skip"    ${d.rule.if_missing==='skip'?'selected':''}>skip</option>
-      <option value="fail"    ${d.rule.if_missing==='fail'?'selected':''}>fail</option>
-      <option value="default" ${d.rule.if_missing==='default'?'selected':''}>default</option>
-    </select>
     <label>Dest currency (跨币种, 空 = 同 trigger)</label>
     <input class="field" id="r-currency" value="${escapeHtml(d.dest_currency||'')}" placeholder="USD / EUR / CNY ...">
   `;
-  ['r-kind','r-type','r-value','r-missing','r-currency'].forEach(k => {
+  ['r-event','r-kind','r-type','r-value','r-currency'].forEach(k => {
     const el = $(k);
     el.oninput = el.onchange = () => {
       setEdges((es) => es.map(e => e.id === edge.id ? {
         ...e,
-        label: ruleLabel({ type: $('r-type').value, value: parseInt($('r-value').value) || 0 })
+        label: ($('r-event').value ? '[' + $('r-event').value + '] ' : '')
+             + ruleLabel({ type: $('r-type').value, value: parseInt($('r-value').value) || 0 })
              + ($('r-kind').value !== 'transfer' ? ' • ' + $('r-kind').value : ''),
         data: {
           ...e.data,
+          event_code: $('r-event').value,
           kind: $('r-kind').value,
           dest_currency: $('r-currency').value,
           rule: {
             type: $('r-type').value,
             value: parseInt($('r-value').value) || 0,
-            if_missing: $('r-missing').value,
           },
         },
       } : e));
@@ -379,14 +388,24 @@ async function loadGraph(key) {
       position: { x: 100 + i * 240, y: 100 },
       data: {
         type: n.type, label: n.label || n.id,
-        account_template: n.account_template, from_attr: n.from_attr, optional: n.optional,
+        account_id_attr: n.account_id_attr || '',
+        amount_attr:    n.amount_attr    || '',
+        currency_attr:  n.currency_attr  || '',
+        auto_clear:     !!n.auto_clear,
       },
     }));
     const reactEdges = (g.spec.edges || []).map(e => ({
       id: 'e_' + e.from + '_' + e.to,
       source: e.from, target: e.to,
-      label: ruleLabel(e.rule) + (e.kind && e.kind !== 'transfer' ? ' • ' + e.kind : ''),
-      data: { kind: e.kind || 'transfer', rule: e.rule, dest_currency: e.dest_currency },
+      label: (e.event_code ? '[' + e.event_code + '] ' : '')
+           + ruleLabel(e.rule)
+           + (e.kind && e.kind !== 'transfer' ? ' • ' + e.kind : ''),
+      data: {
+        event_code: e.event_code || '',
+        kind: e.kind || 'transfer',
+        rule: e.rule,
+        dest_currency: e.dest_currency,
+      },
     }));
     window._designer.setNodes(reactNodes);
     window._designer.setEdges(reactEdges);

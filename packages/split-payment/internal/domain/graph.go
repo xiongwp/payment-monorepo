@@ -66,42 +66,45 @@ type Trigger struct {
 	Filter string `json:"filter,omitempty"` // Starlark 表达式, e.g. `merchant.tier=="marketplace"`
 }
 
-// Node 节点 — 通常是一个账户 (account_id 模板)。
+// Node 节点 — 一个资金端点 (本质上就是 "谁的某类账户").
+//
+// SP-AC-7 瘦身:
+//   - 不再带 AccountType — 由 Edge.event_code → TransactionRule.debit/credit_subject 推导.
+//   - 不再带 AccountTemplate / FromAttr / Optional — 字符串拼 account_no 的 DIY 时代终结.
+//   - 不再带 PartyType — 由 AccountTypeInfo.owner_type 推导.
 //
 // Type 分类 (translator 不区分语义,纯 UI 标记给运营看清资金路径):
 //   - input:        资金来源 (顾客 / 渠道入金)
-//   - intermediate: 中间过渡户 (escrow / clearing / holding / hold-period 暂留户)
+//   - intermediate: 中间过渡户 (escrow / clearing / holding / suspense)
 //   - account:      普通收款方 (商户余额 / 推广员 / 物流方)
 //   - output:       最终账户 (清结算 / 平台主账户)
-//   - pool:         资金池 (历史保留, intermediate 取代了大部分场景)
 //
-// SP-AC-1: 真实账务模型对接
-//   - AccountType:    引用 accounting-system AccountTypeInfo.account_type
-//                     e.g. "PLATFORM_RECEIVABLE_CHANNEL" / "USER_WALLET" / "PLATFORM_FEE_CLEARING"
-//   - PartyType:      "user" / "merchant" / "platform" — 配合 PartyIDAttr 找具体 account_no
-//   - PartyIDAttr:    从 event.attributes 取 party_id 的 key
-//                     party_type=platform 时为空 (平台户 owner_type=3/4 不需要 party_id)
-//   - AutoClear:      intermediate 节点标 true → 进金后立即触发下游 (实时清算)
-//                     false → 等独立 event 触发 (T+0 cron / 手动)
+// Node 上的三件套 attr key —— 告诉运行时去 event/request payload 里取:
 //
-// 旧 AccountTemplate / FromAttr 字段保留兼容期, 优先级:
-//   AccountType 非空 → 走新模型 (accounting CreateTransaction)
-//   否则 → 走旧 Movement 拼分录
+//   AccountIDAttr  → attributes[key] = account_id   ("user_id_account"   → "42")
+//   AmountAttr     → attributes[key] = amount_minor ("user_id_account_amount"   → "9900")
+//   CurrencyAttr   → attributes[key] = currency     ("user_id_account_currency" → "CNY")
+//
+// 每个 key 在 caller (channel webhook / api 入参) 里都对应一组 (account_id, amount, currency).
+// translator 直接透传给 accounting.CreateTransaction, 不做任何模板拼接.
+//
+// 默认 convention (省 designer 配置):
+//   AmountAttr   空 → 用 AccountIDAttr + "_amount"
+//   CurrencyAttr 空 → 用 AccountIDAttr + "_currency"
+//   AccountIDAttr 空 → 用 node.ID (平台固定户 e.g. PLATFORM_FEE_REVENUE 全局唯一,不需要 caller 传)
 type Node struct {
 	ID    string `json:"id"`              // 图内唯一
-	Type  string `json:"type"`            // input / intermediate / account / output / pool
+	Type  string `json:"type"`            // input / intermediate / account / output (UI 分类)
 	Label string `json:"label,omitempty"` // UI 显示
 
-	// SP-AC-1 新模型 (推荐)
-	AccountType  string `json:"account_type,omitempty"`   // FK accounting.account_type_info
-	PartyType    string `json:"party_type,omitempty"`     // user / merchant / platform
-	PartyIDAttr  string `json:"party_id_attr,omitempty"`  // event.attributes 里的 key
-	AutoClear    bool   `json:"auto_clear,omitempty"`     // intermediate 进金立即清算
+	AccountIDAttr string `json:"account_id_attr,omitempty"` // attributes 里取 account_id 的 key
+	AmountAttr    string `json:"amount_attr,omitempty"`     // attributes 里取 amount (minor) 的 key
+	CurrencyAttr  string `json:"currency_attr,omitempty"`   // attributes 里取 currency 的 key
 
-	// 旧模型 (兼容过渡期)
-	AccountTemplate string `json:"account_template,omitempty"` // 字符串模板, 支持 {placeholder}
-	FromAttr        string `json:"from_attr,omitempty"`         // template 里 placeholder 的 attr 来源
-	Optional        bool   `json:"optional,omitempty"`          // attribute 缺失时跳过此节点
+	// AutoClear: intermediate 节点的实时清算开关.
+	// true  → 进金事件落账后立刻派生下游 event (实时清算)
+	// false → 等独立 event 触发 (cron / 人工)
+	AutoClear bool `json:"auto_clear,omitempty"`
 }
 
 // Edge 一条资金流: from → to, 按 rule 决定金额。
@@ -122,12 +125,16 @@ type Edge struct {
 	// 配了 e.g. "EUR" → translator 调 FX 换算后写 Transfer.Currency.
 	DestCurrency string `json:"dest_currency,omitempty"`
 
-	// SP-AC-1: 真实账务模型对接.
-	// EventCode 引用 accounting-system TransactionRule.event_code,
+	// EventCode: 引用 accounting TransactionRule.event_code, 一条 rule 的名字.
 	// 配合 GraphSpec.Scenario (= product_code) 唯一确定一条 rule.
-	// engine 触发时调 accounting.CreateTransaction(product=scenario, event=event_code, amount=...).
 	//
-	// 空 → 走旧路径 (Movement 直接拼分录).
+	// 关键语义 (SP-AC-7):
+	//   多条 edge 可以共享同一个 EventCode → 这些 edge 一起组成 **一次原子账户操作** (一条 rule).
+	//   例: 三方分账规则 "split_with_fee" 涉及 3 个账户、3 条 edge, 全挂同一个 event_code,
+	//   translator 把它们打包成一个 TransactionRequest, accounting 一次落账 (要么全成要么全失败).
+	//
+	// 调用时 caller 传 (scenario, event_code) + 三件套 attribute (account_id/amount/currency),
+	// accounting-system 拿到后查 rule → 拆借贷 → 一笔原子落账.
 	EventCode string `json:"event_code,omitempty"`
 }
 

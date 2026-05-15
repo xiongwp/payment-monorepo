@@ -1,41 +1,31 @@
-// transaction_request.go — SP-AC-1 Translator 输出新格式.
+// transaction_request.go — Translator 输出格式 (账务系统调用入参).
 //
-// 替代旧 Movement (from_acc, to_acc, amount), 升级为引用 accounting TransactionRule:
+// SP-AC-7 重构:
+//   一个 rule (= event_code) 可以包含多条 edge → 一次原子账务操作可涉及 ≥ 2 个账户.
+//   所以 TransactionRequest 是 multi-leg 的: 携带一个 Legs 数组, 每条 leg 一对账户.
 //
-//   旧: Movement{from_account: "user_wallet/u_xxx", to_account: "platform_fee/", amount: 100}
-//       engine → accounting.PostMovements (自己拼借贷)
-//
-//   新: TransactionRequest{product_code:"user_topup", event_code:"channel_settled_to_user",
-//                          from_party_id:42, from_party_type:"user",
-//                          to_party_id:0,    to_party_type:"platform",
-//                          amount:10000, business_no:"topup_xxx"}
-//       engine → accounting.CreateTransaction (rule 自动拆借贷)
-//
-// 一个 Graph execution → N 个 TransactionRequest (按 edge 顺序, saga step 各跑一条).
+//   触发流程:
+//     1. caller 把 (account_id, amount, currency) 按 node.account_id_attr 三件套塞进 attributes
+//     2. translator 按 event_code 分组 edge → 生成 N 个 TransactionRequest
+//     3. accounting.CreateTransaction 一次原子落账 (Legs 一起成功或一起失败)
 package domain
 
 import "time"
 
-// TransactionRequest 给 accounting.CreateTransaction 的入参.
+// TransactionRequest 给 accounting.CreateTransaction 的入参 (multi-leg).
 type TransactionRequest struct {
 	// 幂等 + 业务关联
-	OrderNo      string `json:"order_no"`      // 外部幂等键 (e.g. graph_run_id + edge_id)
-	BusinessNo   string `json:"business_no"`   // 业务 ID, 分片键 (e.g. topup_xxx / charge_xxx)
+	OrderNo      string `json:"order_no"`      // 外部幂等键 (graph_run_id + event_code)
+	BusinessNo   string `json:"business_no"`   // 业务 ID (e.g. topup_xxx), 分片键
 	BusinessType string `json:"business_type"` // user_topup / marketplace_split / ...
 
-	// 规则路由
+	// 规则路由 — accounting 用 (product_code, event_code) 找 TransactionRule
 	ProductCode string `json:"product_code"` // = GraphSpec.Scenario
-	EventCode   string `json:"event_code"`   // = Edge.EventCode
+	EventCode   string `json:"event_code"`   // = Edge.EventCode (= rule 名字)
 
-	// 参与方
-	FromPartyID   int64  `json:"from_party_id"`
-	FromPartyType string `json:"from_party_type"` // user / merchant / platform
-	ToPartyID     int64  `json:"to_party_id"`
-	ToPartyType   string `json:"to_party_type"`
-
-	// 金额
-	Amount   string `json:"amount"`   // 字符串保精度 (accounting 内部用 string)
-	Currency string `json:"currency"`
+	// Legs — 一个 rule 包含的所有 edge 的资金流, 一起原子落账.
+	// 顺序由 translator 决定 (remainder 永远最后, 防尾差).
+	Legs []TxnLeg `json:"legs"`
 
 	// 元信息
 	Description string            `json:"description,omitempty"`
@@ -43,10 +33,20 @@ type TransactionRequest struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 
 	// runtime 字段 (落 RunPlan 用)
-	EdgeFromNode string    `json:"edge_from_node,omitempty"`
-	EdgeToNode   string    `json:"edge_to_node,omitempty"`
-	Status       string    `json:"status,omitempty"` // pending / posted / failed
-	VoucherNo    string    `json:"voucher_no,omitempty"`
-	ErrorMsg     string    `json:"error_msg,omitempty"`
-	CreatedAt    time.Time `json:"created_at,omitempty"`
+	Status    string    `json:"status,omitempty"` // pending / posted / failed
+	VoucherNo string    `json:"voucher_no,omitempty"`
+	ErrorMsg  string    `json:"error_msg,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+}
+
+// TxnLeg 一条资金流 (from_account → to_account, 一笔金额).
+//
+// 同一个 TransactionRequest 里的所有 Leg 必须用同一币种 (accounting 不支持跨币种原子操作).
+type TxnLeg struct {
+	EdgeFromNode  string `json:"edge_from_node"`
+	EdgeToNode    string `json:"edge_to_node"`
+	FromAccountID string `json:"from_account_id"`
+	ToAccountID   string `json:"to_account_id"`
+	Amount        string `json:"amount"` // 字符串保精度 (单位 minor)
+	Currency      string `json:"currency"`
 }

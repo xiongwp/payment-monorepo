@@ -298,7 +298,7 @@ function render() {
     g.innerHTML = `
       <rect class="node-rect ${n.type} ${sel ? 'selected' : ''}" x="${x}" y="${y}" width="180" height="44" rx="6"/>
       <text class="node-label" x="${x+10}" y="${y+18}" fill="#1a1a2e" font-weight="600">${escapeHtml(n.label||n.id)}</text>
-      <text class="node-label" x="${x+10}" y="${y+34}" fill="#888" font-size="10">${escapeHtml(n.account_template||'')}</text>
+      <text class="node-label" x="${x+10}" y="${y+34}" fill="#888" font-size="10">${escapeHtml(n.account_id_attr||'')}</text>
       <!-- 右侧拖线 handle: 直接从这个圆点拖到另一节点连边 -->
       <circle class="node-handle" cx="${x+180}" cy="${y+22}" r="5" data-handle="${n.id}"/>
     `;
@@ -382,10 +382,7 @@ function renderPropForm(kind, obj) {
   const form = $('prop-form');
   if (!obj) { form.innerHTML = '<p style="color:#888">无</p>'; return; }
   if (kind === 'node') {
-    // SP-AC-4: account_type 下拉从 /api/accounting/account_types 拉
-    const acctOpts = (window._accountTypes || []).map(a =>
-      `<option value="${a.account_type}" ${obj.account_type===a.account_type?'selected':''}>${a.account_type} — ${a.account_type_name||a.description||''}</option>`
-    ).join('');
+    // SP-AC-7: 只剩三件套 attr key — caller 在 event/request 里按 key 提供 (account_id, amount, currency).
     form.innerHTML = `
       <label>ID</label><input class="field" id="p-id" value="${obj.id}" disabled>
       <label>Type (UI 分类)</label>
@@ -397,42 +394,34 @@ function renderPropForm(kind, obj) {
       </select>
       <label>Label</label><input class="field" id="p-label" value="${escapeHtml(obj.label||'')}">
 
-      <h2 style="margin-top:14px">accounting 绑定 (SP-AC)</h2>
-      <label>Account type (引用 AccountTypeInfo)</label>
-      <select class="field" id="p-acct">
-        <option value="">— 选 Account Type —</option>
-        ${acctOpts}
-      </select>
-      <label>Party type</label>
-      <select class="field" id="p-party">
-        <option value="">—</option>
-        <option value="user"     ${obj.party_type==='user'?'selected':''}>user</option>
-        <option value="merchant" ${obj.party_type==='merchant'?'selected':''}>merchant</option>
-        <option value="platform" ${obj.party_type==='platform'?'selected':''}>platform</option>
-      </select>
-      <label>Party ID attribute (event.attributes.&lt;key&gt;)</label>
-      <input class="field" id="p-party-attr" value="${escapeHtml(obj.party_id_attr||'')}" placeholder="e.g. user_id / seller_id">
+      <h2 style="margin-top:14px">Event/request 三件套 attr key</h2>
+      <label>Account ID attr <small style="color:var(--text-faint)">attributes[key] = account_id</small></label>
+      <input class="field" id="p-aid" value="${escapeHtml(obj.account_id_attr||'')}" placeholder="e.g. user_id_account / fee_account">
+      <label>Amount attr <small style="color:var(--text-faint)">默认 &lt;aid&gt;_amount</small></label>
+      <input class="field" id="p-amt" value="${escapeHtml(obj.amount_attr||'')}" placeholder="可留空, 默认 user_id_account_amount">
+      <label>Currency attr <small style="color:var(--text-faint)">默认 &lt;aid&gt;_currency</small></label>
+      <input class="field" id="p-cur" value="${escapeHtml(obj.currency_attr||'')}" placeholder="可留空, 默认 user_id_account_currency">
       <label><input type="checkbox" id="p-auto-clear" ${obj.auto_clear?'checked':''}> auto_clear (中间户立即清算)</label>
-
-      <h2 style="margin-top:14px">旧字段 (兼容)</h2>
-      <label>Account template</label>
-      <input class="field" id="p-tmpl" value="${escapeHtml(obj.account_template||'')}">
-      <label>From attribute</label>
-      <input class="field" id="p-attr" value="${escapeHtml(obj.from_attr||'')}">
-      <label><input type="checkbox" id="p-optional" ${obj.optional?'checked':''}> optional</label>
+      <small style="color:var(--text-faint);font-size:10px;display:block;margin-top:6px;line-height:1.4">
+        平台固定户 (PLATFORM_FEE_REVENUE 等) 三件套全留空 → 用 node.ID 兜底.<br>
+        accounting-system 根据 (product_code, event_code) 查 TransactionRule 自动定位平台户.
+      </small>
     `;
-    ['p-type','p-label','p-acct','p-party','p-party-attr','p-auto-clear',
-     'p-tmpl','p-attr','p-optional'].forEach(k => {
+    ['p-type','p-label','p-aid','p-amt','p-cur','p-auto-clear'].forEach(k => {
       $(k).oninput = $(k).onchange = () => {
         obj.type = $('p-type').value;
         obj.label = $('p-label').value;
-        obj.account_type = $('p-acct').value;
-        obj.party_type = $('p-party').value;
-        obj.party_id_attr = $('p-party-attr').value;
+        obj.account_id_attr = $('p-aid').value;
+        obj.amount_attr = $('p-amt').value;
+        obj.currency_attr = $('p-cur').value;
         obj.auto_clear = $('p-auto-clear').checked;
-        obj.account_template = $('p-tmpl').value;
-        obj.from_attr = $('p-attr').value;
-        obj.optional = $('p-optional').checked;
+        // 清理掉旧字段
+        delete obj.account_type;
+        delete obj.party_type;
+        delete obj.party_id_attr;
+        delete obj.account_template;
+        delete obj.from_attr;
+        delete obj.optional;
         render();
       };
     });
@@ -490,14 +479,8 @@ function renderPropForm(kind, obj) {
   }
 }
 
-// SP-AC-4: 启动期 + 选 Scenario 时拉 account_types / transaction_rules.
-async function loadAccountTypes() {
-  try {
-    const r = await fetch('/api/accounting/account_types');
-    if (!r.ok) { console.warn('account_types HTTP', r.status); return; }
-    window._accountTypes = await r.json();
-  } catch (e) { console.warn('account_types', e); window._accountTypes = []; }
-}
+// SP-AC-7: account_types 不再需要 (Node 不绑 AccountType, 由 rule 推导).
+// 仍然拉 transaction_rules 用于 edge.event_code picker.
 async function loadTransactionRules(scenario) {
   if (!scenario) { window._txnRules = []; return; }
   try {
@@ -510,7 +493,8 @@ async function loadTransactionRules(scenario) {
 function addNode(type) {
   const id = type + '_' + (state.graph.spec.nodes.length + 1);
   state.graph.spec.nodes.push({
-    id, type, label: type, account_template: type==='input' ? 'platform_collected/{merchant_id}' : '',
+    id, type, label: type,
+    account_id_attr: '', amount_attr: '', currency_attr: '', auto_clear: false,
     x: 50 + state.graph.spec.nodes.length * 200, y: 100,
   });
   render();
@@ -552,7 +536,8 @@ svg.ondrop = (e) => {
   const r = svg.getBoundingClientRect();
   const id = t + '_' + (state.graph.spec.nodes.length + 1);
   state.graph.spec.nodes.push({
-    id, type: t, label: t, account_template: '',
+    id, type: t, label: t,
+    account_id_attr: '', amount_attr: '', currency_attr: '', auto_clear: false,
     x: e.clientX - r.left - 90, y: e.clientY - r.top - 22,
   });
   render();
@@ -656,9 +641,8 @@ $('scenario').onchange = async () => {
   }
 };
 
-// 启动期拉 account_types + 初始化 scenario 下拉
+// 启动期初始化 scenario 下拉 (SP-AC-7: 不再需要 loadAccountTypes)
 (async function initAccountingMeta() {
-  await loadAccountTypes();
   // 已知 scenario 列表 (硬编码 + 后续可从 /api/accounting/transaction_rules 取 product_code 去重)
   const scenarioSel = $('scenario');
   // 拉所有 rule, 取 distinct product_code 填 scenario 下拉
