@@ -13,8 +13,8 @@
 //   →
 //   { "decision": "allow|review|deny", "score": 65, "rule_id": "marketplace_high_amount", "reason": "..." }
 //
-// 适配 split-payment/internal/workflow.RiskClient / AMLClient 接口.
-package clients
+// 适配 split-payment/internal/RiskClient / AMLClient 接口.
+package workflow
 
 import (
 	"bytes"
@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/workflow"
 )
 
 // HTTPRiskClient 通过 HTTP-JSON 调 risk-manage 服务.
@@ -44,8 +43,8 @@ func NewHTTPRiskClient(baseURL, token string) *HTTPRiskClient {
 	}
 }
 
-// Evaluate impl workflow.RiskClient.
-func (c *HTTPRiskClient) Evaluate(ctx context.Context, req workflow.RiskRequest) (*workflow.RiskResult, error) {
+// Evaluate impl RiskClient.
+func (c *HTTPRiskClient) Evaluate(ctx context.Context, req RiskRequest) (*RiskResult, error) {
 	return c.call(ctx, "/v1/evaluate", req)
 }
 
@@ -65,14 +64,14 @@ func NewHTTPAMLClient(baseURL, token string) *HTTPAMLClient {
 	}
 }
 
-// Screen impl workflow.AMLClient.
-func (c *HTTPAMLClient) Screen(ctx context.Context, req workflow.RiskRequest) (*workflow.RiskResult, error) {
+// Screen impl AMLClient.
+func (c *HTTPAMLClient) Screen(ctx context.Context, req RiskRequest) (*RiskResult, error) {
 	hr := &HTTPRiskClient{BaseURL: c.BaseURL, HTTPClient: c.HTTPClient, AuthToken: c.AuthToken}
 	return hr.call(ctx, "/v1/screen", req)
 }
 
 // call 共用逻辑.
-func (c *HTTPRiskClient) call(ctx context.Context, path string, req workflow.RiskRequest) (*workflow.RiskResult, error) {
+func (c *HTTPRiskClient) call(ctx context.Context, path string, req RiskRequest) (*RiskResult, error) {
 	if c.BaseURL == "" {
 		return nil, errors.New("risk client: base url empty")
 	}
@@ -105,11 +104,11 @@ func (c *HTTPRiskClient) call(ctx context.Context, path string, req workflow.Ris
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
-	d := workflow.RiskDecision(out.Decision)
+	d := RiskDecision(out.Decision)
 	if d == "" {
-		d = workflow.RiskAllow
+		d = RiskAllow
 	}
-	return &workflow.RiskResult{
+	return &RiskResult{
 		Decision: d, Score: out.Score, RuleID: out.RuleID, Reason: out.Reason,
 	}, nil
 }

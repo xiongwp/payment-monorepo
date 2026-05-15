@@ -259,11 +259,11 @@ func main() {
 		var riskCli workflow.RiskClient = workflow.AlwaysAllowRisk{}
 		var amlCli workflow.AMLClient = workflow.AlwaysAllowAML{}
 		if u := envOr("RISK_HTTP_URL", ""); u != "" {
-			riskCli = clients.NewHTTPRiskClient(u, envOr("RISK_AUTH_TOKEN", ""))
+			riskCli = workflow.NewHTTPRiskClient(u, envOr("RISK_AUTH_TOKEN", ""))
 			log.Info("risk client: http", zap.String("url", u))
 		}
 		if u := envOr("AML_HTTP_URL", ""); u != "" {
-			amlCli = clients.NewHTTPAMLClient(u, envOr("AML_AUTH_TOKEN", ""))
+			amlCli = workflow.NewHTTPAMLClient(u, envOr("AML_AUTH_TOKEN", ""))
 			log.Info("aml client: http", zap.String("url", u))
 		}
 		engine.RiskGate = &workflow.RiskGate{
@@ -290,7 +290,7 @@ func main() {
 
 	// SP-3C + SP-FIN-1: FX client (env FX_HTTP_URL 配了走真实, 否则 static 占位).
 	if u := envOr("FX_HTTP_URL", ""); u != "" {
-		engine.FX = clients.NewHTTPFXClient(u, envOr("FX_AUTH_TOKEN", ""))
+		engine.FX = workflow.NewHTTPFXClient(u, envOr("FX_AUTH_TOKEN", ""))
 		log.Info("fx client: http", zap.String("url", u))
 	} else {
 		engine.FX = workflow.StaticFXClient{

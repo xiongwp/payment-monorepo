@@ -5,7 +5,7 @@
 //   GET {url}/v1/rates?from=USD&to=EUR
 //   →
 //   { "from":"USD", "to":"EUR", "rate":0.9234, "source":"fx-service", "fetched_at": "2026-05-15T01:23:45Z" }
-package clients
+package workflow
 
 import (
 	"context"
@@ -16,7 +16,6 @@ import (
 	"net/url"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/workflow"
 )
 
 // HTTPFXClient FX 服务客户端.
@@ -33,7 +32,7 @@ type fxCache struct {
 }
 
 type fxCacheEntry struct {
-	snap *workflow.FXSnapshot
+	snap *FXSnapshot
 	exp  time.Time
 }
 
@@ -47,12 +46,12 @@ func NewHTTPFXClient(baseURL, token string) *HTTPFXClient {
 	}
 }
 
-// GetRate impl workflow.FXClient.
+// GetRate impl FXClient.
 //
 // 5min cache + 2s timeout. 失败返 error (caller 决定是否 fallback).
-func (c *HTTPFXClient) GetRate(ctx context.Context, from, to string) (*workflow.FXSnapshot, error) {
+func (c *HTTPFXClient) GetRate(ctx context.Context, from, to string) (*FXSnapshot, error) {
 	if from == to {
-		return &workflow.FXSnapshot{FromCurrency: from, ToCurrency: to, Rate: 1, Source: "identity", FetchedAt: time.Now().UTC()}, nil
+		return &FXSnapshot{FromCurrency: from, ToCurrency: to, Rate: 1, Source: "identity", FetchedAt: time.Now().UTC()}, nil
 	}
 	key := from + "-" + to
 	if ent, ok := c.cache.rates[key]; ok && time.Now().Before(ent.exp) {
@@ -91,7 +90,7 @@ func (c *HTTPFXClient) GetRate(ctx context.Context, from, to string) (*workflow.
 	if t.IsZero() {
 		t = time.Now().UTC()
 	}
-	snap := &workflow.FXSnapshot{
+	snap := &FXSnapshot{
 		ID:           "fxs_" + fmt.Sprintf("%d", time.Now().UnixNano()),
 		FromCurrency: out.From, ToCurrency: out.To,
 		Rate: out.Rate, Source: out.Source, FetchedAt: t,
