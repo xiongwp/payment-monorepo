@@ -922,7 +922,13 @@ services:
       KMS_GRPC_ADDR:          "kms-manage:9290"
       RISK_GRPC_ADDR:         "risk-manage:9490"
       USER_MERCHANT_GRPC_ADDR: "user-merchant-core:9191"
+      # SP-AC: split-payment 是内部 gRPC 服务 (graph CRUD / dry-run / runs).
+      # BFF 通过 gRPC 调它, 不再做 HTTP reverse-proxy.
+      SPLIT_PAYMENT_GRPC_ADDR: "host.docker.internal:9098"
+      ACCOUNTING_GRPC_ADDR:    "accounting-system:50051"
       PORT: "9190"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   payment-admin-frontend:
     # 前端 Dockerfile 只做 npm build，不需要 GITHUB_TOKEN

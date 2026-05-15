@@ -1,17 +1,21 @@
-// split-payment server — Money Flow Graph 编排服务入口。
+// split-payment server — Money Flow Graph 编排服务入口 (SP-AC-7 pure gRPC).
 //
 // 起:
 //   ACCOUNTING_GRPC_ADDR=accounting-system:9091 \
-//   SPLIT_HTTP_PORT=8098 \
+//   SPLIT_GRPC_PORT=9098 \
 //   go run ./cmd/server
 //
-// 端点:
-//   GET    /healthz
-//   GET    /metrics
-//   /api/moneyflow/*  — graph CRUD + dry-run + runs search
+// 暴露:
+//   gRPC :9098  — split_payment.v1.AdminService (Graph CRUD / DryRun)
+//                  admin-web BFF 通过这个端口调
 //
 // 后台:
-//   Kafka 订阅业务事件 → workflow.Engine.Handle → translator → accounting
+//   Kafka 订阅业务事件 → workflow.Engine.Handle → translator → accounting (gRPC)
+//   Payout cron / refund subscriber / saga recovery 等内部 worker
+//
+// SP-AC-7 改造: HTTP server 全部下线 (旧路径: adminhttp.Server + StripeAPIServer +
+// ReviewsServer + Stripe 兼容层). 业务调用一律走 gRPC, 通信对端 (admin-web / accounting-system)
+// 跟着切换. 外部 Stripe API 兼容如需保留, 后续在独立的 stripe-gateway 服务里做.
 
 package main
 
@@ -19,17 +23,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/adminhttp"
 	"reconcile-system/packages/split-payment/internal/clients"
 	"reconcile-system/packages/split-payment/internal/domain"
+	"reconcile-system/packages/split-payment/internal/grpcsvc"
 	"reconcile-system/packages/split-payment/internal/repo"
 	"reconcile-system/packages/split-payment/internal/workflow"
 
@@ -45,7 +48,8 @@ func main() {
 	log, _ := zap.NewProduction()
 	defer log.Sync()
 
-	port := envOr("SPLIT_HTTP_PORT", "8098")
+	// SP-AC-7: HTTP server 已废除, split-payment 现是纯 gRPC 内部服务.
+	// SPLIT_GRPC_PORT 由 runAdminGRPCServer 读取 (默认 9098).
 	accAddr := envOr("ACCOUNTING_GRPC_ADDR", "accounting-system:9091")
 
 	// 1. accounting client (gRPC)
@@ -71,8 +75,6 @@ func main() {
 	var (
 		graphRepo workflow.GraphRepo
 		runRepo   workflow.RunRepo
-		// SP-4 Stripe-style 资源对象 API (nil = memory 模式不挂)
-		stripeAPI *adminhttp.StripeAPIServer
 		// SP-6 typed repos 注到 engine 用 (nil = 跑老路径不持 typed 对象)
 		engAccRepo  workflow.AccountRepo
 		engTrRepo   workflow.TransferRepo
@@ -128,11 +130,9 @@ func main() {
 		feeRepo := repo.NewAppFeeRepo(db)
 		poRepo := repo.NewPayoutRepo(db)
 		rvRepo := repo.NewReversalRepo(db)
-		// 把 Stripe API server 也挂到 mux (会在下方 Register).
-		stripeAPI = &adminhttp.StripeAPIServer{
-			Accounts: accRepo, Transfers: trRepo, Fees: feeRepo,
-			Payouts: poRepo, Reversals: rvRepo, Log: log,
-		}
+		// SP-AC-7: Stripe-style 外部 HTTP API (StripeAPIServer) 已下线 —
+		// split-payment 转为纯 gRPC 内部服务. typed repos 仍然喂给 engine 做持久化.
+		_ = rvRepo // reserved for future gRPC Reversal service
 		// SP-6: 注到 engine 走 capability gate + typed 对象持久化
 		engAccRepo = accRepo
 		engTrRepo = trRepo
@@ -304,55 +304,30 @@ func main() {
 		log.Info("fx client: static rates (set FX_HTTP_URL to use real fx-service)")
 	}
 
-	// 5. HTTP server (admin API + dry-run + health)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte("ok"))
-	})
-	// adminhttp.Server 接受 GraphRepo / RunRepo 接口 — workflow 包同名接口的子集.
-	// 这里把 workflow.* 实例换成 adminhttp 视角 (Save/GetByKey/List + Search).
-	// memory / mysql 实现都满足.
-	adminGraphs, _ := graphRepo.(adminhttp.GraphRepo)
-	adminRuns, _ := runRepo.(adminhttp.RunRepo)
-	(&adminhttp.Server{Graphs: adminGraphs, Runs: adminRuns, Log: log}).Register(mux)
-	if stripeAPI != nil {
-		stripeAPI.Register(mux)
-		log.Info("stripe-style API registered (/api/connected_accounts, /api/transfers, /api/application_fees, /api/payouts)")
+	// 5. SP-AC-7: split-payment 转为纯 gRPC 内部服务.
+	//    旧 HTTP server (adminhttp.Server + StripeAPIServer + ReviewsServer + Stripe compat)
+	//    全部下线. admin-web BFF 现在通过 gRPC AdminService 调本服务.
+	//
+	//    graphRepo 是 workflow.GraphRepo 类型, 我们的 grpcsvc.GraphRepo 接口形态一致
+	//    (Save/GetByKey/List), MemoryGraphRepo / MySQLGraphRepo 都满足两边.
+	sgGraphs, _ := graphRepo.(grpcsvc.GraphRepo)
+	if sgGraphs == nil {
+		log.Fatal("graphRepo does not satisfy grpcsvc.GraphRepo (missing Save/GetByKey/List)")
 	}
-	// SP-FIN-4: 4-eyes approval reviews API (仅 MySQL 模式)
-	if reviewRepo, ok := runRepo.(adminhttp.ReviewableRunRepo); ok {
-		reviewsServer := &adminhttp.ReviewsServer{
-			Runs:     reviewRepo,
-			Executor: engine,
-			Events:   eventPub,
-			Log:      log,
-		}
-		reviewsServer.Register(mux)
-		log.Info("4-eyes reviews API registered (/api/moneyflow/reviews)")
-	}
-
-	// SP-FIN-5: Stripe API 兼容层 (Idempotency-Key + /v1/ alias).
-	// 内存 store 适合单节点 dev; 生产替换为 Redis 实现.
-	idemStore := adminhttp.NewMemoryIdempotencyStore()
-	finalHandler := adminhttp.WithStripeCompat(mux, idemStore)
-	log.Info("stripe compat enabled: idempotency-key + /v1/* alias")
-
-	srv := &http.Server{
-		Addr: ":" + port, Handler: finalHandler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	// runRepo / engine 仍然在用 (kafka subscriber / saga / payout cron 都引用), 但
+	// 不再通过 HTTP 暴露给前端. 4-eyes approval / runs/search 等查询如需要, 后续
+	// 在 grpcsvc.AdminService 里加 RPC 方法.
+	_ = runRepo // 当前 gRPC AdminService 还没加 ListRuns / GetRun / ApproveRun 等方法
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	log.Info("split-payment listening",
-		zap.String("addr", srv.Addr), zap.String("accounting", accAddr))
+	log.Info("split-payment internal gRPC service starting",
+		zap.String("grpc_port", envOr("SPLIT_GRPC_PORT", "9098")),
+		zap.String("accounting", accAddr))
 
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("serve", zap.Error(err))
-		}
-	}()
+	// SP-AC-7: gRPC AdminService — admin-web BFF 通过此端口调.
+	go runAdminGRPCServer(ctx, log, sgGraphs)
 
 	// SP-FIN-2: PayoutDispatchWorker — pending → in_transit 状态机.
 	// 调 clearing-settlement 服务 (env CLEARING_HTTP_URL 配了走真实, 否则 Noop).
@@ -486,6 +461,26 @@ func maskDSN(dsn string) string {
 		return left + "@" + dsn[at+1:]
 	}
 	return left[:colon] + ":***@" + dsn[at+1:]
+}
+
+// runAdminGRPCServer — SP-AC-7 启动 split-payment gRPC AdminService.
+//
+// admin-web BFF 通过这个 gRPC 端口调 Graph CRUD / DryRun (取代旧 HTTP reverse-proxy).
+// 监听端口由 env SPLIT_GRPC_PORT 控制 (默认 9098).
+func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.GraphRepo) {
+	port := envOr("SPLIT_GRPC_PORT", "9098")
+	lis, err := net.Listen("tcp", ":"+port)
+	if err != nil {
+		log.Error("split gRPC listen failed", zap.Error(err))
+		return
+	}
+	srv := grpc.NewServer()
+	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, log))
+	log.Info("split-payment gRPC AdminService listening", zap.String("port", port))
+	go func() { <-ctx.Done(); srv.GracefulStop() }()
+	if err := srv.Serve(lis); err != nil {
+		log.Error("split gRPC serve", zap.Error(err))
+	}
 }
 
 // accountingGRPCAdapter — SP-AC-7 把 clients.AccountingGRPCClient 适配成 workflow.AccountingMetaCaller.

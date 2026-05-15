@@ -224,18 +224,14 @@ func main() {
 	api.HandleFunc("/risk/mlscore/challengers/promote", riskH.ChallengerPromote).Methods("POST", "OPTIONS")
 	api.HandleFunc("/risk/mlscore/challengers/drop", riskH.ChallengerDrop).Methods("POST", "OPTIONS")
 
-	// MF-2 + SP-13: Money Flow Designer + Stripe-style 资源 API + 资源管理页.
+	// MF-2 + SP-AC-7: Money Flow Designer 通过 gRPC 调 split-payment AdminService.
 	moneyflowH := handler.NewMoneyflowHandler()
 	api.HandleFunc("/moneyflow/_health", moneyflowH.Health).Methods("GET", "OPTIONS")
-	// /api/moneyflow/* (graphs / dry-run / runs/search) 透传到 split-payment
+	// /api/moneyflow/* (graphs / dry-run) → handler 内部按 path 路由到 gRPC 方法
 	api.PathPrefix("/moneyflow/").HandlerFunc(moneyflowH.Proxy)
-	// SP-13: Stripe-style 资源对象 API 也透传 (accounts / transfers / fees / payouts)
-	api.PathPrefix("/connected_accounts").HandlerFunc(moneyflowH.Proxy)
-	api.PathPrefix("/connected_accounts/").HandlerFunc(moneyflowH.Proxy)
-	api.PathPrefix("/transfers").HandlerFunc(moneyflowH.Proxy)
-	api.PathPrefix("/transfers/").HandlerFunc(moneyflowH.Proxy)
-	api.PathPrefix("/application_fees").HandlerFunc(moneyflowH.Proxy)
-	api.PathPrefix("/payouts").HandlerFunc(moneyflowH.Proxy)
+	// SP-13 Stripe-style 资源 API (accounts / transfers / fees / payouts) 暂时下线:
+	// split-payment 转为纯 gRPC 内部服务后, 这些外部 HTTP 端点要么挪到独立服务,
+	// 要么走 BFF gRPC bridge 重做. 当前路径直接 404, 等独立 gRPC 服务上线再补.
 	// /moneyflow → designer HTML; /moneyflow/resources → 资源管理 (SP-13)
 	r.HandleFunc("/moneyflow", moneyflowH.Designer).Methods("GET")
 	r.HandleFunc("/moneyflow/", moneyflowH.Designer).Methods("GET")
