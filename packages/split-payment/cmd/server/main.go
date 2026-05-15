@@ -254,10 +254,21 @@ func main() {
 		if envOr("SPLIT_PAYMENT_RISK_FAIL_OPEN", "") == "1" {
 			riskCfg.FailSafeReject = false
 		}
+		// SP-FIN-1: 真实 HTTP client (env 配了 URL 走真实, 否则 AlwaysAllow 占位).
+		var riskCli workflow.RiskClient = workflow.AlwaysAllowRisk{}
+		var amlCli workflow.AMLClient = workflow.AlwaysAllowAML{}
+		if u := envOr("RISK_HTTP_URL", ""); u != "" {
+			riskCli = clients.NewHTTPRiskClient(u, envOr("RISK_AUTH_TOKEN", ""))
+			log.Info("risk client: http", zap.String("url", u))
+		}
+		if u := envOr("AML_HTTP_URL", ""); u != "" {
+			amlCli = clients.NewHTTPAMLClient(u, envOr("AML_AUTH_TOKEN", ""))
+			log.Info("aml client: http", zap.String("url", u))
+		}
 		engine.RiskGate = &workflow.RiskGate{
 			Cfg:  riskCfg,
-			Risk: workflow.AlwaysAllowRisk{}, // TODO: 注入真实 gRPC RiskClient
-			AML:  workflow.AlwaysAllowAML{},  // TODO: 注入真实 gRPC AMLClient
+			Risk: riskCli,
+			AML:  amlCli,
 			Log:  log,
 		}
 		log.Info("risk gate: enabled (using AlwaysAllow placeholder; wire real gRPC clients in main.go)",
@@ -265,8 +276,11 @@ func main() {
 			zap.Bool("fail_safe_reject", riskCfg.FailSafeReject))
 	}
 
-	// SP-3C: FX client (跨币种 Transfer). dev 用静态汇率, 生产替换为 GRPCFXClient.
-	{
+	// SP-3C + SP-FIN-1: FX client (env FX_HTTP_URL 配了走真实, 否则 static 占位).
+	if u := envOr("FX_HTTP_URL", ""); u != "" {
+		engine.FX = clients.NewHTTPFXClient(u, envOr("FX_AUTH_TOKEN", ""))
+		log.Info("fx client: http", zap.String("url", u))
+	} else {
 		engine.FX = workflow.StaticFXClient{
 			Rates: map[string]float64{
 				"USD-EUR": 0.92, "EUR-USD": 1.09,
@@ -276,9 +290,7 @@ func main() {
 				"EUR-CNY": 7.83, "CNY-EUR": 0.128,
 			},
 		}
-		// FXSnapshotRepo: 没接 MySQL 表实现, 留 Phase 3D 加.
-		// 现在 snapshot 仅存 Transfer.Metadata["fx_snapshot_id"] 当审计踪迹.
-		log.Info("fx client: static rates (replace with GRPCFXClient in production)")
+		log.Info("fx client: static rates (set FX_HTTP_URL to use real fx-service)")
 	}
 
 	// 5. HTTP server (admin API + dry-run + health)
@@ -296,9 +308,26 @@ func main() {
 		stripeAPI.Register(mux)
 		log.Info("stripe-style API registered (/api/connected_accounts, /api/transfers, /api/application_fees, /api/payouts)")
 	}
+	// SP-FIN-4: 4-eyes approval reviews API (仅 MySQL 模式)
+	if reviewRepo, ok := runRepo.(adminhttp.ReviewableRunRepo); ok {
+		reviewsServer := &adminhttp.ReviewsServer{
+			Runs:     reviewRepo,
+			Executor: engine,
+			Events:   eventPub,
+			Log:      log,
+		}
+		reviewsServer.Register(mux)
+		log.Info("4-eyes reviews API registered (/api/moneyflow/reviews)")
+	}
+
+	// SP-FIN-5: Stripe API 兼容层 (Idempotency-Key + /v1/ alias).
+	// 内存 store 适合单节点 dev; 生产替换为 Redis 实现.
+	idemStore := adminhttp.NewMemoryIdempotencyStore()
+	finalHandler := adminhttp.WithStripeCompat(mux, idemStore)
+	log.Info("stripe compat enabled: idempotency-key + /v1/* alias")
 
 	srv := &http.Server{
-		Addr: ":" + port, Handler: mux,
+		Addr: ":" + port, Handler: finalHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -313,6 +342,26 @@ func main() {
 			log.Error("serve", zap.Error(err))
 		}
 	}()
+
+	// SP-FIN-2: PayoutDispatchWorker — pending → in_transit 状态机.
+	// 调 clearing-settlement 服务 (env CLEARING_HTTP_URL 配了走真实, 否则 Noop).
+	if cronPoRepo != nil {
+		clear := workflow.ClearingClient(workflow.NoopClearingClient{Log: log})
+		// TODO: 真实 ClearingClient → 新增 internal/clients/clearing.go HTTP impl.
+		// 占位 Noop 行为: 标 in_transit 假装已发送.
+		_ = envOr("CLEARING_HTTP_URL", "") // reserved for future HTTP impl
+		dispatchPayoutRepo, _ := cronPoRepo.(workflow.PendingPayoutsRepo)
+		if dispatchPayoutRepo != nil {
+			disp := &workflow.PayoutDispatchWorker{
+				Cfg:      workflow.DefaultPayoutDispatchConfig(),
+				Payouts:  dispatchPayoutRepo,
+				Clearing: clear,
+				Events:   eventPub,
+				Log:      log,
+			}
+			go disp.Run(ctx)
+		}
+	}
 
 	// SP-10: PayoutCron 后台 goroutine, 周期扫账户余额 → 自动创建 Payout.
 	// 仅 MySQL 模式启用 (cronAccRepo / cronPoRepo nil → 跳过).

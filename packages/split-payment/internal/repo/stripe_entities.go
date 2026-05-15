@@ -476,20 +476,27 @@ func (r *PayoutRepo) UpdateStatus(ctx context.Context, id, status, failureCode, 
 	return err
 }
 
-// ListByAccount 按 account 拉 payout 历史.
-func (r *PayoutRepo) ListByAccount(ctx context.Context, account string, limit int) ([]*domain.Payout, error) {
-	if limit <= 0 || limit > 1000 {
+// ListPending 拉 status='pending' 的 payout (SP-FIN-2 dispatch worker 用), 按 created_at 升序.
+func (r *PayoutRepo) ListPending(ctx context.Context, limit int) ([]*domain.Payout, error) {
+	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, account, amount_minor, currency, method, status, arrival_date,
 		       failure_code, failure_message, statement_descriptor, destination_json,
 		       graph_run_id, idempotency_key, metadata_json, created_at
-		  FROM payouts WHERE account=? ORDER BY created_at DESC LIMIT ?`, account, limit)
+		  FROM payouts
+		 WHERE status='pending'
+		 ORDER BY created_at ASC LIMIT ?`, limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list pending payouts: %w", err)
 	}
 	defer rows.Close()
+	return scanPayoutRows(rows)
+}
+
+// scanPayoutRows 共用 rows → []*Payout (ListPending + ListByAccount).
+func scanPayoutRows(rows *sql.Rows) ([]*domain.Payout, error) {
 	out := []*domain.Payout{}
 	for rows.Next() {
 		var p domain.Payout
@@ -513,6 +520,23 @@ func (r *PayoutRepo) ListByAccount(ctx context.Context, account string, limit in
 		out = append(out, &p)
 	}
 	return out, rows.Err()
+}
+
+// ListByAccount 按 account 拉 payout 历史.
+func (r *PayoutRepo) ListByAccount(ctx context.Context, account string, limit int) ([]*domain.Payout, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 50
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, account, amount_minor, currency, method, status, arrival_date,
+		       failure_code, failure_message, statement_descriptor, destination_json,
+		       graph_run_id, idempotency_key, metadata_json, created_at
+		  FROM payouts WHERE account=? ORDER BY created_at DESC LIMIT ?`, account, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPayoutRows(rows)
 }
 
 // ─── Reversal repo ────────────────────────────────────────────────────

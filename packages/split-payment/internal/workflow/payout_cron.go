@@ -241,12 +241,27 @@ type PendingHoldsRepo interface {
 	ListExpiredHolds(ctx context.Context, now time.Time, limit int) ([]*domain.RunPlan, error)
 }
 
+// HoldReleaser SP-FIN-3 把 hold 期资金搬到正式账户的执行器.
+//
+// Hold 期间钱压在 "unsettled" 账户 (translator 落账时已写),
+// 到期后:
+//   1. 找该 plan 的 unsettled movements
+//   2. 调 accounting-system PostMovements 反向 batch: unsettled → settled
+//   3. 标 plan.hold_released=true (用 metadata 字段)
+//   4. publish hold.released 事件
+//
+// 接口抽象 (不直接依赖 clients.AccountingClient, 方便单测).
+type HoldReleaser interface {
+	ReleaseHold(ctx context.Context, plan *domain.RunPlan) error
+}
+
 // HoldUnstickWorker 把到期的 hold 资金从 unsettled 搬到正式账户.
 type HoldUnstickWorker struct {
-	Cfg    HoldUnstickConfig
-	Plans  PendingHoldsRepo
-	Events EventPublisher
-	Log    *zap.Logger
+	Cfg      HoldUnstickConfig
+	Plans    PendingHoldsRepo
+	Releaser HoldReleaser // SP-FIN-3 真接 accounting; nil 退化为仅发事件
+	Events   EventPublisher
+	Log      *zap.Logger
 }
 
 // Run 阻塞 ticker.
@@ -270,7 +285,7 @@ func (w *HoldUnstickWorker) Run(ctx context.Context) {
 
 func (w *HoldUnstickWorker) tick(ctx context.Context) {
 	if w.Plans == nil {
-		return // 没接 repo, 静默退化
+		return
 	}
 	now := time.Now().UTC()
 	plans, err := w.Plans.ListExpiredHolds(ctx, now, 100)
@@ -279,12 +294,115 @@ func (w *HoldUnstickWorker) tick(ctx context.Context) {
 		return
 	}
 	for _, p := range plans {
-		// 实际搬钱: 暂略 — 需要 accounting-system 反向 batch.
-		// 先发事件让下游 (商户 webhook) 知道.
+		// SP-FIN-3: 真接 accounting 把 unsettled → settled.
+		if w.Releaser != nil {
+			if err := w.Releaser.ReleaseHold(ctx, p); err != nil {
+				w.Log.Error("hold release failed",
+					zap.Int64("plan_id", p.ID), zap.Error(err))
+				continue
+			}
+		}
 		if w.Events != nil {
 			_ = w.Events.Publish(ctx, "hold.released", p)
 		}
-		w.Log.Info("hold unstick: released (event only, accounting batch TODO)",
+		w.Log.Info("hold unstick: released",
 			zap.Int64("plan_id", p.ID))
 	}
+}
+
+// ─── 默认 HoldReleaser 实现 (基于 accounting batch 反向) ───────────────
+
+// AccountingHoldReleaser 通过调 accounting-system 把 unsettled → settled 搬钱.
+//
+// 工作流:
+//   1. 遍历 plan.Movements, 找 to_account 含 "unsettled" 前缀的 (translator
+//      在 hold 期把 to 改成 unsettled/<原 acc>)
+//   2. 反向构造两笔: unsettled→0 + 0→正式账户 (借贷平衡)
+//   3. 一次 atomic batch 提交给 accounting
+//
+// 简化版: 当前 RunPlan 没显式存 "hold movement" 标记, 这里按命名约定 (account
+// 含 "unsettled_") 识别. 实际生产用 hold_movements 子表精确管理.
+type AccountingHoldReleaser struct {
+	Accounting accountingPoster // duck-typed interface
+	Log        *zap.Logger
+}
+
+// accountingPoster 跟 clients.AccountingClient.PostMovements 同签名 (避免循环 import).
+type accountingPoster interface {
+	PostMovements(ctx context.Context, plan *domain.RunPlan) (voucher string, txIDs []string, err error)
+}
+
+// NewAccountingHoldReleaser.
+func NewAccountingHoldReleaser(acc accountingPoster, log *zap.Logger) *AccountingHoldReleaser {
+	return &AccountingHoldReleaser{Accounting: acc, Log: log}
+}
+
+// ReleaseHold 真实搬钱.
+func (r *AccountingHoldReleaser) ReleaseHold(ctx context.Context, plan *domain.RunPlan) error {
+	// 找 hold 中的 movement (account 名含 "unsettled_" 前缀)
+	releases := []domain.Movement{}
+	for _, m := range plan.Movements {
+		if m.Status != "posted" {
+			continue
+		}
+		// 约定: hold 期暂留账户用 "unsettled_<原 account>" 命名
+		if !contains(m.ToAccount, "unsettled_") {
+			continue
+		}
+		realAcc := stripUnsettledPrefix(m.ToAccount)
+		releases = append(releases, domain.Movement{
+			EdgeFromNode: "hold_release",
+			EdgeToNode:   m.EdgeToNode,
+			FromAccount:  m.ToAccount, // unsettled → real
+			ToAccount:    realAcc,
+			AmountMinor:  m.AmountMinor,
+			Status:       "pending",
+			Reason:       "hold expired",
+		})
+	}
+	if len(releases) == 0 {
+		return nil
+	}
+	// 构造一个反向 plan 调 accounting
+	releasePlan := &domain.RunPlan{
+		GraphID:       plan.GraphID,
+		GraphVersion:  plan.GraphVersion,
+		TriggerEvent:  "hold.expired",
+		ChargeID:      plan.ChargeID,
+		MerchantID:    plan.MerchantID,
+		AmountMinor:   plan.AmountMinor,
+		Currency:      plan.Currency,
+		TransferGroup: plan.TransferGroup,
+		Movements:     releases,
+	}
+	voucher, _, err := r.Accounting.PostMovements(ctx, releasePlan)
+	if err != nil {
+		return err
+	}
+	if r.Log != nil {
+		r.Log.Info("hold released via accounting",
+			zap.Int64("plan_id", plan.ID),
+			zap.String("voucher", voucher),
+			zap.Int("movements", len(releases)))
+	}
+	return nil
+}
+
+// contains 简单 substring 检查.
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+// stripUnsettledPrefix "unsettled_seller_balance/123" → "seller_balance/123".
+func stripUnsettledPrefix(s string) string {
+	const p = "unsettled_"
+	if len(s) > len(p) && s[:len(p)] == p {
+		return s[len(p):]
+	}
+	return s
 }

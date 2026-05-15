@@ -346,6 +346,58 @@ func (e *Engine) applyFX(ctx context.Context, plan *domain.RunPlan) {
 	}
 }
 
+// ExecuteApproved (SP-FIN-4) 4-eyes 审批通过后重新触发, 跳过 risk gate.
+//
+// 复用 executeOne 的 capability / persist / accounting 路径, 仅把 RiskGate 临时移除.
+// 完成后状态 → completed (或 failed if 中途出错).
+func (e *Engine) ExecuteApproved(ctx context.Context, plan *domain.RunPlan) error {
+	// 临时禁用 risk gate (审批通过 = 显式 override)
+	originalGate := e.RiskGate
+	e.RiskGate = nil
+	defer func() { e.RiskGate = originalGate }()
+
+	// 重构 TriggerContext 跑一遍下游 (capability gate / accounting / saga).
+	// 注: 不重新 Translate, 用 plan 现有的 Movements / Transfers.
+	// SP-6 capability gate 仍然跑 (账户 capabilities 可能变了)
+	if e.AccountRepo != nil {
+		e.applyCapabilityGate(ctx, plan)
+	}
+	if e.FX != nil {
+		e.applyFX(ctx, plan)
+	}
+	e.persistTypedObjects(ctx, plan)
+
+	if e.Saga != nil && e.SagaDeps != nil {
+		return e.runSaga(ctx, plan)
+	}
+
+	// 老路径: 直接 accounting batch
+	plan.Status = PlanStatusExecuting
+	_ = e.RunRepo.Update(ctx, plan)
+	voucher, txIDs, err := e.Accounting.PostMovements(ctx, plan)
+	if err != nil {
+		plan.Status = PlanStatusFailed
+		plan.ErrorMsg = "approved exec failed: " + err.Error()
+		_ = e.RunRepo.Update(ctx, plan)
+		return err
+	}
+	plan.VoucherNo = voucher
+	txIdx := 0
+	for i := range plan.Movements {
+		if plan.Movements[i].Status != "pending" {
+			continue
+		}
+		if txIdx < len(txIDs) {
+			plan.Movements[i].TxID = txIDs[txIdx]
+		}
+		plan.Movements[i].Status = "posted"
+		txIdx++
+	}
+	plan.Status = PlanStatusCompleted
+	_ = e.RunRepo.Update(ctx, plan)
+	return nil
+}
+
 // runSaga (SP-3A) 走持久化 saga 路径.
 //
 // BuildSteps 把 plan.Transfers/Fees/Payouts 编排成 SagaStep 序列, SagaCoordinator

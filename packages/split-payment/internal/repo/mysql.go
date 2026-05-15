@@ -251,6 +251,46 @@ func (r *MySQLRunRepo) GetByCharge(ctx context.Context, chargeID string) ([]*dom
 	return collectRuns(rows)
 }
 
+// ListByStatus SP-FIN-4 4-eyes approval 列表用 — 拉指定 status 的 plan, created_at desc.
+func (r *MySQLRunRepo) ListByStatus(ctx context.Context, status string, limit int) ([]*domain.RunPlan, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
+		       amount_minor, currency, attributes_json, movements_json,
+		       status, voucher_no, error_msg, trace_id, created_at
+		  FROM moneyflow_runs
+		 WHERE status=?
+		 ORDER BY created_at DESC LIMIT ?`, status, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list by status: %w", err)
+	}
+	defer rows.Close()
+	return collectRuns(rows)
+}
+
+// GetByID 单条.
+func (r *MySQLRunRepo) GetByID(ctx context.Context, id int64) (*domain.RunPlan, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
+		       amount_minor, currency, attributes_json, movements_json,
+		       status, voucher_no, error_msg, trace_id, created_at
+		  FROM moneyflow_runs WHERE id=? LIMIT 1`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list, err := collectRuns(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, ErrNotFound
+	}
+	return list[0], nil
+}
+
 // Search adminhttp 用 — eventLike 在 trigger_event LIKE %x%, limit 默认 100.
 func (r *MySQLRunRepo) Search(ctx context.Context, eventLike string, limit int) ([]*domain.RunPlan, error) {
 	if limit <= 0 || limit > 1000 {
