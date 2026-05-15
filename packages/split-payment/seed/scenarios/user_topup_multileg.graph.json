@@ -1,0 +1,154 @@
+{
+  "key": "user-topup-multileg",
+  "name": "用户充值标准流程 (multi-leg 原子版)",
+  "version": "1.0.0",
+  "status": "active",
+  "_doc": [
+    "跟 user_topup.graph.json (key=user-topup-default) 同业务场景, 但合并 event_code:",
+    "  • 'channel_settled' 包 3 条 edge (channel_receivable → suspense → user_wallet/fee_clearing)",
+    "  • 'fee_cleared'     包 2 条 edge (fee_clearing → channel_payable/platform_revenue)",
+    "",
+    "效果: translator 输出 2 个 multi-leg TransactionRequest, 而不是 5 个 single-leg.",
+    "accounting-system 每个 TransactionRequest 一次 DoubleEntryBooking → 一个 voucher → 原子.",
+    "整个 Phase 1 (3 leg) 要么全成功要么全回滚, 不会出现 '钱进 suspense 了但没分到 user_wallet' 这种半截状态.",
+    "",
+    "前置条件: accounting-system 的 transaction_rule 表里需要有 (product_code='user_topup', event_code='channel_settled')",
+    "  + (product_code='user_topup', event_code='fee_cleared') 这两条规则;",
+    "  rule 本身仍是单借贷 metadata, 实际 N 条 leg 由 translator 输出, executeBookkeeping 拆 2N entries 落账."
+  ],
+  "spec": {
+    "scenario": "user_topup",
+    "charge_strategy": "separate",
+    "triggers": [
+      { "event": "channel.settled" }
+    ],
+    "guards": [
+      { "kind": "amount_min", "value": 1, "msg": "充值金额必须 > 0" }
+    ],
+    "nodes": [
+      {
+        "id": "channel_receivable",
+        "type": "input",
+        "label": "平台应收-渠道",
+        "account_id_attr": "channel_receivable_account"
+      },
+      {
+        "id": "suspense",
+        "type": "intermediate",
+        "label": "渠道入金挂账户",
+        "account_id_attr": "channel_suspense_account",
+        "auto_clear": true
+      },
+      {
+        "id": "user_wallet",
+        "type": "account",
+        "label": "用户钱包",
+        "account_id_attr": "user_id_account"
+      },
+      {
+        "id": "fee_clearing",
+        "type": "intermediate",
+        "label": "平台待清算费用",
+        "account_id_attr": "fee_clearing_account",
+        "auto_clear": true
+      },
+      {
+        "id": "channel_payable",
+        "type": "output",
+        "label": "应付渠道手续费",
+        "account_id_attr": "channel_fee_account"
+      },
+      {
+        "id": "platform_revenue",
+        "type": "output",
+        "label": "平台手续费收入",
+        "account_id_attr": "fee_account"
+      }
+    ],
+    "edges": [
+      {
+        "_comment": "Phase 1: channel.settled — 3 条 edge 共享 event_code, 一次原子落账",
+        "from": "channel_receivable",
+        "to": "suspense",
+        "kind": "transfer",
+        "event_code": "channel_settled",
+        "rule": { "type": "remainder" }
+      },
+      {
+        "from": "suspense",
+        "to": "user_wallet",
+        "kind": "transfer",
+        "event_code": "channel_settled",
+        "rule": { "type": "percent", "value": 9900 }
+      },
+      {
+        "from": "suspense",
+        "to": "fee_clearing",
+        "kind": "transfer",
+        "event_code": "channel_settled",
+        "rule": { "type": "remainder" }
+      },
+      {
+        "_comment": "Phase 2: fee.cleared — 2 条 edge 共享 event_code, 一次原子清算",
+        "from": "fee_clearing",
+        "to": "channel_payable",
+        "kind": "transfer",
+        "event_code": "fee_cleared",
+        "rule": { "type": "percent", "value": 6000 }
+      },
+      {
+        "from": "fee_clearing",
+        "to": "platform_revenue",
+        "kind": "transfer",
+        "event_code": "fee_cleared",
+        "rule": { "type": "remainder" }
+      }
+    ]
+  },
+  "_sample_trigger_payload": {
+    "_doc": "调用例 (用户 42 充值 ¥100, 渠道 fee ¥0.60, 平台 fee ¥0.40)",
+    "channel_receivable_account":          "PLATFORM_RECEIVABLE_CHANNEL/sub_42",
+    "channel_receivable_account_amount":   "10000",
+    "channel_receivable_account_currency": "CNY",
+    "channel_suspense_account":            "PLATFORM_CHANNEL_INBOUND_SUSPENSE/main",
+    "channel_suspense_account_amount":     "10000",
+    "channel_suspense_account_currency":   "CNY",
+    "user_id_account":                     "USER_WALLET/42",
+    "user_id_account_amount":              "9900",
+    "user_id_account_currency":            "CNY",
+    "fee_clearing_account":                "PLATFORM_FEE_CLEARING/main",
+    "fee_clearing_account_amount":         "100",
+    "fee_clearing_account_currency":       "CNY",
+    "channel_fee_account":                 "CHANNEL_FEE_PAYABLE/alipay",
+    "channel_fee_account_amount":          "60",
+    "channel_fee_account_currency":        "CNY",
+    "fee_account":                         "PLATFORM_FEE_REVENUE/main",
+    "fee_account_amount":                  "40",
+    "fee_account_currency":                "CNY"
+  },
+  "_expected_translator_output": [
+    {
+      "_doc": "Phase 1: 3 legs 一次原子. 注: translator 同组内 remainder 排最后, 所以顺序会重排成 percent → remainder × 2",
+      "order_no":    "topup_xxx_channel_settled",
+      "business_no": "topup_xxx",
+      "product_code":"user_topup",
+      "event_code":  "channel_settled",
+      "legs": [
+        {"edge_from_node": "suspense",           "edge_to_node": "user_wallet",   "from_account_id": "PLATFORM_CHANNEL_INBOUND_SUSPENSE/main", "to_account_id": "USER_WALLET/42",                            "amount": "9900",  "currency": "CNY"},
+        {"edge_from_node": "channel_receivable", "edge_to_node": "suspense",      "from_account_id": "PLATFORM_RECEIVABLE_CHANNEL/sub_42",      "to_account_id": "PLATFORM_CHANNEL_INBOUND_SUSPENSE/main",     "amount": "10000", "currency": "CNY"},
+        {"edge_from_node": "suspense",           "edge_to_node": "fee_clearing",  "from_account_id": "PLATFORM_CHANNEL_INBOUND_SUSPENSE/main", "to_account_id": "PLATFORM_FEE_CLEARING/main",                  "amount": "100",   "currency": "CNY"}
+      ]
+    },
+    {
+      "_doc": "Phase 2: 2 legs 一次原子",
+      "order_no":    "topup_xxx_fee_cleared",
+      "business_no": "topup_xxx",
+      "product_code":"user_topup",
+      "event_code":  "fee_cleared",
+      "legs": [
+        {"edge_from_node": "fee_clearing", "edge_to_node": "channel_payable",  "from_account_id": "PLATFORM_FEE_CLEARING/main", "to_account_id": "CHANNEL_FEE_PAYABLE/alipay",    "amount": "60", "currency": "CNY"},
+        {"edge_from_node": "fee_clearing", "edge_to_node": "platform_revenue", "from_account_id": "PLATFORM_FEE_CLEARING/main", "to_account_id": "PLATFORM_FEE_REVENUE/main",     "amount": "40", "currency": "CNY"}
+      ]
+    }
+  ]
+}
