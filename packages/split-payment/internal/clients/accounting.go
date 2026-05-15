@@ -56,7 +56,7 @@ func (a *AccountingClient) PostSplitAtomic(_ context.Context, _ *domain.Plan) (s
 }
 
 // ReverseSplit legacy 接口, stub 返错.
-func (a *AccountingClient) ReverseSplit(_ context.Context, _ *domain.Reversal, _ *domain.Plan) (string, error) {
+func (a *AccountingClient) ReverseSplit(_ context.Context, _ *domain.LegacyReversal, _ *domain.Plan) (string, error) {
 	return "", ErrAccountingNotWired
 }
 

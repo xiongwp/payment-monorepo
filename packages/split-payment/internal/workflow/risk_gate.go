@@ -23,8 +23,6 @@ import (
 	"context"
 	"errors"
 
-	"reconcile-system/packages/split-payment/internal/domain"
-
 	"go.uber.org/zap"
 )
 

@@ -57,15 +57,22 @@ type PlanItem struct {
 	Reason      string `json:"reason,omitempty"` // 出错原因
 }
 
-// Reversal 退款 / 拒付的反向拆分。
-type Reversal struct {
-	ID           int64     `db:"id" json:"id"`
-	OriginalPlanID int64   `db:"original_plan_id" json:"original_plan_id"`
-	RefundID     string    `db:"refund_id" json:"refund_id"`
-	AmountMinor  int64     `db:"amount_minor" json:"amount_minor"` // 部分退款支持
-	Items        []ReversalItem `db:"-" json:"items"`
-	Status       string    `db:"status" json:"status"`
-	CreatedAt    time.Time `db:"created_at" json:"created_at"`
+// LegacyReversal SP-1 时代的反向拆分 (基于 Plan + Items 拼分录).
+//
+// 跟 transfer.go 里 SP-3 Stripe-style Reversal 并存:
+//   - LegacyReversal: 老 Plan-based 退款链 (execute.go Reverse 用)
+//   - Reversal       : Stripe-style 单 Transfer 反向 (saga / refund handler / stripe API 用)
+//
+// 历史更名: 原本两个都叫 `Reversal`, 编译撞名. SP-AC-7 把老的改名兼容并存,
+// 等老路径清完再删 LegacyReversal.
+type LegacyReversal struct {
+	ID             int64          `db:"id" json:"id"`
+	OriginalPlanID int64          `db:"original_plan_id" json:"original_plan_id"`
+	RefundID       string         `db:"refund_id" json:"refund_id"`
+	AmountMinor    int64          `db:"amount_minor" json:"amount_minor"` // 部分退款支持
+	Items          []ReversalItem `db:"-" json:"items"`
+	Status         string         `db:"status" json:"status"`
+	CreatedAt      time.Time      `db:"created_at" json:"created_at"`
 }
 
 // ReversalItem 反向扣款一项。

@@ -47,7 +47,7 @@ type Repository interface {
 	SavePlan(ctx context.Context, p *domain.Plan) (int64, error)
 	UpdatePlan(ctx context.Context, p *domain.Plan) error
 	GetPlanByCharge(ctx context.Context, chargeID string) (*domain.Plan, error)
-	SaveReversal(ctx context.Context, r *domain.Reversal) (int64, error)
+	SaveReversal(ctx context.Context, r *domain.LegacyReversal) (int64, error)
 }
 
 // AuditClient audit-log 调用。
@@ -157,7 +157,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (*domain.Plan
 // 关键: 余额查询和提交不是原子的 (TOCTOU window), 但 accounting 内部对每个账户
 // 的扣减是强一致 — 如果在 GetBalance 到 AtomicBatch 之间被别的 tx 抽走, accounting
 // 会拒绝 → 这边 retry (用 backoff) 或人工介入.
-func (s *Service) Reverse(ctx context.Context, refundID, originalChargeID string, refundAmount int64) (*domain.Reversal, error) {
+func (s *Service) Reverse(ctx context.Context, refundID, originalChargeID string, refundAmount int64) (*domain.LegacyReversal, error) {
 	orig, err := s.Repo.GetPlanByCharge(ctx, originalChargeID)
 	if err != nil || orig == nil {
 		return nil, fmt.Errorf("original plan not found: %v", err)
@@ -169,7 +169,7 @@ func (s *Service) Reverse(ctx context.Context, refundID, originalChargeID string
 		return nil, fmt.Errorf("invalid refund amount %d (orig=%d)", refundAmount, orig.AmountMinor)
 	}
 
-	rev := &domain.Reversal{
+	rev := &domain.LegacyReversal{
 		OriginalPlanID: orig.ID,
 		RefundID:       refundID,
 		AmountMinor:    refundAmount,

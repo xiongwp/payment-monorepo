@@ -36,14 +36,17 @@ import (
 //   - attributes[node.CurrencyAttr] (or 默认 _currency) = 币种
 //
 // 平台固定户 (node.AccountIDAttr 空) 不需要 caller 提供, translator 用 node.ID 兜底.
+//
+// JSON tag 是必须的: BFF DryRun 把浏览器送过来的 snake_case JSON 直接喂给 Unmarshal,
+// 没 tag 时 Go 用 case-insensitive 但仍区分下划线 → amount_minor 不会匹配 AmountMinor.
 type TriggerContext struct {
-	Event       string
-	ChargeID    string
-	MerchantID  string
-	AmountMinor int64
-	Currency    string
-	Attributes  map[string]string
-	TraceID     string
+	Event       string            `json:"event"`
+	ChargeID    string            `json:"charge_id"`
+	MerchantID  string            `json:"merchant_id,omitempty"`
+	AmountMinor int64             `json:"amount_minor"`
+	Currency    string            `json:"currency"`
+	Attributes  map[string]string `json:"attributes,omitempty"`
+	TraceID     string            `json:"trace_id,omitempty"`
 }
 
 // Translate Graph + 事件上下文 → 一个 RunPlan (含 N 条 multi-leg TransactionRequest).
@@ -291,6 +294,18 @@ func findNode(nodes []domain.Node, id string) domain.Node {
 		}
 	}
 	return domain.Node{}
+}
+
+// genID 通用 ID 生成: <prefix>_<8 hex>. 给 transfer / payout / fxs / saga reversal 等用.
+func genID(prefix string) string {
+	rb := make([]byte, 8)
+	_, _ = rand.Read(rb)
+	return prefix + "_" + hex.EncodeToString(rb)
+}
+
+// genIdempotency 同一 (charge, edge.from, edge.to) 复跑只产生一条记录.
+func genIdempotency(chargeID, from, to string) string {
+	return chargeID + "::" + from + "->" + to
 }
 
 // genTransferGroup tg_<chargeID 截断>_<rand4>; 同 charge 不同 run 拿不同 group.
