@@ -739,16 +739,39 @@ $('test-btn').onclick = async () => {
   const charge = prompt('test charge_id?', 'ch_test');
   const amount = parseInt(prompt('amount (cents)?', '10000')) || 0;
   if (!amount) return;
+
+  // 自动从 graph 的 nodes 抽 account_id_attr key, 给每个生成一个合成 account_id.
+  // 这样 translator 走到 resolveAccountID 不会因 "attributes 缺值" 报错.
+  // 老 placeholder (seller_id / referrer) 留着兼容老 graph.
+  const attrs = { seller_id: 'seller_001', referrer: 'ref_jane' };
+  (state.graph.spec.nodes || []).forEach(n => {
+    if (n.account_id_attr) {
+      attrs[n.account_id_attr] = 'test_' + n.id;
+    }
+  });
+
   const r = await fetch(`${API_BASE}/api/moneyflow/dry-run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       graph: state.graph,
-      event: { event: 'charge.succeeded', charge_id: charge, amount_minor: amount, currency: 'USD',
-               attributes: { seller_id: 'seller_001', referrer: 'ref_jane' } }
+      event: {
+        event: 'charge.succeeded',
+        charge_id: charge,
+        amount_minor: amount,
+        currency: 'USD',
+        attributes: attrs,
+      }
     }),
   });
-  alert(await r.text());
+  const txt = await r.text();
+  try {
+    // 美化打印 (translator 返的 plan 嵌在 data.plan 里)
+    const obj = JSON.parse(txt);
+    alert(JSON.stringify(obj, null, 2));
+  } catch (_) {
+    alert(txt);
+  }
 };
 
 // 载入已有

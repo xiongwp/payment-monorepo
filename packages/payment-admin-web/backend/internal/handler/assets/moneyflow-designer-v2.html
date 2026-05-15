@@ -515,7 +515,16 @@ $('dry-btn').onclick = async () => {
   const charge = prompt('charge_id?', 'ch_test');
   const amount = parseInt(prompt('amount cents?', '10000'));
   if (!charge || !amount) return;
-  const sellerID = prompt('seller_id attribute?', 'acct_seller_001') || '';
+
+  // 自动从 spec 的 nodes 抽 account_id_attr key, 给每个生成合成 account_id.
+  // 不再单独 prompt seller_id —— SP-AC-7 之后图里只用 account_id_attr.
+  const attrs = { seller_id: 'acct_seller_001', referrer: 'ref_jane' };
+  ((window._currentSpec && window._currentSpec.nodes) || []).forEach(n => {
+    if (n.account_id_attr) {
+      attrs[n.account_id_attr] = 'test_' + n.id;
+    }
+  });
+
   const r = await fetch(API + '/moneyflow/dry-run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -526,13 +535,14 @@ $('dry-btn').onclick = async () => {
         charge_id: charge,
         amount_minor: amount,
         currency: 'USD',
-        attributes: { seller_id: sellerID, referrer: 'ref_jane' },
+        attributes: attrs,
       },
     }),
   });
   const txt = await r.text();
-  // 把 dry-run 结果展示在 prop-form
-  $('prop-form').innerHTML = `<h2>Dry-Run Result</h2><pre class="json-preview">${escapeHtml(txt)}</pre>`;
+  let pretty = txt;
+  try { pretty = JSON.stringify(JSON.parse(txt), null, 2); } catch (_) {}
+  $('prop-form').innerHTML = `<h2>Dry-Run Result</h2><pre class="json-preview">${escapeHtml(pretty)}</pre>`;
 };
 
 // 顶部 sidebar 字段同步 spec
