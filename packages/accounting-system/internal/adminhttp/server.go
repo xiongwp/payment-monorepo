@@ -712,8 +712,21 @@ func (s *Server) handleTransactionRules(w http.ResponseWriter, r *http.Request) 
 		}
 		writeJSON(w, http.StatusOK, rows)
 	case http.MethodPost:
+		// 用 anonymous struct 显式带 json tag 解析 — model.TransactionRule 只有 gorm tag
+		// 没 json tag, snake_case 入参会拿不到值. 这里 DTO 解完再 copy 进 model.
+		type ruleDTO struct {
+			ProductCode     string `json:"product_code"`
+			EventCode       string `json:"event_code"`
+			HashKey         string `json:"hash_key"`
+			DebitSubjectID  string `json:"debit_subject_id"`
+			CreditSubjectID string `json:"credit_subject_id"`
+			FromDirection   string `json:"from_direction"`
+			ToDirection     string `json:"to_direction"`
+			TransactionType int    `json:"transaction_type"`
+			BookkeepingMode string `json:"bookkeeping_mode"`
+		}
 		var body struct {
-			Rules []*model.TransactionRule `json:"rules"`
+			Rules []ruleDTO `json:"rules"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
@@ -724,12 +737,23 @@ func (s *Server) handleTransactionRules(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		succeeded := 0
-		for i, rule := range body.Rules {
+		for i, d := range body.Rules {
+			rule := &model.TransactionRule{
+				ProductCode:     d.ProductCode,
+				EventCode:       d.EventCode,
+				HashKey:         d.HashKey,
+				DebitSubjectID:  d.DebitSubjectID,
+				CreditSubjectID: d.CreditSubjectID,
+				FromDirection:   d.FromDirection,
+				ToDirection:     d.ToDirection,
+				TransactionType: d.TransactionType,
+				BookkeepingMode: d.BookkeepingMode,
+			}
 			if err := s.ruleRepo.UpsertRule(r.Context(), rule); err != nil {
 				writeJSON(w, http.StatusBadGateway, map[string]any{
-					"error":      fmt.Sprintf("rule[%d] (product=%s event=%s): %v", i, rule.ProductCode, rule.EventCode, err),
-					"succeeded":  succeeded,
-					"total":      len(body.Rules),
+					"error":     fmt.Sprintf("rule[%d] (product=%s event=%s): %v", i, rule.ProductCode, rule.EventCode, err),
+					"succeeded": succeeded,
+					"total":     len(body.Rules),
 				})
 				return
 			}
