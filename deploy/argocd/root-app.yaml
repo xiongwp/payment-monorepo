@@ -1,0 +1,87 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: payment-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: payment-platform
+  source:
+    repoURL: https://github.com/example/payment-monorepo
+    targetRevision: HEAD
+    path: deploy/argocd/applications
+    directory:
+      recurse: false
+      include: "*.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: payment-platform
+  namespace: argocd
+spec:
+  description: Payment platform GitOps project
+  sourceRepos:
+    - https://github.com/example/payment-monorepo
+    - https://charts.bitnami.com/bitnami
+    - https://prometheus-community.github.io/helm-charts
+    - https://grafana.github.io/helm-charts
+    - https://strimzi.io/charts/
+  destinations:
+    - namespace: "payment*"
+      server: https://kubernetes.default.svc
+    - namespace: "kafka"
+      server: https://kubernetes.default.svc
+    - namespace: "monitoring"
+      server: https://kubernetes.default.svc
+    - namespace: "argocd"
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  roles:
+    - name: dev
+      description: Read-only
+      policies:
+        - p, proj:payment-platform:dev, applications, get, payment-platform/*, allow
+        - p, proj:payment-platform:dev, applications, sync, payment-platform/*, deny
+      groups:
+        - github:example-org:dev
+    - name: oncall
+      description: Sync + rollback core/edge
+      policies:
+        - p, proj:payment-platform:oncall, applications, get, payment-platform/*, allow
+        - p, proj:payment-platform:oncall, applications, sync, payment-platform/payment-core-services, allow
+        - p, proj:payment-platform:oncall, applications, sync, payment-platform/payment-edge-services, allow
+        - p, proj:payment-platform:oncall, applications, action/*, payment-platform/*, allow
+      groups:
+        - github:example-org:oncall
+    - name: platform-admin
+      description: Full control
+      policies:
+        - p, proj:payment-platform:platform-admin, *, *, payment-platform/*, allow
+      groups:
+        - github:example-org:platform-admin
+  orphanedResources:
+    warn: true

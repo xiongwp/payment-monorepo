@@ -1,0 +1,115 @@
+openapi: 3.0.3
+info:
+  title: payment-gateway API
+  version: 1.0.0
+  description: |
+    payment-gateway 是商户接入的最外层入口,处理鉴权、限流、智能路由、3DS 编排。
+    所有公网 /v1/* 都打到这里,内部再分发到 payment-core / order-core 等。
+servers:
+  - url: https://api.payment.example.com
+security:
+  - bearerAuth: []
+paths:
+  /v1/charges:
+    post:
+      summary: 创建支付 (糖语法,内部 = create PI + confirm)
+      operationId: createCharge
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChargeRequest'
+      responses:
+        '200':
+          description: Charge 已发起
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Charge' }
+
+  /v1/refunds:
+    post:
+      summary: 退款
+      operationId: createRefund
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [charge_id]
+              properties:
+                charge_id: { type: string }
+                amount:    { type: integer, format: int64, description: "缺省全额" }
+                reason:    { type: string, enum: [requested_by_customer, fraud, duplicate] }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Refund' }
+
+  /v1/disputes/{id}:
+    get:
+      summary: 查 chargeback / dispute 详情
+      operationId: getDispute
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dispute' }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, maxLength: 128 }
+  schemas:
+    CreateChargeRequest:
+      type: object
+      required: [amount, currency, source]
+      properties:
+        amount:   { type: integer, format: int64 }
+        currency: { type: string, minLength: 3, maxLength: 3 }
+        source:   { type: string, description: "tok_test_* 或 stored_token + cvv" }
+        customer_id: { type: string }
+        description: { type: string }
+        metadata: { type: object, additionalProperties: { type: string } }
+    Charge:
+      type: object
+      properties:
+        id:           { type: string, example: ch_3abc123 }
+        amount:       { type: integer, format: int64 }
+        currency:     { type: string }
+        status:       { type: string, enum: [succeeded, processing, failed, refunded] }
+        receipt_url:  { type: string, format: uri }
+        failure_code: { type: string }
+    Refund:
+      type: object
+      properties:
+        id:        { type: string, example: re_3abc123 }
+        charge_id: { type: string }
+        amount:    { type: integer, format: int64 }
+        status:    { type: string, enum: [succeeded, processing, failed] }
+    Dispute:
+      type: object
+      properties:
+        id:           { type: string }
+        charge_id:    { type: string }
+        amount:       { type: integer, format: int64 }
+        network:      { type: string, enum: [visa, mastercard, jcb, amex, unionpay] }
+        reason_code:  { type: string, description: "卡组拒付原因码" }
+        status:       { type: string, enum: [needs_response, under_review, won, lost] }
+        evidence_due_at: { type: string, format: date-time }

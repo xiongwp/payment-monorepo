@@ -194,10 +194,16 @@ func (e *Engine) Run(ctx context.Context, cs *CompiledScript, sctx *Context) (di
 		Name: "run:" + cs.ID,
 		Load: e.loadModule,
 		Print: func(_ *starlark.Thread, msg string) {
-			// 脚本里的 print() 走我们的 logger，不要直接 stdout（容器化部署 grep 不到）
-			if sctx != nil && sctx.logger != nil {
+			// 脚本里的 print() 走两路:
+			//  1) logger.Info → zap (生产容器能 grep)
+			//  2) ctx.AppendLog → 本次 Run 的捕获缓冲, dry-run 接口会读出给编辑器 console 面板.
+			if sctx == nil {
+				return
+			}
+			if sctx.logger != nil {
 				sctx.logger.Info("script.print", "script_id", cs.ID, "msg", msg)
 			}
+			sctx.AppendLog("print", msg, nil)
 		},
 	}
 	// MaxExecutionSteps 限制纯计算上限。Starlark 每条语句 ~ 1-100 step。

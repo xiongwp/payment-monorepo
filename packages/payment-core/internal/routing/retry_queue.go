@@ -108,13 +108,11 @@ func (q *MemoryRetryQueue) Stats() map[string]interface{} {
 	}
 }
 
-// DBRetryQueue 数据库实现占位符（生产用，实际需实现 SQL）
-// 使用 outbox pattern：charge 失败时插入 outbox 表，独立 worker 轮询处理
-type DBRetryQueue struct {
-	// db connection + query builder
-	// TODO: 实现具体的数据库操作
-}
-
-// 实现 RetryQueue interface...
-// Enqueue / Dequeue / MarkRetry / MarkSuccess
-// 使用 INSERT INTO outbox_retry / UPDATE / DELETE 操作
+// DBRetryQueue 真实实现见 db_retry_queue.go (DBRetryQueueImpl).
+//
+// 这里保留构造函数别名,方便老调用方迁移 (PaymentService 注入时:
+//
+//	rq := routing.NewDBRetryQueue(db, logger)
+//	svc.SetRetryQueue(rq)
+//
+// 内存版仅供单测/dev: NewMemoryRetryQueue()).

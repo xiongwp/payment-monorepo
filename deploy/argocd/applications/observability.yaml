@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: payment-observability
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"  # 最先装
+spec:
+  project: payment-platform
+  source:
+    repoURL: https://github.com/example/payment-monorepo
+    targetRevision: HEAD
+    path: deploy/monitoring
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: payment-alerting
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+spec:
+  project: payment-platform
+  source:
+    repoURL: https://github.com/example/payment-monorepo
+    targetRevision: HEAD
+    path: deploy/alerts
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

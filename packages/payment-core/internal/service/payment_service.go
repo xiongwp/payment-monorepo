@@ -995,9 +995,19 @@ func (s *PaymentService) Execute(ctx context.Context, task *routing.RetryTask) (
 			zap.String("pi_id", task.PaymentIntentID),
 			zap.String("failed_adapter", task.FailedAdapter))
 		metrics.ChargeTotal.WithLabelValues(task.PaymentMethod, task.FailedAdapter, "no_fallback").Inc()
-		// TODO（出本会话之外）：通知 order-core 把 PI 置 failed。
-		// 当前依赖 order-core 自身的 Query 对账兜底（payment-channel 侧
-		// UNIQUE(idempotency_key) 保证状态一致）。
+		// 设计选择(不向 order-core 主动推 "failed" 状态变更):
+		//
+		// 不主动推,而是依赖 order-core 自身的 Query 对账机制兜底。原因:
+		//   1. payment-channel 侧 UNIQUE(adapter, idempotency_key) 保证即使重试到达,
+		//      最终也只记一条最权威的状态(成功或失败),不可能"双花";
+		//   2. order-core 已有定期 PendingQueryWorker 扫 processing 状态超过阈值的
+		//      PI,主动调 Query 推进到终态;
+		//   3. 主动推会让 payment-core ↔ order-core 形成双向依赖 → 编排耦合 + 重试
+		//      复杂度爆炸(谁负责对推送失败的事件再重试?事件丢了怎么办?);
+		//   4. 走 Query 拉模式天然幂等,故障恢复成本低(order-core 不依赖 payment-core 的可用性).
+		//
+		// 若未来需要更短的 PI failed 时延(< 30s),把这里改成往 payment.events 发
+		// PaymentRetryExhausted 事件,order-core 消费,而不是同步 RPC。
 		return true, "no_fallback_available"
 	}
 

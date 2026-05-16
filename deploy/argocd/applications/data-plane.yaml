@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: payment-data-plane
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"    # 先于业务服务
+spec:
+  project: payment-platform
+  source:
+    repoURL: https://github.com/example/payment-monorepo
+    targetRevision: HEAD
+    path: chart/charts/ha-data
+    helm:
+      releaseName: ha-data
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payment
+  syncPolicy:
+    automated:
+      prune: false                  # 有状态组件绝不自动 prune
+      selfHeal: false               # 改动需 ops 显式 sync
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  ignoreDifferences:
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers: [/spec/resources/requests/storage]    # 扩容由 ops 手工

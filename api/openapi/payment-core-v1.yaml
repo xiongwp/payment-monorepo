@@ -1,0 +1,173 @@
+openapi: 3.0.3
+info:
+  title: payment-core API
+  version: 1.0.0
+  description: |
+    payment-core 是支付编排核心。商户 PI (PaymentIntent) 流程的同步入口与重试/对账编排,
+    具体卡组通信交给 payment-channel + card-payment。
+  contact:
+    name: Platform Team
+    email: platform@payment.example.com
+servers:
+  - url: https://api.payment.example.com
+  - url: https://api.staging.payment.example.com
+    description: staging
+security:
+  - bearerAuth: []
+paths:
+  /v1/payment-intents:
+    post:
+      summary: 创建支付意向 (PI)
+      operationId: createPaymentIntent
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentIntentRequest'
+      responses:
+        '200':
+          description: PI 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+        '400':
+          description: 入参不合法 / 商户不在白名单
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: 幂等冲突 (idempotency_key 同值但 payload 不一致)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: 上游不可用 / 断路器打开
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /v1/payment-intents/{pi_id}/confirm:
+    post:
+      summary: Confirm 一个 PI (推动到 processing → succeeded)
+      operationId: confirmPaymentIntent
+      parameters:
+        - in: path
+          name: pi_id
+          required: true
+          schema: { type: string, example: pi_3abc123 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payment_method]
+              properties:
+                payment_method:
+                  type: string
+                  enum: [CARD, WALLET, BANK_TRANSFER, GCASH, PAYMAYA]
+                payment_token:
+                  type: string
+                  description: card-center 颁发的一次性 token (CARD 必填)
+      responses:
+        '200':
+          description: 已推进
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+
+  /v1/payment-intents/{pi_id}:
+    get:
+      summary: 查询 PI 当前状态
+      operationId: getPaymentIntent
+      parameters:
+        - in: path
+          name: pi_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentIntent' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: oauth2_token
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, maxLength: 128 }
+      description: |
+        必填。同 (merchant_id, idempotency_key, payload-hash) 命中即返原响应,不重复扣款。
+        建议 UUIDv4。
+
+  schemas:
+    CreatePaymentIntentRequest:
+      type: object
+      required: [amount, currency, payment_method, customer_id]
+      properties:
+        amount:
+          type: integer
+          format: int64
+          description: 分位 (cents) 整数,避免浮点
+          minimum: 1
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          example: USD
+        payment_method:
+          type: string
+          enum: [CARD, WALLET, BANK_TRANSFER, GCASH, PAYMAYA]
+        customer_id:
+          type: string
+        description:
+          type: string
+          maxLength: 200
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+
+    PaymentIntent:
+      type: object
+      properties:
+        id:           { type: string, example: pi_3abc123 }
+        merchant_id:  { type: string }
+        customer_id:  { type: string }
+        amount:       { type: integer, format: int64 }
+        currency:     { type: string }
+        status:
+          type: string
+          enum:
+            - requires_action
+            - requires_confirmation
+            - processing
+            - succeeded
+            - failed
+            - canceled
+        failure_code:
+          type: string
+          description: 失败时填,e.g. "do_not_honor" / "insufficient_funds"
+        created_at:   { type: string, format: date-time }
+        updated_at:   { type: string, format: date-time }
+
+    Problem:
+      type: object
+      description: RFC 7807 problem+json
+      properties:
+        type:     { type: string, format: uri }
+        title:    { type: string }
+        status:   { type: integer }
+        detail:   { type: string }
+        instance: { type: string }
+        trace_id: { type: string }

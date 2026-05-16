@@ -2,6 +2,11 @@
 //
 // 用途：用户存卡 / 删卡 / 查询某 token 状态时调 card-center。
 // 派生支付 token 不在这一侧（在 order-core 创建 PI confirm 时调）。
+//
+// 注:cardcenterv1 proto stub 不在本模块直接 import (避免跨服务 build context 耦合);
+// 调用方走通用 gRPC ClientConn。要切到强类型,把 cardcenter.pb.go +
+// cardcenter_grpc.pb.go vendor 进 packages/user-merchant-core/api/proto/cardcenter/v1/
+// 并切 import 即可。
 package cardcenterclient
 
 import (
@@ -72,13 +77,21 @@ func New(cfg Config) (*Client, error) {
 // Close 关连接
 func (c *Client) Close() error { return c.conn.Close() }
 
+// errProtoNotVendored 显式错误:启用真实 card-center DeleteCard 调用前必须
+// 把 cardcenterv1 proto stub vendor 进本模块。绝不静默成功。
+var errProtoNotVendored = errors.New(
+	"cardcenterclient: cardcenterv1 proto stubs not vendored into user-merchant-core " +
+		"— see package doc for vendoring instructions")
+
 // DeleteCard 调 card-center.DeleteCard（业务层 soft delete）
+//
+// 当前实现:返回 errProtoNotVendored 强制 prod 部署前 vendor stub;
+// dev / 测试调用方通过 mock 注入路径,不经过本函数。
 func (c *Client) DeleteCard(ctx context.Context, userID int64, storedToken, reason, traceID string) error {
-	cctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-	_ = cctx
-	// TODO: cli.DeleteCard(...)
-	return errors.New("cardcenterclient: TODO wire cardcenterv1 stubs")
+	if storedToken == "" {
+		return errors.New("stored_token required")
+	}
+	return errProtoNotVendored
 }
 
 func buildTLS(cfg Config) (*tls.Config, error) {

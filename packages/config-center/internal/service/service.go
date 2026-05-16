@@ -141,6 +141,33 @@ func (s *Service) PutConfig(ctx context.Context, in PutVersionInput) (int64, err
 	return newVer, nil
 }
 
+// Delete admin RPC: 软删 (标 deleted=1) + audit + 通知 watcher.
+//
+// 删完发 EventDelete 给同 namespace 订阅者; SDK 收到后清本地缓存对应行.
+// 软删不丢历史 (config_version 表里仍能 ListVersions 看到),便于审计追溯。
+func (s *Service) Delete(ctx context.Context, namespace, key, actor, reason string) error {
+	if namespace == "" || key == "" {
+		return errors.New("namespace and key required")
+	}
+	if actor == "" {
+		return errors.New("actor required for audit")
+	}
+	// 拿一份删前的 active row 作为 EventDelete 的载荷 (SDK 用 version 号识别 evict 目标)
+	beforeRow, _ := s.repo.GetActive(ctx, namespace, key)
+	if err := s.repo.Delete(ctx, namespace, key, actor, reason); err != nil {
+		return fmt.Errorf("delete: %w", err)
+	}
+	if beforeRow != nil {
+		s.hub.Publish(namespace, &Event{Type: EventDelete, Config: beforeRow})
+	}
+	s.logger.Warn("config deleted",
+		zap.String("namespace", namespace),
+		zap.String("key", key),
+		zap.String("actor", actor),
+		zap.String("reason", reason))
+	return nil
+}
+
 // Rollback admin RPC：切回旧 version（产新 version 号，保单调）。
 func (s *Service) Rollback(ctx context.Context, namespace, key string, toVersion int64, actor, reason string) (int64, error) {
 	if actor == "" {

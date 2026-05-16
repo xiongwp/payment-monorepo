@@ -39,11 +39,22 @@ func NewStore(r redis.UniversalClient) *Store { return &Store{r: r} }
 // 每次 Save 把上一版完整 dump 到 :v<prev>，再把当前更新到 v<new>。
 // 脚本可以一直回退（版本数量上限通过 RetainVersions 限定，默认 50）。
 func (s *Store) SaveDef(ctx context.Context, id, name, code, schedule string, triggers []string, updatedBy string) (int64, error) {
+	return s.SaveDefWithMeta(ctx, id, name, code, schedule, triggers, "", nil, updatedBy)
+}
+
+// SaveDefWithMeta UX-2 + FEAT-1 扩展版: 多带 mode + tags 元数据.
+//
+// 老 SaveDef 兼容 (mode="", tags=nil → 持久化也带空字段; 老脚本不受影响).
+func (s *Store) SaveDefWithMeta(ctx context.Context, id, name, code, schedule string, triggers []string, mode string, tags []string, updatedBy string) (int64, error) {
 	if id == "" {
 		return 0, fmt.Errorf("empty script id")
 	}
 	now := time.Now()
 	triggersJSON, _ := json.Marshal(triggers)
+	tagsJSON, _ := json.Marshal(tags)
+	if mode == "" {
+		mode = "live"
+	}
 
 	// 拿上一版（如果存在的话）
 	prevHash, _ := s.r.HGetAll(ctx, "recon:script:"+id).Result()
@@ -72,6 +83,8 @@ func (s *Store) SaveDef(ctx context.Context, id, name, code, schedule string, tr
 		"updated_at": now.UnixMilli(),
 		"updated_by": updatedBy,
 		"version":    newVer,
+		"mode":       mode,
+		"tags":       string(tagsJSON),
 	})
 	pipe.ZAdd(ctx, "recon:script:list",
 		redis.Z{Score: float64(now.UnixMilli()), Member: id})
@@ -203,6 +216,14 @@ func (s *Store) LoadDef(ctx context.Context, id string) (*Script, error) {
 	if t := m["triggers"]; t != "" {
 		_ = json.Unmarshal([]byte(t), &triggers)
 	}
+	var tags []string
+	if t := m["tags"]; t != "" {
+		_ = json.Unmarshal([]byte(t), &tags)
+	}
+	mode := m["mode"]
+	if mode == "" {
+		mode = "live"
+	}
 	return &Script{
 		ID:        m["id"],
 		Name:      m["name"],
@@ -211,6 +232,8 @@ func (s *Store) LoadDef(ctx context.Context, id string) (*Script, error) {
 		UpdatedBy: m["updated_by"],
 		Schedule:  m["schedule"],
 		Triggers:  triggers,
+		Mode:      mode,
+		Tags:      tags,
 	}, nil
 }
 

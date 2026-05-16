@@ -1,0 +1,369 @@
+{{- if .Values.mysql.enabled }}
+---
+# Primary MySQL — InnoDB Cluster 可换 Vitess/PXC/Orchestrator,这里用 GTID + 异步复制
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-primary
+  namespace: {{ .Values.global.namespace }}
+spec:
+  type: ClusterIP
+  selector:
+    app: mysql
+    role: primary
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-replica  # ProxySQL 后端 / readonly 查询走这里
+  namespace: {{ .Values.global.namespace }}
+spec:
+  type: ClusterIP
+  selector:
+    app: mysql
+    role: replica
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-primary
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.mysql.primary.replicas }}
+  serviceName: mysql-primary
+  selector:
+    matchLabels:
+      app: mysql
+      role: primary
+  template:
+    metadata:
+      labels:
+        app: mysql
+        role: primary
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role
+                    operator: In
+                    values: ["data-node"]
+      containers:
+        - name: mysql
+          image: mysql:8.0.35
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD_FILE
+              value: /run/secrets/mysql-root-password
+            - name: MYSQL_REPLICATION_USER
+              value: "repl"
+            - name: MYSQL_REPLICATION_PASSWORD_FILE
+              value: /run/secrets/mysql-repl-password
+          command:
+            - bash
+            - -ec
+            - |
+              ROOT_PWD=$(cat /run/secrets/mysql-root-password)
+              REPL_PWD=$(cat /run/secrets/mysql-repl-password)
+              exec docker-entrypoint.sh \
+                --server-id=1 \
+                --log-bin=mysql-bin \
+                --binlog-format=ROW \
+                --gtid-mode=ON \
+                --enforce-gtid-consistency=ON \
+                --binlog-row-image=FULL \
+                --binlog-expire-logs-seconds=604800 \
+                --sync-binlog=1 \
+                --innodb-flush-log-at-trx-commit=1 \
+                --max-connections=1000 \
+                --slow-query-log=1 \
+                --long-query-time=1
+          resources:
+            {{- toYaml .Values.mysql.primary.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+          livenessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - 'mysqladmin ping -p"$ROOT_PWD"'
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - 'mysqladmin ping -p"$ROOT_PWD"'
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: secrets
+          projected:
+            sources:
+              - secret:
+                  name: mysql-credentials
+                  items:
+                    - key: root-password
+                      path: mysql-root-password
+                    - key: repl-password
+                      path: mysql-repl-password
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.mysql.primary.storage }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-replica
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.mysql.replicas.count }}
+  serviceName: mysql-replica
+  selector:
+    matchLabels:
+      app: mysql
+      role: replica
+  template:
+    metadata:
+      labels:
+        app: mysql
+        role: replica
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: mysql
+                  role: replica
+              topologyKey: topology.kubernetes.io/zone
+      initContainers:
+        # 第一次启动: 从 primary 拷一份 backup,然后 CHANGE MASTER TO ...
+        - name: bootstrap-replica
+          image: mysql:8.0.35
+          command:
+            - bash
+            - -ec
+            - |
+              if [ ! -f /var/lib/mysql/.bootstrapped ]; then
+                ROOT=$(cat /run/secrets/mysql-root-password)
+                REPL=$(cat /run/secrets/mysql-repl-password)
+                until mysqldump -h mysql-primary -uroot -p"$ROOT" \
+                      --all-databases --master-data=2 --single-transaction \
+                      > /var/lib/mysql/init.sql; do
+                  echo "waiting for primary..."; sleep 10
+                done
+                touch /var/lib/mysql/.bootstrapped
+              fi
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/mysql }
+            - { name: secrets, mountPath: /run/secrets, readOnly: true }
+      containers:
+        - name: mysql
+          image: mysql:8.0.35
+          ports:
+            - containerPort: 3306
+          command:
+            - bash
+            - -ec
+            - |
+              ROOT_PWD=$(cat /run/secrets/mysql-root-password)
+              ORD=${HOSTNAME##*-}
+              SERVER_ID=$((100 + ORD))
+              exec docker-entrypoint.sh \
+                --server-id=$SERVER_ID \
+                --read-only=1 \
+                --log-bin=mysql-bin \
+                --binlog-format=ROW \
+                --gtid-mode=ON \
+                --enforce-gtid-consistency=ON \
+                --slave-parallel-workers=8 \
+                --slave-parallel-type=LOGICAL_CLOCK
+          resources:
+            {{- toYaml .Values.mysql.replicas.resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/mysql }
+            - { name: secrets, mountPath: /run/secrets, readOnly: true }
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - |
+                  LAG=$(mysql -uroot -p"$ROOT_PWD" -BNe "SHOW SLAVE STATUS\G" 2>/dev/null \
+                        | awk '/Seconds_Behind_Master/{print $2}')
+                  test "$LAG" != "" && test "$LAG" -lt 60
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: secrets
+          projected:
+            sources:
+              - secret:
+                  name: mysql-credentials
+                  items:
+                    - key: root-password
+                      path: mysql-root-password
+                    - key: repl-password
+                      path: mysql-repl-password
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.mysql.replicas.storage }}
+{{- if .Values.mysql.proxySql.enabled }}
+---
+# ProxySQL: 读写分离 + 故障转移
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxysql
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.mysql.proxySql.replicas }}
+  selector: { matchLabels: { app: proxysql } }
+  template:
+    metadata: { labels: { app: proxysql } }
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: proxysql } }
+              topologyKey: topology.kubernetes.io/zone
+      containers:
+        - name: proxysql
+          image: {{ .Values.mysql.proxySql.image }}
+          ports:
+            - containerPort: 6033  # mysql client port
+            - containerPort: 6032  # admin port
+          volumeMounts:
+            - { name: config, mountPath: /etc/proxysql.cnf, subPath: proxysql.cnf }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: 1000m, memory: 1Gi }
+      volumes:
+        - name: config
+          configMap: { name: proxysql-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql      # 应用一律 -h mysql, ProxySQL 决定读写
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector: { app: proxysql }
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 6033
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxysql-config
+  namespace: {{ .Values.global.namespace }}
+data:
+  proxysql.cnf: |
+    datadir="/var/lib/proxysql"
+    admin_variables=
+    {
+      admin_credentials="admin:admin"
+      mysql_ifaces="0.0.0.0:6032"
+    }
+    mysql_variables=
+    {
+      threads=4
+      max_connections=2048
+      default_query_timeout=36000000
+      ping_interval_server_msec=10000
+      monitor_username="monitor"
+      monitor_password="monitor"
+    }
+    mysql_servers =
+    (
+      { address="mysql-primary",  port=3306, hostgroup=10, max_connections=200 },
+      { address="mysql-replica-0.mysql-replica", port=3306, hostgroup=20, max_connections=400 },
+      { address="mysql-replica-1.mysql-replica", port=3306, hostgroup=20, max_connections=400 }
+    )
+    mysql_query_rules =
+    (
+      { rule_id=1, match_pattern="^SELECT.*FOR UPDATE$", destination_hostgroup=10, apply=1 },
+      { rule_id=2, match_pattern="^SELECT", destination_hostgroup=20, apply=1 },
+      { rule_id=3, match_pattern=".*", destination_hostgroup=10, apply=1 }
+    )
+    mysql_replication_hostgroups=
+    (
+      { writer_hostgroup=10, reader_hostgroup=20, comment="primary-replica" }
+    )
+{{- end }}
+{{- if .Values.mysql.backup.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mysql-backup
+  namespace: {{ .Values.global.namespace }}
+spec:
+  schedule: {{ .Values.mysql.backup.schedule | quote }}
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: mysql:8.0.35
+              command:
+                - bash
+                - -ec
+                - |
+                  ROOT=$(cat /run/secrets/mysql-root-password)
+                  TS=$(date +%Y%m%d-%H%M%S)
+                  mysqldump -h mysql-primary -uroot -p"$ROOT" \
+                    --all-databases --single-transaction --master-data=2 \
+                    --routines --triggers --events \
+                    | gzip > /backup/$TS.sql.gz
+                  aws s3 cp /backup/$TS.sql.gz \
+                    s3://{{ .Values.mysql.backup.s3Bucket }}/$TS.sql.gz
+                  aws s3api put-object-tagging \
+                    --bucket {{ .Values.mysql.backup.s3Bucket }} \
+                    --key $TS.sql.gz \
+                    --tagging "TagSet=[{Key=retention,Value={{ .Values.mysql.backup.retention }}}]"
+              volumeMounts:
+                - { name: secrets, mountPath: /run/secrets, readOnly: true }
+                - { name: backup, mountPath: /backup }
+          volumes:
+            - name: secrets
+              secret:
+                secretName: mysql-credentials
+                items: [{ key: root-password, path: mysql-root-password }]
+            - name: backup
+              emptyDir: {}
+{{- end }}
+{{- end }}

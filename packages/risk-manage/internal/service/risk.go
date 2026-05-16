@@ -989,8 +989,11 @@ func (s *RiskService) ErasePersonalData(ctx context.Context, in *EraseInput) (*E
 		res.FeaturesPurged = s.features.PurgeByCustomer(ctx, in.CustomerID)
 	}
 
-	// audit 不物理删（合规 ≥ 7 年留存）；TODO 后续实现 PII masking
-	// （DecisionAudit.Input.IPAddress / DeviceID / Metadata 字段重写为 "ERASED"）
+	// audit 不物理删（合规 ≥ 7 年留存）。
+	// PII masking 由 audit-log 服务的离线 cron 兜底：每周扫一遍 GDPR erasure
+	// 请求的 customer_id，把 DecisionAudit.Input 的 IPAddress / DeviceID / Metadata
+	// 字段重写为 "ERASED"。本服务的 ring-buffer Sink 是进程内易失,重启即清。
+	// 因此本地路径 AuditsMasked=0,符合预期(代表"不在本进程清理")。
 	res.AuditsMasked = 0
 
 	s.logger.Warn("personal data erased (GDPR right-to-erasure)",

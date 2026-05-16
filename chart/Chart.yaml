@@ -9,3 +9,10 @@ home: https://github.com/example/payment-platform
 maintainers:
   - name: Platform Team
     email: platform@example.com
+
+dependencies:
+  - name: ha-data
+    version: "0.1.0"
+    repository: "file://./charts/ha-data"
+    condition: ha-data.enabled
+    tags: ["ha", "data"]

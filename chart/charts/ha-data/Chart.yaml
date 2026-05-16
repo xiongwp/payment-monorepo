@@ -1,0 +1,28 @@
+apiVersion: v2
+name: ha-data
+description: |
+  High-availability data plane sub-chart for payment-monorepo.
+
+  Bundles:
+    - Redis Sentinel (3 sentinels + 1 master + 2 replicas) — replaces single-node Redis
+    - MySQL primary + 2 replicas (read replicas behind ProxySQL) — replaces single MySQL
+    - Kafka 3 brokers with RF=3 and ISR=2 — replaces single broker
+    - ClickHouse 2-replica cluster (ReplicatedMergeTree) — replaces single CH node
+
+  Each component is enabled-by-flag so dev environments can fall back to single-node.
+
+  Real upstream charts (bitnami / strimzi / clickhouse-operator) are NOT vendored here;
+  this chart writes the operator CRs / StatefulSets directly so we own the rollout.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - payment
+  - high-availability
+  - redis-sentinel
+  - mysql
+  - kafka
+  - clickhouse
+maintainers:
+  - name: payment-platform
+    email: platform@payment.example.com

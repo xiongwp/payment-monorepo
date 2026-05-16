@@ -224,6 +224,31 @@ func main() {
 	api.HandleFunc("/risk/mlscore/challengers/promote", riskH.ChallengerPromote).Methods("POST", "OPTIONS")
 	api.HandleFunc("/risk/mlscore/challengers/drop", riskH.ChallengerDrop).Methods("POST", "OPTIONS")
 
+	// MF-2 + SP-AC-7: Money Flow Designer 通过 gRPC 调 split-payment AdminService.
+	moneyflowH := handler.NewMoneyflowHandler()
+	api.HandleFunc("/moneyflow/_health", moneyflowH.Health).Methods("GET", "OPTIONS")
+	// /api/moneyflow/* (graphs / dry-run) → handler 内部按 path 路由到 gRPC 方法
+	api.PathPrefix("/moneyflow/").HandlerFunc(moneyflowH.Proxy)
+	// SP-13 Stripe-style 资源 API (accounts / transfers / fees / payouts) 暂时下线:
+	// split-payment 转为纯 gRPC 内部服务后, 这些外部 HTTP 端点要么挪到独立服务,
+	// 要么走 BFF gRPC bridge 重做. 当前路径直接 404, 等独立 gRPC 服务上线再补.
+	// /moneyflow → designer HTML; /moneyflow/resources → 资源管理 (SP-13)
+	r.HandleFunc("/moneyflow", moneyflowH.Designer).Methods("GET")
+	r.HandleFunc("/moneyflow/", moneyflowH.Designer).Methods("GET")
+	r.HandleFunc("/moneyflow/resources", moneyflowH.Resources).Methods("GET")
+	r.HandleFunc("/moneyflow/resources/", moneyflowH.Resources).Methods("GET")
+	// SP-3D React Flow 重写版
+	r.HandleFunc("/moneyflow/v2", moneyflowH.DesignerV2).Methods("GET")
+	r.HandleFunc("/moneyflow/v2/", moneyflowH.DesignerV2).Methods("GET")
+
+	// SP-AC-4 accounting meta proxy (Designer picker / Rule 管理页用)
+	acctH := handler.NewAccountingMetaHandler()
+	api.PathPrefix("/accounting/").HandlerFunc(acctH.Proxy)
+
+	// SP-AC-5 TransactionRule 管理页
+	r.HandleFunc("/moneyflow/rules", moneyflowH.Rules).Methods("GET")
+	r.HandleFunc("/moneyflow/rules/", moneyflowH.Rules).Methods("GET")
+
 	// health
 	r.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -349,7 +374,7 @@ func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn 
 				service, fallbackAddr)
 			target := fallbackAddr
 			if !strings.Contains(target, "://") {
-				target = "dns:///" + target
+				target = "passthrough:///" + target
 			}
 			conn, derr := grpc.NewClient(target,
 				creds,
@@ -388,7 +413,7 @@ func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn 
 	// 后端容器重启 / 副本切换 / 启动顺序错时会卡在 "no children to pick from"。
 	target := fallbackAddr
 	if !strings.Contains(target, "://") {
-		target = "dns:///" + target
+		target = "passthrough:///" + target
 	}
 	conn, err := grpc.NewClient(target,
 		creds,

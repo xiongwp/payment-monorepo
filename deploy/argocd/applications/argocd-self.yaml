@@ -1,0 +1,24 @@
+# Argo CD 自管 (self-managed): 防止 ConfigMap / RBAC / Project 配置漂移.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd-self
+  namespace: argocd
+spec:
+  project: payment-platform
+  source:
+    repoURL: https://github.com/example/payment-monorepo
+    targetRevision: HEAD
+    path: deploy/argocd
+    directory:
+      recurse: false
+      include: "*.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

@@ -25,11 +25,13 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Server gRPC 服务实现（同时实现 AccountingService、AccountingAdminService 和 FreezeService）
+// Server gRPC 服务实现（同时实现 AccountingService、AccountingAdminService、
+// FreezeService 和 SP-AC-7 TransactionService）
 type Server struct {
 	accountingv1.UnimplementedAccountingServiceServer
 	accountingv1.UnimplementedAccountingAdminServiceServer
 	accountingv1.UnimplementedFreezeServiceServer
+	UnimplementedTransactionServiceServer // SP-AC-7 multi-leg + 元数据查询
 	accountingSvc     service.AccountingService
 	transactionSvc    service.TransactionService
 	dayCutSvc         service.DayCutService
@@ -39,6 +41,7 @@ type Server struct {
 	freezeSvc         service.FreezeService
 	adjustmentSvc     service.AdjustmentService
 	transactionRepo   repository.TransactionRepository
+	ruleRepo          repository.TransactionRuleRepository // SP-AC-7: ListAccountTypes / ListTransactionRules
 	hotAccountRepo    repository.HotAccountRepository
 	bufferAccountRepo repository.BufferAccountRepository
 	logger            *zap.Logger // API 层日志（api.log）
@@ -115,6 +118,7 @@ func NewServer(
 	freezeSvc service.FreezeService,
 	adjustmentSvc service.AdjustmentService,
 	transactionRepo repository.TransactionRepository,
+	ruleRepo repository.TransactionRuleRepository,
 	hotAccountRepo repository.HotAccountRepository,
 	bufferAccountRepo repository.BufferAccountRepository,
 	loggers *logging.Loggers,
@@ -129,6 +133,7 @@ func NewServer(
 		freezeSvc:         freezeSvc,
 		adjustmentSvc:     adjustmentSvc,
 		transactionRepo:   transactionRepo,
+		ruleRepo:          ruleRepo,
 		hotAccountRepo:    hotAccountRepo,
 		bufferAccountRepo: bufferAccountRepo,
 		logger:            loggers.API,
@@ -205,6 +210,7 @@ func (s *Server) ListenAndServe(ctx context.Context, port int, loadShed LoadShed
 	accountingv1.RegisterAccountingServiceServer(srv, s)
 	accountingv1.RegisterAccountingAdminServiceServer(srv, s)
 	accountingv1.RegisterFreezeServiceServer(srv, s)
+	RegisterTransactionServiceServer(srv, s) // SP-AC-7
 	reflection.Register(srv)
 
 	s.grpcSrv = srv
@@ -293,14 +299,42 @@ func (s *Server) GetAccount(ctx context.Context, req *accountingv1.GetAccountReq
 	}
 }
 
+// FreezeAccount 把账户状态从 Active 翻成 Frozen,后续所有出账被拒。
+//
+// 这是 admin 操作 (风控 / 合规):
+//   - 操作前必须有 audit-log + approval-service 双人复核 (网关层校验);
+//   - 余额本身不动,FrozenBalance 字段也不动 (那是订单级冻结,独立机制);
+//   - 已 in-flight 的 TCC 仍然能 confirm/cancel (按已 leg 上的 lock 走完);
+//   - 缓存(BalanceCache) 不需要清,下次读会拿到新 status.
 func (s *Server) FreezeAccount(ctx context.Context, req *accountingv1.FreezeAccountRequest) (*accountingv1.FreezeAccountResponse, error) {
-	// TODO: implement
-	return &accountingv1.FreezeAccountResponse{Code: 501, Message: "not implemented"}, nil
+	if req == nil || req.AccountNo == "" {
+		return &accountingv1.FreezeAccountResponse{Code: 400, Message: "account_no required"}, nil
+	}
+	if req.Operator == "" {
+		return &accountingv1.FreezeAccountResponse{Code: 400, Message: "operator required"}, nil
+	}
+	if err := s.accountingSvc.SetAccountStatus(ctx, req.AccountNo, model.AccountStatusFrozen, req.Operator, req.Reason); err != nil {
+		s.logger.Warn("FreezeAccount failed", zap.String("account_no", req.AccountNo), zap.Error(err))
+		return &accountingv1.FreezeAccountResponse{Code: 500, Message: err.Error()}, nil
+	}
+	return &accountingv1.FreezeAccountResponse{Code: 0, Message: "ok"}, nil
 }
 
+// UnfreezeAccount 把账户状态从 Frozen 翻回 Active。
+//
+// 同样要求 admin 审批;UpdateBalance / 取现等被禁的接口会立即可用.
 func (s *Server) UnfreezeAccount(ctx context.Context, req *accountingv1.UnfreezeAccountRequest) (*accountingv1.UnfreezeAccountResponse, error) {
-	// TODO: implement
-	return &accountingv1.UnfreezeAccountResponse{Code: 501, Message: "not implemented"}, nil
+	if req == nil || req.AccountNo == "" {
+		return &accountingv1.UnfreezeAccountResponse{Code: 400, Message: "account_no required"}, nil
+	}
+	if req.Operator == "" {
+		return &accountingv1.UnfreezeAccountResponse{Code: 400, Message: "operator required"}, nil
+	}
+	if err := s.accountingSvc.SetAccountStatus(ctx, req.AccountNo, model.AccountStatusActive, req.Operator, req.Reason); err != nil {
+		s.logger.Warn("UnfreezeAccount failed", zap.String("account_no", req.AccountNo), zap.Error(err))
+		return &accountingv1.UnfreezeAccountResponse{Code: 500, Message: err.Error()}, nil
+	}
+	return &accountingv1.UnfreezeAccountResponse{Code: 0, Message: "ok"}, nil
 }
 
 // ─── 记账操作 ─────────────────────────────────────────────────────────────────

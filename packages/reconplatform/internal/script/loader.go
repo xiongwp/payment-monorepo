@@ -24,17 +24,28 @@ import (
 )
 
 // Script 已加载的单条脚本：源码 + Starlark 编译产物。
+//
+// JSON tag 保证 detail 端点 (/api/v1/scripts/:id) 返回小写字段名,
+// 与 list 端点 (/api/v1/scripts) 手工 map 出的字段名一致, 前端写一套即可.
 type Script struct {
-	ID        string
-	Name      string
-	Code      string
-	UpdatedAt time.Time
-	UpdatedBy string
-	Schedule  string   // cron 表达式（"*/5 * * * *"）；空 = 不走定时
-	Triggers  []string // ["order-core:payment_intents", "*"]；空 = 不走事件驱动
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Code      string    `json:"code"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UpdatedBy string    `json:"updated_by"`
+	Schedule  string    `json:"schedule"`   // cron 表达式（"*/5 * * * *"）；空 = 不走定时
+	Triggers  []string  `json:"triggers"`   // ["order-core:payment_intents", "*"]；空 = 不走事件驱动
+
+	// UX-2 mode: "live" (默认 — 写主 Kafka topic) / "shadow" (写 Redis shadow stream).
+	// shadow 用于灰度新规则,运营看 24h 命中量 + 误报率再切 live.
+	Mode string `json:"mode,omitempty"`
+
+	// FEAT-1 tags: 用户给规则打的分类标签 (e.g. "three-way", "amount", "refund").
+	// catalog 页面按 tag 过滤; 同一规则可多个 tag.
+	Tags []string `json:"tags,omitempty"`
 
 	// compiled Starlark 编译后产物，Run 时复用。
-	compiled *CompiledScript
+	compiled *CompiledScript `json:"-"`
 }
 
 // PostRunHook 脚本运行结束后的回调（main.go 注 notifier + diffstate.CreateOpen）。
@@ -49,6 +60,12 @@ type Loader struct {
 	scripts   map[string]*Script
 	engine    *Engine
 	postHooks []PostRunHook
+
+	// compileCache LRU cache for ad-hoc Compile (RunCode / Validate).
+	// 已注册脚本的 compiled 字段仍用 Script.compiled 持有(永驻);
+	// cache 只服务 dry-run / batch 等"一次性 code 但可能重复"的路径,
+	// 命中典型节省 5-50ms/次.
+	compileCache *CompileCache
 }
 
 // NewLoader 构造 Loader。engine 默认是 NewEngine(0) — 用 maxSteps 默认值。
@@ -59,10 +76,14 @@ func NewLoader(e *Engine) *Loader {
 		e = NewEngine(0)
 	}
 	return &Loader{
-		scripts: make(map[string]*Script),
-		engine:  e,
+		scripts:      make(map[string]*Script),
+		engine:       e,
+		compileCache: NewCompileCache(128),
 	}
 }
+
+// CompileCache 暴露给 caller 抓 metrics (Prometheus).
+func (l *Loader) CompileCache() *CompileCache { return l.compileCache }
 
 // Engine 暴露给 caller（main.go）做动态 RegisterModule / 调 /symbols 端点。
 func (l *Loader) Engine() *Engine { return l.engine }
@@ -280,12 +301,20 @@ func (l *Loader) RunCode(ctx *Context, displayID, code, trigger string) *Result 
 		StartedAt:   time.Now(),
 		TriggeredBy: trigger,
 	}
-	cs, err := l.engine.Compile(displayID, code)
-	if err != nil {
-		r.Status = "error"
-		r.Error = "compile: " + err.Error()
-		r.FinishedAt = time.Now()
-		return r
+	// 优先查 cache: hit 命中省 5-50ms (Starlark Compile 是热路径瓶颈).
+	var cs *CompiledScript
+	if cached, ok := l.compileCache.Get(displayID, code); ok {
+		cs = cached
+	} else {
+		var err error
+		cs, err = l.engine.Compile(displayID, code)
+		if err != nil {
+			r.Status = "error"
+			r.Error = "compile: " + err.Error()
+			r.FinishedAt = time.Now()
+			return r
+		}
+		l.compileCache.Put(displayID, code, cs)
 	}
 	goCtx := ctx.Ctx
 	if goCtx == nil {
@@ -296,6 +325,12 @@ func (l *Loader) RunCode(ctx *Context, displayID, code, trigger string) *Result 
 	r.Stats = ctx.GetStats()
 	r.Diffs = append(r.Diffs, ctx.Diffs()...)
 	r.Diffs = append(r.Diffs, diffs...)
+	// 把脚本里 print() / ctx.log_* 的捕获日志带回, dry-run 端点会显示给编辑器 Console 面板.
+	// 即使为 nil 也兜底为 [] (JSON 字段不缺失,前端 r.logs.length 不报错).
+	r.Logs = ctx.GetLogs()
+	if r.Logs == nil {
+		r.Logs = []LogEntry{}
+	}
 	if runErr != nil {
 		r.Status = "error"
 		r.Error = runErr.Error()

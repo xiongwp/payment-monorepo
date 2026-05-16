@@ -124,12 +124,29 @@ func (es EventList) ByService() map[string]EventList {
 // Searcher 跨服务索引搜索 + 主存读取。
 type Searcher struct {
 	r redis.UniversalClient
+
+	// PERF-15: NonEmptySet 提供 (svc, table) "见过数据" 快路径,
+	// 没标记的表 ScanService 直接返 [] 不打 Redis. 可选,nil 退化原行为.
+	nonEmpty *NonEmptySet
 }
 
 // NewSearcher 构造（caller 传入已 dial 的 redis client）。
 func NewSearcher(r redis.UniversalClient) *Searcher {
 	return &Searcher{r: r}
 }
+
+// WithNonEmptySet 挂一个 PERF-15 非空缓存. 链式调用风格.
+//
+//	s := store.NewSearcher(rdb).WithNonEmptySet(neSet)
+//
+// 调用方负责 neSet.Bootstrap + neSet.StartRefresh.
+func (s *Searcher) WithNonEmptySet(n *NonEmptySet) *Searcher {
+	s.nonEmpty = n
+	return s
+}
+
+// NonEmpty 拿挂的 NonEmptySet 引用 (admin /metrics 用).
+func (s *Searcher) NonEmpty() *NonEmptySet { return s.nonEmpty }
 
 // SearchByIndex 用业务 key (idx_name, value) 拿到所有引用它的事件。
 //
@@ -201,7 +218,14 @@ func (s *Searcher) GetEvent(ctx context.Context, service, table, pk string) (*Ev
 // 实现：SCAN cursor MATCH "recon:evt:<svc>:<table>*:*" + GET 每条。
 // 注意：sharded 表（如 payment_intent_10..19）会自然命中所有 shard。
 // 大表慎用 — 业务侧 100 万 row 全扫要几秒到几十秒。
+//
+// PERF-15: 先查 NonEmptySet, 若标记不存在 → 直接 return [],省一次 SCAN 全表.
+// false positive (表曾有数据现已 TTL 过期) → fallthru 到 SCAN 拿空, 行为正确.
 func (s *Searcher) ScanService(ctx context.Context, service, table string, limit int) (EventList, error) {
+	// PERF-15 短路: 没标记 → 视为空表
+	if s.nonEmpty != nil && !s.nonEmpty.HasData(service, table) {
+		return nil, nil
+	}
 	if limit <= 0 || limit > 50000 {
 		limit = 5000
 	}

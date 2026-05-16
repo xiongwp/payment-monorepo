@@ -1,0 +1,139 @@
+{{- if .Values.kafka.enabled }}
+---
+# Kafka cluster via Strimzi operator (operator 必须已经装上,见 infra/k8s-bootstrap)
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: payment-kafka
+  namespace: {{ .Values.global.namespace }}
+spec:
+  kafka:
+    version: 3.6.0
+    replicas: {{ .Values.kafka.brokers }}
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+      - name: tls
+        port: 9093
+        type: internal
+        tls: true
+        authentication:
+          type: tls
+    config:
+      offsets.topic.replication.factor: {{ .Values.kafka.replicationFactor }}
+      transaction.state.log.replication.factor: {{ .Values.kafka.replicationFactor }}
+      transaction.state.log.min.isr: {{ .Values.kafka.minInSyncReplicas }}
+      default.replication.factor: {{ .Values.kafka.replicationFactor }}
+      min.insync.replicas: {{ .Values.kafka.minInSyncReplicas }}
+      inter.broker.protocol.version: "3.6"
+      log.retention.hours: 168
+      log.segment.bytes: 1073741824
+      auto.create.topics.enable: false
+    storage:
+      type: jbod
+      volumes:
+        - id: 0
+          type: persistent-claim
+          size: {{ .Values.kafka.storage }}
+          class: {{ .Values.kafka.storageClass }}
+          deleteClaim: false
+    resources:
+      {{- toYaml .Values.kafka.resources | nindent 6 }}
+    rack:
+      topologyKey: topology.kubernetes.io/zone
+    template:
+      pod:
+        affinity:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    strimzi.io/cluster: payment-kafka
+                topologyKey: topology.kubernetes.io/zone
+  zookeeper:
+    replicas: 3
+    storage:
+      type: persistent-claim
+      size: 10Gi
+      class: {{ .Values.kafka.storageClass }}
+      deleteClaim: false
+    template:
+      pod:
+        affinity:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    strimzi.io/cluster: payment-kafka
+                    strimzi.io/name: payment-kafka-zookeeper
+                topologyKey: topology.kubernetes.io/zone
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+---
+# 关键 topic (Strimzi KafkaTopic CR)
+{{- range .Values.kafka.topics }}
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: {{ .name | replace "." "-" }}
+  namespace: {{ $.Values.global.namespace }}
+  labels:
+    strimzi.io/cluster: payment-kafka
+spec:
+  topicName: {{ .name }}
+  partitions: {{ .partitions }}
+  replicas: {{ .replicationFactor }}
+  config:
+    {{- range $k, $v := .config }}
+    {{ $k }}: {{ $v | quote }}
+    {{- end }}
+---
+{{- end }}
+{{- if .Values.kafka.mirrorMaker2.enabled }}
+# MirrorMaker 2 for cross-region replication
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaMirrorMaker2
+metadata:
+  name: kafka-mirror-maker-2
+  namespace: {{ .Values.global.namespace }}
+spec:
+  version: 3.6.0
+  replicas: 2
+  image: {{ .Values.kafka.mirrorMaker2.image }}
+  connectCluster: {{ .Values.kafka.mirrorMaker2.sourceCluster }}
+  clusters:
+    - alias: {{ .Values.kafka.mirrorMaker2.sourceCluster }}
+      bootstrapServers: kafka-primary-bootstrap:9092
+      config:
+        config.storage.replication.factor: 3
+        offset.storage.replication.factor: 3
+        status.storage.replication.factor: 3
+    - alias: {{ .Values.kafka.mirrorMaker2.targetCluster }}
+      bootstrapServers: kafka-dr-bootstrap:9092
+      config:
+        config.storage.replication.factor: 3
+        offset.storage.replication.factor: 3
+        status.storage.replication.factor: 3
+  mirrors:
+    - sourceCluster: {{ .Values.kafka.mirrorMaker2.sourceCluster }}
+      targetCluster: {{ .Values.kafka.mirrorMaker2.targetCluster }}
+      sourceConnector:
+        config:
+          replication.factor: 3
+          offset-syncs.topic.replication.factor: 3
+          sync.topic.acls.enabled: "true"
+          refresh.topics.interval.seconds: 30
+      heartbeatConnector:
+        config:
+          heartbeats.topic.replication.factor: 3
+      checkpointConnector:
+        config:
+          checkpoints.topic.replication.factor: 3
+          sync.group.offsets.enabled: "true"
+      topicsPattern: {{ .Values.kafka.mirrorMaker2.topics | first }}
+      groupsPattern: ".*"
+{{- end }}
+{{- end }}

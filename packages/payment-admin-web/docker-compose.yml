@@ -47,10 +47,16 @@ services:
       RISK_GRPC_ADDR: "risk-manage:9490"
       USER_MERCHANT_GRPC_ADDR: "user-merchant-core:9191"
       ACCOUNTING_ADMIN_HTTP_ADDR: "http://accounting-system:8888"
+      # SP-AC-7: split-payment 是内部 gRPC 服务. host 上跑 (本机 dev), 容器通过
+      # host.docker.internal 访问 (extra_hosts 下面注入 host-gateway).
+      SPLIT_PAYMENT_GRPC_ADDR: "host.docker.internal:9098"
+      ACCOUNTING_GRPC_ADDR:    "accounting-system:50051"
       # 服务发现：BFF 也用 etcd resolver 跨副本负载均衡
       REGISTRY_ENDPOINTS: "etcd:2379"
       PORT: "9190"
       ADMIN_BEARER_TOKEN: ""
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8190:9190"   # HTTP API (host 8190 → container 9190，避开 payment-core metrics 9190)
 

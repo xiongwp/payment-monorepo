@@ -757,9 +757,26 @@ func (h *AdminHandler) handleRollback(w http.ResponseWriter, r *http.Request, ns
 	http.Redirect(w, r, "/admin/ns/"+ns+"/"+key, http.StatusSeeOther)
 }
 
+// handleDelete POST /admin/ns/{ns}/{key}/delete
+//
+// 软删除一个 config (标 deleted=1) + audit。同步给同 ns 的 SDK 客户端推 EventDelete。
+// 双人复核 (approval-service) 在路由层校验过,这里只做实际的服务调用。
 func (h *AdminHandler) handleDelete(w http.ResponseWriter, r *http.Request, ns, key string) {
-	// TODO: 实现 service.DeleteConfig。当前 stub。
-	http.Error(w, "delete not implemented", http.StatusNotImplemented)
+	actor := r.FormValue("actor")
+	if actor == "" {
+		http.Error(w, "actor required", http.StatusBadRequest)
+		return
+	}
+	reason := r.FormValue("reason")
+	if reason == "" {
+		http.Error(w, "reason required (admin audit)", http.StatusBadRequest)
+		return
+	}
+	if err := h.svc.Delete(r.Context(), ns, key, actor, reason); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/admin/ns/"+ns, http.StatusSeeOther)
 }
 
 // handleCancelPending POST /admin/ns/{ns}/{key}/cancel?version=N

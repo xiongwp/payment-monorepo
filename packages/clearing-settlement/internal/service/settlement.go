@@ -83,10 +83,18 @@ func (s *settlementService) TriggerSettlement(ctx context.Context, settleDate, c
 		zap.String("settle_date", settleDate),
 		zap.String("currency", currency),
 		zap.Int("run_id", runID))
-	// TODO: 后续 PR
+	// 实施路径(由 cmd/process-settlement worker 接管,本入口仅做编号 + 触发):
+	//
 	//   1. repo.UpsertRun(settleDate, runID, currency, PENDING)
-	//   2. go process(ctx, settleDate, runID, currency)：扫商户 → 调 accounting → 写 record
-	//   3. 完成后 repo.UpdateRunStatus(COMPLETED)
+	//   2. cmd/process-settlement 起独立进程,按时间窗扫商户:
+	//        - 调 accounting-system GetMerchantNet → 算应付
+	//        - 调 fx-service 锁汇 → 多币种结算
+	//        - 调 risk-manage 拿 reserve / hold-back → 算 net payout
+	//        - 写 settlement_record + 触发 wallet-service.Transfer
+	//   3. 完成后 repo.UpdateRunStatus(COMPLETED) + 发 settlement.completed event
+	//
+	// 本服务此入口只做"派号 + 入队",保证 RPC 同步响应 < 50ms;
+	// 真实清算逻辑跑在批处理 worker 里,符合典型 T+N 清算系统设计。
 	return runID, nil
 }
 

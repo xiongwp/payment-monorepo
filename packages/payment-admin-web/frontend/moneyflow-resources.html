@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Money Flow Resources</title>
+<style>
+  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+  body { margin: 0; background: #f7f8fa; font-size: 13px; color: #1a1a2e; }
+  header { background: #1a1a2e; color: #fff; padding: 12px 24px; display: flex; gap: 14px; align-items: center; }
+  header h1 { margin: 0; font-size: 16px; }
+  header a { color: #c8c8e8; text-decoration: none; padding: 4px 10px; border-radius: 4px; font-size: 13px; }
+  header a.active, header a:hover { background: #4040c0; color: #fff; }
+  header .spacer { flex: 1; }
+  header .health { font-size: 11px; color: #80cba2; }
+  nav.tabs { background: #fff; border-bottom: 1px solid #e0e2e8; padding: 0 24px; display: flex; gap: 4px; }
+  nav.tabs button { border: 0; background: transparent; padding: 12px 14px; font-size: 13px; cursor: pointer; color: #555; border-bottom: 2px solid transparent; }
+  nav.tabs button.active { color: #4040c0; border-bottom-color: #4040c0; font-weight: 600; }
+  main { padding: 16px 24px; max-width: 1400px; margin: 0 auto; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+  .toolbar input, .toolbar select, .toolbar button {
+    padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; background: #fff;
+  }
+  .toolbar button.primary { background: #4040c0; color: #fff; border-color: #4040c0; cursor: pointer; font-weight: 500; }
+  .toolbar button.primary:hover { background: #5050d0; }
+  .toolbar .gap { flex: 1; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 4px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  th, td { padding: 10px 12px; text-align: left; font-size: 12px; border-bottom: 1px solid #eef; }
+  th { background: #f4f5f7; font-weight: 600; color: #555; font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; }
+  tr:hover td { background: #fafbff; cursor: pointer; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  .id-cell { color: #4040c0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  .amount { text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+  .badge.green   { background: #d6f5e2; color: #1a7a3a; }
+  .badge.amber   { background: #fff2cd; color: #8a5a00; }
+  .badge.red     { background: #ffd6d6; color: #a01a1a; }
+  .badge.blue    { background: #d6e8ff; color: #1a4aa0; }
+  .badge.gray    { background: #e8e8ee; color: #555; }
+  .badge.purple  { background: #ead6ff; color: #5a1aa0; }
+  .empty { padding: 60px 20px; text-align: center; color: #999; }
+  .empty .icon { font-size: 32px; opacity: 0.5; margin-bottom: 8px; }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
+  .modal.hidden { display: none; }
+  .modal-content { background: #fff; border-radius: 8px; width: 560px; max-width: 90vw; max-height: 85vh; overflow: auto; padding: 20px 24px; }
+  .modal-content h2 { margin: 0 0 12px; font-size: 16px; }
+  .modal-content label { display: block; margin: 10px 0 4px; font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.3px; }
+  .modal-content input, .modal-content select, .modal-content textarea {
+    width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;
+  }
+  .modal-content textarea { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+  .modal-content .row { display: flex; gap: 10px; }
+  .modal-content .row > * { flex: 1; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  .modal-actions button { padding: 6px 14px; border-radius: 4px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 13px; }
+  .modal-actions button.primary { background: #4040c0; color: #fff; border-color: #4040c0; }
+  .modal-actions button.danger  { background: #c04040; color: #fff; border-color: #c04040; }
+  details { background: #fff; border-radius: 4px; padding: 10px 14px; margin-top: 6px; }
+  details summary { cursor: pointer; font-weight: 500; font-size: 12px; }
+  pre { background: #f4f5f7; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 11px; line-height: 1.4; }
+  .relation { font-size: 11px; color: #666; margin-top: 2px; }
+  .relation a { color: #4040c0; text-decoration: none; }
+  .relation a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>💰 Money Flow Resources</h1>
+  <a href="/moneyflow">← Designer</a>
+  <a href="/moneyflow/resources" class="active">Resources</a>
+  <div class="spacer"></div>
+  <span class="health" id="health-status">connecting…</span>
+</header>
+
+<nav class="tabs">
+  <button data-tab="accounts" class="active">Connected Accounts</button>
+  <button data-tab="transfers">Transfers</button>
+  <button data-tab="fees">Application Fees</button>
+  <button data-tab="payouts">Payouts</button>
+  <button data-tab="reversals">Reversals</button>
+</nav>
+
+<main>
+  <!-- ─── Connected Accounts ──────────────────────────────────── -->
+  <section id="tab-accounts">
+    <div class="toolbar">
+      <select id="acc-status-filter">
+        <option value="">All statuses</option>
+        <option value="pending">pending</option>
+        <option value="enabled">enabled</option>
+        <option value="restricted">restricted</option>
+        <option value="disabled">disabled</option>
+        <option value="rejected">rejected</option>
+      </select>
+      <button onclick="loadAccounts()">↻ Refresh</button>
+      <div class="gap"></div>
+      <button class="primary" onclick="openNewAccountModal()">+ New Account</button>
+    </div>
+    <table id="accounts-table">
+      <thead><tr>
+        <th>ID</th><th>Type</th><th>Country</th><th>Currency</th>
+        <th>Status</th><th>Capabilities</th><th>Payout</th><th>Updated</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- ─── Transfers ──────────────────────────────────────────── -->
+  <section id="tab-transfers" style="display:none">
+    <div class="toolbar">
+      <input id="tr-group-input" placeholder="transfer_group (tg_xxx)" style="min-width: 280px">
+      <button onclick="loadTransfersByGroup()">查 Group</button>
+      <input id="tr-id-input" placeholder="single transfer id (tr_xxx)" style="min-width: 220px">
+      <button onclick="loadTransferByID()">查 ID</button>
+    </div>
+    <table id="transfers-table">
+      <thead><tr>
+        <th>ID</th><th>Group</th><th>Source → Destination</th><th class="amount">Amount</th>
+        <th>Status</th><th>Reversed</th><th>Source Tx</th><th>Actions</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- ─── Application Fees ───────────────────────────────────── -->
+  <section id="tab-fees" style="display:none">
+    <div class="toolbar">
+      <input id="fee-charge-input" placeholder="charge_id (ch_xxx)" style="min-width: 280px">
+      <button onclick="loadFeesByCharge()">查 Charge</button>
+    </div>
+    <table id="fees-table">
+      <thead><tr>
+        <th>ID</th><th>Charge</th><th>Account</th><th class="amount">Amount</th>
+        <th>Status</th><th>Refunded</th><th>Created</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- ─── Payouts ────────────────────────────────────────────── -->
+  <section id="tab-payouts" style="display:none">
+    <div class="toolbar">
+      <input id="po-account-input" placeholder="account (acct_xxx)" style="min-width: 280px">
+      <button onclick="loadPayoutsByAccount()">查 Account</button>
+      <div class="gap"></div>
+      <button class="primary" onclick="openNewPayoutModal()">+ New Payout</button>
+    </div>
+    <table id="payouts-table">
+      <thead><tr>
+        <th>ID</th><th>Account</th><th class="amount">Amount</th><th>Currency</th>
+        <th>Method</th><th>Status</th><th>Arrival</th><th>Created</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- ─── Reversals ──────────────────────────────────────────── -->
+  <section id="tab-reversals" style="display:none">
+    <div class="toolbar">
+      <input id="rv-transfer-input" placeholder="transfer_id (tr_xxx)" style="min-width: 280px">
+      <button onclick="loadReversalsByTransfer()">查 Transfer Reversals</button>
+      <span class="relation">注: Reversal 没有独立 list endpoint, 必须按 transfer_id 查</span>
+    </div>
+    <table id="reversals-table">
+      <thead><tr>
+        <th>ID</th><th>Transfer</th><th class="amount">Amount</th>
+        <th>Reason</th><th>Status</th><th>Idem Key</th><th>Created</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<!-- New Account Modal -->
+<div id="modal-new-account" class="modal hidden">
+  <div class="modal-content">
+    <h2>+ Connected Account</h2>
+    <div class="row">
+      <div>
+        <label>Type</label>
+        <select id="new-acc-type">
+          <option value="express">express (推荐, 平台代办 KYC)</option>
+          <option value="standard">standard</option>
+          <option value="custom">custom</option>
+        </select>
+      </div>
+      <div>
+        <label>Country (ISO-2)</label>
+        <input id="new-acc-country" value="US">
+      </div>
+      <div>
+        <label>Currency</label>
+        <input id="new-acc-currency" value="USD">
+      </div>
+    </div>
+    <label>Status</label>
+    <select id="new-acc-status">
+      <option value="enabled">enabled</option>
+      <option value="pending">pending</option>
+      <option value="restricted">restricted</option>
+    </select>
+    <label>Capabilities (JSON)</label>
+    <textarea id="new-acc-caps" rows="3">{
+  "transfers": "active",
+  "payouts": "active"
+}</textarea>
+    <label>Metadata (JSON, e.g. {"merchant_id": "m_xxx"})</label>
+    <textarea id="new-acc-meta" rows="3">{
+  "merchant_id": ""
+}</textarea>
+    <label>Business profile name (optional)</label>
+    <input id="new-acc-name" placeholder="商户名 (payout 时显示)">
+    <div class="modal-actions">
+      <button onclick="closeModal('modal-new-account')">取消</button>
+      <button class="primary" onclick="submitNewAccount()">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Payout Modal -->
+<div id="modal-new-payout" class="modal hidden">
+  <div class="modal-content">
+    <h2>+ Manual Payout</h2>
+    <label>Account ID</label>
+    <input id="new-po-account" placeholder="acct_xxx">
+    <div class="row">
+      <div>
+        <label>Amount (cents)</label>
+        <input id="new-po-amount" type="number" placeholder="10000 = $100.00">
+      </div>
+      <div>
+        <label>Currency</label>
+        <input id="new-po-currency" value="USD">
+      </div>
+      <div>
+        <label>Method</label>
+        <select id="new-po-method">
+          <option value="standard">standard (T+2, 免费)</option>
+          <option value="instant">instant (秒到, 1% fee)</option>
+        </select>
+      </div>
+    </div>
+    <label>Statement descriptor (optional)</label>
+    <input id="new-po-stmt" placeholder="payout 时显示的商户名">
+    <div class="modal-actions">
+      <button onclick="closeModal('modal-new-payout')">取消</button>
+      <button class="primary" onclick="submitNewPayout()">发起 Payout</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reverse Transfer Modal -->
+<div id="modal-reverse" class="modal hidden">
+  <div class="modal-content">
+    <h2>↩ Reverse Transfer</h2>
+    <p class="relation" id="reverse-target"></p>
+    <label>Amount (cents, 留空 = 全额退剩余)</label>
+    <input id="rev-amount" type="number" placeholder="">
+    <label>Reason</label>
+    <select id="rev-reason">
+      <option value="requested_by_customer">requested_by_customer</option>
+      <option value="duplicate">duplicate</option>
+      <option value="fraudulent">fraudulent</option>
+      <option value="expired_uncaptured_charge">expired_uncaptured_charge</option>
+    </select>
+    <label>Idempotency Key (必填, 防重复)</label>
+    <input id="rev-idem" placeholder="e.g. refund_001::tr_xxx">
+    <div class="modal-actions">
+      <button onclick="closeModal('modal-reverse')">取消</button>
+      <button class="primary danger" onclick="submitReverse()">执行 Reverse</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '/api';
+let currentReverseTransferID = null;
+
+// ─── tab switching ──────────────────────────────────────────────────
+document.querySelectorAll('nav.tabs button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('nav.tabs button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('main > section').forEach(s => s.style.display = 'none');
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).style.display = '';
+    // auto-load on first visit
+    if (btn.dataset.tab === 'accounts') loadAccounts();
+  };
+});
+
+// ─── health probe ──────────────────────────────────────────────────
+async function probeHealth() {
+  try {
+    const r = await fetch(API + '/moneyflow/_health');
+    if (r.ok) {
+      const j = await r.json();
+      const data = j.data || j;
+      document.getElementById('health-status').textContent =
+        '● split-payment ' + (data.status || 'ok');
+      document.getElementById('health-status').style.color = '#80cba2';
+    } else {
+      document.getElementById('health-status').textContent = '● split-payment down';
+      document.getElementById('health-status').style.color = '#ffc0c0';
+    }
+  } catch (e) {
+    document.getElementById('health-status').textContent = '● bff unreachable';
+    document.getElementById('health-status').style.color = '#ffc0c0';
+  }
+}
+
+// ─── badges ────────────────────────────────────────────────────────
+function statusBadge(s) {
+  const map = {
+    enabled: 'green', active: 'green', paid: 'green',
+    posted: 'green', collected: 'green', succeeded: 'green', completed: 'green',
+    pending: 'amber', in_transit: 'amber', created: 'amber', executing: 'amber',
+    restricted: 'amber', partially_reversed: 'amber', partially_refunded: 'amber',
+    failed: 'red', disabled: 'red', rejected: 'red', canceled: 'gray',
+    reversed: 'purple', refunded: 'purple',
+  };
+  const cls = map[s] || 'gray';
+  return `<span class="badge ${cls}">${s || '?'}</span>`;
+}
+
+function capsBadge(caps) {
+  if (!caps) return '<span class="relation">—</span>';
+  return Object.entries(caps).map(([k, v]) =>
+    `<span class="badge ${v === 'active' ? 'green' : 'gray'}" style="margin-right:4px">${k}: ${v}</span>`
+  ).join('');
+}
+
+function money(amount, currency) {
+  if (amount == null) return '—';
+  return (amount / 100).toFixed(2) + ' ' + (currency || '');
+}
+
+function fmtTime(s) {
+  if (!s) return '—';
+  try { return new Date(s).toLocaleString(); }
+  catch { return s; }
+}
+
+// ─── Accounts ──────────────────────────────────────────────────────
+async function loadAccounts() {
+  const status = document.getElementById('acc-status-filter').value;
+  const url = API + '/connected_accounts' + (status ? '?status=' + encodeURIComponent(status) : '');
+  const tbody = document.querySelector('#accounts-table tbody');
+  tbody.innerHTML = '<tr><td colspan="8" class="empty">Loading…</td></tr>';
+  try {
+    const r = await fetch(url);
+    const j = await r.json();
+    const list = (j.data && j.data.data) || j.data || [];
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty"><div class="icon">📭</div>暂无账户 — 点 + New Account 创建</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(a => `
+      <tr>
+        <td class="id-cell">${a.id}</td>
+        <td>${a.type}</td>
+        <td>${a.country || '—'}</td>
+        <td>${a.default_currency || '—'}</td>
+        <td>${statusBadge(a.status)}</td>
+        <td>${capsBadge(a.capabilities)}</td>
+        <td><span class="mono">${(a.payout_schedule && a.payout_schedule.interval) || 'manual'}</span></td>
+        <td>${fmtTime(a.updated_at)}</td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function openNewAccountModal() {
+  document.getElementById('modal-new-account').classList.remove('hidden');
+}
+
+async function submitNewAccount() {
+  let caps, meta;
+  try {
+    caps = JSON.parse(document.getElementById('new-acc-caps').value || '{}');
+    meta = JSON.parse(document.getElementById('new-acc-meta').value || '{}');
+  } catch (e) { alert('JSON 不合法: ' + e.message); return; }
+  const body = {
+    type: document.getElementById('new-acc-type').value,
+    country: document.getElementById('new-acc-country').value,
+    default_currency: document.getElementById('new-acc-currency').value,
+    status: document.getElementById('new-acc-status').value,
+    capabilities: caps,
+    metadata: meta,
+    business_profile: { name: document.getElementById('new-acc-name').value },
+  };
+  try {
+    const r = await fetch(API + '/connected_accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) { alert('创建失败: HTTP ' + r.status); return; }
+    closeModal('modal-new-account');
+    await loadAccounts();
+  } catch (e) { alert('请求出错: ' + e.message); }
+}
+
+// ─── Transfers ─────────────────────────────────────────────────────
+async function loadTransfersByGroup() {
+  const group = document.getElementById('tr-group-input').value.trim();
+  if (!group) { alert('请填 transfer_group'); return; }
+  const tbody = document.querySelector('#transfers-table tbody');
+  tbody.innerHTML = '<tr><td colspan="8" class="empty">Loading…</td></tr>';
+  try {
+    const r = await fetch(API + '/transfers?group=' + encodeURIComponent(group));
+    const j = await r.json();
+    const list = (j.data && j.data.data) || j.data || [];
+    renderTransfers(list);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty">Error: ${e.message}</td></tr>`;
+  }
+}
+
+async function loadTransferByID() {
+  const id = document.getElementById('tr-id-input').value.trim();
+  if (!id) { alert('请填 transfer id'); return; }
+  const tbody = document.querySelector('#transfers-table tbody');
+  tbody.innerHTML = '<tr><td colspan="8" class="empty">Loading…</td></tr>';
+  try {
+    const r = await fetch(API + '/transfers/' + encodeURIComponent(id));
+    const j = await r.json();
+    const t = j.data || j;
+    renderTransfers([t]);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function renderTransfers(list) {
+  const tbody = document.querySelector('#transfers-table tbody');
+  if (!list || !list.length || !list[0]) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">无数据</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(t => `
+    <tr>
+      <td class="id-cell">${t.id}</td>
+      <td class="mono">${t.transfer_group || '—'}</td>
+      <td><span class="mono">${t.source_account} → ${t.destination_account}</span></td>
+      <td class="amount">${money(t.amount_minor, t.currency)}</td>
+      <td>${statusBadge(t.status)}</td>
+      <td class="amount">${t.reversed_amount ? money(t.reversed_amount, t.currency) : '—'}</td>
+      <td class="mono">${t.source_transaction || '—'}</td>
+      <td>
+        ${t.status === 'posted' || t.status === 'partially_reversed' ?
+          `<button onclick="openReverseModal('${t.id}', ${t.amount_minor - (t.reversed_amount || 0)}, '${t.currency}')">↩ Reverse</button>`
+          : '—'}
+      </td>
+    </tr>
+  `).join('');
+}
+
+function openReverseModal(transferID, remaining, currency) {
+  currentReverseTransferID = transferID;
+  document.getElementById('reverse-target').textContent =
+    `Transfer ${transferID} · 剩余可退: ${money(remaining, currency)}`;
+  document.getElementById('rev-amount').value = '';
+  document.getElementById('rev-amount').placeholder = '留空 = ' + remaining + ' (全额)';
+  document.getElementById('rev-idem').value = '';
+  document.getElementById('modal-reverse').classList.remove('hidden');
+}
+
+async function submitReverse() {
+  const idem = document.getElementById('rev-idem').value.trim();
+  if (!idem) { alert('idempotency_key 必填'); return; }
+  const body = {
+    idempotency_key: idem,
+    reason: document.getElementById('rev-reason').value,
+  };
+  const amt = parseInt(document.getElementById('rev-amount').value);
+  if (amt && amt > 0) body.amount_minor = amt;
+  try {
+    const r = await fetch(API + '/transfers/' + encodeURIComponent(currentReverseTransferID) + '/reverse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) { alert('Reverse 失败: ' + (j.message || r.status)); return; }
+    alert('Reverse 成功: ' + (j.data && j.data.id || 'ok'));
+    closeModal('modal-reverse');
+    // 重新查同 group 让用户看到 reversed_amount 累加
+    await loadTransfersByGroup();
+  } catch (e) { alert('请求出错: ' + e.message); }
+}
+
+// ─── Application Fees ──────────────────────────────────────────────
+async function loadFeesByCharge() {
+  const charge = document.getElementById('fee-charge-input').value.trim();
+  if (!charge) { alert('请填 charge_id'); return; }
+  const tbody = document.querySelector('#fees-table tbody');
+  tbody.innerHTML = '<tr><td colspan="7" class="empty">Loading…</td></tr>';
+  try {
+    const r = await fetch(API + '/application_fees?charge=' + encodeURIComponent(charge));
+    const j = await r.json();
+    const list = (j.data && j.data.data) || j.data || [];
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">该 charge 无 application_fee</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(f => `
+      <tr>
+        <td class="id-cell">${f.id}</td>
+        <td class="mono">${f.charge}</td>
+        <td class="mono">${f.account || '—'}</td>
+        <td class="amount">${money(f.amount_minor, f.currency)}</td>
+        <td>${statusBadge(f.status)}</td>
+        <td class="amount">${f.refunded_amount ? money(f.refunded_amount, f.currency) : '—'}</td>
+        <td>${fmtTime(f.created_at)}</td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">Error: ${e.message}</td></tr>`;
+  }
+}
+
+// ─── Payouts ───────────────────────────────────────────────────────
+async function loadPayoutsByAccount() {
+  const acc = document.getElementById('po-account-input').value.trim();
+  if (!acc) { alert('请填 account ID'); return; }
+  const tbody = document.querySelector('#payouts-table tbody');
+  tbody.innerHTML = '<tr><td colspan="8" class="empty">Loading…</td></tr>';
+  try {
+    const r = await fetch(API + '/payouts?account=' + encodeURIComponent(acc));
+    const j = await r.json();
+    const list = (j.data && j.data.data) || j.data || [];
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">该账户无 payout 历史</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(p => `
+      <tr>
+        <td class="id-cell">${p.id}</td>
+        <td class="mono">${p.account}</td>
+        <td class="amount">${money(p.amount_minor, p.currency)}</td>
+        <td>${p.currency}</td>
+        <td><span class="badge gray">${p.method}</span></td>
+        <td>${statusBadge(p.status)}</td>
+        <td>${fmtTime(p.arrival_date)}</td>
+        <td>${fmtTime(p.created_at)}</td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function openNewPayoutModal() {
+  document.getElementById('modal-new-payout').classList.remove('hidden');
+}
+
+async function submitNewPayout() {
+  const body = {
+    account: document.getElementById('new-po-account').value.trim(),
+    amount_minor: parseInt(document.getElementById('new-po-amount').value),
+    currency: document.getElementById('new-po-currency').value.trim(),
+    method: document.getElementById('new-po-method').value,
+    statement_descriptor: document.getElementById('new-po-stmt').value.trim(),
+  };
+  if (!body.account || !body.amount_minor || !body.currency) {
+    alert('account / amount / currency 必填'); return;
+  }
+  try {
+    const r = await fetch(API + '/payouts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      alert('创建失败: ' + (j.message || r.status));
+      return;
+    }
+    closeModal('modal-new-payout');
+    document.getElementById('po-account-input').value = body.account;
+    await loadPayoutsByAccount();
+  } catch (e) { alert('请求出错: ' + e.message); }
+}
+
+// ─── Reversals ─────────────────────────────────────────────────────
+async function loadReversalsByTransfer() {
+  const tr = document.getElementById('rv-transfer-input').value.trim();
+  if (!tr) { alert('请填 transfer id'); return; }
+  // 后端目前没暴露按 transfer 列 reversal 的端点 — 走单 transfer GET 拿不到 reversal 历史.
+  // 临时方案: 提示用户去看 transfer.reversed_amount + transfer 状态.
+  const tbody = document.querySelector('#reversals-table tbody');
+  tbody.innerHTML = `<tr><td colspan="7" class="empty">
+    注: 后端 GET /api/transfers/{id}/reversals 端点未暴露 (Phase 3).<br>
+    临时方案: 看 Transfer 页面 (输入 ${tr}) 的 reversed_amount 字段 + status (reversed/partially_reversed).
+  </td></tr>`;
+}
+
+// ─── modal utils ───────────────────────────────────────────────────
+function closeModal(id) {
+  document.getElementById(id).classList.add('hidden');
+}
+window.onclick = (e) => {
+  if (e.target.classList.contains('modal')) e.target.classList.add('hidden');
+};
+
+// ─── init ──────────────────────────────────────────────────────────
+probeHealth();
+setInterval(probeHealth, 30000);
+loadAccounts();
+</script>
+</body>
+</html>

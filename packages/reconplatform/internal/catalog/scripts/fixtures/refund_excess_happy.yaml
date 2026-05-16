@@ -1,0 +1,36 @@
+# refund_excess — Happy: 退款 <= charge 总额.
+
+events:
+  - svc: payment-channel
+    table: acquirer_tx
+    pk: tx_001
+    after:
+      id: tx_001
+      pi_id: pi_001
+      amount: 10000
+      currency: USD
+    indexes:
+      pi_id: pi_001
+
+  - svc: payment-channel
+    table: refund
+    pk: rf_001
+    after:
+      id: rf_001
+      pi_id: pi_001
+      amount: 3000
+    indexes:
+      pi_id: pi_001
+
+  - svc: payment-channel
+    table: refund
+    pk: rf_002
+    after:
+      id: rf_002
+      pi_id: pi_001
+      amount: 4000
+    indexes:
+      pi_id: pi_001
+
+# total refund 7000 < charge 10000 → ok
+expect_diffs: []

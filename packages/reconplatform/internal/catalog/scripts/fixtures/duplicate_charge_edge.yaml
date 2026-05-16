@@ -1,0 +1,51 @@
+# duplicate_charge — Edge fixture.
+#
+# 同一 idempotency_key 出现 2 条 acquirer_tx (上游重试 / idempotency 检查漏).
+# 规则应输出 1 条 diff,key 是冲突的 idempotency_key.
+
+events:
+  - svc: payment-channel
+    table: acquirer_tx
+    pk: tx_dup_1
+    op: insert
+    ts: 2026-05-13T10:00:00Z
+    after:
+      id: tx_dup_1
+      idempotency_key: idem_dup
+      amount: 1500
+    indexes:
+      idempotency_key: idem_dup
+
+  - svc: payment-channel
+    table: acquirer_tx
+    pk: tx_dup_2
+    op: insert
+    ts: 2026-05-13T10:00:05Z
+    after:
+      id: tx_dup_2
+      idempotency_key: idem_dup
+      amount: 1500
+    indexes:
+      idempotency_key: idem_dup
+
+  # 控制组:正常的另一笔
+  - svc: payment-channel
+    table: acquirer_tx
+    pk: tx_ok
+    op: insert
+    ts: 2026-05-13T10:01:00Z
+    after:
+      id: tx_ok
+      idempotency_key: idem_ok
+      amount: 800
+    indexes:
+      idempotency_key: idem_ok
+
+expect_diffs:
+  - type: duplicate_charge
+    key: idem_dup
+    detail:
+      charge_ids:
+        - tx_dup_1
+        - tx_dup_2
+      count: 2

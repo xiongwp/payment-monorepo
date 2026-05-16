@@ -119,6 +119,15 @@ type AccountingService interface {
 	// 适合单点创建；渠道级批量注册请用 CreatePlatformAccountFleet。
 	CreatePlatformAccount(ctx context.Context, reservedID int64, accountType model.AccountType, currency string) (*model.Account, error)
 
+	// CreateUserScopedPlatformAccount 为一个具体的真实用户挂一个平台类型的 business_type 账户.
+	// 用途: SP-AC-7 multi-leg 原子记账要求"用户钱包 + 平台中转/费用账户"共享 user_id,
+	// 这样整条 multi-leg 落同一 shard, 一个 DB 事务原子提交.
+	//
+	// 跟 CreatePlatformAccount 区别: 不再要求 userID ∈ [1, ReservedOwnerIDMax],
+	// 接受任意真实 user_id (跟 USER_WALLET 共享). business_type / category 仍由
+	// accountType 1:1 推导, 校验 registry 一致.
+	CreateUserScopedPlatformAccount(ctx context.Context, userID int64, accountType model.AccountType, currency string) (*model.Account, error)
+
 	// CreatePlatformAccountFleet 为一个渠道批量创建 100 个系统内部账户（每分片表一个）+
 	// 在 account_business_type_info 登记一条渠道注册。
 	//
@@ -174,6 +183,11 @@ type AccountingService interface {
 
 	// GetAccount 根据账户号查询账户
 	GetAccount(ctx context.Context, accountNo string) (*model.Account, error)
+
+	// SetAccountStatus admin 操作:把账户状态置为 Active / Frozen / Disabled.
+	// 写完后失效本地 BalanceCache 以避免 stale read; 同步写 audit-log 由调用方
+	// (gRPC handler) 在 RPC 入口做。
+	SetAccountStatus(ctx context.Context, accountNo string, newStatus model.AccountStatus, operator, reason string) error
 
 	// GetAccountByUserAndBusinessType 根据 userId + businessType 查询账户
 	// 注意：多币种用户会有多条记录；本方法仅返回首条。要拿全部币种用
@@ -2647,6 +2661,24 @@ func (s *accountingService) CreatePlatformAccount(ctx context.Context, reservedI
 	return s.createAccountInternal(ctx, reservedID, spec.BusinessType, accountType, spec.Category, currency)
 }
 
+// CreateUserScopedPlatformAccount 给具体真实用户挂一个平台类型 business_type 账户.
+// SP-AC-7 multi-leg 原子记账要求 (user_wallet + platform_*) 同 shard 一个事务落账,
+// 因此平台账户要"挂"在真实 user_id 下, 而不是平台 reserved 段.
+//
+// 跟 CreatePlatformAccount 唯一区别: 跳过 owner_id ∈ [1, ReservedOwnerIDMax] 的限制,
+// 其它逻辑 (account_type 必须是平台类型, business_type/category 由 spec 1:1 推导,
+// idempotent by (user_id, business_type, currency)) 完全复用 createAccountInternal.
+func (s *accountingService) CreateUserScopedPlatformAccount(ctx context.Context, userID int64, accountType model.AccountType, currency string) (*model.Account, error) {
+	if userID <= 0 {
+		return nil, fmt.Errorf("user_id must be > 0, got %d", userID)
+	}
+	spec, ok := platformAccountSpec[accountType]
+	if !ok {
+		return nil, fmt.Errorf("account type %d is not a platform-internal type", accountType)
+	}
+	return s.createAccountInternal(ctx, userID, spec.BusinessType, accountType, spec.Category, currency)
+}
+
 // CreatePlatformChannelRequest Fleet 请求：基于**已登记**的 business_type 批量建 100 账户。
 //
 // 字段都是 int/string，无 enum 约束：
@@ -3553,4 +3585,49 @@ func (s *accountingService) retryOnDeadlock(fn func() error) error {
 	}
 	metrics.DeadlockRetryExhaustedTotal.Inc()
 	return fmt.Errorf("transient mysql error retry exhausted after %d attempts: %w", deadlockMaxRetries, lastErr)
+}
+
+// SetAccountStatus admin 操作:把账户状态置为 Active / Frozen / Disabled。
+//
+// 实现细节:
+//   - 校验目标状态合法 (避免 admin 误传一个负数把所有读路径炸掉);
+//   - 单条 UPDATE,version+1 防并发覆盖余额变更;
+//   - 失效本地 BalanceCache (如已启用),保证下次读拿到新 status;
+//   - 调用方 (gRPC handler) 负责入口处的 audit-log + 双人复核 (approval-service);
+//     此函数本身不发 audit,因为它可能被其它 admin tool 直接调用 (CLI / batch),
+//     重复发 audit 会冗余。
+func (s *accountingService) SetAccountStatus(
+	ctx context.Context,
+	accountNo string,
+	newStatus model.AccountStatus,
+	operator, reason string,
+) error {
+	if accountNo == "" {
+		return fmt.Errorf("account_no required")
+	}
+	if operator == "" {
+		return fmt.Errorf("operator required (admin-only operation)")
+	}
+	switch newStatus {
+	case model.AccountStatusActive, model.AccountStatusFrozen, model.AccountStatusDisabled:
+		// ok
+	default:
+		return fmt.Errorf("invalid target status: %d", newStatus)
+	}
+	if err := s.accountRepo.UpdateAccountStatus(ctx, accountNo, newStatus); err != nil {
+		return fmt.Errorf("update status: %w", err)
+	}
+	// Hot-path: 让 BalanceCache 失效,下次读拿新 status。
+	if s.balanceCache != nil {
+		if cerr := s.balanceCache.Invalidate(ctx, accountNo); cerr != nil {
+			s.logger.Warn("balance cache invalidate failed (non-fatal)",
+				zap.String("account_no", accountNo), zap.Error(cerr))
+		}
+	}
+	s.logger.Info("account status updated",
+		zap.String("account_no", accountNo),
+		zap.Int("new_status", int(newStatus)),
+		zap.String("operator", operator),
+		zap.String("reason", reason))
+	return nil
 }

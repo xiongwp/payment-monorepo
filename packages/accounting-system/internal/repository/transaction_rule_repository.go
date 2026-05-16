@@ -32,6 +32,10 @@ type TransactionRuleRepository interface {
 	// ListAccountTypes 返回 account_type_info 全部记录（按 owner_type 升序）。
 	ListAccountTypes(ctx context.Context) ([]*model.AccountTypeInfo, error)
 
+	// ListRulesByProduct 列指定 product_code 下所有规则; productCode 空 → 全部.
+	// 供 admin /admin/transaction-rules 用 (designer event_code 下拉).
+	ListRulesByProduct(ctx context.Context, productCode string) ([]*model.TransactionRule, error)
+
 	// Reload 重新拉取 transaction_rule + account_type_info 全表，原子替换内存快照。
 	// 启动时调用一次；admin /admin/reload/transaction-rules 触发热更新。
 	Reload(ctx context.Context) error
@@ -161,6 +165,39 @@ func (r *transactionRuleRepository) GetAccountTypeInfo(ctx context.Context, acco
 		return nil, fmt.Errorf("query account type info failed: %w", result.Error)
 	}
 	return &info, nil
+}
+
+// ListRulesByProduct 列指定 product_code 下所有规则.
+//
+// 优先用内存快照 (启动时已 Reload); 未 load → fall back 到 DB.
+// productCode 空 → 返回全部规则 (admin 总览用).
+func (r *transactionRuleRepository) ListRulesByProduct(ctx context.Context, productCode string) ([]*model.TransactionRule, error) {
+	snap := r.snapshot.Load()
+	if snap.loaded {
+		out := []*model.TransactionRule{}
+		for _, rules := range snap.rulesByPE {
+			for _, ru := range rules {
+				if productCode == "" || ru.ProductCode == productCode {
+					out = append(out, ru)
+				}
+			}
+		}
+		return out, nil
+	}
+	// fallback: snapshot 没 load,去 DB
+	db, err := r.dbManager.GetMetaDB()
+	if err != nil {
+		return nil, fmt.Errorf("list rules: get meta db: %w", err)
+	}
+	var rules []*model.TransactionRule
+	q := db.WithContext(ctx).Order("id ASC")
+	if productCode != "" {
+		q = q.Where("product_code = ?", productCode)
+	}
+	if err := q.Find(&rules).Error; err != nil {
+		return nil, fmt.Errorf("list rules: %w", err)
+	}
+	return rules, nil
 }
 
 // ListAccountTypes 全表扫 account_type_info（条目少、admin-web 偶尔拉取，不走缓存）。

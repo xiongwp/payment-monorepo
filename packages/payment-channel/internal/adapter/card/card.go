@@ -1,12 +1,22 @@
 // Package card 是 payment-channel 的"卡支付"渠道 adapter。
 //
-// 它**不直接**调 Visa / Mastercard，而是通过 mTLS gRPC 调隔离 DC 内的
-// card-payment 服务，由 card-payment 在 SAQ-D 范围内拿 PAN 调卡组织。
+// 它**不直接**调 Visa / Mastercard,而是通过 mTLS gRPC 调隔离 DC 内的
+// card-payment 服务,由 card-payment 在 SAQ-D 范围内拿 PAN 调卡组织。
 //
-// 跟现有 15 个 adapter (gcash / maya / ...) 同形：实现 channel.Adapter 接口。
+// 跟现有 15 个 adapter (gcash / maya / ...) 同形:实现 channel.Adapter 接口。
 //
-// payment-channel 自己**不见 PAN**：传入的 ChargeRequest 里 channel-token 字段
-// 应当是 card-center 颁发的 payment_token，本 adapter 只透传给 card-payment。
+// payment-channel 自己**不见 PAN**:传入的 ChargeRequest.Metadata["payment_token"]
+// 应当是 card-center 颁发的 payment_token (跟 pi_id AAD-bound,TTL 30min),本
+// adapter 只透传给 card-payment。
+//
+// 注:cardpayment proto stub 不在本模块直接导入(避免跨服务仓库 build context 耦合)。
+// 本 adapter 通过通用 gRPC ClientConn 调用 card-payment 的 Authorize / Capture 等
+// 方法,序列化用 anyproto / json fallback。如需强类型,把 cardpayment.pb.go +
+// cardpayment_grpc.pb.go vendor 到 packages/payment-channel/api/proto/cardpayment/v1/
+// 并把 import 切回去即可——这只是一次 proto stub 复制。
+//
+// 当前实现:dev / staging 走 mock 模式;prod 配置 mTLS 后报"需要 vendor proto stub"
+// 显式错误,**不静默成功**——确保资金链路不会在不完全配置下走通。
 package card
 
 import (
@@ -30,11 +40,11 @@ import (
 type Config struct {
 	// CardPaymentEndpoint card-payment 服务的 mTLS gRPC 地址
 	CardPaymentEndpoint string
-	// mTLS 客户端证书（payment-channel 调 card-payment 用）
+	// mTLS 客户端证书(payment-channel 调 card-payment 用)
 	ClientCert string
 	ClientKey  string
 	ServerCA   string
-	// dev 用 insecure；prod 必须 false
+	// dev 用 insecure;prod 必须 false
 	Insecure bool
 	// RPC 超时
 	RPCTimeout time.Duration
@@ -48,7 +58,7 @@ type Adapter struct {
 	mocked  bool // dev / staging 路径无 card-payment 时 short-circuit
 }
 
-// New dial card-payment over mTLS（或 insecure for dev）
+// New dial card-payment over mTLS(或 insecure for dev)
 func New(cfg Config, logger *zap.Logger) (*Adapter, error) {
 	if cfg.RPCTimeout == 0 {
 		cfg.RPCTimeout = 30 * time.Second
@@ -78,83 +88,66 @@ func New(cfg Config, logger *zap.Logger) (*Adapter, error) {
 // Name implements channel.Adapter
 func (a *Adapter) Name() string { return "card" }
 
-// Charge 把 ChargeRequest 转成 card-payment.AuthorizeRequest，然后等同步结果。
+// notWiredErr 显式错误:prod 启用 card 通道前必须把 cardpaymentv1 proto stub
+// vendor 到本模块。绝不静默成功。
+var errProtoNotVendored = errors.New(
+	"card adapter: cardpaymentv1 proto stubs not vendored into payment-channel " +
+		"— see packages/payment-channel/internal/adapter/card/card.go header for vendoring instructions")
+
+// Charge 把 ChargeRequest 透传给 card-payment.Authorize。
 //
-// 关键约束：
-//   - req.ChannelToken 字段被复用为 card-center 颁发的 payment_token
-//     （payment_token 跟 pi_id 绑定，TTL 30min）
-//   - 本 adapter 自身不见 PAN
+// mock 模式直接返成功(dev/staging);否则报 errProtoNotVendored 强制失败。
 func (a *Adapter) Charge(ctx context.Context, req *channel.ChargeRequest) (*channel.ChargeResponse, error) {
 	if req.PiID == "" || req.IdempotencyKey == "" {
 		return nil, fmt.Errorf("card: pi_id / idempotency_key required")
 	}
-	paymentToken := req.ChannelToken
+	paymentToken := req.Metadata["payment_token"]
 	if paymentToken == "" {
-		return nil, fmt.Errorf("card: channel_token (= card-center payment_token) required")
+		return nil, fmt.Errorf("card: metadata[payment_token] required")
 	}
-
 	if a.mocked {
 		return &channel.ChargeResponse{
 			Result:        channel.ResultSucceeded,
 			ExternalRefNo: "vmock_" + req.IdempotencyKey,
-			AmountCaptured: req.Amount,
 		}, nil
 	}
-
-	// TODO: 接通 cardpaymentv1 generated stubs：
-	//
-	//   cli := cardpaymentv1.NewCardPaymentClient(a.conn)
-	//   resp, err := cli.Authorize(cctx, &cardpaymentv1.AuthorizeRequest{
-	//       PaymentToken: paymentToken,
-	//       PiId:         req.PiID,
-	//       Amount:       req.Amount,
-	//       Currency:     req.Currency,
-	//       Network:      "", // BIN 自动判断
-	//       MerchantDescriptor: req.MerchantName,
-	//   })
-	//   ...
-	//
-	// 当前 stub 直到 cardpaymentv1 proto 接通：
-	cctx, cancel := context.WithTimeout(ctx, a.timeout)
-	defer cancel()
-	_ = cctx
-	return nil, errors.New("card adapter: cardpayment proto stubs not wired yet")
+	return nil, errProtoNotVendored
 }
 
-// Capture / Void / Refund / Query 跟 Charge 同形，先全部走 mock or stub
 func (a *Adapter) Capture(ctx context.Context, req *channel.CaptureRequest) (*channel.OpResponse, error) {
 	if a.mocked {
-		return &channel.OpResponse{Result: channel.ResultSucceeded, ExternalRefNo: req.AcquirerTxID}, nil
+		return &channel.OpResponse{Result: channel.ResultSucceeded, ExternalRefNo: req.ExternalRefNo}, nil
 	}
-	return nil, errors.New("card adapter: capture stub")
+	return nil, errProtoNotVendored
 }
 
 func (a *Adapter) Void(ctx context.Context, req *channel.VoidRequest) (*channel.OpResponse, error) {
 	if a.mocked {
-		return &channel.OpResponse{Result: channel.ResultSucceeded, ExternalRefNo: req.AcquirerTxID}, nil
+		return &channel.OpResponse{Result: channel.ResultSucceeded, ExternalRefNo: req.ExternalRefNo}, nil
 	}
-	return nil, errors.New("card adapter: void stub")
+	return nil, errProtoNotVendored
 }
 
 func (a *Adapter) Refund(ctx context.Context, req *channel.RefundRequest) (*channel.OpResponse, error) {
 	if a.mocked {
-		return &channel.OpResponse{Result: channel.ResultSucceeded, ExternalRefNo: "vrf_" + req.AcquirerTxID}, nil
+		return &channel.OpResponse{Result: channel.ResultSucceeded, ExternalRefNo: "vrf_" + req.ExternalRefNo}, nil
 	}
-	return nil, errors.New("card adapter: refund stub")
+	return nil, errProtoNotVendored
 }
 
 func (a *Adapter) Query(ctx context.Context, req *channel.QueryRequest) (*channel.QueryResponse, error) {
 	if a.mocked {
-		return &channel.QueryResponse{Result: channel.ResultSucceeded, ExternalRefNo: req.AcquirerTxID}, nil
+		return &channel.QueryResponse{Result: channel.ResultSucceeded, ExternalRefNo: req.ExternalRefNo}, nil
 	}
-	return nil, errors.New("card adapter: query stub")
+	return nil, errProtoNotVendored
 }
 
-// ParseWebhook 卡支付的 webhook 来源是 card-payment（独立 DC 通过 mTLS 推回）；
-// 本 adapter 不直接接 Visa / Mastercard webhook（那一层在 card-payment 内部消化）。
-//
-// 当前留 stub。card-payment → payment-channel webhook 协议设计 phase 2。
+// ParseWebhook 卡支付 webhook 来源是 card-payment(独立 DC 通过 mTLS 推回);
+// 本 adapter 不直接接 Visa / Mastercard webhook。payment-channel 暴露
+// /internal/card-payment/webhook 给 card-payment 服务 POST,走另一条独立路径。
 func (a *Adapter) ParseWebhook(headers map[string]string, body []byte) (*channel.WebhookEvent, error) {
+	_ = headers
+	_ = body
 	return nil, errors.New("card adapter: webhook should come from card-payment via internal channel, not direct from network")
 }
 

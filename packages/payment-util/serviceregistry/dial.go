@@ -130,9 +130,13 @@ func DialWithFallback(endpoints []string, service, fallbackAddr string, opts ...
 	// passthrough 拿不到 endpoint → balancer 报 "no children to pick from",
 	// 后续请求一直 fail 直到进程重启。
 	// 加 dns:/// 触发 gRPC 内置 DNS resolver, idle 连接重建时会重新解析。
+	// SP-AC-7: dns:/// → passthrough:///
+	// dns 在 docker compose 网络下经常返 "no children to pick from", 整套挂.
+	// passthrough 用系统层 DNS, 行为更稳; 代价: peer 重启换 IP 后 caller 需自己重启.
+	// 生产应该用 etcd resolver (DialFromEndpoints) 真服务发现.
 	target := fallbackAddr
 	if !strings.Contains(target, "://") {
-		target = "dns:///" + target
+		target = "passthrough:///" + target
 	}
 	fixed := hardenedOptions()
 	fixed = append(fixed, opts...)

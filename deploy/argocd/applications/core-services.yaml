@@ -1,0 +1,62 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: payment-core-services
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
+spec:
+  project: payment-platform
+  source:
+    repoURL: https://github.com/example/payment-monorepo
+    targetRevision: HEAD
+    path: chart
+    helm:
+      releaseName: payment-core
+      valueFiles:
+        - values.yaml
+        - values-prod.yaml
+      parameters:
+        - name: global.image.tag
+          value: "$ARGOCD_APP_REVISION"
+      values: |
+        services:
+          oauth2-server:    { enabled: true }
+          payment-core:     { enabled: true }
+          payment-channel:  { enabled: true }
+          order-core:       { enabled: true }
+          accounting-system:{ enabled: true }
+          kms-manage:       { enabled: true }
+          user-merchant-core: { enabled: true }
+          tokenization-vault: { enabled: true }
+          aml-screening:    { enabled: true }
+          card-center:      { enabled: false }   # 由 edge-services 管
+          card-payment:     { enabled: false }
+          api-gateway:      { enabled: false }
+          biz-admin-web:    { enabled: false }
+          payment-admin-web:{ enabled: false }
+          accounting-admin-web: { enabled: false }
+          reconplatform:    { enabled: false }
+          risk-manage:      { enabled: false }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payment
+  syncPolicy:
+    automated:
+      prune: false                  # 核心服务不自动 prune (防止误删)
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - PruneLast=true
+    retry:
+      limit: 3
+      backoff: { duration: 10s, factor: 2, maxDuration: 5m }
+  revisionHistoryLimit: 10
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas      # HPA 接管副本数

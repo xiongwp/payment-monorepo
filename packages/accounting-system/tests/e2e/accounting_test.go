@@ -552,17 +552,20 @@ func TestE2E_TC09_TransactionService_Idempotency(t *testing.T) {
 	)
 
 	orderNo := uniqueBizNo("TXN_IDEM")
+	// SP-AC-7: multi-leg API. 这个 case 只有 1 条 leg.
 	req := &service.CreateTransactionRequest{
-		OrderNo:       orderNo,
-		ProductCode:   "PAYMENT",
-		EventCode:     "CHECKOUT_PAY",
-		FromPartyID:   user.UserID,
-		FromPartyType: model.PartyTypeUser,
-		ToPartyID:     merchant.UserID,
-		ToPartyType:   model.PartyTypeMerchant,
-		Amount:        100,
-		Currency:      "PHP",
-		MaxRetry:      3,
+		OrderNo:     orderNo,
+		ProductCode: "PAYMENT",
+		EventCode:   "CHECKOUT_PAY",
+		Legs: []service.TxnLeg{
+			{
+				FromAccountID: user.AccountNo,
+				ToAccountID:   merchant.AccountNo,
+				Amount:        "100",
+				Currency:      "PHP",
+			},
+		},
+		MaxRetry: 3,
 	}
 
 	// 第一次调用
@@ -602,24 +605,23 @@ func TestE2E_TC10_TransactionService_Retry(t *testing.T) {
 
 	orderNo := uniqueBizNo("TXN_RETRY")
 
-	// 手动创建一个 FAILED 状态的订单，模拟首次失败场景
-	// TransactionService 以 orderNo 作为 businessNo（与 CreateTransaction 保持一致）
+	// 手动创建一个 FAILED 状态的订单, Extra 里塞 multi-leg payload (重试时要还原).
+	// TransactionService 以 orderNo 作为 businessNo (与 CreateTransaction 保持一致).
+	extraJSON := fmt.Sprintf(`{"legs":[{"from_account_id":%q,"to_account_id":%q,"amount":"200","currency":"PHP"}]}`,
+		user.AccountNo, merchant.AccountNo)
 	failedOrder := &model.TransactionOrder{
 		OrderNo:       orderNo,
-		BusinessNo:    orderNo, // TransactionService 路由键：businessNo = orderNo
+		BusinessNo:    orderNo,
 		BusinessType:  "",
 		ProductCode:   "PAYMENT",
 		EventCode:     "CHECKOUT_PAY",
-		FromPartyID:   user.UserID,
-		FromPartyType: model.PartyTypeUser,
-		ToPartyID:     merchant.UserID,
-		ToPartyType:   model.PartyTypeMerchant,
 		Amount:        "200",
 		Currency:      "PHP",
 		Status:        model.TransactionOrderStatusFailed,
 		RetryCount:    1,
 		MaxRetryCount: 3,
 		ErrorMessage:  "simulated failure",
+		Extra:         extraJSON,
 	}
 	err := env.orderRepo.Create(ctx, failedOrder)
 	require.NoError(t, err)

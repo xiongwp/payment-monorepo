@@ -110,5 +110,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=build /out/payment-admin-backend /usr/local/bin/
+# MF-2: moneyflow-designer.html 走 go:embed 直接编进二进制 (无需外挂),
+# 所以这里不再单独 COPY frontend/ 进镜像.
 EXPOSE 9190
 ENTRYPOINT ["/usr/local/bin/payment-admin-backend"]

@@ -795,6 +795,257 @@ curl -H "Authorization: Token token=$PAGERDUTY_API_KEY" \
 
 ---
 
+## DRReplicaLagHigh
+
+**Severity:** CRITICAL (RPO at risk)
+
+**Symptom:**
+- `dr_mysql_replica_lag_seconds{region="dr"} > 60` for 5min
+- Failover in this state means data loss
+
+**Triage:**
+
+1. Identify lagging replica:
+   ```promql
+   topk(3, dr_mysql_replica_lag_seconds)
+   ```
+2. SSH into DR master, run `SHOW SLAVE STATUS\G`:
+   - `Seconds_Behind_Master` → how far behind
+   - `Slave_IO_Running` / `Slave_SQL_Running` → must both be `Yes`
+   - `Last_IO_Error` / `Last_SQL_Error` → blocking errors
+3. Check network bandwidth between regions: `kubectl -n monitoring port-forward svc/grafana 3000`, dashboard `cross-region-bandwidth`.
+
+**Mitigation:**
+
+- If SQL thread stopped: skip event with `STOP SLAVE; SET GLOBAL SQL_SLAVE_SKIP_COUNTER=1; START SLAVE;` (only if event is non-critical; document the skip in audit log).
+- If IO thread stopped (network): restart slave IO `STOP SLAVE IO_THREAD; START SLAVE IO_THREAD;`.
+- If lag is from bulk DDL: temporarily disable replication for that schema, run DDL separately, re-enable.
+- If consistently growing (>10s/min): replica hardware is too small — scale up StatefulSet `mysql-replica` cpu/memory in `chart/charts/ha-data/values.yaml`.
+
+**Failover gate:** Do NOT run `dr-failover.sh promote-mysql` while lag > 5s — this is enforced by `scripts/dr-failover.sh verify`.
+
+---
+
+## KafkaMirrorMakerLagHigh
+
+**Severity:** WARNING (escalates to CRITICAL if > 5min)
+
+**Symptom:**
+- `kafka_mm2_lag_msgs > 1000` (MirrorMaker 2 between primary and DR clusters)
+- Cross-region event replication falling behind → DR consumers see stale data
+
+**Triage:**
+
+1. Confirm lag is on which mirror direction:
+   ```bash
+   kubectl -n kafka exec deploy/kafka-mirror-maker-2 -- \
+     bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+     --describe --all-groups | grep -E '(payment|mm2)'
+   ```
+2. Check MM2 connector status:
+   ```bash
+   kubectl -n kafka get kafkamirrormaker2 -o yaml | grep -A 5 conditions
+   ```
+3. Check broker errors in source / target: `kubectl -n kafka logs sts/payment-kafka-kafka -c kafka --tail 200 | grep ERROR`.
+
+**Mitigation:**
+
+- **Throughput issue:** scale MM2 replicas `kubectl -n kafka scale deploy/kafka-mirror-maker-2 --replicas=4`.
+- **Connector stuck:** delete the stuck connector and let operator reconcile:
+  ```bash
+  kubectl -n kafka delete kafkamirrormaker2 kafka-mirror-maker-2 --wait=false
+  kubectl apply -f chart/charts/ha-data/templates/kafka.yaml
+  ```
+- **DR cluster slow:** check disk saturation on DR brokers, scale storage.
+- **Sustained backlog > 5min:** trigger SOP `DRReadiness Degraded` (block DR failover until lag < 100).
+
+---
+
+## CrossRegionTrialBalanceMismatch
+
+**Severity:** CRITICAL (potential fund loss)
+
+**Symptom:**
+- Daily trial-balance check in DR region reports `diff_cents != 0`
+- Primary trial-balance is 0, DR is not → replication missed events
+- Alert: `accounting_trial_balance_diff_cents{region="dr"} != 0` for 10min
+
+**Triage:**
+
+1. Pull both regions' fee_event counts for the same window:
+   ```sql
+   -- on primary:
+   SELECT DATE(occurred_at) d, COUNT(*) FROM fee_event
+   WHERE occurred_at >= CURDATE() - INTERVAL 1 DAY GROUP BY d;
+   -- on DR:
+   ```
+2. Diff outbox `event_id` between primary and DR (last 24h):
+   ```sql
+   SELECT event_id FROM accounting_outbox
+   WHERE created_at >= NOW() - INTERVAL 1 HOUR
+     AND status='published'
+   ```
+   Missing IDs → replication gap.
+3. Run `reconplatform/cmd/diff` with the time window — produces the exact missing records.
+
+**Mitigation:**
+
+1. **Block DR failover** until reconciled (`kubectl annotate ns payment dr-failover-disabled=true`).
+2. Backfill missing events from Kafka source-of-truth:
+   ```bash
+   scripts/backfill-events.sh --src primary --dst dr \
+     --topic payment.outbox --since '2026-05-13T00:00:00Z'
+   ```
+3. Re-run trial balance: `kubectl -n payment create job --from=cronjob/trial-balance trial-balance-manual-$(date +%s)`.
+4. If diff persists, page accounting team lead + fund-safety oncall.
+
+**Post-Incident:** RCA must include why MM2 dropped messages (offset reset? topic deletion? leader election storm?). Update `docs/DR_PLAN.md` retention/replication factor.
+
+---
+
+## RetryQueueOverdueHigh
+
+**Severity:** WARNING (escalates to CRITICAL if > 1000 overdue)
+
+**Symptom:**
+- `payment_retry_queue_overdue > 100` for 5min
+- Failed charges not being retried — customer impact: stuck "processing" payments
+
+**Triage:**
+
+1. Check worker liveness:
+   ```bash
+   kubectl -n payment logs deploy/payment-core --tail 200 | grep retry_worker
+   ```
+   No "retry task scheduled" log → worker dead.
+2. Inspect overdue causes:
+   ```sql
+   SELECT failed_adapter, reason, COUNT(*)
+   FROM payment_retry_queue
+   WHERE state='pending' AND next_retry_at < NOW()
+   GROUP BY failed_adapter, reason ORDER BY 3 DESC;
+   ```
+
+**Mitigation:**
+
+- **Worker dead:** restart `kubectl -n payment rollout restart deploy/payment-core`.
+- **Specific adapter stuck:** close fallback chain via `config-center`:
+  ```bash
+  cfctl set payment-core/routing.fallback \
+    '{"rules":[{"country":"...","priority":[{"adapter":"alt-only"}]}]}'
+  ```
+- **All adapters down:** drain queue manually after closure (`UPDATE payment_retry_queue SET state='done' WHERE state='pending' AND failed_adapter='X'`) — audit log required.
+
+---
+
+## SagaStuckCompensating
+
+**Severity:** CRITICAL (multi-step transaction half-applied)
+
+**Symptom:**
+- Saga in `compensating` state > 10min
+- `saga_state{state="compensating"} > 0` for 10min
+
+**Triage:**
+
+```sql
+SELECT saga_id, def_name, current_step, started_at,
+       JSON_UNQUOTE(JSON_EXTRACT(step_results, '$[*].error_msg'))
+FROM saga_instance
+WHERE state='compensating' AND TIMESTAMPDIFF(MINUTE, started_at, NOW()) > 10;
+```
+
+**Mitigation:**
+
+1. Identify which step's compensate fn is failing (check `step_results` JSON).
+2. **If transient (downstream timeout):** retry compensation via admin API:
+   ```bash
+   curl -X POST http://payment-core:9090/admin/saga/{saga_id}/retry-compensate
+   ```
+3. **If non-transient (e.g. account closed):** manually adjust state then mark saga `failed`:
+   ```sql
+   UPDATE saga_instance SET state='failed' WHERE saga_id='...';
+   ```
+   Document manual reconciliation in audit-log + create incident ticket.
+
+---
+
+## ArgoSyncFailed
+
+**Severity:** WARNING
+
+**Symptom:**
+- Argo CD Application `payment-platform` in `OutOfSync` or `Failed` state > 15min
+- Recent commits not deployed
+
+**Triage:**
+
+```bash
+argocd app get payment-platform
+argocd app history payment-platform
+kubectl -n argocd get events --sort-by=.metadata.creationTimestamp
+```
+
+**Mitigation:**
+
+- **Diff is expected (manual hotfix in cluster):** sync via `argocd app sync payment-platform --prune` (with approval).
+- **Invalid manifest:** `argocd app diff` → fix in git → push → auto-sync.
+- **Helm chart broken:** rollback `argocd app rollback payment-platform <revision>`.
+
+---
+
+## VPAGoneRogue (resource limits adjusted off-target)
+
+**Severity:** WARNING
+
+**Symptom:**
+- VerticalPodAutoscaler keeps OOM-killing pods, or memory limit creeping > 8Gi
+- `vpa_recommendation_memory_bytes{target_name="...",resource="memory"} > 8e9`
+
+**Mitigation:**
+
+- Switch the VPA mode to `Initial` (recommendations only, no live patching) on the affected workload.
+- Annotate the deployment `vpa.openshift.io/maxResources=memory=4Gi` to cap.
+- File ticket on root-cause: is it a memory leak (heap dump comparison from `pprof`) or true demand?
+
+---
+
+## Escalation Matrix — DR-aware addendum
+
+| Stage | Action |
+|-------|--------|
+| MM2 lag > 5min | Block DR failover; page Kafka oncall |
+| Trial-balance diff | Page fund-safety lead + accounting oncall, freeze writes |
+| 2 active-active regions inconsistent | Incident commander; consider declaring P0 |
+
+---
+
+## Testing & Validation
+
+Before deploying rules to production:
+
+```bash
+# Validate Prometheus rule syntax
+promtool check rules deploy/alertmanager/payment-rules.yml
+
+# Validate alertmanager config
+amtool config routes --config deploy/alertmanager/alertmanager.yml
+
+# Test Slack webhook
+curl -X POST -H 'Content-type: application/json' \
+  --data '{"text":"Test alert"}' \
+  $SLACK_WEBHOOK_URL
+
+# Test PagerDuty integration (read-only)
+curl -H "Authorization: Token token=$PAGERDUTY_API_KEY" \
+  https://api.pagerduty.com/services?query=payment
+
+# Validate Runbook alert coverage vs Prometheus rules
+scripts/runbook-coverage.sh deploy/alerts/payment-platform.yml docs/runbooks/RUNBOOK.md
+```
+
+---
+
 ## SLO Reference
 
 See `docs/SLO.md` for:

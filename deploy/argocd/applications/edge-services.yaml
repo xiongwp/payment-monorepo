@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: payment-edge-services
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+spec:
+  project: payment-platform
+  source:
+    repoURL: https://github.com/example/payment-monorepo
+    targetRevision: HEAD
+    path: chart
+    helm:
+      releaseName: payment-edge
+      valueFiles:
+        - values.yaml
+        - values-prod.yaml
+      values: |
+        services:
+          # 仅入口 + adapter + admin web 由 edge 管
+          api-gateway:        { enabled: true }
+          card-center:        { enabled: true }
+          card-payment:       { enabled: true }
+          payment-gateway:    { enabled: true }
+          merchant-webhook:   { enabled: true }
+          biz-admin-web:      { enabled: true }
+          payment-admin-web:  { enabled: true }
+          accounting-admin-web: { enabled: true }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payment
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff: { duration: 5s, factor: 2, maxDuration: 3m }

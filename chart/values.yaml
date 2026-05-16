@@ -16,7 +16,8 @@ global:
     LOG_DEV: "false"
     AUDITLOG_URL: "http://audit-log:8087"
     OTEL_ENDPOINT: "tempo:4317"
-    OTEL_SAMPLE_RATIO: "0.01"
+    OTEL_SAMPLE_RATIO: "0.05"          # 5% head-based; 详细配置见 OTEL_SAMPLING_*
+    OTEL_SAMPLING_RULES_JSON: ""       # 见 docs/SLO.md 的 sampling rules,空 → 走 head-based
 
   # 安全 / 网络
   securityContext:
@@ -36,6 +37,19 @@ global:
   pdb:
     enabled: true
 
+  # 共用默认 resources / affinity, per-service 可覆盖
+  defaultResources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 1000m, memory: 1Gi }
+
+  defaultPodAntiAffinity: zone   # 同服务的 Pod 强制分布到不同 zone
+
+  # Vertical Pod Autoscaler (默认 Initial 模式,只给建议,不动态改 limit;
+  # 资金链路服务关掉自动调整防止 OOMKill)
+  vpa:
+    enabled: false
+    updateMode: "Initial"
+
 # Secrets (helm 不内置敏感; 真生产用 external-secrets 或 sealed-secrets)
 # 这里只列名, --set 时填值
 secrets:
@@ -46,6 +60,11 @@ secrets:
   taxAdminToken: "REPLACE"
   drAdminToken: "REPLACE"
   approvalAuditToken: "REPLACE"
+
+# ── ha-data sub-chart toggle ──
+ha-data:
+  enabled: true   # 启用 Redis Sentinel / MySQL primary+replica / Kafka RF=3 / ClickHouse
+  # 详细配置见 chart/charts/ha-data/values.yaml
 
 # ── per-service overrides ──
 #
@@ -59,8 +78,10 @@ services:
     port: 8087
     resources:
       requests: { cpu: 100m, memory: 128Mi }
-      limits: { cpu: 1000m, memory: 512Mi }
+      limits:   { cpu: 1000m, memory: 512Mi }
     hpa: { enabled: true, minReplicas: 2, maxReplicas: 10, targetCPU: 70 }
+    podAntiAffinity: zone
+    pdb: { minAvailable: 1 }
     env: {}
 
   aml-screening:
@@ -69,8 +90,9 @@ services:
     port: 8088
     resources:
       requests: { cpu: 200m, memory: 512Mi }   # 名单 70w 内存
-      limits: { cpu: 2000m, memory: 2Gi }
+      limits:   { cpu: 2000m, memory: 2Gi }
     hpa: { enabled: true, minReplicas: 2, maxReplicas: 10, targetCPU: 70 }
+    podAntiAffinity: zone
     env:
       AML_REFRESH_OFAC: "1"
 
@@ -80,7 +102,7 @@ services:
     port: 8089
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: 1000m, memory: 1Gi }
+      limits:   { cpu: 1000m, memory: 1Gi }
     hpa: { enabled: true, minReplicas: 3, maxReplicas: 12, targetCPU: 60 }
     podAntiAffinity: zone
     pdb: { minAvailable: 2 }
@@ -92,7 +114,7 @@ services:
     port: 8090
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: 1000m, memory: 1Gi }
+      limits:   { cpu: 1000m, memory: 1Gi }
     hpa: { enabled: true, minReplicas: 2, maxReplicas: 8, targetCPU: 70 }
     cron:
       enabled: true
@@ -105,7 +127,7 @@ services:
     port: 8091
     resources:
       requests: { cpu: 50m, memory: 128Mi }
-      limits: { cpu: 500m, memory: 512Mi }
+      limits:   { cpu: 500m, memory: 512Mi }
     hpa: { enabled: false }
     env: {}
 
@@ -115,7 +137,7 @@ services:
     port: 8092
     resources:
       requests: { cpu: 50m, memory: 64Mi }
-      limits: { cpu: 500m, memory: 256Mi }
+      limits:   { cpu: 500m, memory: 256Mi }
     serviceAffinity: clientIP
     env: {}
 
@@ -125,7 +147,8 @@ services:
     port: 8087
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: 1000m, memory: 1Gi }
+      limits:   { cpu: 1000m, memory: 1Gi }
+    pdb: { minAvailable: 1 }
     env: {}
 
   merchant-webhook:
@@ -134,8 +157,9 @@ services:
     port: 8080
     resources:
       requests: { cpu: 100m, memory: 256Mi }
-      limits: { cpu: 1000m, memory: 1Gi }
+      limits:   { cpu: 1000m, memory: 1Gi }
     hpa: { enabled: true, minReplicas: 3, maxReplicas: 10, targetCPU: 70 }
+    podAntiAffinity: zone
     env: {}
 
   payment-core:
@@ -143,141 +167,279 @@ services:
     replicas: 3
     port: 9090
     resources:
-      requests: { cpu: 200m, memory: 512Mi }
-      limits: { cpu: 2000m, memory: 2Gi }
+      requests: { cpu: 500m, memory: 1Gi }
+      limits:   { cpu: 4000m, memory: 4Gi }
     hpa: { enabled: true, minReplicas: 3, maxReplicas: 30, targetCPU: 70 }
-    env: {}
+    podAntiAffinity: zone
+    pdb: { minAvailable: 2 }
+    env:
+      OTEL_SAMPLE_RATIO: "0.1"     # 资金核心多采,出错时关键 trace 不丢
+    vpa:
+      enabled: false                # 资金核心永远不让 VPA 动态改 limit
 
   payment-channel:
     enabled: true
-    replicas: 2
+    replicas: 3
     port: 9092
     resources:
-      requests: { cpu: 200m, memory: 512Mi }
-      limits: { cpu: 2000m, memory: 2Gi }
+      requests: { cpu: 300m, memory: 768Mi }
+      limits:   { cpu: 3000m, memory: 3Gi }
+    hpa: { enabled: true, minReplicas: 3, maxReplicas: 20, targetCPU: 70 }
+    podAntiAffinity: zone
+    pdb: { minAvailable: 2 }
     env: {}
 
   order-core:
     enabled: true
     replicas: 3
     port: 9091
+    resources:
+      requests: { cpu: 300m, memory: 768Mi }
+      limits:   { cpu: 3000m, memory: 3Gi }
+    hpa: { enabled: true, minReplicas: 3, maxReplicas: 20, targetCPU: 70 }
+    podAntiAffinity: zone
+    pdb: { minAvailable: 2 }
     env: {}
 
   user-merchant-core:
     enabled: true
     replicas: 3
     port: 9191
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 2000m, memory: 2Gi }
+    hpa: { enabled: true, minReplicas: 3, maxReplicas: 15, targetCPU: 70 }
+    podAntiAffinity: zone
     env: {}
 
   api-gateway:
     enabled: true
     replicas: 3
     port: 8080
+    resources:
+      requests: { cpu: 200m, memory: 256Mi }
+      limits:   { cpu: 2000m, memory: 1Gi }
+    hpa: { enabled: true, minReplicas: 3, maxReplicas: 40, targetCPU: 60 }
+    podAntiAffinity: zone
+    pdb: { minAvailable: 2 }
     ingress:
       enabled: true
       host: api.payment.example.com
       tls: true
-    env: {}
+      clusterIssuer: letsencrypt-prod
+    env:
+      OTEL_SAMPLE_RATIO: "0.05"
 
   reconplatform:
     enabled: true
     replicas: 1   # CDC 单写
     port: 8083
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 2000m, memory: 2Gi }
+    pdb: { minAvailable: 1 }
     env: {}
 
   accounting-system:
     enabled: true
-    replicas: 2
-    env: {}
+    replicas: 3
+    port: 9094
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+      limits:   { cpu: 4000m, memory: 4Gi }
+    hpa: { enabled: true, minReplicas: 3, maxReplicas: 30, targetCPU: 70 }
+    podAntiAffinity: zone
+    pdb: { minAvailable: 2 }
+    env:
+      OTEL_SAMPLE_RATIO: "0.1"
+    vpa:
+      enabled: false                # 账目核心,VPA 永远只给建议
 
   risk-manage:
     enabled: true
-    replicas: 2
+    replicas: 3
+    port: 9095
+    resources:
+      requests: { cpu: 300m, memory: 1Gi }     # ML 模型 + 名单 + 计数表内存大头
+      limits:   { cpu: 3000m, memory: 4Gi }
+    hpa: { enabled: true, minReplicas: 3, maxReplicas: 20, targetCPU: 70 }
+    podAntiAffinity: zone
     env: {}
 
   kms-manage:
     enabled: true
-    replicas: 2
+    replicas: 3
+    port: 9096
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 2000m, memory: 2Gi }
+    hpa: { enabled: true, minReplicas: 3, maxReplicas: 12, targetCPU: 60 }
+    podAntiAffinity: zone
+    pdb: { minAvailable: 2 }
     env: {}
 
   card-center:
     enabled: true
-    replicas: 2
+    replicas: 3        # PCI 关键路径,HA
+    port: 9097
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 2000m, memory: 2Gi }
+    hpa: { enabled: true, minReplicas: 3, maxReplicas: 12, targetCPU: 60 }
+    podAntiAffinity: zone
+    pdb: { minAvailable: 2 }
     env: {}
 
   card-payment:
     enabled: true
-    replicas: 2
+    replicas: 3        # PCI SAQ-D scope
+    port: 9098
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 2000m, memory: 2Gi }
+    hpa: { enabled: true, minReplicas: 3, maxReplicas: 12, targetCPU: 60 }
+    podAntiAffinity: zone
+    pdb: { minAvailable: 2 }
     env: {}
 
   billing-system:
     enabled: true
     replicas: 2
+    port: 9099
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 2000m, memory: 2Gi }
+    hpa: { enabled: true, minReplicas: 2, maxReplicas: 10, targetCPU: 70 }
+    podAntiAffinity: zone
     env: {}
 
   clearing-settlement:
     enabled: true
     replicas: 2
+    port: 9100
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 2000m, memory: 2Gi }
+    podAntiAffinity: zone
     env: {}
 
   refund-engine:
     enabled: true
     replicas: 2
+    port: 9101
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 2000m, memory: 2Gi }
+    hpa: { enabled: true, minReplicas: 2, maxReplicas: 10, targetCPU: 70 }
+    podAntiAffinity: zone
     env: {}
 
   dispute-service:
     enabled: true
     replicas: 2
+    port: 9102
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits:   { cpu: 1000m, memory: 1Gi }
+    podAntiAffinity: zone
     env: {}
 
   kyc-service:
     enabled: true
     replicas: 2
+    port: 9103
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 2000m, memory: 2Gi }
     env: {}
 
   subscription:
     enabled: true
     replicas: 2
+    port: 9104
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits:   { cpu: 1000m, memory: 1Gi }
     env: {}
 
   wallet-service:
     enabled: true
-    replicas: 2
+    replicas: 3
+    port: 9105
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 2000m, memory: 2Gi }
+    hpa: { enabled: true, minReplicas: 3, maxReplicas: 15, targetCPU: 70 }
+    podAntiAffinity: zone
+    pdb: { minAvailable: 2 }
     env: {}
 
   fx-service:
     enabled: true
     replicas: 2
+    port: 9106
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits:   { cpu: 1000m, memory: 1Gi }
+    hpa: { enabled: true, minReplicas: 2, maxReplicas: 8, targetCPU: 70 }
     env: {}
 
   split-payment:
     enabled: true
     replicas: 2
+    port: 9107
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits:   { cpu: 1000m, memory: 1Gi }
     env: {}
 
   payment-gateway:
     enabled: true
-    replicas: 2
+    replicas: 3
+    port: 9108
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 2000m, memory: 2Gi }
+    hpa: { enabled: true, minReplicas: 3, maxReplicas: 30, targetCPU: 70 }
+    podAntiAffinity: zone
+    pdb: { minAvailable: 2 }
     env: {}
 
   config-center:
     enabled: true
     replicas: 1
+    port: 9109
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits:   { cpu: 500m, memory: 512Mi }
+    pdb: { minAvailable: 1 }
     env: {}
 
   biz-admin-web:
     enabled: true
     replicas: 1
-    ingress: { enabled: true, host: biz-admin.payment.example.com }
+    port: 8200
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits:   { cpu: 500m, memory: 512Mi }
+    ingress: { enabled: true, host: biz-admin.payment.example.com, clusterIssuer: letsencrypt-prod }
     env: {}
 
   payment-admin-web:
     enabled: true
     replicas: 1
-    ingress: { enabled: true, host: admin.payment.example.com }
+    port: 8201
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits:   { cpu: 500m, memory: 512Mi }
+    ingress: { enabled: true, host: admin.payment.example.com, clusterIssuer: letsencrypt-prod }
     env: {}
 
   accounting-admin-web:
     enabled: true
     replicas: 1
+    port: 8202
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits:   { cpu: 500m, memory: 512Mi }
     env: {}

@@ -1,0 +1,46 @@
+{
+  "name": "payment-monorepo",
+  "image": "mcr.microsoft.com/devcontainers/go:1.25",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {},
+    "ghcr.io/devcontainers/features/aws-cli:1": {},
+    "ghcr.io/devcontainers/features/terraform:1": { "version": "1.6" },
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-azuretools.vscode-docker",
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "redhat.vscode-yaml",
+        "hashicorp.terraform",
+        "tamasfe.even-better-toml",
+        "EditorConfig.EditorConfig",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "yzhang.markdown-all-in-one"
+      ],
+      "settings": {
+        "go.useLanguageServer": true,
+        "go.lintTool": "golangci-lint",
+        "go.lintOnSave": "workspace",
+        "[go]": { "editor.formatOnSave": true }
+      }
+    }
+  },
+  "postCreateCommand": "go install github.com/air-verse/air@latest && go work sync && pre-commit install 2>/dev/null || true",
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=${localWorkspaceFolderBasename}-modcache,target=/go/pkg/mod,type=volume"
+  ],
+  "forwardPorts": [8080, 9090, 9091, 3306, 6379, 9092],
+  "portsAttributes": {
+    "8080": { "label": "api-gateway" },
+    "9090": { "label": "payment-core gRPC" },
+    "3306": { "label": "MySQL" },
+    "6379": { "label": "Redis" },
+    "9092": { "label": "Kafka" }
+  }
+}

@@ -36,8 +36,10 @@ sources:
   #   webhook_outbox    PK=id      idx=[event_id, merchant_id]
   - service: order-core
     addrs:
-      - shared-shard-0:3306
-      - shared-shard-1:3306
+      # shard-0 / shard-1 在当前 dev compose 里没起来 (docker ps 不见 → DNS 解析失败).
+      # 若以后补上,把下两行注释解开即可.
+      # - shared-shard-0:3306
+      # - shared-shard-1:3306
       - shared-shard-2:3306
       - shared-shard-3:3306
       - shared-shard-4:3306
@@ -92,8 +94,10 @@ sources:
   #   webhook_inbox     PK=id      idx=[adapter, event_id]
   - service: payment-channel
     addrs:
-      - shared-shard-0:3306
-      - shared-shard-1:3306
+      # shard-0 / shard-1 在当前 dev compose 里没起来 (docker ps 不见 → DNS 解析失败).
+      # 若以后补上,把下两行注释解开即可.
+      # - shared-shard-0:3306
+      # - shared-shard-1:3306
       - shared-shard-2:3306
       - shared-shard-3:3306
       - shared-shard-4:3306
@@ -144,8 +148,10 @@ sources:
   #   tcc_record                PK=[id]  idx=[transaction_id, user_id]
   - service: accounting-system
     addrs:
-      - shared-shard-0:3306
-      - shared-shard-1:3306
+      # shard-0 / shard-1 在当前 dev compose 里没起来 (docker ps 不见 → DNS 解析失败).
+      # 若以后补上,把下两行注释解开即可.
+      # - shared-shard-0:3306
+      # - shared-shard-1:3306
       - shared-shard-2:3306
       - shared-shard-3:3306
       - shared-shard-4:3306

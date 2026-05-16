@@ -38,6 +38,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"reconcile-system/internal/alerter"
 	"reconcile-system/internal/anomaly"
 	"reconcile-system/internal/approval"
 	"reconcile-system/internal/archive"
@@ -76,6 +77,15 @@ type Server struct {
 	eodRunner  *eod.Runner           // optional：日切对账
 	approvalMg *approval.Manager     // optional：双人复核
 	anomalyDet *anomaly.Detector     // optional：异常检测（无端点，仅启动）
+
+	// FEAT-2: 告警 store, /api/v1/alerts 端点 + alerter.Runner 后台用.
+	alertStore *alerter.Store
+}
+
+// WithAlertStore FEAT-2: 注入告警 store. 没注入时 /api/v1/alerts 返 503.
+func (s *Server) WithAlertStore(a *alerter.Store) *Server {
+	s.alertStore = a
+	return s
 }
 
 // New 构造。
@@ -167,6 +177,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/scripts", s.scriptsRoot)
 	mux.HandleFunc("/api/v1/scripts/", s.scriptsByID)
 	mux.HandleFunc("/api/v1/scripts/_dry_run", s.scriptDryRun)
+	mux.HandleFunc("/api/v1/scripts/_test", s.scriptTest)
 	mux.HandleFunc("/api/v1/script/symbols", s.scriptSymbols)
 	mux.HandleFunc("/api/v1/search", s.search)
 	mux.HandleFunc("/api/v1/meta/tables", s.metaTables)
@@ -188,6 +199,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/admin/backfill", s.adminBackfill)
 	mux.HandleFunc("/api/v1/diffs/_stats", s.diffStats)
 	mux.HandleFunc("/api/v1/events/stream", s.eventsStream)
+	mux.HandleFunc("/api/v1/events/stream/_inject", s.eventsStreamInject)
 	// 冷热分层 — Redis 7d 热 + ClickHouse 跨年冷
 	mux.HandleFunc("/api/v1/diffs/_search", s.diffsSearch)
 	mux.HandleFunc("/api/v1/diffs/_agg_by_day", s.diffsAggByDay)
@@ -204,8 +216,38 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/eod/reports/", s.eodSignOff)
 	mux.HandleFunc("/api/v1/approvals/pending", s.approvalsPending)
 	mux.HandleFunc("/api/v1/approvals/", s.approvalsByID)
-	mux.HandleFunc("/admin/", s.editorHTML)
-	mux.HandleFunc("/admin", s.editorHTML)
+	// 新一代多页 admin web (v2):
+	//   /admin                  → 重定向 dashboard
+	//   /admin/dashboard        → KPI 总览
+	//   /admin/diffs            → 差异列表
+	//   /admin/incidents        → incident 列表
+	//   /admin/incidents/{id}   → incident 详情 (state machine + Cytoscape)
+	//   /admin/catalog          → 规则库浏览
+	//   /admin/editor           → 升级版规则编辑器 (outline + history + dry-run preview)
+	//   /admin/approvals        → 4-eyes 审批工作流
+	//   /admin/legacy           → 旧单文件 SPA (兼容旧 bookmark)
+	mux.HandleFunc("/admin/dashboard", s.pageDashboard)
+	mux.HandleFunc("/admin/events", s.pageEvents)
+	mux.HandleFunc("/admin/diffs", s.pageDiffs)
+	mux.HandleFunc("/admin/incidents", s.pageIncident)
+	mux.HandleFunc("/admin/incidents/", s.pageIncident)
+	mux.HandleFunc("/admin/catalog", s.pageCatalog)
+	mux.HandleFunc("/admin/editor", s.pageEditor)
+	mux.HandleFunc("/admin/approvals", s.pageApprovals)
+	mux.HandleFunc("/admin/perf", s.pagePerf)
+	mux.HandleFunc("/api/v1/perf/slow", s.perfSlow)
+	mux.HandleFunc("/api/v1/admin/audit", s.auditList) // SEC-1
+	mux.HandleFunc("/admin/audit", s.pageAudit)        // SEC-1
+	mux.HandleFunc("/api/v1/alerts", s.alertsAPI)       // FEAT-2
+	mux.HandleFunc("/api/v1/alerts/", s.alertsAPI)      // FEAT-2 DELETE
+	mux.HandleFunc("/admin/alerts", s.pageAlerts)       // FEAT-2
+	mux.HandleFunc("/api/v1/trends", s.trendsAPI)       // FEAT-3
+	mux.HandleFunc("/admin/trends", s.pageTrends)       // FEAT-3
+	mux.HandleFunc("/api/v1/templates", s.templatesAPI) // FEAT-4
+	mux.HandleFunc("/admin/legacy", s.editorHTML)
+	mux.HandleFunc("/admin/legacy/", s.editorHTML)
+	mux.HandleFunc("/admin/", s.adminIndexRedirect)
+	mux.HandleFunc("/admin", s.adminIndexRedirect)
 }
 
 // adminBackfill POST /api/v1/admin/backfill
@@ -269,6 +311,63 @@ func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
 	}
 	hub := NewSSEHub(s.rdb, s.logger)
 	hub.Handle(w, r)
+}
+
+// eventsStreamInject POST /api/v1/events/stream/_inject — dev only.
+//
+// 把一条 JSON event 直接 XADD 到 recon:stream:events,所有订阅 SSE 的客户端
+// 立即看到。用于 dev 验证整条 SSE 渲染链路 (binlog reader 未启动时也能测).
+//
+// 在 prod 应该靠 CDC publisher 写流;本端点对运营隐藏 (admin 后台用),
+// 不影响实际 binlog 数据。
+//
+// Request body: 任意 JSON object,常用字段 {svc, table, pk, op, ts, indexes, after}
+func (s *Server) eventsStreamInject(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.rdb == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("redis not configured"))
+		return
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid json: %w", err))
+		return
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	// 默认值填充
+	if _, ok := payload["ts"]; !ok {
+		payload["ts"] = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if _, ok := payload["op"]; !ok {
+		payload["op"] = "INSERT"
+	}
+	// Redis Stream XADD 字段必须是 string/string;把 nested object 序列化成 JSON
+	flat := map[string]any{}
+	for k, v := range payload {
+		switch vv := v.(type) {
+		case string, float64, int, int64, bool:
+			flat[k] = vv
+		default:
+			b, _ := json.Marshal(vv)
+			flat[k] = string(b)
+		}
+	}
+	id, err := s.rdb.XAdd(r.Context(), &redis.XAddArgs{
+		Stream: "recon:stream:events",
+		MaxLen: 10000,
+		Approx: true,
+		Values: flat,
+	}).Result()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("xadd: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"injected": true, "stream_id": id})
 }
 
 // graphView GET /api/v1/graph?index=pi_id&value=pi_xxx[&depth=3&max_nodes=200]
@@ -701,6 +800,8 @@ func (s *Server) scriptsRoot(w http.ResponseWriter, r *http.Request) {
 				"triggers":   d.Triggers,
 				"updated_at": d.UpdatedAt,
 				"updated_by": d.UpdatedBy,
+				"mode":       d.Mode, // UX-2
+				"tags":       d.Tags, // FEAT-1
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"scripts": out})
@@ -719,8 +820,9 @@ func (s *Server) scriptsRoot(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, fmt.Errorf("validate: %w", err))
 			return
 		}
-		ver, err := s.scriptDB.SaveDef(r.Context(),
-			body.ID, body.Name, body.Code, body.Schedule, body.Triggers, actorOrUnknown(r))
+		ver, err := s.scriptDB.SaveDefWithMeta(r.Context(),
+			body.ID, body.Name, body.Code, body.Schedule, body.Triggers,
+			body.Mode, body.Tags, actorOrUnknown(r))
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
@@ -771,8 +873,9 @@ func (s *Server) scriptsByID(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, fmt.Errorf("validate: %w", err))
 			return
 		}
-		ver, err := s.scriptDB.SaveDef(r.Context(),
-			id, body.Name, body.Code, body.Schedule, body.Triggers, actorOrUnknown(r))
+		ver, err := s.scriptDB.SaveDefWithMeta(r.Context(),
+			id, body.Name, body.Code, body.Schedule, body.Triggers,
+			body.Mode, body.Tags, actorOrUnknown(r))
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
@@ -1024,6 +1127,8 @@ type scriptPayload struct {
 	Code     string   `json:"code"`
 	Schedule string   `json:"schedule"`
 	Triggers []string `json:"triggers"`
+	Mode     string   `json:"mode,omitempty"` // UX-2 "live" / "shadow"
+	Tags     []string `json:"tags,omitempty"` // FEAT-1
 }
 
 func generateScriptID(name string) string {

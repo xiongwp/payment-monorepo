@@ -8,6 +8,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+
+	"reconcile-system/internal/store"
 )
 
 // Publisher 把 cdc.Event 落 Redis：
@@ -33,8 +35,24 @@ type Publisher struct {
 	logger      *zap.Logger
 	streamMaxLen int64
 
+	// PERF-15: 写主存时同步标记 (svc, table) 非空, 给 Searcher.ScanService 快路径.
+	// 可选 — nil 即不标记, 老行为.
+	nonEmpty *store.NonEmptySet
+
+	// AfterPublishHook 主写 Redis 成功后调一次,失败不调.
+	// PIPE-CDC-BRIDGE 用此把 Event 同时 fanout 到 Kafka (cdcbridge.KafkaSink).
+	// 失败不阻塞主路径 (hook 内部自己 log + metric).
+	AfterPublishHook func(ctx context.Context, e *Event)
+
 	// 指标计数（暴露给 prometheus）
 	OnPublish func(svc, table string, op Op, err error)
+}
+
+// WithNonEmptySet 挂 PERF-15 非空缓存. 每条 Publish 首次见到 (svc, table)
+// 时 SADD recon:meta:tables_with_data → 跨 pod 共享.
+func (p *Publisher) WithNonEmptySet(n *store.NonEmptySet) *Publisher {
+	p.nonEmpty = n
+	return p
 }
 
 // NewPublisher caller 传入已经 dial 好的 redis client + TTL provider。
@@ -138,6 +156,15 @@ func (p *Publisher) Publish(ctx context.Context, e *Event) error {
 		zap.String("event_key", e.EventKey()),
 		zap.Int("idx_written", idxWritten),
 		zap.Duration("dur", dur))
+	// PERF-15: 标记 (svc, table) 非空, 给 Searcher.ScanService 快路径.
+	// 首次写时本地 + Redis SADD; 后续只本地 LoadOrStore 命中,零开销.
+	if p.nonEmpty != nil {
+		p.nonEmpty.Mark(ctx, p.r, e.Service, e.Table)
+	}
+	// PIPE-CDC-BRIDGE: 同时 fanout 到 Kafka (若挂了 hook). 失败不阻塞.
+	if p.AfterPublishHook != nil {
+		p.AfterPublishHook(ctx, e)
+	}
 	return nil
 }
 
@@ -223,6 +250,25 @@ func (p *Publisher) PublishBatch(ctx context.Context, events []*Event) error {
 			zap.Int("events", len(events)),
 			zap.Any("by_table", tableCounts),
 			zap.Duration("dur", dur))
+	}
+	// PERF-15: 标记 batch 内所有 (svc, table). 内部 LoadOrStore 去重,
+	// 真正 SADD Redis 的只有首次见到的 pair, 不会刷爆.
+	if p.nonEmpty != nil {
+		seen := make(map[string]bool, len(tableCounts))
+		for _, e := range events {
+			k := e.Service + "|" + e.Table
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			p.nonEmpty.Mark(ctx, p.r, e.Service, e.Table)
+		}
+	}
+	// PIPE-CDC-BRIDGE: 同时 fanout 到 Kafka.
+	if p.AfterPublishHook != nil {
+		for _, e := range events {
+			p.AfterPublishHook(ctx, e)
+		}
 	}
 	return nil
 }

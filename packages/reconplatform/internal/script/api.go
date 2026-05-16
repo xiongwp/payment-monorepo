@@ -20,12 +20,35 @@ import (
 	"reconcile-system/internal/store"
 )
 
+// SearcherIface 是 Context 对底层数据源的最小依赖。
+//
+// 生产由 *store.Searcher 实现 (Redis-backed);
+// 本地 CLI 测试由 store.FixtureSearcher 实现 (内存 fixture-backed)。
+//
+// 抽接口后 Context 可在不起 Redis 的情况下被单测 / CLI 直接用。
+type SearcherIface interface {
+	SearchByIndex(ctx context.Context, idxName, value string) (store.EventList, error)
+	GetEvent(ctx context.Context, service, table, pk string) (*store.Event, error)
+	ScanService(ctx context.Context, service, table string, limit int) (store.EventList, error)
+	ScanIndex(ctx context.Context, idxName, prefix string, limit int) ([]string, error)
+}
+
+// LogEntry 一次脚本运行中通过 ctx.log_info/warn/error 产生的日志条目.
+//
+// 同时包含 print() 输出 (Level="print", KV nil) — 给 dry-run / 编辑器 UI 显示用,
+// 用户写 print(...) 调试时能直接在右侧 console 面板看到.
+type LogEntry struct {
+	Level string         `json:"level"`        // info / warn / error / print
+	Msg   string         `json:"msg"`
+	KV    map[string]any `json:"kv,omitempty"`
+}
+
 // Context 单次脚本运行的上下文。脚本通过 starlark_api.go 的 wrapContext 暴露给脚本侧。
 //
 // 不要把 Context 长期持有；每次 Run 时由 engine 构造新的实例。
 type Context struct {
 	// 内部依赖
-	searcher *store.Searcher
+	searcher SearcherIface
 	logger   Logger
 
 	// 调用环境
@@ -40,6 +63,10 @@ type Context struct {
 	mu    sync.Mutex
 	diffs []Diff
 	stats Stats
+
+	// print() / ctx.log_* 输出的捕获缓冲. dry-run 端点会读出来塞 Result.Logs,
+	// 让前端 console 面板能展示;生产路径 logger 仍接 zap 不丢日志.
+	logs []LogEntry
 }
 
 // Logger 给脚本用的日志接口（默认包 zap，但脚本侧只看到 Info / Warn / Error 三个方法）。
@@ -50,7 +77,9 @@ type Logger interface {
 }
 
 // NewContext engine 调用，给脚本运行时构造。
-func NewContext(ctx context.Context, searcher *store.Searcher, logger Logger, params map[string]string) *Context {
+//
+// searcher 接受 *store.Searcher (生产) 或 store.FixtureSearcher (CLI/单测)。
+func NewContext(ctx context.Context, searcher SearcherIface, logger Logger, params map[string]string) *Context {
 	if logger == nil {
 		logger = noopLogger{}
 	}
@@ -135,6 +164,30 @@ type Diff struct {
 	Detail any    `json:"detail,omitempty"` // 任意附加信息
 }
 
+// AppendLog 追加一条日志条目到本次运行的捕获缓冲. 由 engine 的 Print hook + ctx.log_* 调.
+//
+// 限制 buffer 上限 (1000 条) 防爆内存:超过即丢弃新的,确保单脚本死循环 print() 不会拖死进程.
+func (c *Context) AppendLog(level, msg string, kv map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.logs) >= 1000 {
+		return
+	}
+	c.logs = append(c.logs, LogEntry{Level: level, Msg: msg, KV: kv})
+}
+
+// GetLogs 拿走捕获的日志快照 (deep copy).
+func (c *Context) GetLogs() []LogEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.logs) == 0 {
+		return nil
+	}
+	out := make([]LogEntry, len(c.logs))
+	copy(out, c.logs)
+	return out
+}
+
 // AddDiff 累计一条 diff。Starlark 新风格脚本通过 return list 输出，
 // 这个 API 留给少数副作用风格脚本兼容（不推荐）。
 func (c *Context) AddDiff(diffType, key string, detail any) {
@@ -173,15 +226,16 @@ func (c *Context) GetStats() Stats {
 
 // Result 一次脚本运行的完整结果。
 type Result struct {
-	ScriptID    string    `json:"script_id"`
-	RunID       string    `json:"run_id"`
-	StartedAt   time.Time `json:"started_at"`
-	FinishedAt  time.Time `json:"finished_at"`
-	Status      string    `json:"status"` // "success" / "error" / "timeout"
-	Error       string    `json:"error,omitempty"`
-	Diffs       []Diff    `json:"diffs"`
-	Stats       Stats     `json:"stats"`
-	TriggeredBy string    `json:"triggered_by"` // "manual" / "cron" / "stream:<svc>:<table>"
+	ScriptID    string     `json:"script_id"`
+	RunID       string     `json:"run_id"`
+	StartedAt   time.Time  `json:"started_at"`
+	FinishedAt  time.Time  `json:"finished_at"`
+	Status      string     `json:"status"` // "success" / "error" / "timeout"
+	Error       string     `json:"error,omitempty"`
+	Diffs       []Diff     `json:"diffs"`
+	Stats       Stats      `json:"stats"`
+	Logs        []LogEntry `json:"logs"`                  // 脚本里 print() / ctx.log_* 的捕获 (即使 0 条也返 [],便于前端调试)
+	TriggeredBy string     `json:"triggered_by"`          // "manual" / "cron" / "stream:<svc>:<table>"
 }
 
 // ─── helpers ────────────────────────────────────────────────────
