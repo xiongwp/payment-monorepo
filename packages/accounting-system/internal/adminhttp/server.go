@@ -152,6 +152,7 @@ func NewServer(
 	// 系统内部账户管理（平台 / 中间 / 手续费 / 权益 / 中转）
 	mux.HandleFunc("/admin/platform-accounts", s.handlePlatformAccount)            // POST 创建单个
 	mux.HandleFunc("/admin/platform-accounts/fleet", s.handlePlatformAccountFleet) // POST 批量 100 个（渠道注册）
+	mux.HandleFunc("/admin/user-scoped-platform-accounts", s.handleUserScopedPlatformAccount) // POST 给具体真实用户挂平台 business_type 账户 (SP-AC-7 同 shard 原子记账)
 	mux.HandleFunc("/admin/business-types", s.handleBusinessTypes)                 // GET 列出 / POST 新增 business_type（不建账户）
 	mux.HandleFunc("/admin/account-types", s.handleListAccountTypes)               // GET 列出 account_type_info（含 is_platform）
 	// SP-AC-7: admin-web designer picker 也走这里 (BFF 中转), 加 underscore alias 兼容.
@@ -514,6 +515,38 @@ func (s *Server) handlePlatformAccount(w http.ResponseWriter, r *http.Request) {
 		req.Currency = "PHP"
 	}
 	acc, err := s.accountingSvc.CreatePlatformAccount(r.Context(), req.ReservedID, model.AccountType(req.AccountType), req.Currency)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, acc)
+}
+
+// userScopedPlatformAccountReq POST /admin/user-scoped-platform-accounts
+// 给具体真实 user_id 挂一个平台类型 business_type 账户. SP-AC-7 用法:
+// multi-leg 原子事务里, 用户钱包 + 平台中转/费用账户必须同 shard, 因此平台账户也按
+// 真实 user_id 创建.
+type userScopedPlatformAccountReq struct {
+	UserID      int64  `json:"user_id"`
+	AccountType int    `json:"account_type"` // 平台类型: 4-9
+	Currency    string `json:"currency"`     // 默认 PHP
+}
+
+// handleUserScopedPlatformAccount POST /admin/user-scoped-platform-accounts
+func (s *Server) handleUserScopedPlatformAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req userScopedPlatformAccountReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
+		return
+	}
+	if req.Currency == "" {
+		req.Currency = "PHP"
+	}
+	acc, err := s.accountingSvc.CreateUserScopedPlatformAccount(r.Context(), req.UserID, model.AccountType(req.AccountType), req.Currency)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

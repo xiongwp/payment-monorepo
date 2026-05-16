@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/accounting-system/internal/domain/model"
+	"github.com/accounting-system/internal/infrastructure/sharding"
 	"github.com/accounting-system/internal/repository"
 
 	"go.uber.org/zap"
@@ -491,22 +492,33 @@ func (s *transactionService) resolveAccountRef(ctx context.Context, ref string) 
 		return ref, nil
 	}
 
-	// owner 解析宽松: 提取末尾连续数字段.
-	//   "main" / 空 → 0 (平台户)
-	//   "42"        → 42
-	//   "sub_42"    → 42 (前缀忽略)
-	//   "abc"       → 0 (无数字, 兜底当平台户)
-	var ownerID int64
+	// owner 解析: 取 suffix 末尾连续数字段作为真实 user_id.
+	//   "100000042"           → 100000042
+	//   "sub_100000042"       → 100000042   (前缀忽略, 提末尾数字)
+	//   "main" / 空 / 无数字   → 0
+	var realUserID int64
 	if suffix != "" && suffix != "main" {
-		// 找末尾数字起点
 		i := len(suffix)
 		for i > 0 && suffix[i-1] >= '0' && suffix[i-1] <= '9' {
 			i--
 		}
 		if i < len(suffix) {
-			_, _ = fmt.Sscanf(suffix[i:], "%d", &ownerID)
+			_, _ = fmt.Sscanf(suffix[i:], "%d", &realUserID)
 		}
-		// 全无数字 → ownerID 保持 0 (兼容 "main" 等占位)
+	}
+
+	// SP-AC-7 同 shard 原子记账: 平台账户跟用户账户**落在同一 globalTblIdx**
+	// (= realUserID % ShardTableTotal), 这样一笔 multi-leg 交易的全部 entries
+	// 走同一个 DB / 同一个表, accounting 一个本地事务原子提交, 不需要分布式协调.
+	//
+	// 用户账户 (account_type 1-3): 直接用真实 user_id.
+	// 平台账户 (account_type 4-9): 平台 fleet 里固定开了 user_id ∈ [0, 99] 共 100 个 shard
+	//                              账户; 调用方传真实 user_id, 这里取模映射到对应 shard.
+	//
+	// 例: user 100000042 → 平台 fleet user_id=42 → 跟用户账户同表 (table 42).
+	ownerID := realUserID
+	if isPlatformAccountType(info.AccountType) {
+		ownerID = realUserID % int64(sharding.ShardTableTotal)
 	}
 
 	acct, err := s.accountRepo.GetAccountByUserAndBusinessType(ctx, ownerID,

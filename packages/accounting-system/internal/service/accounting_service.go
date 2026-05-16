@@ -119,6 +119,15 @@ type AccountingService interface {
 	// 适合单点创建；渠道级批量注册请用 CreatePlatformAccountFleet。
 	CreatePlatformAccount(ctx context.Context, reservedID int64, accountType model.AccountType, currency string) (*model.Account, error)
 
+	// CreateUserScopedPlatformAccount 为一个具体的真实用户挂一个平台类型的 business_type 账户.
+	// 用途: SP-AC-7 multi-leg 原子记账要求"用户钱包 + 平台中转/费用账户"共享 user_id,
+	// 这样整条 multi-leg 落同一 shard, 一个 DB 事务原子提交.
+	//
+	// 跟 CreatePlatformAccount 区别: 不再要求 userID ∈ [1, ReservedOwnerIDMax],
+	// 接受任意真实 user_id (跟 USER_WALLET 共享). business_type / category 仍由
+	// accountType 1:1 推导, 校验 registry 一致.
+	CreateUserScopedPlatformAccount(ctx context.Context, userID int64, accountType model.AccountType, currency string) (*model.Account, error)
+
 	// CreatePlatformAccountFleet 为一个渠道批量创建 100 个系统内部账户（每分片表一个）+
 	// 在 account_business_type_info 登记一条渠道注册。
 	//
@@ -2650,6 +2659,24 @@ func (s *accountingService) CreatePlatformAccount(ctx context.Context, reservedI
 		return nil, fmt.Errorf("account type %d is not a platform-internal type; use CreateAccount", accountType)
 	}
 	return s.createAccountInternal(ctx, reservedID, spec.BusinessType, accountType, spec.Category, currency)
+}
+
+// CreateUserScopedPlatformAccount 给具体真实用户挂一个平台类型 business_type 账户.
+// SP-AC-7 multi-leg 原子记账要求 (user_wallet + platform_*) 同 shard 一个事务落账,
+// 因此平台账户要"挂"在真实 user_id 下, 而不是平台 reserved 段.
+//
+// 跟 CreatePlatformAccount 唯一区别: 跳过 owner_id ∈ [1, ReservedOwnerIDMax] 的限制,
+// 其它逻辑 (account_type 必须是平台类型, business_type/category 由 spec 1:1 推导,
+// idempotent by (user_id, business_type, currency)) 完全复用 createAccountInternal.
+func (s *accountingService) CreateUserScopedPlatformAccount(ctx context.Context, userID int64, accountType model.AccountType, currency string) (*model.Account, error) {
+	if userID <= 0 {
+		return nil, fmt.Errorf("user_id must be > 0, got %d", userID)
+	}
+	spec, ok := platformAccountSpec[accountType]
+	if !ok {
+		return nil, fmt.Errorf("account type %d is not a platform-internal type", accountType)
+	}
+	return s.createAccountInternal(ctx, userID, spec.BusinessType, accountType, spec.Category, currency)
 }
 
 // CreatePlatformChannelRequest Fleet 请求：基于**已登记**的 business_type 批量建 100 账户。
