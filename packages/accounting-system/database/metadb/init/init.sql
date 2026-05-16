@@ -93,7 +93,7 @@ VALUES
 -- 同一 product+event 可有多条规则（主流水 + 手续费等）
 -- ============================================
 CREATE TABLE IF NOT EXISTS `transaction_rule` (
-    `id`               BIGINT(20) UNSIGNED NOT NULL COMMENT 'id',
+    `id`               BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT 'id',
     `product_code`     VARCHAR(256) NOT NULL COMMENT '产品编码',
     `event_code`       VARCHAR(256) NOT NULL COMMENT '事件编码',
     `hash_key`         VARCHAR(256) NOT NULL COMMENT 'product_code,event_code,credit_subject_id,debit_subject_id 拼接',

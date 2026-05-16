@@ -20,14 +20,16 @@
 -- accounting-system 的 GetRulesByProductAndEvent 只用来校验 event_code 是否合法,
 -- legs 由 split-payment translator 提供, executeBookkeeping 拆 2N entries 一次 DoubleEntryBooking.
 
+-- 用一个比较大的起始 id 避免跟现有 rule 撞 (生产建议显式分配 id 段管理).
+-- 如果你的 schema 是 AUTO_INCREMENT, 把 id 列 + 9001/9002 删掉也能跑.
 INSERT INTO transaction_rule
-  (product_code, event_code, hash_key, debit_subject_id, credit_subject_id, from_direction, to_direction, transaction_type, bookkeeping_mode)
+  (id, product_code, event_code, hash_key, debit_subject_id, credit_subject_id, from_direction, to_direction, transaction_type, bookkeeping_mode)
 VALUES
   -- Phase 1: channel.settled 触发, 3 条 edge 一次原子落账
   --   leg 1: PLATFORM_RECEIVABLE_CHANNEL → CHANNEL_INBOUND_SUSPENSE (¥100)
   --   leg 2: CHANNEL_INBOUND_SUSPENSE    → USER_WALLET              (¥99)
   --   leg 3: CHANNEL_INBOUND_SUSPENSE    → PLATFORM_FEE_CLEARING    (¥1)
-  ('user_topup', 'channel_settled',
+  (9001, 'user_topup', 'channel_settled',
    'user_topup:channel_settled',
    'PLATFORM_RECEIVABLE_CHANNEL', 'USER_WALLET',
    'debit', 'credit', 1, 'standard'),
@@ -35,7 +37,7 @@ VALUES
   -- Phase 2: fee.cleared 触发, 2 条 edge 一次原子清算
   --   leg 1: PLATFORM_FEE_CLEARING → CHANNEL_FEE_PAYABLE (¥0.60)
   --   leg 2: PLATFORM_FEE_CLEARING → PLATFORM_FEE_REVENUE (¥0.40)
-  ('user_topup', 'fee_cleared',
+  (9002, 'user_topup', 'fee_cleared',
    'user_topup:fee_cleared',
    'PLATFORM_FEE_CLEARING', 'PLATFORM_FEE_REVENUE',
    'debit', 'credit', 1, 'standard');
