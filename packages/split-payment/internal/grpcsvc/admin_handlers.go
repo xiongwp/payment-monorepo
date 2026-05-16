@@ -17,26 +17,36 @@ import (
 )
 
 // GraphRepo 跟 adminhttp.GraphRepo 同形态接口, 复制一份避免 internal 包循环 import.
-//
-// 注: 没要求 Delete — 现有 MemoryGraphRepo / MySQLGraphRepo 都不暴露删除方法
-// (graph 版本控制要求软删除, 不支持硬删). DeleteGraph gRPC 用 UnimplementedAdminServiceServer
-// 兜底返 Unimplemented.
 type GraphRepo interface {
 	Save(ctx context.Context, g *domain.Graph) (int64, error)
 	GetByKey(ctx context.Context, key string) (*domain.Graph, error)
 	List(ctx context.Context, status string) ([]*domain.Graph, error)
 }
 
+// AccountingMetaCaller — TriggerEvent 用来调 accounting.CreateTransaction 真落账.
+// 跟 workflow.AccountingMetaCaller 同形态, 复制避免循环 import.
+type AccountingMetaCaller interface {
+	CreateTransaction(ctx context.Context, req *domain.TransactionRequest) (*AccountingTxResp, error)
+}
+
+// AccountingTxResp 返回值, 也跟 workflow.AccountingTxResp 同形态.
+type AccountingTxResp struct {
+	VoucherNo string
+	Status    int8
+	Error     string
+}
+
 // Server 实现 AdminServiceServer.
 type Server struct {
 	UnimplementedAdminServiceServer
-	Graphs GraphRepo
-	Log    *zap.Logger
+	Graphs     GraphRepo
+	Accounting AccountingMetaCaller // nil → TriggerEvent 返错; DryRun 不受影响
+	Log        *zap.Logger
 }
 
 // NewServer.
-func NewServer(graphs GraphRepo, log *zap.Logger) *Server {
-	return &Server{Graphs: graphs, Log: log}
+func NewServer(graphs GraphRepo, accounting AccountingMetaCaller, log *zap.Logger) *Server {
+	return &Server{Graphs: graphs, Accounting: accounting, Log: log}
 }
 
 // ListGraphs.
@@ -137,6 +147,73 @@ func (s *Server) DryRun(_ context.Context, req *DryRunRequest) (*DryRunResponse,
 		return &DryRunResponse{Error: "marshal plan: " + err.Error()}, nil
 	}
 	return &DryRunResponse{PlanJson: planBytes}, nil
+}
+
+// TriggerEvent — 真触发:
+//   1. 按 graph_key 找 graph
+//   2. Translator → multi-leg TransactionRequest 列表
+//   3. 每个 TransactionRequest 调 AccountingMeta.CreateTransaction (一笔原子)
+//   4. 收集 voucher_no 返回
+//
+// 任一笔失败 → 该笔标错 → 后续不再继续 (避免半截分账); 已成功的 voucher 仍返供审计.
+// 重复触发同 (charge_id, event_code) — accounting 内部按 OrderNo 幂等去重, 不会重复落账.
+func (s *Server) TriggerEvent(ctx context.Context, req *TriggerEventRequest) (*TriggerEventResponse, error) {
+	if req.GraphKey == "" {
+		return &TriggerEventResponse{Error: "graph_key required"}, nil
+	}
+	if s.Accounting == nil {
+		return &TriggerEventResponse{Error: "accounting client not wired (server started without ACCOUNTING_GRPC_ADDR?)"}, nil
+	}
+	g, err := s.Graphs.GetByKey(ctx, req.GraphKey)
+	if err != nil {
+		return &TriggerEventResponse{Error: "get graph: " + err.Error()}, nil
+	}
+	if g == nil {
+		return &TriggerEventResponse{Error: fmt.Sprintf("graph %q not found (save it first via SaveGraph)", req.GraphKey)}, nil
+	}
+	var tc workflow.TriggerContext
+	if len(req.EventJson) > 0 {
+		if err := json.Unmarshal(req.EventJson, &tc); err != nil {
+			return &TriggerEventResponse{Error: "decode event_json: " + err.Error()}, nil
+		}
+	}
+	plan, err := workflow.Translate(g, tc)
+	if err != nil {
+		return &TriggerEventResponse{Error: "translate: " + err.Error()}, nil
+	}
+
+	resp := &TriggerEventResponse{}
+	for i := range plan.Transactions {
+		tx := &plan.Transactions[i]
+		v := &TxnVoucher{EventCode: tx.EventCode, OrderNo: tx.OrderNo}
+		acctResp, callErr := s.Accounting.CreateTransaction(ctx, tx)
+		if callErr != nil {
+			v.Status = 3
+			v.Error = callErr.Error()
+			resp.Vouchers = append(resp.Vouchers, v)
+			resp.Error = fmt.Sprintf("tx %s (%s) failed: %s; %d/%d succeeded so far",
+				tx.OrderNo, tx.EventCode, callErr.Error(), i, len(plan.Transactions))
+			if s.Log != nil {
+				s.Log.Error("TriggerEvent: CreateTransaction failed",
+					zap.String("graph_key", req.GraphKey),
+					zap.String("event_code", tx.EventCode),
+					zap.String("order_no", tx.OrderNo),
+					zap.Error(callErr))
+			}
+			break
+		}
+		v.VoucherNo = acctResp.VoucherNo
+		v.Status = int32(acctResp.Status)
+		if acctResp.Error != "" {
+			v.Error = acctResp.Error
+		}
+		resp.Vouchers = append(resp.Vouchers, v)
+	}
+
+	if planBytes, e := json.Marshal(plan); e == nil {
+		resp.PlanJson = planBytes
+	}
+	return resp, nil
 }
 
 func firstNonEmpty(a, b string) string {

@@ -141,6 +141,38 @@ func (x *rpcDryRunResponse) Reset()         { *x = rpcDryRunResponse{} }
 func (x *rpcDryRunResponse) String() string { return fmt.Sprintf("%+v", *x) }
 func (*rpcDryRunResponse) ProtoMessage()    {}
 
+// TriggerEvent wire 类型.
+type rpcTriggerEventRequest struct {
+	GraphKey  string `protobuf:"bytes,1,opt,name=graph_key,json=graphKey,proto3"`
+	EventJson []byte `protobuf:"bytes,2,opt,name=event_json,json=eventJson,proto3"`
+}
+
+func (x *rpcTriggerEventRequest) Reset()         { *x = rpcTriggerEventRequest{} }
+func (x *rpcTriggerEventRequest) String() string { return fmt.Sprintf("%+v", *x) }
+func (*rpcTriggerEventRequest) ProtoMessage()    {}
+
+type rpcTxnVoucher struct {
+	EventCode string `protobuf:"bytes,1,opt,name=event_code,json=eventCode,proto3"`
+	OrderNo   string `protobuf:"bytes,2,opt,name=order_no,json=orderNo,proto3"`
+	VoucherNo string `protobuf:"bytes,3,opt,name=voucher_no,json=voucherNo,proto3"`
+	Status    int32  `protobuf:"varint,4,opt,name=status,proto3"`
+	Error     string `protobuf:"bytes,5,opt,name=error,proto3"`
+}
+
+func (x *rpcTxnVoucher) Reset()         { *x = rpcTxnVoucher{} }
+func (x *rpcTxnVoucher) String() string { return fmt.Sprintf("%+v", *x) }
+func (*rpcTxnVoucher) ProtoMessage()    {}
+
+type rpcTriggerEventResponse struct {
+	Vouchers []*rpcTxnVoucher `protobuf:"bytes,1,rep,name=vouchers,proto3"`
+	Error    string           `protobuf:"bytes,2,opt,name=error,proto3"`
+	PlanJson []byte           `protobuf:"bytes,3,opt,name=plan_json,json=planJson,proto3"`
+}
+
+func (x *rpcTriggerEventResponse) Reset()         { *x = rpcTriggerEventResponse{} }
+func (x *rpcTriggerEventResponse) String() string { return fmt.Sprintf("%+v", *x) }
+func (*rpcTriggerEventResponse) ProtoMessage()    {}
+
 // ─── MoneyflowHandler ──────────────────────────────────────────────────────
 
 // MoneyflowHandler — gRPC client to split-payment.
@@ -207,6 +239,8 @@ func (h *MoneyflowHandler) Proxy(w http.ResponseWriter, r *http.Request) {
 		h.handleGetGraph(w, r, strings.TrimPrefix(path, "/graphs/"))
 	case path == "/dry-run" && r.Method == http.MethodPost:
 		h.handleDryRun(w, r)
+	case path == "/trigger" && r.Method == http.MethodPost:
+		h.handleTrigger(w, r)
 	default:
 		http.Error(w, "unknown moneyflow endpoint: "+r.Method+" "+r.URL.Path, http.StatusNotFound)
 	}
@@ -366,6 +400,55 @@ func (h *MoneyflowHandler) handleDryRun(w http.ResponseWriter, r *http.Request) 
 	var plan any
 	_ = json.Unmarshal(out.PlanJson, &plan)
 	writeJSON(w, map[string]any{"plan": plan})
+}
+
+// handleTrigger — 同步真触发. body: {graph_key, event}.
+//   - graph_key: 用 split-payment DB 里已存的 graph (Save 过的)
+//   - event:     workflow.TriggerContext 形态 (event/charge_id/amount_minor/currency/attributes)
+//
+// 跟 dry-run 区别: 这个会调 accounting.CreateTransaction 真落账, 返每个 event_code 的 voucher_no.
+func (h *MoneyflowHandler) handleTrigger(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	var raw struct {
+		GraphKey string          `json:"graph_key"`
+		Event    json.RawMessage `json:"event"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		http.Error(w, "parse json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if raw.GraphKey == "" {
+		http.Error(w, "graph_key required", http.StatusBadRequest)
+		return
+	}
+	conn, err := h.getConn()
+	if err != nil {
+		http.Error(w, "split-payment unreachable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	out := new(rpcTriggerEventResponse)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	in := &rpcTriggerEventRequest{GraphKey: raw.GraphKey, EventJson: raw.Event}
+	if err := conn.Invoke(ctx, "/split_payment.v1.AdminService/TriggerEvent", in, out, grpc.StaticMethod()); err != nil {
+		http.Error(w, "TriggerEvent: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	resp := map[string]any{
+		"vouchers": out.Vouchers,
+		"error":    out.Error,
+	}
+	if len(out.PlanJson) > 0 {
+		var plan any
+		_ = json.Unmarshal(out.PlanJson, &plan)
+		resp["plan"] = plan
+	}
+	writeJSON(w, resp)
 }
 
 // Designer / Resources / DesignerV2 / Rules — 静态 HTML serve.

@@ -160,14 +160,18 @@ func Translate(g *domain.Graph, tc TriggerContext) (*domain.RunPlan, error) {
 			}
 		}
 
-		// 尾差归本组最后一 leg (防 percent rounding 丢钱)
-		if remaining > 0 && len(legs) > 0 {
+		// 尾差归本组最后一 leg — 仅当最后一 edge 是 remainder 类型时.
+		//
+		// 设计意图: 'remainder' edge 表示"把剩下的吸收掉", 配合 percent edge 处理舍入误差
+		// (e.g. 33.33% × 3 = 99.99%, remainder 兜底剩 0.01%).
+		// 如果本组全是 percent 没 remainder, 说明设计上就只想消费部分金额, 不补尾差.
+		lastEdgeIsRemainder := len(edges) > 0 && edges[len(edges)-1].Rule.Type == "remainder"
+		if remaining > 0 && len(legs) > 0 && lastEdgeIsRemainder {
 			last := &legs[len(legs)-1]
 			var lastAmt int64
 			_, _ = fmt.Sscanf(last.Amount, "%d", &lastAmt)
 			lastAmt += remaining
 			last.Amount = fmt.Sprintf("%d", lastAmt)
-			// 同步 movement
 			for i := len(movements) - 1; i >= 0; i-- {
 				if movements[i].EdgeFromNode == last.EdgeFromNode &&
 					movements[i].EdgeToNode == last.EdgeToNode {

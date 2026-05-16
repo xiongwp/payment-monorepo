@@ -152,6 +152,46 @@ func (x *DryRunResponse) Reset()         { *x = DryRunResponse{} }
 func (x *DryRunResponse) String() string { return fmt.Sprintf("%+v", *x) }
 func (*DryRunResponse) ProtoMessage()    {}
 
+// TriggerEventRequest — 同步触发一个 graph + 真打 accounting (跟 DryRun 区别: DryRun 不落账).
+//
+// graph_key 必填: translator 按这个 key 从 GraphRepo 找 graph (而不是从 request 里读 spec, 防篡改).
+// event_json: workflow.TriggerContext 序列化, 含 event / amount_minor / attributes 等.
+type TriggerEventRequest struct {
+	GraphKey  string `protobuf:"bytes,1,opt,name=graph_key,json=graphKey,proto3" json:"graph_key,omitempty"`
+	EventJson []byte `protobuf:"bytes,2,opt,name=event_json,json=eventJson,proto3" json:"event_json,omitempty"`
+}
+
+func (x *TriggerEventRequest) Reset()         { *x = TriggerEventRequest{} }
+func (x *TriggerEventRequest) String() string { return fmt.Sprintf("%+v", *x) }
+func (*TriggerEventRequest) ProtoMessage()    {}
+
+// TriggerEventResponse — 每个 event_code 一个 voucher (multi-leg 落账后 accounting 返的凭证号).
+type TriggerEventResponse struct {
+	// 每个 transaction(= event_code group) 一条结果, 顺序跟 plan.Transactions 一致.
+	Vouchers []*TxnVoucher `protobuf:"bytes,1,rep,name=vouchers,proto3" json:"vouchers,omitempty"`
+	// 若 translator 失败 / accounting 任一笔失败, error 非空, 已成功的 voucher 仍返供审计.
+	Error    string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// 摘要: plan 序列化的 JSON, 便于客户端落审计 / 排错.
+	PlanJson []byte `protobuf:"bytes,3,opt,name=plan_json,json=planJson,proto3" json:"plan_json,omitempty"`
+}
+
+func (x *TriggerEventResponse) Reset()         { *x = TriggerEventResponse{} }
+func (x *TriggerEventResponse) String() string { return fmt.Sprintf("%+v", *x) }
+func (*TriggerEventResponse) ProtoMessage()    {}
+
+// TxnVoucher 一个 event_code group 的落账结果.
+type TxnVoucher struct {
+	EventCode string `protobuf:"bytes,1,opt,name=event_code,json=eventCode,proto3" json:"event_code,omitempty"`
+	OrderNo   string `protobuf:"bytes,2,opt,name=order_no,json=orderNo,proto3" json:"order_no,omitempty"`
+	VoucherNo string `protobuf:"bytes,3,opt,name=voucher_no,json=voucherNo,proto3" json:"voucher_no,omitempty"`
+	Status    int32  `protobuf:"varint,4,opt,name=status,proto3" json:"status,omitempty"` // 2=success / 3=failed
+	Error     string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+}
+
+func (x *TxnVoucher) Reset()         { *x = TxnVoucher{} }
+func (x *TxnVoucher) String() string { return fmt.Sprintf("%+v", *x) }
+func (*TxnVoucher) ProtoMessage()    {}
+
 // ─── Server interface ──────────────────────────────────────────────────────
 
 type AdminServiceServer interface {
@@ -160,6 +200,7 @@ type AdminServiceServer interface {
 	SaveGraph(context.Context, *SaveGraphRequest) (*SaveGraphResponse, error)
 	DeleteGraph(context.Context, *DeleteGraphRequest) (*DeleteGraphResponse, error)
 	DryRun(context.Context, *DryRunRequest) (*DryRunResponse, error)
+	TriggerEvent(context.Context, *TriggerEventRequest) (*TriggerEventResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -181,6 +222,9 @@ func (UnimplementedAdminServiceServer) DeleteGraph(context.Context, *DeleteGraph
 func (UnimplementedAdminServiceServer) DryRun(context.Context, *DryRunRequest) (*DryRunResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "DryRun not implemented")
 }
+func (UnimplementedAdminServiceServer) TriggerEvent(context.Context, *TriggerEventRequest) (*TriggerEventResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "TriggerEvent not implemented")
+}
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 
 // ─── Client interface ──────────────────────────────────────────────────────
@@ -191,6 +235,7 @@ type AdminServiceClient interface {
 	SaveGraph(ctx context.Context, in *SaveGraphRequest, opts ...grpc.CallOption) (*SaveGraphResponse, error)
 	DeleteGraph(ctx context.Context, in *DeleteGraphRequest, opts ...grpc.CallOption) (*DeleteGraphResponse, error)
 	DryRun(ctx context.Context, in *DryRunRequest, opts ...grpc.CallOption) (*DryRunResponse, error)
+	TriggerEvent(ctx context.Context, in *TriggerEventRequest, opts ...grpc.CallOption) (*TriggerEventResponse, error)
 }
 
 type adminServiceClient struct{ cc grpc.ClientConnInterface }
@@ -230,6 +275,13 @@ func (c *adminServiceClient) DeleteGraph(ctx context.Context, in *DeleteGraphReq
 func (c *adminServiceClient) DryRun(ctx context.Context, in *DryRunRequest, opts ...grpc.CallOption) (*DryRunResponse, error) {
 	out := new(DryRunResponse)
 	if err := c.cc.Invoke(ctx, "/split_payment.v1.AdminService/DryRun", in, out, append([]grpc.CallOption{grpc.StaticMethod()}, opts...)...); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+func (c *adminServiceClient) TriggerEvent(ctx context.Context, in *TriggerEventRequest, opts ...grpc.CallOption) (*TriggerEventResponse, error) {
+	out := new(TriggerEventResponse)
+	if err := c.cc.Invoke(ctx, "/split_payment.v1.AdminService/TriggerEvent", in, out, append([]grpc.CallOption{grpc.StaticMethod()}, opts...)...); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -307,6 +359,20 @@ func _AdminService_DryRun_Handler(srv interface{}, ctx context.Context, dec func
 	}
 	return interceptor(ctx, in, info, handler)
 }
+func _AdminService_TriggerEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TriggerEventRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).TriggerEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{Server: srv, FullMethod: "/split_payment.v1.AdminService/TriggerEvent"}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).TriggerEvent(ctx, req.(*TriggerEventRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
 
 // AdminService_ServiceDesc.
 var AdminService_ServiceDesc = grpc.ServiceDesc{
@@ -318,6 +384,7 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{MethodName: "SaveGraph", Handler: _AdminService_SaveGraph_Handler},
 		{MethodName: "DeleteGraph", Handler: _AdminService_DeleteGraph_Handler},
 		{MethodName: "DryRun", Handler: _AdminService_DryRun_Handler},
+		{MethodName: "TriggerEvent", Handler: _AdminService_TriggerEvent_Handler},
 	},
 	Streams: []grpc.StreamDesc{},
 }

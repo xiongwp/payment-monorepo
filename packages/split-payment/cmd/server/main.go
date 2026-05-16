@@ -328,7 +328,13 @@ func main() {
 		zap.String("accounting", accAddr))
 
 	// SP-AC-7: gRPC AdminService — admin-web BFF 通过此端口调.
-	go runAdminGRPCServer(ctx, log, sgGraphs)
+	// engine.AccountingMeta 是 workflow.AccountingMetaCaller 接口实例, 把它适配成
+	// grpcsvc.AccountingMetaCaller (同形态, 不同包) 供 TriggerEvent 真落账用.
+	var grpcAcct grpcsvc.AccountingMetaCaller
+	if engine.AccountingMeta != nil {
+		grpcAcct = grpcsvcAcctAdapter{inner: engine.AccountingMeta}
+	}
+	go runAdminGRPCServer(ctx, log, sgGraphs, grpcAcct)
 
 	// SP-FIN-2: PayoutDispatchWorker — pending → in_transit 状态机.
 	// 调 clearing-settlement 服务 (env CLEARING_HTTP_URL 配了走真实, 否则 Noop).
@@ -466,9 +472,9 @@ func maskDSN(dsn string) string {
 
 // runAdminGRPCServer — SP-AC-7 启动 split-payment gRPC AdminService.
 //
-// admin-web BFF 通过这个 gRPC 端口调 Graph CRUD / DryRun (取代旧 HTTP reverse-proxy).
+// admin-web BFF 通过这个 gRPC 端口调 Graph CRUD / DryRun / TriggerEvent.
 // 监听端口由 env SPLIT_GRPC_PORT 控制 (默认 9098).
-func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.GraphRepo) {
+func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.GraphRepo, acct grpcsvc.AccountingMetaCaller) {
 	port := envOr("SPLIT_GRPC_PORT", "9098")
 	lis, err := net.Listen("tcp", ":"+port)
 	if err != nil {
@@ -476,12 +482,25 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 		return
 	}
 	srv := grpc.NewServer()
-	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, log))
+	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, log))
 	log.Info("split-payment gRPC AdminService listening", zap.String("port", port))
 	go func() { <-ctx.Done(); srv.GracefulStop() }()
 	if err := srv.Serve(lis); err != nil {
 		log.Error("split gRPC serve", zap.Error(err))
 	}
+}
+
+// grpcsvcAcctAdapter — workflow.AccountingMetaCaller ↔ grpcsvc.AccountingMetaCaller 适配.
+// 两边接口形态一致 (CreateTransaction(ctx, *domain.TransactionRequest) → resp), 只是
+// resp 类型名不同 (前者 workflow.AccountingTxResp, 后者 grpcsvc.AccountingTxResp).
+type grpcsvcAcctAdapter struct{ inner workflow.AccountingMetaCaller }
+
+func (a grpcsvcAcctAdapter) CreateTransaction(ctx context.Context, req *domain.TransactionRequest) (*grpcsvc.AccountingTxResp, error) {
+	r, err := a.inner.CreateTransaction(ctx, req)
+	if err != nil || r == nil {
+		return nil, err
+	}
+	return &grpcsvc.AccountingTxResp{VoucherNo: r.VoucherNo, Status: r.Status, Error: r.Error}, nil
 }
 
 // accountingGRPCAdapter — SP-AC-7 把 clients.AccountingGRPCClient 适配成 workflow.AccountingMetaCaller.

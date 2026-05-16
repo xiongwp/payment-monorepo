@@ -173,6 +173,7 @@
   <button id="import-btn" class="secondary">Import JSON</button>
   <input id="import-file" type="file" accept=".json,application/json" style="display:none">
   <button id="test-btn" class="secondary">Dry Run...</button>
+  <button id="trigger-btn" style="background:#dc2626;color:#fff">⚡ Trigger Now</button>
 </header>
 <main>
   <!-- 左: 节点 palette -->
@@ -732,6 +733,53 @@ $('import-file').onchange = async (e) => {
     alert('import failed: ' + err.message);
   } finally {
     e.target.value = ''; // 允许重新选同一文件
+  }
+};
+
+// Trigger Now — 真落账到 accounting (graph 必须先 Save 进 DB).
+// 每个 node.account_id_attr 弹 prompt 让运营填实际账号 + 金额; 没配三件套的 (平台固定户)
+// 自动用 node.id 兜底.
+$('trigger-btn').onclick = async () => {
+  if (!state.graph.key) { alert('先 Save graph 再 Trigger (TriggerEvent 按 key 查 graph).'); return; }
+  if (!confirm(`真触发 graph=${state.graph.key} ?  会调 accounting 真落账, 不可撤销 (只能反向退款).`)) return;
+  const charge = prompt('charge_id (业务幂等键)?', 'demo_' + Date.now());
+  if (!charge) return;
+  const totalCents = parseInt(prompt('总金额 (cents)?', '10000')) || 0;
+  if (!totalCents) return;
+
+  const attrs = {};
+  (state.graph.spec.nodes || []).forEach(n => {
+    if (!n.account_id_attr) return; // 平台固定户走 node.id 兜底
+    const ans = prompt(
+      `节点 ${n.id} (${n.label||''}) 三件套\n格式: account_id|amount_minor|currency`,
+      'test_' + n.id + '|' + totalCents + '|CNY'
+    );
+    if (!ans) return;
+    const [aid, amt, cur] = ans.split('|');
+    attrs[n.account_id_attr] = aid || ('test_' + n.id);
+    if (amt) attrs[n.account_id_attr + '_amount']   = amt;
+    if (cur) attrs[n.account_id_attr + '_currency'] = cur;
+  });
+
+  const r = await fetch(`${API_BASE}/api/moneyflow/trigger`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      graph_key: state.graph.key,
+      event: {
+        event:        (state.graph.spec.triggers && state.graph.spec.triggers[0] && state.graph.spec.triggers[0].event) || 'charge.succeeded',
+        charge_id:    charge,
+        amount_minor: totalCents,
+        currency:     'CNY',
+        attributes:   attrs,
+      },
+    }),
+  });
+  const txt = await r.text();
+  try {
+    alert(JSON.stringify(JSON.parse(txt), null, 2));
+  } catch (_) {
+    alert(txt);
   }
 };
 
