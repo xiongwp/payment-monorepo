@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/accounting-system/internal/domain/model"
 	"github.com/accounting-system/internal/repository"
@@ -80,6 +81,7 @@ type transactionService struct {
 	ruleRepo          repository.TransactionRuleRepository
 	orderRepo         repository.TransactionOrderRepository
 	accountRepo       repository.AccountRepository
+	businessTypeRepo  repository.AccountBusinessTypeRepository // SP-AC-7 resolveAccountRef 用
 	accountingService AccountingService
 	logger            *zap.Logger
 }
@@ -89,6 +91,7 @@ func NewTransactionService(
 	ruleRepo repository.TransactionRuleRepository,
 	orderRepo repository.TransactionOrderRepository,
 	accountRepo repository.AccountRepository,
+	businessTypeRepo repository.AccountBusinessTypeRepository,
 	accountingService AccountingService,
 	logger *zap.Logger,
 ) TransactionService {
@@ -96,6 +99,7 @@ func NewTransactionService(
 		ruleRepo:          ruleRepo,
 		orderRepo:         orderRepo,
 		accountRepo:       accountRepo,
+		businessTypeRepo:  businessTypeRepo,
 		accountingService: accountingService,
 		logger:            logger,
 	}
@@ -313,8 +317,33 @@ func (s *transactionService) executeBookkeeping(ctx context.Context, req *Create
 			req.ProductCode, req.EventCode)
 	}
 
-	// 每条 leg → 2 个分录 (借 from, 贷 to)
-	entries := make([]AccountingEntry, 0, len(req.Legs)*2)
+	// 每条 leg → 2 个 raw entry (借 from, 贷 to),然后按 account_no 聚合
+	// (accounting 内部 DoubleEntryBooking 不允许同一 account_no 在一笔里出现多次).
+	//
+	// SP-AC-7+ account ref 解析:
+	//   leg.FromAccountID / ToAccountID 支持两种形态:
+	//     1. 实际 account_no (e.g. "010100001-005")         — 直接用
+	//     2. 业务语义 ref     (e.g. "USER_WALLET/42",
+	//                             "PLATFORM_FEE_CLEARING/main") — 拆 prefix 当 business_type,
+	//                                                            后缀当 user_id ("main"→0).
+	//                                                            按 (user_id, account_business_type)
+	//                                                            查 account 表拿真 account_no.
+	//
+	// 多 leg 共用 transit 账户: 净额 = sum(debit) - sum(credit). 净 0 → 跳过 (中转户进出相抵).
+	type accSummary struct{ debit, credit int64 }
+	agg := map[string]*accSummary{}
+	resolved := map[string]string{} // ref → 真 account_no 缓存
+	resolveRef := func(ref string) (string, error) {
+		if v, ok := resolved[ref]; ok {
+			return v, nil
+		}
+		v, err := s.resolveAccountRef(ctx, ref)
+		if err != nil {
+			return "", err
+		}
+		resolved[ref] = v
+		return v, nil
+	}
 	for i, leg := range req.Legs {
 		amount, err := strconv.ParseInt(leg.Amount, 10, 64)
 		if err != nil {
@@ -323,18 +352,40 @@ func (s *transactionService) executeBookkeeping(ctx context.Context, req *Create
 		if amount <= 0 {
 			return "", fmt.Errorf("leg[%d] amount must > 0, got %d", i, amount)
 		}
-		entries = append(entries,
-			AccountingEntry{
-				AccountNo:   leg.FromAccountID,
-				DebitAmount: amount,
-				Description: req.Description,
-			},
-			AccountingEntry{
-				AccountNo:    leg.ToAccountID,
-				CreditAmount: amount,
-				Description:  req.Description,
-			},
-		)
+		fromAcct, err := resolveRef(leg.FromAccountID)
+		if err != nil {
+			return "", fmt.Errorf("leg[%d] from ref %q: %w", i, leg.FromAccountID, err)
+		}
+		toAcct, err := resolveRef(leg.ToAccountID)
+		if err != nil {
+			return "", fmt.Errorf("leg[%d] to ref %q: %w", i, leg.ToAccountID, err)
+		}
+		if fromAcct == toAcct {
+			return "", fmt.Errorf("leg[%d] from == to (%s); self-transfer not allowed", i, fromAcct)
+		}
+		if agg[fromAcct] == nil {
+			agg[fromAcct] = &accSummary{}
+		}
+		agg[fromAcct].debit += amount
+		if agg[toAcct] == nil {
+			agg[toAcct] = &accSummary{}
+		}
+		agg[toAcct].credit += amount
+	}
+	entries := make([]AccountingEntry, 0, len(agg))
+	for accNo, sum := range agg {
+		net := sum.debit - sum.credit
+		switch {
+		case net > 0:
+			entries = append(entries, AccountingEntry{
+				AccountNo: accNo, DebitAmount: net, Description: req.Description,
+			})
+		case net < 0:
+			entries = append(entries, AccountingEntry{
+				AccountNo: accNo, CreditAmount: -net, Description: req.Description,
+			})
+			// net == 0: 中转户进出相抵, 不影响余额, 跳过 entry.
+		}
 	}
 
 	businessType := mapEventCodeToBusinessType(req.EventCode)
@@ -399,6 +450,76 @@ func (s *transactionService) validateRequest(req *CreateTransactionRequest) erro
 		return fmt.Errorf("legs is required (≥ 1)")
 	}
 	return nil
+}
+
+// resolveAccountRef 把业务语义 ref 转成真实 account_no.
+//
+// 支持格式:
+//   "<BUSINESS_TYPE_CODE>/<owner>"  → 查 (user_id=owner, account_business_type=<查 registry 得到的数字码>)
+//
+//   e.g. "PLATFORM_FEE_CLEARING/main"  → (user_id=0, business_type=11) → real account_no
+//        "USER_WALLET/42"              → (user_id=42, business_type=USER_BALANCE 注册码)
+//        "alipay_ch_fee/main"          → (user_id=0, business_type=ALIPAY_CH_FEE)
+//
+//   owner suffix:
+//     "main" / 空 → user_id=0 (平台户)
+//     纯数字 N    → user_id=N
+//
+// business_type_code 通过 account_business_type_info 表查得到对应数字 (管理 UI 注册时分配).
+// 不再有硬编码映射, 注册新 business_type 不用改代码.
+//
+// 没 "/" 的 ref 当 raw account_no 直接透传 (兼容 caller 已知 account_no 的场景).
+// registry 里找不到 code → 当 raw account_no 兜底 (避免阻塞).
+func (s *transactionService) resolveAccountRef(ctx context.Context, ref string) (string, error) {
+	if ref == "" {
+		return "", fmt.Errorf("empty account ref")
+	}
+	slash := strings.Index(ref, "/")
+	if slash < 0 {
+		return ref, nil // 当 raw account_no
+	}
+	code := ref[:slash]
+	suffix := ref[slash+1:]
+
+	// 查 business_type registry: code → 数字 business_type
+	info, err := s.businessTypeRepo.GetByCode(ctx, code)
+	if err != nil {
+		return "", fmt.Errorf("lookup business_type code %q: %w", code, err)
+	}
+	if info == nil {
+		// 没注册过的 code → 当 raw account_no 兜底
+		return ref, nil
+	}
+
+	// owner 解析宽松: 提取末尾连续数字段.
+	//   "main" / 空 → 0 (平台户)
+	//   "42"        → 42
+	//   "sub_42"    → 42 (前缀忽略)
+	//   "abc"       → 0 (无数字, 兜底当平台户)
+	var ownerID int64
+	if suffix != "" && suffix != "main" {
+		// 找末尾数字起点
+		i := len(suffix)
+		for i > 0 && suffix[i-1] >= '0' && suffix[i-1] <= '9' {
+			i--
+		}
+		if i < len(suffix) {
+			_, _ = fmt.Sscanf(suffix[i:], "%d", &ownerID)
+		}
+		// 全无数字 → ownerID 保持 0 (兼容 "main" 等占位)
+	}
+
+	acct, err := s.accountRepo.GetAccountByUserAndBusinessType(ctx, ownerID,
+		model.AccountBusinessType(info.BusinessType))
+	if err != nil {
+		return "", fmt.Errorf("query account (user_id=%d, business_type=%d/%s): %w",
+			ownerID, info.BusinessType, code, err)
+	}
+	if acct == nil {
+		return "", fmt.Errorf("account not found: ref=%q resolved to (user_id=%d, business_type=%d/%s) but no row",
+			ref, ownerID, info.BusinessType, code)
+	}
+	return acct.AccountNo, nil
 }
 
 // mapEventCodeToBusinessType event_code → 内部业务类型映射 (用于 voucher 归类).

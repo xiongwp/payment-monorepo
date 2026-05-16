@@ -13,9 +13,9 @@ services:
       KMS_GRPC_ADDR: "kms-manage:9290"
       RISK_GRPC_ADDR: "risk-manage:9490"
       USER_MERCHANT_GRPC_ADDR: "user-merchant-core:9191"
-      # SP-AC-7: split-payment 同网容器, 走 DNS
+      # SP-AC-7: split-payment / accounting-service 同网容器, 走 DNS
       SPLIT_PAYMENT_GRPC_ADDR: "split-payment:9098"
-      ACCOUNTING_GRPC_ADDR:    "accounting-system:50051"
+      ACCOUNTING_GRPC_ADDR:    "accounting-service:50051"
       REGISTRY_ENDPOINTS: "etcd:2379"
       PORT: "9190"
       ADMIN_BEARER_TOKEN: ""

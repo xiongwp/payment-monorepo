@@ -105,6 +105,7 @@ func Translate(g *domain.Graph, tc TriggerContext) (*domain.RunPlan, error) {
 		legs := []domain.TxnLeg{}
 		remaining := tc.AmountMinor
 		groupCurrency := ""
+		hadRuleDriven := false // 是否本组用过 rule 算金额 (event-driven 全程不动 remaining)
 		for _, e := range edges {
 			fromNode := findNode(spec.Nodes, e.From)
 			toNode := findNode(spec.Nodes, e.To)
@@ -157,16 +158,17 @@ func Translate(g *domain.Graph, tc TriggerContext) (*domain.RunPlan, error) {
 			})
 			if src == "rule" {
 				remaining -= amount
+				hadRuleDriven = true
 			}
 		}
 
-		// 尾差归本组最后一 leg — 仅当最后一 edge 是 remainder 类型时.
-		//
-		// 设计意图: 'remainder' edge 表示"把剩下的吸收掉", 配合 percent edge 处理舍入误差
-		// (e.g. 33.33% × 3 = 99.99%, remainder 兜底剩 0.01%).
-		// 如果本组全是 percent 没 remainder, 说明设计上就只想消费部分金额, 不补尾差.
+		// 尾差归本组最后一 leg — 必须同时满足:
+		//   1. 最后一 edge 是 remainder 类型 (设计意图就是"吸收剩下")
+		//   2. 本组用过 rule-driven 算金额 (有 percent rounding 风险)
+		// event-driven (caller 给精确金额) 全程不动 remaining, 不该被这里补 ——
+		// 否则没用上的 tc.AmountMinor 会错误地塞给最后一 leg.
 		lastEdgeIsRemainder := len(edges) > 0 && edges[len(edges)-1].Rule.Type == "remainder"
-		if remaining > 0 && len(legs) > 0 && lastEdgeIsRemainder {
+		if hadRuleDriven && remaining > 0 && len(legs) > 0 && lastEdgeIsRemainder {
 			last := &legs[len(legs)-1]
 			var lastAmt int64
 			_, _ = fmt.Sscanf(last.Amount, "%d", &lastAmt)

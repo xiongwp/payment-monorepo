@@ -51,11 +51,13 @@ func main() {
 	// SPLIT_GRPC_PORT 由 runAdminGRPCServer 读取 (默认 9098).
 	accAddr := envOr("ACCOUNTING_GRPC_ADDR", "accounting-system:9091")
 
-	// 1. accounting client (gRPC)
+	// 1. accounting client (gRPC).
+	// passthrough:/// 让 grpc-go 跳过自己的 DNS resolver, 直接 net.Dial 由系统层解析.
+	// 之前 dns:/// 在 Docker / host-gateway 环境下经常返 "no children to pick from".
+	// 单节点不需要 round_robin (passthrough 不支持 LB config), 多副本要再换回 dns + 真实多 endpoint.
 	conn, err := grpc.NewClient(
-		"dns:///"+accAddr,
+		"passthrough:///"+accAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
 	)
 	if err != nil {
 		log.Fatal("dial accounting", zap.Error(err))

@@ -29,7 +29,9 @@ services:
       - split-go-mod:/go/pkg/mod
     environment:
       SPLIT_GRPC_PORT: "9098"
-      ACCOUNTING_GRPC_ADDR: "accounting-system:50051"
+      # accounting service 在 compose 里实际叫 accounting-service (不是 accounting-system).
+      # etcd 注册名同名; 多副本由 deploy.sh scale_args_of 起 2 个.
+      ACCOUNTING_GRPC_ADDR: "accounting-service:50051"
       # MySQL 持久化 (跟 accounting-system 一样复用 shared-meta meta 库)
       SPLIT_PAYMENT_DSN: "split_user:password@tcp(shared-meta:3306)/split_payment?parseTime=true&charset=utf8mb4"
       # Kafka 事件订阅 (refund.completed) — 复用 risk-stack 的 kafka

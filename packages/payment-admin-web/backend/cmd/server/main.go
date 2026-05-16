@@ -374,7 +374,7 @@ func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn 
 				service, fallbackAddr)
 			target := fallbackAddr
 			if !strings.Contains(target, "://") {
-				target = "dns:///" + target
+				target = "passthrough:///" + target
 			}
 			conn, derr := grpc.NewClient(target,
 				creds,
@@ -413,7 +413,7 @@ func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn 
 	// 后端容器重启 / 副本切换 / 启动顺序错时会卡在 "no children to pick from"。
 	target := fallbackAddr
 	if !strings.Contains(target, "://") {
-		target = "dns:///" + target
+		target = "passthrough:///" + target
 	}
 	conn, err := grpc.NewClient(target,
 		creds,
