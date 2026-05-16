@@ -11,6 +11,7 @@ import (
 	"github.com/accounting-system/internal/infrastructure/sharding"
 	"github.com/accounting-system/internal/repository"
 
+	"github.com/xiongwp/payment-util/money"
 	"go.uber.org/zap"
 )
 
@@ -346,12 +347,20 @@ func (s *transactionService) executeBookkeeping(ctx context.Context, req *Create
 		return v, nil
 	}
 	for i, leg := range req.Legs {
-		amount, err := strconv.ParseInt(leg.Amount, 10, 64)
+		minorAmt, err := strconv.ParseInt(leg.Amount, 10, 64)
 		if err != nil {
 			return "", fmt.Errorf("leg[%d] amount %q not int: %w", i, leg.Amount, err)
 		}
-		if amount <= 0 {
-			return "", fmt.Errorf("leg[%d] amount must > 0, got %d", i, amount)
+		if minorAmt <= 0 {
+			return "", fmt.Errorf("leg[%d] amount must > 0, got %d", i, minorAmt)
+		}
+		// SP-AC-7 单位约定: caller (split-payment / 任意 multi-leg 调用方) 传 ISO 4217 minor units
+		// (PHP 1 = 100 minor, JPY 1 = 1 minor, KWD 1 = 1000 minor); accounting 内部统一存 4-decimal
+		// storage scale (见 payment-util/money/money.go). 这里入口处一次性 MinorToStorage 转换,
+		// 让 caller 不用关心内部精度.
+		amount, err := money.MinorToStorage(minorAmt, leg.Currency)
+		if err != nil {
+			return "", fmt.Errorf("leg[%d] MinorToStorage(%d, %q): %w", i, minorAmt, leg.Currency, err)
 		}
 		fromAcct, err := resolveRef(leg.FromAccountID)
 		if err != nil {
