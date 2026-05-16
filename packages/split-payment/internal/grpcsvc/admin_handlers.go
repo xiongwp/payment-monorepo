@@ -36,17 +36,38 @@ type AccountingTxResp struct {
 	Error     string
 }
 
+// RuleSpec — SaveGraph saga 推到 accounting 的一条 rule 元数据.
+// 字段跟 accounting.model.TransactionRule 对齐, 由 wire 层翻成 JSON 发出去.
+type RuleSpec struct {
+	ProductCode     string
+	EventCode       string
+	HashKey         string
+	DebitSubjectID  string
+	CreditSubjectID string
+	FromDirection   string
+	ToDirection     string
+	TransactionType int
+	BookkeepingMode string
+}
+
+// AccountingRuleSyncer — SaveGraph 时把 graph 派生出的 rules 推到 accounting.
+// 实现一般是 HTTP POST /admin/transaction-rules. nil → SaveGraph 跳过同步 (best-effort 退化).
+type AccountingRuleSyncer interface {
+	UpsertRules(ctx context.Context, rules []RuleSpec) error
+}
+
 // Server 实现 AdminServiceServer.
 type Server struct {
 	UnimplementedAdminServiceServer
 	Graphs     GraphRepo
 	Accounting AccountingMetaCaller // nil → TriggerEvent 返错; DryRun 不受影响
+	RuleSync   AccountingRuleSyncer // nil → SaveGraph 跳过 rule 同步
 	Log        *zap.Logger
 }
 
 // NewServer.
-func NewServer(graphs GraphRepo, accounting AccountingMetaCaller, log *zap.Logger) *Server {
-	return &Server{Graphs: graphs, Accounting: accounting, Log: log}
+func NewServer(graphs GraphRepo, accounting AccountingMetaCaller, ruleSync AccountingRuleSyncer, log *zap.Logger) *Server {
+	return &Server{Graphs: graphs, Accounting: accounting, RuleSync: ruleSync, Log: log}
 }
 
 // ListGraphs.
@@ -91,6 +112,13 @@ func (s *Server) GetGraph(ctx context.Context, req *GetGraphRequest) (*GetGraphR
 // SaveGraph — upsert.
 //
 // 入参 graph.spec_json 是 domain.GraphSpec 的 JSON 字面量, 这里 Unmarshal 还原.
+//
+// SP-AC-7 saga: 先把 graph 派生出的 (product_code, event_code) 规则推到 accounting
+// (`POST /admin/transaction-rules`), 全部成功才落 graph 本地 DB. 任一 rule upsert
+// 失败 → 返错, graph 不存. 这样保证 accounting 永远先于 split-payment 见到规则,
+// trigger 时 GetRulesByProductAndEvent 不会 miss.
+//
+// RuleSync == nil 时退化为旧行为 (跳过同步, 仅保存 graph), 便于 dev 单仓启动.
 func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGraphResponse, error) {
 	if req.Graph == nil {
 		return nil, errors.New("graph required")
@@ -111,10 +139,65 @@ func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGra
 			return nil, fmt.Errorf("decode spec_json: %w", err)
 		}
 	}
+
+	// Saga step 1: derive + push rules to accounting (前置, 失败则全部 abort)
+	if s.RuleSync != nil {
+		rules := deriveRulesFromGraph(g)
+		if len(rules) > 0 {
+			if err := s.RuleSync.UpsertRules(ctx, rules); err != nil {
+				if s.Log != nil {
+					s.Log.Error("SaveGraph: accounting rule sync failed; aborting graph save",
+						zap.String("graph_key", g.Key), zap.Int("rule_count", len(rules)), zap.Error(err))
+				}
+				return nil, fmt.Errorf("accounting rule sync: %w (graph not saved)", err)
+			}
+		}
+	}
+
+	// Saga step 2: 本地持久化 graph
 	if _, err := s.Graphs.Save(ctx, g); err != nil {
+		// 注: 此处 graph save 失败, accounting 的 rule 已经 upsert. rule 是幂等的
+		// 元数据, 残留不会造成数据不一致 (没有对应 graph 触发就用不到), 下次 SaveGraph
+		// 重试会覆盖. 不做补偿 cancel.
 		return nil, err
 	}
 	return &SaveGraphResponse{Key: g.Key, Version: g.Version}, nil
+}
+
+// deriveRulesFromGraph 从 graph.spec 提取 (product_code, event_code) 唯一对, 每对生成一条 RuleSpec.
+//
+//   product_code = spec.scenario
+//   subject_id   = 该 event_code 下第一条 edge 的 from/to node.ID (multi-leg 设计下退化为
+//                  元数据/admin UI 展示用; 真实落账走 translator 输出的 N 条 leg).
+//
+// 同 event_code 多条 edge 只产出一条 rule (按 event_code 去重).
+func deriveRulesFromGraph(g *domain.Graph) []RuleSpec {
+	if g == nil || g.Spec.Scenario == "" || len(g.Spec.Edges) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []RuleSpec
+	for _, e := range g.Spec.Edges {
+		if e.EventCode == "" {
+			continue
+		}
+		if seen[e.EventCode] {
+			continue
+		}
+		seen[e.EventCode] = true
+		out = append(out, RuleSpec{
+			ProductCode:     g.Spec.Scenario,
+			EventCode:       e.EventCode,
+			HashKey:         g.Spec.Scenario + ":" + e.EventCode,
+			DebitSubjectID:  e.From, // node.ID
+			CreditSubjectID: e.To,   // node.ID
+			FromDirection:   "debit",
+			ToDirection:     "credit",
+			TransactionType: 1,
+			BookkeepingMode: "standard",
+		})
+	}
+	return out
 }
 
 // DryRun — graph + event → 翻译预览, 不落账.
@@ -170,6 +253,11 @@ func (s *Server) TriggerEvent(ctx context.Context, req *TriggerEventRequest) (*T
 	}
 	if g == nil {
 		return &TriggerEventResponse{Error: fmt.Sprintf("graph %q not found (save it first via SaveGraph)", req.GraphKey)}, nil
+	}
+	// SP-AC-7 状态管理: 只有 status=active 的 graph 才允许触发. draft / archived 等
+	// 状态的 graph 仅能编辑/查看, 不能落账. 这层守门员避免误把测试版本/历史版本拿来 trigger.
+	if g.Status != "active" {
+		return &TriggerEventResponse{Error: fmt.Sprintf("graph %q status=%q is not active; only active graphs can be triggered", req.GraphKey, g.Status)}, nil
 	}
 	var tc workflow.TriggerContext
 	if len(req.EventJson) > 0 {

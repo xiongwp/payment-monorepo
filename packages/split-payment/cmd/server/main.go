@@ -20,13 +20,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -476,6 +480,9 @@ func maskDSN(dsn string) string {
 //
 // admin-web BFF 通过这个 gRPC 端口调 Graph CRUD / DryRun / TriggerEvent.
 // 监听端口由 env SPLIT_GRPC_PORT 控制 (默认 9098).
+//
+// ruleSync 来自 env ACCOUNTING_HTTP_URL (e.g. http://accounting-service:8888),
+// SaveGraph 时把派生的 rules POST 到 /admin/transaction-rules. 空 → 关掉同步.
 func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.GraphRepo, acct grpcsvc.AccountingMetaCaller) {
 	port := envOr("SPLIT_GRPC_PORT", "9098")
 	lis, err := net.Listen("tcp", ":"+port)
@@ -483,13 +490,85 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 		log.Error("split gRPC listen failed", zap.Error(err))
 		return
 	}
+	var ruleSync grpcsvc.AccountingRuleSyncer
+	if base := envOr("ACCOUNTING_HTTP_URL", ""); base != "" {
+		ruleSync = &httpRuleSyncer{baseURL: strings.TrimRight(base, "/"), log: log}
+		log.Info("SaveGraph saga: rule syncer wired", zap.String("accounting_http", base))
+	} else {
+		log.Warn("SaveGraph saga: ACCOUNTING_HTTP_URL empty, rule sync disabled")
+	}
 	srv := grpc.NewServer()
-	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, log))
+	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, ruleSync, log))
 	log.Info("split-payment gRPC AdminService listening", zap.String("port", port))
 	go func() { <-ctx.Done(); srv.GracefulStop() }()
 	if err := srv.Serve(lis); err != nil {
 		log.Error("split gRPC serve", zap.Error(err))
 	}
+}
+
+// httpRuleSyncer — POST {rules:[...]} 到 accounting /admin/transaction-rules.
+//
+// 任一 rule upsert 失败 accounting 返 BadGateway, 这里反序列化出 error + succeeded
+// 转成 caller error. 全部成功 accounting 自动调用 Reload, snapshot 立即可见.
+type httpRuleSyncer struct {
+	baseURL string
+	log     *zap.Logger
+}
+
+func (h *httpRuleSyncer) UpsertRules(ctx context.Context, rules []grpcsvc.RuleSpec) error {
+	if len(rules) == 0 {
+		return nil
+	}
+	// 用 anonymous struct 避免依赖 accounting model 包.
+	type ruleDTO struct {
+		ProductCode     string `json:"product_code"`
+		EventCode       string `json:"event_code"`
+		HashKey         string `json:"hash_key"`
+		DebitSubjectID  string `json:"debit_subject_id"`
+		CreditSubjectID string `json:"credit_subject_id"`
+		FromDirection   string `json:"from_direction"`
+		ToDirection     string `json:"to_direction"`
+		TransactionType int    `json:"transaction_type"`
+		BookkeepingMode string `json:"bookkeeping_mode"`
+	}
+	dtos := make([]ruleDTO, 0, len(rules))
+	for _, r := range rules {
+		dtos = append(dtos, ruleDTO{
+			ProductCode:     r.ProductCode,
+			EventCode:       r.EventCode,
+			HashKey:         r.HashKey,
+			DebitSubjectID:  r.DebitSubjectID,
+			CreditSubjectID: r.CreditSubjectID,
+			FromDirection:   r.FromDirection,
+			ToDirection:     r.ToDirection,
+			TransactionType: r.TransactionType,
+			BookkeepingMode: r.BookkeepingMode,
+		})
+	}
+	body, _ := json.Marshal(map[string]any{"rules": dtos})
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
+		h.baseURL+"/admin/transaction-rules", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build http req: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("accounting unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("accounting HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	if h.log != nil {
+		h.log.Info("rule sync to accounting OK",
+			zap.Int("count", len(rules)),
+			zap.String("response", string(respBody)))
+	}
+	return nil
 }
 
 // grpcsvcAcctAdapter — workflow.AccountingMetaCaller ↔ grpcsvc.AccountingMetaCaller 适配.

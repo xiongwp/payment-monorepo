@@ -32,6 +32,10 @@ services:
       # accounting service 在 compose 里实际叫 accounting-service (不是 accounting-system).
       # etcd 注册名同名; 多副本由 deploy.sh scale_args_of 起 2 个.
       ACCOUNTING_GRPC_ADDR: "accounting-service:50051"
+      # SP-AC-7 SaveGraph saga: SaveGraph 时把 graph 派生的 rules POST 到 accounting
+      # admin HTTP (/admin/transaction-rules), 全部 upsert 成功才落 graph 本地 DB.
+      # 空 → 退化, 不同步 (dev 单仓启动用).
+      ACCOUNTING_HTTP_URL: "http://accounting-service:8888"
       # MySQL 持久化 (跟 accounting-system 一样复用 shared-meta meta 库)
       SPLIT_PAYMENT_DSN: "split_user:password@tcp(shared-meta:3306)/split_payment?parseTime=true&charset=utf8mb4"
       # Kafka 事件订阅 (refund.completed) — 复用 risk-stack 的 kafka

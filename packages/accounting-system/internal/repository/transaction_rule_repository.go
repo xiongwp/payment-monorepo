@@ -41,6 +41,12 @@ type TransactionRuleRepository interface {
 	Reload(ctx context.Context) error
 
 	GetMerchantInfo(ctx context.Context, merchantID int64) (*model.MerchantInfo, error)
+
+	// UpsertRule 幂等 upsert 一条 TransactionRule (按 hash_key 唯一).
+	// SP-AC-7: split-payment 在 SaveGraph 时调用, 自动把 graph 里的
+	// (product_code, event_code) 对同步成 accounting 的 rule 元数据.
+	// 注意: 只写 DB, 不触发 Reload (调用方批量 upsert 完后显式调一次 Reload).
+	UpsertRule(ctx context.Context, rule *model.TransactionRule) error
 }
 
 // ruleSnapshot 不可变快照：替换时 atomic.Store 整个指针，读端无锁。
@@ -232,4 +238,49 @@ func (r *transactionRuleRepository) GetMerchantInfo(ctx context.Context, merchan
 	}
 
 	return &info, nil
+}
+
+// UpsertRule 幂等 upsert 一条 TransactionRule.
+//
+// 唯一键: hash_key (UNIQUE INDEX uniq_hash_key). 调用方在构造 rule 时应该填
+// hash_key = "<product_code>:<event_code>" 之类稳定值.
+//
+// 注意: 只 hit DB, 不动 in-memory snapshot. 批量 upsert 完后调用方应该显式触发
+// Reload (POST /admin/reload/transaction-rules) 让运行时 cache 同步.
+func (r *transactionRuleRepository) UpsertRule(ctx context.Context, rule *model.TransactionRule) error {
+	if rule == nil {
+		return errors.New("upsert rule: nil rule")
+	}
+	if rule.ProductCode == "" || rule.EventCode == "" {
+		return fmt.Errorf("upsert rule: product_code/event_code required")
+	}
+	if rule.HashKey == "" {
+		rule.HashKey = rule.ProductCode + ":" + rule.EventCode
+	}
+	db, err := r.dbManager.GetMetaDB()
+	if err != nil {
+		return fmt.Errorf("upsert rule: get meta db: %w", err)
+	}
+	// ON DUPLICATE KEY UPDATE — uniq_hash_key 命中时改其它字段.
+	return db.WithContext(ctx).Exec(`
+		INSERT INTO transaction_rule
+		  (product_code, event_code, hash_key,
+		   debit_subject_id, credit_subject_id,
+		   from_direction, to_direction, transaction_type, bookkeeping_mode)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+		  product_code      = VALUES(product_code),
+		  event_code        = VALUES(event_code),
+		  debit_subject_id  = VALUES(debit_subject_id),
+		  credit_subject_id = VALUES(credit_subject_id),
+		  from_direction    = VALUES(from_direction),
+		  to_direction      = VALUES(to_direction),
+		  transaction_type  = VALUES(transaction_type),
+		  bookkeeping_mode  = VALUES(bookkeeping_mode)
+	`,
+		rule.ProductCode, rule.EventCode, rule.HashKey,
+		rule.DebitSubjectID, rule.CreditSubjectID,
+		rule.FromDirection, rule.ToDirection,
+		rule.TransactionType, rule.BookkeepingMode,
+	).Error
 }

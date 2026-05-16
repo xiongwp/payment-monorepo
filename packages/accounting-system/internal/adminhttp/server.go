@@ -158,8 +158,8 @@ func NewServer(
 	// SP-AC-7: admin-web designer picker 也走这里 (BFF 中转), 加 underscore alias 兼容.
 	// 真正的服务间 (split-payment → accounting) CreateTransaction 不走 HTTP, 见 gRPC TransactionService.
 	mux.HandleFunc("/admin/account_types", s.handleListAccountTypes)               // alias
-	mux.HandleFunc("/admin/transaction-rules", s.handleListTransactionRules)       // GET ?product= 列规则 (admin UI)
-	mux.HandleFunc("/admin/transaction_rules", s.handleListTransactionRules)       // alias
+	mux.HandleFunc("/admin/transaction-rules", s.handleTransactionRules)           // GET ?product= 列规则; POST upsert (SP-AC-7 split-payment SaveGraph 用)
+	mux.HandleFunc("/admin/transaction_rules", s.handleTransactionRules)           // alias
 	// TCC 归档
 	mux.HandleFunc("/admin/tcc-archive/config", s.handleTccArchiveConfig)          // GET 当前生效的归档配置
 	mux.HandleFunc("/admin/tcc-archive/run", s.handleTccArchiveRun)                // POST 立即触发一次归档
@@ -691,26 +691,62 @@ func (s *Server) handleListAccountTypes(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, rows)
 }
 
-// handleListTransactionRules GET /admin/transaction-rules?product=XXX
+// handleTransactionRules /admin/transaction-rules.
 //
-// 列指定 product_code 下所有 TransactionRule. product 空 → 全部规则.
-// 供 split-payment designer 拉 event_code 下拉, 以及 admin rules 管理页.
-func (s *Server) handleListTransactionRules(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+// GET  ?product=XXX            列指定 product_code 下所有 TransactionRule. product 空 → 全部规则.
+// POST {rules:[TransactionRule]}  批量 upsert (split-payment SaveGraph 用),  hash_key 唯一,
+//                              upsert 完自动触发 Reload, in-memory snapshot 立即可见.
+//                              单条 upsert 失败立即中止并返回错误 + 已成功的 count.
+func (s *Server) handleTransactionRules(w http.ResponseWriter, r *http.Request) {
 	if s.ruleRepo == nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "rule repo not wired"})
 		return
 	}
-	product := r.URL.Query().Get("product")
-	rows, err := s.ruleRepo.ListRulesByProduct(r.Context(), product)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+	switch r.Method {
+	case http.MethodGet:
+		product := r.URL.Query().Get("product")
+		rows, err := s.ruleRepo.ListRulesByProduct(r.Context(), product)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, rows)
+	case http.MethodPost:
+		var body struct {
+			Rules []*model.TransactionRule `json:"rules"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
+			return
+		}
+		if len(body.Rules) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "rules array required"})
+			return
+		}
+		succeeded := 0
+		for i, rule := range body.Rules {
+			if err := s.ruleRepo.UpsertRule(r.Context(), rule); err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]any{
+					"error":      fmt.Sprintf("rule[%d] (product=%s event=%s): %v", i, rule.ProductCode, rule.EventCode, err),
+					"succeeded":  succeeded,
+					"total":      len(body.Rules),
+				})
+				return
+			}
+			succeeded++
+		}
+		// 全部 OK → 触发 reload 让 in-memory snapshot 立即可见
+		if err := s.ruleRepo.Reload(r.Context()); err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"upserted": succeeded,
+				"warning":  "upsert succeeded but reload failed: " + err.Error(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"upserted": succeeded})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
-	writeJSON(w, http.StatusOK, rows)
 }
 
 // SP-AC-7: handleCreateTransaction 已删除.

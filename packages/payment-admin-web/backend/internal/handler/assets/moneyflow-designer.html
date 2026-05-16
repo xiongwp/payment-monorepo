@@ -305,7 +305,6 @@ function render() {
       <!-- 右侧拖线 handle: 直接从这个圆点拖到另一节点连边 -->
       <circle class="node-handle" cx="${x+180}" cy="${y+22}" r="5" data-handle="${n.id}"/>
     `;
-    let dragging = false, ox = 0, oy = 0;
     const rect = g.querySelector('rect');
     const handle = g.querySelector('.node-handle');
     rect.onmousedown = (ev) => {
@@ -322,18 +321,27 @@ function render() {
         return;
       }
       selectNode(n.id);
-      dragging = true;
-      ox = ev.offsetX - x;
-      oy = ev.offsetY - y;
       ev.stopPropagation();
+      ev.preventDefault();
+      // 拖拽: 监听器挂 document, 避免 render() 重建 rect 后丢失事件链.
+      // 用 SVG 坐标系: 取 svg.getBoundingClientRect() 把 clientX/Y 换算到 svg 内部坐标.
+      const svgRect = svg.getBoundingClientRect();
+      const startX = ev.clientX, startY = ev.clientY;
+      const origX = n.x ?? 100, origY = n.y ?? 100;
+      const onMove = (mv) => {
+        // 实时更新模型 + 重绘. clientX-startX 是 viewport 像素位移,
+        // 跟 svg 内部坐标 1:1 (svg viewBox 没缩放).
+        n.x = origX + (mv.clientX - startX);
+        n.y = origY + (mv.clientY - startY);
+        render();
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
     };
-    rect.onmousemove = (ev) => {
-      if (!dragging) return;
-      n.x = ev.offsetX - ox;
-      n.y = ev.offsetY - oy;
-      render();
-    };
-    rect.onmouseup = () => { dragging = false; };
     // 拖线 handle: mousedown 启动连线模式, mouseup 在另一节点上则连边
     handle.onmousedown = (ev) => {
       ev.stopPropagation();
@@ -826,17 +834,27 @@ $('test-btn').onclick = async () => {
 async function loadGraphs() {
   try {
     const r = await fetch(`${API_BASE}/api/moneyflow/graphs`);
-    const list = await r.json();
+    const resp = await r.json();
+    // BFF response shape: {code, message, data: {data: [...]}} (envelope 包了一层),
+    // 历史 shape: {data: [...]} (split-payment 直返). 两种都兼容.
+    const list = Array.isArray(resp.data)
+      ? resp.data
+      : Array.isArray(resp.data && resp.data.data)
+      ? resp.data.data
+      : [];
     const sel = $('graph-key');
     sel.innerHTML = '<option value="">[ new graph ]</option>';
-    (list.data || []).forEach(g => {
-      sel.innerHTML += `<option value="${g.key}">${g.name}</option>`;
+    list.forEach(g => {
+      const statusLabel = g.status && g.status !== 'active' ? ` [${g.status}]` : '';
+      sel.innerHTML += `<option value="${g.key}">${g.name || g.key}${statusLabel}</option>`;
     });
     sel.onchange = async () => {
       if (!sel.value) { state.graph = { id:0, key:'', name:'', version:'1.0.0', spec:{triggers:[],nodes:[],edges:[]} }; render(); return; }
       const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${sel.value}`);
-      state.graph = await r.json();
-      $('graph-name').value = state.graph.name;
+      const respG = await r.json();
+      // GetGraph 也可能被 BFF envelope: {code, message, data: <graph>}
+      state.graph = (respG.data && (respG.data.spec || respG.data.key)) ? respG.data : respG;
+      $('graph-name').value = state.graph.name || '';
       render();
     };
   } catch (e) { /* admin-backend 没起就忽略 */ }
