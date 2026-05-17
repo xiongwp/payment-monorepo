@@ -76,3 +76,29 @@ plan, _ := sp.Execute(ctx, splitpayment.ExecuteRequest{
 - `repo/`           — MySQL + in-memory
 - `clients/`        — accounting-system + audit-log 调用
 - `cmd/server/`     — HTTP/gRPC entrypoint
+
+测试
+
+curl -sS -X POST http://localhost:19190/api/moneyflow/trigger \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "graph_key":"user-topup-multileg",
+    "event":{
+      "event":"channel.settled","charge_id":"topup_demo_100000100_007",
+      "amount_minor":10000,"currency":"PHP",
+      "attributes":{
+        "channel_receivable_account":"PLATFORM_RECEIVABLE_CHANNEL/100000100",
+        "channel_receivable_account_amount":"10000","channel_receivable_account_currency":"PHP",
+        "channel_suspense_account":"PLATFORM_CHANNEL_INBOUND_SUSPENSE/100000100",
+        "channel_suspense_account_amount":"10000","channel_suspense_account_currency":"PHP",
+        "user_id_account":"USER_BALANCE/100000100",
+        "user_id_account_amount":"9900","user_id_account_currency":"PHP",
+        "fee_clearing_account":"PLATFORM_FEE_CLEARING/100000100",
+        "fee_clearing_account_amount":"100","fee_clearing_account_currency":"PHP",
+        "channel_fee_account":"CHANNEL_FEE_PAYABLE/100000100",
+        "channel_fee_account_amount":"60","channel_fee_account_currency":"PHP",
+        "fee_account":"PLATFORM_FEE_REVENUE/100000100",
+        "fee_account_amount":"40","fee_account_currency":"PHP"
+      }
+    }
+  }' | jq '.data.vouchers'
