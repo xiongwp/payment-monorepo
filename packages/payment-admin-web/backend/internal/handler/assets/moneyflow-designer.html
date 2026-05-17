@@ -176,40 +176,49 @@
   <button id="trigger-btn" style="background:#dc2626;color:#fff">⚡ Trigger Now</button>
 </header>
 
-<!-- ───── 已保存 Flow 列表 + 状态管理 ───────────────────────────────── -->
-<section style="background:#fff;border-bottom:1px solid #ddd;padding:8px 16px;font-size:13px">
-  <details open id="flows-panel">
-    <summary style="cursor:pointer;font-weight:600;user-select:none">
-      📋 已保存的 Money Flows
-      <span id="flows-count" style="color:#888;font-weight:400;margin-left:8px"></span>
-      <button id="refresh-flows" style="float:right;padding:2px 8px">🔄 刷新</button>
-    </summary>
-    <table id="flows-table" style="width:100%;margin-top:8px;border-collapse:collapse">
-      <thead style="background:#f5f5f5">
-        <tr>
-          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd">Key</th>
-          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd">名称</th>
-          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd">版本</th>
-          <th style="text-align:center;padding:6px 8px;border-bottom:1px solid #ddd">状态</th>
-          <th style="text-align:center;padding:6px 8px;border-bottom:1px solid #ddd">操作</th>
-        </tr>
-      </thead>
-      <tbody id="flows-tbody"></tbody>
-    </table>
-  </details>
-</section>
 <style>
-  #flows-table tbody tr:hover { background:#fafaff }
-  #flows-table td { padding:6px 8px; border-bottom:1px solid #eee }
-  .status-chip { padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600 }
-  .status-active   { background:#d1fae5; color:#065f46 }
-  .status-draft    { background:#fef3c7; color:#92400e }
-  .status-archived { background:#e5e7eb; color:#4b5563 }
-  .row-btn { padding:2px 8px; margin:0 2px; border:1px solid #ccc; background:#fff;
-             cursor:pointer; border-radius:3px; font-size:11px }
-  .row-btn:hover { background:#f0f0ff }
-  .row-btn.danger { color:#dc2626; border-color:#fca5a5 }
-  .row-btn.success { color:#059669; border-color:#86efac }
+  /* SP-AC-7 右侧 Flow 列表 + 状态管理 — 嵌在 .panel-right 顶部 */
+  #flows-list { margin-bottom: 12px; }
+  #flows-list .flow-card {
+    border: 1px solid var(--border, #ddd);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    background: #fff;
+    cursor: pointer;
+    transition: box-shadow .15s, border-color .15s;
+  }
+  #flows-list .flow-card:hover {
+    box-shadow: 0 2px 6px rgba(0,0,0,.08);
+    border-color: #4040c0;
+  }
+  #flows-list .flow-card.selected {
+    border-color: #4040c0;
+    background: #f0f0ff;
+  }
+  #flows-list .flow-card .flow-name {
+    font-weight: 600; font-size: 13px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #flows-list .flow-card .flow-key {
+    font-family: monospace; font-size: 10px; color: #888;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #flows-list .flow-card .flow-meta {
+    display: flex; justify-content: space-between; align-items: center; margin-top: 4px;
+  }
+  #flows-list .flow-actions { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+  .status-chip { padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 600 }
+  .status-active   { background: #d1fae5; color: #065f46 }
+  .status-draft    { background: #fef3c7; color: #92400e }
+  .status-archived { background: #e5e7eb; color: #4b5563 }
+  .row-btn { padding: 2px 6px; border: 1px solid #ccc; background: #fff;
+             cursor: pointer; border-radius: 3px; font-size: 10px; flex: 1 }
+  .row-btn:hover { background: #f0f0ff }
+  .row-btn.danger { color: #dc2626; border-color: #fca5a5 }
+  .row-btn.success { color: #059669; border-color: #86efac }
+  @keyframes uiToastIn { from { transform: translateX(20px); opacity: 0 } to { transform: translateX(0); opacity: 1 } }
+  @keyframes uiOverlayIn { from { opacity: 0 } to { opacity: 1 } }
 </style>
 
 <main>
@@ -277,8 +286,14 @@
     </svg>
   </div>
 
-  <!-- 右: 属性 + JSON 预览 -->
+  <!-- 右: Flow 列表 + 属性 + JSON 预览 -->
   <aside class="panel">
+    <h2 style="display:flex;justify-content:space-between;align-items:center">
+      <span>📋 Money Flows <span id="flows-count" style="color:#888;font-weight:400;font-size:11px"></span></span>
+      <button id="refresh-flows" style="padding:2px 8px;font-size:11px;font-weight:400">🔄</button>
+    </h2>
+    <div id="flows-list"></div>
+
     <h2>Selected element</h2>
     <div id="prop-form">
       <p style="color:#888; font-size:11px">点节点或边查看属性</p>
@@ -711,9 +726,9 @@ $('scenario').onchange = async () => {
 
 // ─── 工具栏按钮 ────────────────────────────────────────────────────
 $('add-node-btn').onclick = () => addNode('account');
-$('add-edge-btn').onclick = () => { state.mode = 'add-edge'; state.edgeFrom = null; alert('点 2 个节点连边'); };
+$('add-edge-btn').onclick = () => { state.mode = 'add-edge'; state.edgeFrom = null; uiToast('点 2 个节点连边', 'info'); };
 $('del-btn').onclick = delSelected;
-$('clear-btn').onclick = () => { if (confirm('清空 graph?')) { state.graph.spec.nodes = []; state.graph.spec.edges = []; render(); } };
+$('clear-btn').onclick = async () => { if (await uiConfirm('清空 graph?', { danger: true })) { state.graph.spec.nodes = []; state.graph.spec.edges = []; render(); } };
 
 // ─── save / export / dry-run ───────────────────────────────────────
 $('save-btn').onclick = async () => {
@@ -724,7 +739,7 @@ $('save-btn').onclick = async () => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(state.graph),
   });
-  if (r.ok) alert('saved ✓'); else alert('save failed: ' + await r.text());
+  if (r.ok) { uiToast('已保存 ✓', 'success'); await loadGraphs(); } else uiToast('保存失败: ' + await r.text(), 'error');
 };
 
 $('export-btn').onclick = () => {
@@ -773,9 +788,9 @@ $('import-file').onchange = async (e) => {
     if (typeof loadTransactionRules === 'function' && g.spec.scenario) {
       await loadTransactionRules(g.spec.scenario);
     }
-    alert(`imported ✓  nodes=${g.spec.nodes.length} edges=${g.spec.edges.length}`);
+    uiToast(`已导入 ✓ nodes=${g.spec.nodes.length} edges=${g.spec.edges.length}`, 'success');
   } catch (err) {
-    alert('import failed: ' + err.message);
+    uiToast('导入失败: ' + err.message, 'error');
   } finally {
     e.target.value = ''; // 允许重新选同一文件
   }
@@ -785,8 +800,8 @@ $('import-file').onchange = async (e) => {
 // 每个 node.account_id_attr 弹 prompt 让运营填实际账号 + 金额; 没配三件套的 (平台固定户)
 // 自动用 node.id 兜底.
 $('trigger-btn').onclick = async () => {
-  if (!state.graph.key) { alert('先 Save graph 再 Trigger (TriggerEvent 按 key 查 graph).'); return; }
-  if (!confirm(`真触发 graph=${state.graph.key} ?  会调 accounting 真落账, 不可撤销 (只能反向退款).`)) return;
+  if (!state.graph.key) { uiToast('先 Save graph 再 Trigger (按 key 查 graph)', 'error'); return; }
+  if (!(await uiConfirm(`真触发 graph="${state.graph.key}"?\n会调 accounting 真落账, 不可撤销(只能反向退款)。`, { danger: true }))) return;
   const charge = prompt('charge_id (业务幂等键)?', 'demo_' + Date.now());
   if (!charge) return;
   const totalCents = parseInt(prompt('总金额 (cents)?', '10000')) || 0;
@@ -822,9 +837,20 @@ $('trigger-btn').onclick = async () => {
   });
   const txt = await r.text();
   try {
-    alert(JSON.stringify(JSON.parse(txt), null, 2));
+    const obj = JSON.parse(txt);
+    const pretty = JSON.stringify(obj, null, 2);
+    const pv = document.getElementById('json-preview');
+    if (pv) pv.textContent = pretty;
+    const vouchers = obj && obj.data && obj.data.vouchers;
+    if (Array.isArray(vouchers)) {
+      const ok = vouchers.filter(v => v.VoucherNo && v.Status === 2).length;
+      const fail = vouchers.length - ok;
+      uiToast(`Trigger 完成: ${ok}/${vouchers.length} 张 voucher 成功${fail ? `, ${fail} 失败` : ''} (详见右侧 JSON Preview)`, fail ? 'error' : 'success');
+    } else {
+      uiToast('Trigger 已发送 (详见右侧 JSON Preview)', 'info');
+    }
   } catch (_) {
-    alert(txt);
+    uiToast('Trigger 异常: ' + txt, 'error');
   }
 };
 
@@ -859,11 +885,12 @@ $('test-btn').onclick = async () => {
   });
   const txt = await r.text();
   try {
-    // 美化打印 (translator 返的 plan 嵌在 data.plan 里)
     const obj = JSON.parse(txt);
-    alert(JSON.stringify(obj, null, 2));
+    const pv = document.getElementById('json-preview');
+    if (pv) pv.textContent = JSON.stringify(obj, null, 2);
+    uiToast('Dry Run 已生成 plan (详见右侧 JSON Preview)', 'info');
   } catch (_) {
-    alert(txt);
+    uiToast('Dry Run 异常: ' + txt, 'error');
   }
 };
 
@@ -894,79 +921,183 @@ async function loadGraphs() {
       await loadGraphIntoEditor(sel.value);
     };
 
-    // (2) 新的 Flow 列表面板
-    renderFlowsTable(list);
+    // (2) 右侧 Flow 列表
+    renderFlowsList(list);
   } catch (e) { console.warn('loadGraphs', e); }
 }
 
-// 把某条 graph 拉进 editor (供下拉框 + 行 "编辑" 按钮共用)
+// 统一 unwrap BFF envelope: 真实 graph 可能在 resp, resp.data, 或 resp.data.data.
+// 判定: 找到带 .key 的那层就当作 graph.
+function unwrapGraph(resp) {
+  const candidates = [resp, resp && resp.data, resp && resp.data && resp.data.data];
+  for (const c of candidates) {
+    if (c && typeof c === 'object' && typeof c.key === 'string' && c.key) return c;
+  }
+  // 拿不到带 key 的, 回退最里一层非空对象
+  for (const c of candidates) {
+    if (c && typeof c === 'object') return c;
+  }
+  return {};
+}
+
+// 把某条 graph 拉进 editor + 立即在 canvas 渲染
 async function loadGraphIntoEditor(key) {
   const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${key}`);
   const respG = await r.json();
-  state.graph = (respG.data && (respG.data.spec || respG.data.key)) ? respG.data : respG;
+  state.graph = unwrapGraph(respG);
+  // 兜底: spec 命名容错
+  if (!state.graph.spec && state.graph.Spec) state.graph.spec = state.graph.Spec;
+  if (!state.graph.spec) state.graph.spec = { triggers: [], nodes: [], edges: [] };
+  if (!state.graph.key) state.graph.key = key; // BFF 兜底
   $('graph-name').value = state.graph.name || '';
   $('graph-key').value = key;
+  // 高亮当前选中的卡片
+  document.querySelectorAll('#flows-list .flow-card').forEach(c => {
+    c.classList.toggle('selected', c.dataset.key === key);
+  });
   render();
 }
 
-// 渲染 Flow 列表表格
-function renderFlowsTable(list) {
-  const tbody = document.getElementById('flows-tbody');
+// 渲染右侧 Flow 卡片列表
+function renderFlowsList(list) {
+  const wrap = document.getElementById('flows-list');
   const countEl = document.getElementById('flows-count');
-  if (countEl) countEl.textContent = `(${list.length} 条)`;
-  if (!tbody) return;
+  if (countEl) countEl.textContent = `(${list.length})`;
+  if (!wrap) return;
   if (list.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;padding:16px">— 暂无 Flow,点上方 [Save] 创建第一个 —</td></tr>`;
+    wrap.innerHTML = `<p style="color:#888;font-size:11px;text-align:center;padding:12px 0">— 暂无 Flow,点 [Save] 创建 —</p>`;
     return;
   }
-  tbody.innerHTML = list.map(g => {
+  const currentKey = (state.graph && state.graph.key) || '';
+  wrap.innerHTML = list.map(g => {
     const s = g.status || 'draft';
     const chipCls = s === 'active' ? 'status-active' : s === 'archived' ? 'status-archived' : 'status-draft';
+    const isSelected = g.key === currentKey;
     const activateBtn = s !== 'active'
-      ? `<button class="row-btn success" onclick="changeFlowStatus('${g.key}','active')">✓ 生效</button>` : '';
+      ? `<button class="row-btn success" data-act="status" data-status="active">✓ 生效</button>` : '';
     const archiveBtn = s !== 'archived'
-      ? `<button class="row-btn" onclick="changeFlowStatus('${g.key}','archived')">⏸ 无效</button>` : '';
-    return `<tr>
-      <td><code style="font-size:11px">${g.key}</code></td>
-      <td>${escapeHtml(g.name || '')}</td>
-      <td style="text-align:center">${g.version || ''}</td>
-      <td style="text-align:center"><span class="status-chip ${chipCls}">${s}</span></td>
-      <td style="text-align:center;white-space:nowrap">
-        <button class="row-btn" onclick="loadGraphIntoEditor('${g.key}')">✎ 编辑</button>
+      ? `<button class="row-btn" data-act="status" data-status="archived">⏸ 无效</button>` : '';
+    return `<div class="flow-card ${isSelected ? 'selected' : ''}" data-key="${g.key}">
+      <div class="flow-name">${escapeHtml(g.name || g.key)}</div>
+      <div class="flow-key">${g.key} <span style="color:#aaa">· v${g.version || '?'}</span></div>
+      <div class="flow-meta">
+        <span class="status-chip ${chipCls}">${s}</span>
+      </div>
+      <div class="flow-actions">
         ${activateBtn}
         ${archiveBtn}
-        <button class="row-btn danger" onclick="deleteFlow('${g.key}')">🗑 删除</button>
-      </td>
-    </tr>`;
+        <button class="row-btn danger" data-act="delete">🗑 删除</button>
+      </div>
+    </div>`;
   }).join('');
+
+  // 绑事件 (避免 inline onclick 跟 CSP / 转义 graph key 麻烦)
+  wrap.querySelectorAll('.flow-card').forEach(card => {
+    const key = card.dataset.key;
+    // 点卡片本体 (非按钮区) → 立即加载到 canvas
+    card.addEventListener('click', (ev) => {
+      if (ev.target.closest('.row-btn')) return; // 按钮交给自己 handler
+      loadGraphIntoEditor(key);
+    });
+    // 操作按钮
+    card.querySelectorAll('.row-btn').forEach(btn => {
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const act = btn.dataset.act;
+        if (act === 'status') {
+          changeFlowStatus(key, btn.dataset.status);
+        } else if (act === 'delete') {
+          deleteFlow(key);
+        }
+      });
+    });
+  });
 }
 
-// 改 graph 状态: 拉完整 graph → 改 status → 重新 Save
+// 改 graph 状态: 拉完整 graph → 改 status → 重新 Save (走同样的 saga + 状态守门员)
 async function changeFlowStatus(key, newStatus) {
-  if (!confirm(`确认把 ${key} 状态改成 "${newStatus}"?`)) return;
+  const labels = { active: '生效', archived: '无效', draft: '草稿' };
+  const ok = await uiConfirm(`确认把 "${key}" 改成 ${labels[newStatus] || newStatus}?`);
+  if (!ok) return;
   try {
     const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${key}`);
     const resp = await r.json();
-    const g = (resp.data && (resp.data.spec || resp.data.key)) ? resp.data : resp;
+    const g = unwrapGraph(resp);
+    if (!g.key) g.key = key;
+    if (!g.spec && g.Spec) g.spec = g.Spec;
     g.status = newStatus;
     const r2 = await fetch(`${API_BASE}/api/moneyflow/graphs`, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify(g)
     });
-    if (!r2.ok) { alert('状态变更失败: ' + await r2.text()); return; }
-    await loadGraphs(); // refresh list
-  } catch (e) { alert('状态变更出错: ' + e.message); }
+    if (!r2.ok) { uiToast('状态变更失败: ' + await r2.text(), 'error'); return; }
+    uiToast(`已${labels[newStatus] || newStatus}: ${key}`, 'success');
+    await loadGraphs();
+  } catch (e) { uiToast('状态变更出错: ' + e.message, 'error'); }
 }
 
 // 删除 graph
 async function deleteFlow(key) {
-  if (!confirm(`确认彻底删除 ${key}?(此操作不可恢复)`)) return;
+  const ok = await uiConfirm(`确认彻底删除 "${key}"?\n此操作不可恢复。`, { danger: true });
+  if (!ok) return;
   try {
     const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${key}`, { method: 'DELETE' });
-    if (!r.ok) { alert('删除失败: ' + await r.text()); return; }
+    if (!r.ok) { uiToast('删除失败: ' + await r.text(), 'error'); return; }
+    uiToast(`已删除: ${key}`, 'success');
     await loadGraphs();
-  } catch (e) { alert('删除出错: ' + e.message); }
+  } catch (e) { uiToast('删除出错: ' + e.message, 'error'); }
+}
+
+// ─── 自定义弹窗 / Toast (替代 alert/confirm) ───────────────────────
+function uiToast(msg, kind = 'info') {
+  let host = document.getElementById('ui-toast-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'ui-toast-host';
+    host.style.cssText = 'position:fixed;top:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none';
+    document.body.appendChild(host);
+  }
+  const colors = {
+    info: { bg: '#eef2ff', bd: '#6366f1', fg: '#3730a3' },
+    success: { bg: '#dcfce7', bd: '#16a34a', fg: '#15803d' },
+    error: { bg: '#fee2e2', bd: '#dc2626', fg: '#991b1b' },
+  };
+  const c = colors[kind] || colors.info;
+  const el = document.createElement('div');
+  el.style.cssText = `pointer-events:auto;min-width:260px;max-width:420px;background:${c.bg};border-left:4px solid ${c.bd};color:${c.fg};padding:10px 14px;border-radius:6px;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.12);animation:uiToastIn .18s ease`;
+  el.textContent = msg;
+  host.appendChild(el);
+  setTimeout(() => { el.style.transition = 'opacity .3s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 320); }, 2800);
+}
+
+function uiConfirm(msg, opts = {}) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:9998;display:flex;align-items:center;justify-content:center;animation:uiOverlayIn .15s ease';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#fff;min-width:320px;max-width:480px;padding:20px 24px;border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.25);font-size:14px;line-height:1.55';
+    const danger = !!opts.danger;
+    box.innerHTML = `
+      <div style="font-weight:600;font-size:15px;margin-bottom:10px">${danger ? '⚠️ 确认操作' : '确认'}</div>
+      <div style="color:#444;white-space:pre-wrap;margin-bottom:18px">${escapeHtml(msg)}</div>
+      <div style="display:flex;justify-content:flex-end;gap:10px">
+        <button id="ui-cancel-btn" style="padding:6px 16px;border:1px solid #d4d4d8;background:#fff;border-radius:6px;cursor:pointer;font-size:13px">取消</button>
+        <button id="ui-ok-btn" style="padding:6px 16px;border:none;background:${danger ? '#dc2626' : '#4f46e5'};color:#fff;border-radius:6px;cursor:pointer;font-size:13px">确定</button>
+      </div>
+    `;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const cleanup = (v) => { overlay.remove(); resolve(v); };
+    box.querySelector('#ui-cancel-btn').onclick = () => cleanup(false);
+    box.querySelector('#ui-ok-btn').onclick = () => cleanup(true);
+    overlay.onclick = (e) => { if (e.target === overlay) cleanup(false); };
+    document.addEventListener('keydown', function onKey(ev) {
+      if (ev.key === 'Escape') { document.removeEventListener('keydown', onKey); cleanup(false); }
+      if (ev.key === 'Enter')  { document.removeEventListener('keydown', onKey); cleanup(true); }
+    });
+    setTimeout(() => box.querySelector('#ui-ok-btn').focus(), 50);
+  });
 }
 
 // 刷新按钮
