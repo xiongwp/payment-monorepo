@@ -50,6 +50,7 @@ type Server struct {
 	instanceRepo     repository.ServiceInstanceRepository
 	hotAccountRepo   repository.HotAccountRepository
 	ruleRepo         repository.TransactionRuleRepository // 用于 ListAccountTypes
+	orderRepo        repository.TransactionOrderRepository // SP-AC-7 trigger 重试 用 (ResetForRetry)
 	accountingSvc    service.AccountingService
 	dayCutSvc        service.DayCutService                // 用于 /admin/day-cut/resume
 	systemConfigSvc  service.SystemConfigService          // wrap config-center SDK；保留 Reload 入口给 ConfigSyncWorker
@@ -90,6 +91,7 @@ func NewServer(
 	instanceRepo repository.ServiceInstanceRepository,
 	hotAccountRepo repository.HotAccountRepository,
 	ruleRepo repository.TransactionRuleRepository,
+	orderRepo repository.TransactionOrderRepository,
 	accountingSvc service.AccountingService,
 	dayCutSvc service.DayCutService,
 	systemConfigSvc service.SystemConfigService,
@@ -127,6 +129,7 @@ func NewServer(
 		instanceRepo:     instanceRepo,
 		hotAccountRepo:   hotAccountRepo,
 		ruleRepo:         ruleRepo,
+		orderRepo:        orderRepo,
 		accountingSvc:    accountingSvc,
 		dayCutSvc:        dayCutSvc,
 		systemConfigSvc:  systemConfigSvc,
@@ -160,6 +163,7 @@ func NewServer(
 	mux.HandleFunc("/admin/account_types", s.handleListAccountTypes)               // alias
 	mux.HandleFunc("/admin/transaction-rules", s.handleTransactionRules)           // GET ?product= 列规则; POST upsert (SP-AC-7 split-payment SaveGraph 用)
 	mux.HandleFunc("/admin/transaction_rules", s.handleTransactionRules)           // alias
+	mux.HandleFunc("/admin/transaction-orders/", s.handleTransactionOrderActions)  // POST /admin/transaction-orders/{order_no}/reset  (SP-AC-7 trigger 重试)
 	// TCC 归档
 	mux.HandleFunc("/admin/tcc-archive/config", s.handleTccArchiveConfig)          // GET 当前生效的归档配置
 	mux.HandleFunc("/admin/tcc-archive/run", s.handleTccArchiveRun)                // POST 立即触发一次归档
@@ -776,6 +780,73 @@ func (s *Server) handleTransactionRules(w http.ResponseWriter, r *http.Request) 
 // SP-AC-7: handleCreateTransaction 已删除.
 // CreateTransaction 走 gRPC TransactionService (见 internal/grpc/server.go + admin_extensions.go).
 // HTTP admin 只留 ops + admin UI read-only.
+
+// handleTransactionOrderActions /admin/transaction-orders/{order_no}/reset
+//
+// SP-AC-7: trigger 部分失败可重试. body: {business_no, business_type?, force?}.
+//   - business_no: orderRepo route 用 (sharded by businessNo).
+//   - business_type: 一般空 (split-payment 不分 type).
+//   - force=true: 不管 status, 重置 status=Failed + retry_count=0 (admin 紧急通道).
+//
+// 异常场景:
+//   - status=Success         → 拒绝重置 (action=skipped_success), 资金安全保障.
+//   - Processing + voucher_no → phantom processing, 修正到 Success (action=phantom_fixed).
+//   - Processing + 空 voucher → 真 stuck, 改 Failed (action=unstuck), retry_count 不动.
+//   - 已 Failed              → 啥也不做 (action=already_failed), 直接可重试.
+//   - Pending                → 也归 Failed (action=reset_pending).
+func (s *Server) handleTransactionOrderActions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.orderRepo == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "order repo not wired"})
+		return
+	}
+	// 路径解析: /admin/transaction-orders/{order_no}/reset
+	prefix := "/admin/transaction-orders/"
+	rest := strings.TrimPrefix(r.URL.Path, prefix)
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[1] != "reset" {
+		http.Error(w, "expect /admin/transaction-orders/{order_no}/reset", http.StatusBadRequest)
+		return
+	}
+	orderNo := parts[0]
+	if orderNo == "" {
+		http.Error(w, "order_no required in path", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		BusinessNo   string `json:"business_no"`
+		BusinessType string `json:"business_type"`
+		Force        bool   `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		// 没 body 也接受 (默认 business_no=order_no 兜底,force=false).
+		body.BusinessNo = orderNo
+	}
+	if body.BusinessNo == "" {
+		body.BusinessNo = orderNo // shard 路由依据
+	}
+	res, err := s.orderRepo.ResetForRetry(r.Context(), orderNo, body.BusinessType, body.BusinessNo, body.Force)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error":    err.Error(),
+			"order_no": orderNo,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"order_no":      orderNo,
+		"action":        res.Action,
+		"prev_status":   res.PrevStatus,
+		"curr_status":   res.CurrStatus,
+		"voucher_no":    res.VoucherNo,
+		"retry_count":   res.RetryCount,
+		"max_retry":     res.MaxRetry,
+		"error_message": res.ErrorMessage,
+	})
+}
 
 // handleTccArchiveConfig GET /admin/tcc-archive/config
 // 返回当前 TccArchiveWorker 的运行时配置。

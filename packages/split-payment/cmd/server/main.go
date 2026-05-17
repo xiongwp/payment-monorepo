@@ -491,14 +491,19 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 		return
 	}
 	var ruleSync grpcsvc.AccountingRuleSyncer
+	var orderReset grpcsvc.AccountingOrderResetter
 	if base := envOr("ACCOUNTING_HTTP_URL", ""); base != "" {
-		ruleSync = &httpRuleSyncer{baseURL: strings.TrimRight(base, "/"), log: log}
-		log.Info("SaveGraph saga: rule syncer wired", zap.String("accounting_http", base))
+		base = strings.TrimRight(base, "/")
+		ruleSync = &httpRuleSyncer{baseURL: base, log: log}
+		orderReset = &httpOrderResetter{baseURL: base, log: log}
+		log.Info("split-payment: accounting admin HTTP wired",
+			zap.String("accounting_http", base),
+			zap.String("for", "SaveGraph saga + TriggerEvent retry"))
 	} else {
-		log.Warn("SaveGraph saga: ACCOUNTING_HTTP_URL empty, rule sync disabled")
+		log.Warn("split-payment: ACCOUNTING_HTTP_URL empty, saga + retry features disabled")
 	}
 	srv := grpc.NewServer()
-	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, ruleSync, log))
+	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, log))
 	log.Info("split-payment gRPC AdminService listening", zap.String("port", port))
 	go func() { <-ctx.Done(); srv.GracefulStop() }()
 	if err := srv.Serve(lis); err != nil {
@@ -566,6 +571,53 @@ func (h *httpRuleSyncer) UpsertRules(ctx context.Context, rules []grpcsvc.RuleSp
 	if h.log != nil {
 		h.log.Info("rule sync to accounting OK",
 			zap.Int("count", len(rules)),
+			zap.String("response", string(respBody)))
+	}
+	return nil
+}
+
+// httpOrderResetter — TriggerEvent 遇到卡 Processing 时, POST accounting
+// /admin/transaction-orders/{order_no}/reset 主动解锁.
+//
+// 异常场景在 accounting 端处理 (action=skipped_success / phantom_fixed / unstuck / ...),
+// 这里只透传 HTTP error.
+type httpOrderResetter struct {
+	baseURL string
+	log     *zap.Logger
+}
+
+func (h *httpOrderResetter) ResetOrder(ctx context.Context, orderNo, businessNo string, force bool) error {
+	if orderNo == "" {
+		return fmt.Errorf("order_no required")
+	}
+	if businessNo == "" {
+		businessNo = orderNo // accounting orderRepo route by businessNo, fallback to orderNo
+	}
+	body, _ := json.Marshal(map[string]any{
+		"business_no": businessNo,
+		"force":       force,
+	})
+	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	url := h.baseURL + "/admin/transaction-orders/" + orderNo + "/reset"
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build http req: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("accounting unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("accounting HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	if h.log != nil {
+		h.log.Info("order reset request OK",
+			zap.String("order_no", orderNo),
+			zap.Bool("force", force),
 			zap.String("response", string(respBody)))
 	}
 	return nil

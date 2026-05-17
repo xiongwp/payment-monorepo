@@ -799,27 +799,33 @@ $('import-file').onchange = async (e) => {
 // Trigger Now — 真落账到 accounting (graph 必须先 Save 进 DB).
 // 每个 node.account_id_attr 弹 prompt 让运营填实际账号 + 金额; 没配三件套的 (平台固定户)
 // 自动用 node.id 兜底.
-$('trigger-btn').onclick = async () => {
+// runTrigger: 抽出来的 trigger 逻辑, retry 时复用. 传 cached={charge, attrs, total} 则跳过 prompt 直接重试.
+async function runTrigger(cached) {
   if (!state.graph.key) { uiToast('先 Save graph 再 Trigger (按 key 查 graph)', 'error'); return; }
-  if (!(await uiConfirm(`真触发 graph="${state.graph.key}"?\n会调 accounting 真落账, 不可撤销(只能反向退款)。`, { danger: true }))) return;
-  const charge = prompt('charge_id (业务幂等键)?', 'demo_' + Date.now());
-  if (!charge) return;
-  const totalCents = parseInt(prompt('总金额 (cents)?', '10000')) || 0;
-  if (!totalCents) return;
-
-  const attrs = {};
-  (state.graph.spec.nodes || []).forEach(n => {
-    if (!n.account_id_attr) return; // 平台固定户走 node.id 兜底
-    const ans = prompt(
-      `节点 ${n.id} (${n.label||''}) 三件套\n格式: account_id|amount_minor|currency`,
-      'test_' + n.id + '|' + totalCents + '|CNY'
-    );
-    if (!ans) return;
-    const [aid, amt, cur] = ans.split('|');
-    attrs[n.account_id_attr] = aid || ('test_' + n.id);
-    if (amt) attrs[n.account_id_attr + '_amount']   = amt;
-    if (cur) attrs[n.account_id_attr + '_currency'] = cur;
-  });
+  let charge, totalCents, attrs;
+  if (cached) {
+    charge = cached.charge; totalCents = cached.totalCents; attrs = cached.attrs;
+    uiToast('正在重试同 business_no 的失败 leg...', 'info');
+  } else {
+    if (!(await uiConfirm(`真触发 graph="${state.graph.key}"?\n会调 accounting 真落账, 不可撤销(只能反向退款)。`, { danger: true }))) return;
+    charge = prompt('charge_id (业务幂等键)?', 'demo_' + Date.now());
+    if (!charge) return;
+    totalCents = parseInt(prompt('总金额 (cents)?', '10000')) || 0;
+    if (!totalCents) return;
+    attrs = {};
+    (state.graph.spec.nodes || []).forEach(n => {
+      if (!n.account_id_attr) return;
+      const ans = prompt(
+        `节点 ${n.id} (${n.label||''}) 三件套\n格式: account_id|amount_minor|currency`,
+        'test_' + n.id + '|' + totalCents + '|CNY'
+      );
+      if (!ans) return;
+      const [aid, amt, cur] = ans.split('|');
+      attrs[n.account_id_attr] = aid || ('test_' + n.id);
+      if (amt) attrs[n.account_id_attr + '_amount']   = amt;
+      if (cur) attrs[n.account_id_attr + '_currency'] = cur;
+    });
+  }
 
   const r = await fetch(`${API_BASE}/api/moneyflow/trigger`, {
     method: 'POST',
@@ -845,14 +851,53 @@ $('trigger-btn').onclick = async () => {
     if (Array.isArray(vouchers)) {
       const ok = vouchers.filter(v => v.VoucherNo && v.Status === 2).length;
       const fail = vouchers.length - ok;
-      uiToast(`Trigger 完成: ${ok}/${vouchers.length} 张 voucher 成功${fail ? `, ${fail} 失败` : ''} (详见右侧 JSON Preview)`, fail ? 'error' : 'success');
+      // 把 cached context 存下来供 retry 用
+      state.lastTrigger = { charge, totalCents, attrs, vouchers };
+      renderTriggerResult(vouchers);
+      uiToast(`Trigger: ${ok}/${vouchers.length} 成功${fail ? `, ${fail} 待重试 — 点 🔄 重试同 business_no` : ''}`, fail ? 'error' : 'success');
     } else {
       uiToast('Trigger 已发送 (详见右侧 JSON Preview)', 'info');
     }
   } catch (_) {
     uiToast('Trigger 异常: ' + txt, 'error');
   }
-};
+}
+
+// 渲染 trigger 结果到右侧 panel 上面: voucher 列表 + 重试按钮.
+function renderTriggerResult(vouchers) {
+  let host = document.getElementById('trigger-result');
+  if (!host) {
+    // 创建一个挂在 JSON Preview 前面的容器
+    const pv = document.getElementById('json-preview');
+    if (!pv || !pv.parentNode) return;
+    host = document.createElement('div');
+    host.id = 'trigger-result';
+    host.style.cssText = 'margin:10px 0';
+    pv.parentNode.insertBefore(host, pv);
+  }
+  const hasFail = vouchers.some(v => v.Status !== 2);
+  host.innerHTML = `
+    <h2 style="display:flex;justify-content:space-between;align-items:center">
+      <span>⚡ Trigger 结果</span>
+      ${hasFail ? '<button id="retry-trigger-btn" style="padding:3px 10px;font-size:11px;background:#dc2626;color:#fff;border:none;border-radius:3px;cursor:pointer">🔄 重试失败 leg</button>' : ''}
+    </h2>
+    <div style="max-height:180px;overflow-y:auto">
+    ${vouchers.map(v => {
+      const ok = v.Status === 2;
+      return `<div style="border-left:3px solid ${ok ? '#16a34a' : '#dc2626'};padding:4px 8px;margin-bottom:4px;background:${ok ? '#f0fdf4' : '#fef2f2'};font-size:11px">
+        <div style="font-weight:600">${escapeHtml(v.EventCode)} ${ok ? '✓' : '✗'}</div>
+        <div style="color:#666;font-family:monospace;font-size:10px;word-break:break-all">${escapeHtml(v.OrderNo)}</div>
+        ${v.VoucherNo ? `<div style="color:#16a34a">voucher: <code>${v.VoucherNo}</code></div>` : ''}
+        ${v.Error ? `<div style="color:#dc2626">${escapeHtml(v.Error)}</div>` : ''}
+      </div>`;
+    }).join('')}
+    </div>
+  `;
+  const retryBtn = host.querySelector('#retry-trigger-btn');
+  if (retryBtn) retryBtn.onclick = () => runTrigger(state.lastTrigger);
+}
+
+$('trigger-btn').onclick = () => runTrigger(null);
 
 $('test-btn').onclick = async () => {
   const charge = prompt('test charge_id?', 'ch_test');

@@ -56,18 +56,25 @@ type AccountingRuleSyncer interface {
 	UpsertRules(ctx context.Context, rules []RuleSpec) error
 }
 
+// AccountingOrderResetter — TriggerEvent 遇到卡 Processing 时主动重置.
+// 实现一般是 HTTP POST /admin/transaction-orders/{order_no}/reset. nil → 不重试卡住的, 仅返 Processing.
+type AccountingOrderResetter interface {
+	ResetOrder(ctx context.Context, orderNo, businessNo string, force bool) error
+}
+
 // Server 实现 AdminServiceServer.
 type Server struct {
 	UnimplementedAdminServiceServer
 	Graphs     GraphRepo
-	Accounting AccountingMetaCaller // nil → TriggerEvent 返错; DryRun 不受影响
-	RuleSync   AccountingRuleSyncer // nil → SaveGraph 跳过 rule 同步
+	Accounting AccountingMetaCaller    // nil → TriggerEvent 返错; DryRun 不受影响
+	RuleSync   AccountingRuleSyncer    // nil → SaveGraph 跳过 rule 同步
+	OrderReset AccountingOrderResetter // nil → TriggerEvent 卡 Processing 时只能等 background recovery
 	Log        *zap.Logger
 }
 
 // NewServer.
-func NewServer(graphs GraphRepo, accounting AccountingMetaCaller, ruleSync AccountingRuleSyncer, log *zap.Logger) *Server {
-	return &Server{Graphs: graphs, Accounting: accounting, RuleSync: ruleSync, Log: log}
+func NewServer(graphs GraphRepo, accounting AccountingMetaCaller, ruleSync AccountingRuleSyncer, orderReset AccountingOrderResetter, log *zap.Logger) *Server {
+	return &Server{Graphs: graphs, Accounting: accounting, RuleSync: ruleSync, OrderReset: orderReset, Log: log}
 }
 
 // ListGraphs.
@@ -270,32 +277,65 @@ func (s *Server) TriggerEvent(ctx context.Context, req *TriggerEventRequest) (*T
 		return &TriggerEventResponse{Error: "translate: " + err.Error()}, nil
 	}
 
+	// SP-AC-7 resume-aware trigger: 多个 transaction (= 多个 event_code) 不再 break-on-failure.
+	// 关键场景:
+	//   - 单笔 trigger 跑 N 个 tx, 中间某个失败 → 不影响后面已配置的 tx 继续尝试
+	//   - 同 business_no 重新 trigger → 已 Success 的 tx 走 accounting 幂等返 cached
+	//   - 卡 Processing 的 tx → 主动 reset 一次再重试 (resetThenRetry)
+	// 资金安全: accounting CreateTransaction 内部按 order_no 幂等 + status 守门员, 多次调用 0 重复落账.
 	resp := &TriggerEventResponse{}
+	var failedTx []string
 	for i := range plan.Transactions {
 		tx := &plan.Transactions[i]
 		v := &TxnVoucher{EventCode: tx.EventCode, OrderNo: tx.OrderNo}
+
 		acctResp, callErr := s.Accounting.CreateTransaction(ctx, tx)
+		// 处理 Processing 卡死: 主动 reset 一次, 再调一次 CreateTransaction.
+		if callErr == nil && acctResp != nil && acctResp.Status == 1 /*Processing*/ {
+			if s.OrderReset != nil {
+				if rerr := s.OrderReset.ResetOrder(ctx, tx.OrderNo, tx.OrderNo, false); rerr != nil {
+					if s.Log != nil {
+						s.Log.Warn("TriggerEvent: reset stuck order failed; will keep Processing",
+							zap.String("order_no", tx.OrderNo), zap.Error(rerr))
+					}
+				} else {
+					// reset OK, 再调一次 CreateTransaction (走 Failed → Processing → Confirm 重试分支).
+					if r2, e2 := s.Accounting.CreateTransaction(ctx, tx); e2 == nil && r2 != nil {
+						acctResp, callErr = r2, nil
+					}
+				}
+			}
+		}
+
 		if callErr != nil {
 			v.Status = 3
 			v.Error = callErr.Error()
-			resp.Vouchers = append(resp.Vouchers, v)
-			resp.Error = fmt.Sprintf("tx %s (%s) failed: %s; %d/%d succeeded so far",
-				tx.OrderNo, tx.EventCode, callErr.Error(), i, len(plan.Transactions))
+			failedTx = append(failedTx, tx.OrderNo)
 			if s.Log != nil {
-				s.Log.Error("TriggerEvent: CreateTransaction failed",
+				s.Log.Error("TriggerEvent: CreateTransaction failed (continuing)",
 					zap.String("graph_key", req.GraphKey),
 					zap.String("event_code", tx.EventCode),
 					zap.String("order_no", tx.OrderNo),
+					zap.Int("idx", i),
+					zap.Int("total", len(plan.Transactions)),
 					zap.Error(callErr))
 			}
-			break
+			resp.Vouchers = append(resp.Vouchers, v)
+			continue // 不 break, 继续跑后续 tx
 		}
 		v.VoucherNo = acctResp.VoucherNo
 		v.Status = int32(acctResp.Status)
 		if acctResp.Error != "" {
 			v.Error = acctResp.Error
 		}
+		if acctResp.Status != 2 /*Success*/ {
+			failedTx = append(failedTx, tx.OrderNo)
+		}
 		resp.Vouchers = append(resp.Vouchers, v)
+	}
+	if len(failedTx) > 0 {
+		resp.Error = fmt.Sprintf("%d/%d tx unsuccessful (retry same business_no to resume): %v",
+			len(failedTx), len(plan.Transactions), failedTx)
 	}
 
 	if planBytes, e := json.Marshal(plan); e == nil {

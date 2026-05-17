@@ -57,6 +57,30 @@ type TransactionOrderRepository interface {
 	// 仅供审计 / 对账（cut_max_order_id 列）；day-cut 实际扫描走 account_transaction.id。
 	// 零行返回 0。
 	MaxID(ctx context.Context, dbIndex, tableIndex int) (uint64, error)
+
+	// ResetForRetry 把单个 order 重置成可重试状态. 用于 trigger 部分失败后人工 / API 重试.
+	//
+	// 异常场景对齐 (SP-AC-7):
+	//   - status=Success → 不动, 返 ResetSkippedSuccess  (idempotent, 同 order_no 不允许重置已落账的)
+	//   - status=Processing 且 voucher_no 非空 → phantom processing, 修正到 Success, 返 ResetPhantomFixed
+	//   - status=Processing 且 voucher_no 空     → 真 stuck, 改 Failed (retry_count 不动), 返 ResetUnstuck
+	//   - status=Failed → 不动 (已可重试), 返 ResetAlreadyFailed
+	//   - status=Pending → 也归 Failed (让 CAS 抢占重跑), 返 ResetPending
+	//   - force=true: 不论 status, 改 Failed + retry_count=0 (admin 紧急通道)
+	//
+	// 返回 ResetResult 描述执行了什么动作, 让上游能区分 "已成功别再试" vs "已重置可重试".
+	ResetForRetry(ctx context.Context, orderNo, businessType, businessNo string, force bool) (*ResetResult, error)
+}
+
+// ResetResult — ResetForRetry 的执行结果.
+type ResetResult struct {
+	Action       string // "skipped_success" / "phantom_fixed" / "unstuck" / "already_failed" / "reset_pending" / "forced"
+	PrevStatus   int8
+	CurrStatus   int8
+	VoucherNo    string
+	RetryCount   int
+	MaxRetry     int
+	ErrorMessage string
 }
 
 type transactionOrderRepository struct {
@@ -238,6 +262,114 @@ func (r *transactionOrderRepository) UpdateFailed(ctx context.Context, orderNo, 
 			"retry_count":   gorm.Expr("retry_count + 1"),
 			"updated_at":    time.Now(),
 		}).Error
+}
+
+// ResetForRetry — 按 order_no 把订单重置成可重试态.
+// 关键: 不破坏已成功的资金落账, phantom processing 主动修正 → Success.
+func (r *transactionOrderRepository) ResetForRetry(ctx context.Context, orderNo, businessType, businessNo string, force bool) (*ResetResult, error) {
+	db, mainTable, _, err := r.route(ctx, businessNo)
+	if err != nil {
+		return nil, err
+	}
+
+	var ord model.TransactionOrder
+	if err := db.Table(mainTable).
+		Where("order_no = ? AND business_type = ? AND business_no = ?", orderNo, businessType, businessNo).
+		First(&ord).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("order %q not found (shard route by business_no=%q)", orderNo, businessNo)
+		}
+		return nil, fmt.Errorf("load order for reset: %w", err)
+	}
+
+	res := &ResetResult{
+		PrevStatus:   ord.Status,
+		CurrStatus:   ord.Status,
+		VoucherNo:    ord.VoucherNo,
+		RetryCount:   int(ord.RetryCount),
+		MaxRetry:     int(ord.MaxRetryCount),
+		ErrorMessage: ord.ErrorMessage,
+	}
+
+	// force=true: 紧急通道, 不管当前 status, 归 Failed + retry_count=0.
+	if force {
+		if err := db.Table(mainTable).
+			Where("order_no = ? AND business_type = ? AND business_no = ?", orderNo, businessType, businessNo).
+			Updates(map[string]interface{}{
+				"status":        model.TransactionOrderStatusFailed,
+				"retry_count":   0,
+				"error_message": "reset by admin force",
+				"updated_at":    time.Now(),
+			}).Error; err != nil {
+			return nil, fmt.Errorf("force reset: %w", err)
+		}
+		res.Action = "forced"
+		res.CurrStatus = model.TransactionOrderStatusFailed
+		res.RetryCount = 0
+		return res, nil
+	}
+
+	switch ord.Status {
+	case model.TransactionOrderStatusSuccess:
+		// 已成功, 绝对不允许重置 (避免破坏资金).
+		res.Action = "skipped_success"
+		return res, nil
+
+	case model.TransactionOrderStatusProcessing:
+		// 区分真 stuck vs phantom (实际已成功但 status 没被改).
+		if ord.VoucherNo != "" {
+			// Phantom processing — voucher 已生成, 直接修正到 Success.
+			if err := db.Table(mainTable).
+				Where("order_no = ? AND business_type = ? AND business_no = ? AND status = ?",
+					orderNo, businessType, businessNo, model.TransactionOrderStatusProcessing).
+				Updates(map[string]interface{}{
+					"status":     model.TransactionOrderStatusSuccess,
+					"updated_at": time.Now(),
+				}).Error; err != nil {
+				return nil, fmt.Errorf("phantom fix to success: %w", err)
+			}
+			res.Action = "phantom_fixed"
+			res.CurrStatus = model.TransactionOrderStatusSuccess
+			return res, nil
+		}
+		// 真 stuck — 改 Failed (retry_count 不动, 让 CreateTransaction 走重试分支).
+		if err := db.Table(mainTable).
+			Where("order_no = ? AND business_type = ? AND business_no = ? AND status = ?",
+				orderNo, businessType, businessNo, model.TransactionOrderStatusProcessing).
+			Updates(map[string]interface{}{
+				"status":        model.TransactionOrderStatusFailed,
+				"error_message": "reset_for_retry: was stuck in PROCESSING",
+				"updated_at":    time.Now(),
+			}).Error; err != nil {
+			return nil, fmt.Errorf("unstuck processing: %w", err)
+		}
+		res.Action = "unstuck"
+		res.CurrStatus = model.TransactionOrderStatusFailed
+		return res, nil
+
+	case model.TransactionOrderStatusFailed:
+		// 已可重试, 不需要再动.
+		res.Action = "already_failed"
+		return res, nil
+
+	case model.TransactionOrderStatusPending:
+		// Pending 一般说明 CAS 还没抢, 也归 Failed 让 CreateTransaction 路径重新抢.
+		if err := db.Table(mainTable).
+			Where("order_no = ? AND business_type = ? AND business_no = ? AND status = ?",
+				orderNo, businessType, businessNo, model.TransactionOrderStatusPending).
+			Updates(map[string]interface{}{
+				"status":     model.TransactionOrderStatusFailed,
+				"updated_at": time.Now(),
+			}).Error; err != nil {
+			return nil, fmt.Errorf("reset pending: %w", err)
+		}
+		res.Action = "reset_pending"
+		res.CurrStatus = model.TransactionOrderStatusFailed
+		return res, nil
+
+	default:
+		return nil, fmt.Errorf("unknown order status %d", ord.Status)
+	}
 }
 
 // ─── FreezeOrderRepository ────────────────────────────────────────────────────
