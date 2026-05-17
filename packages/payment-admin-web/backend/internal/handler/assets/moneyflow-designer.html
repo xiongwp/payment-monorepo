@@ -175,6 +175,43 @@
   <button id="test-btn" class="secondary">Dry Run...</button>
   <button id="trigger-btn" style="background:#dc2626;color:#fff">⚡ Trigger Now</button>
 </header>
+
+<!-- ───── 已保存 Flow 列表 + 状态管理 ───────────────────────────────── -->
+<section style="background:#fff;border-bottom:1px solid #ddd;padding:8px 16px;font-size:13px">
+  <details open id="flows-panel">
+    <summary style="cursor:pointer;font-weight:600;user-select:none">
+      📋 已保存的 Money Flows
+      <span id="flows-count" style="color:#888;font-weight:400;margin-left:8px"></span>
+      <button id="refresh-flows" style="float:right;padding:2px 8px">🔄 刷新</button>
+    </summary>
+    <table id="flows-table" style="width:100%;margin-top:8px;border-collapse:collapse">
+      <thead style="background:#f5f5f5">
+        <tr>
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd">Key</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd">名称</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd">版本</th>
+          <th style="text-align:center;padding:6px 8px;border-bottom:1px solid #ddd">状态</th>
+          <th style="text-align:center;padding:6px 8px;border-bottom:1px solid #ddd">操作</th>
+        </tr>
+      </thead>
+      <tbody id="flows-tbody"></tbody>
+    </table>
+  </details>
+</section>
+<style>
+  #flows-table tbody tr:hover { background:#fafaff }
+  #flows-table td { padding:6px 8px; border-bottom:1px solid #eee }
+  .status-chip { padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600 }
+  .status-active   { background:#d1fae5; color:#065f46 }
+  .status-draft    { background:#fef3c7; color:#92400e }
+  .status-archived { background:#e5e7eb; color:#4b5563 }
+  .row-btn { padding:2px 8px; margin:0 2px; border:1px solid #ccc; background:#fff;
+             cursor:pointer; border-radius:3px; font-size:11px }
+  .row-btn:hover { background:#f0f0ff }
+  .row-btn.danger { color:#dc2626; border-color:#fca5a5 }
+  .row-btn.success { color:#059669; border-color:#86efac }
+</style>
+
 <main>
   <!-- 左: 节点 palette -->
   <aside class="panel">
@@ -830,18 +867,19 @@ $('test-btn').onclick = async () => {
   }
 };
 
-// 载入已有
+// 载入已有 — 同时填顶部 Flow 列表 + 老的下拉框
 async function loadGraphs() {
   try {
     const r = await fetch(`${API_BASE}/api/moneyflow/graphs`);
     const resp = await r.json();
-    // BFF response shape: {code, message, data: {data: [...]}} (envelope 包了一层),
-    // 历史 shape: {data: [...]} (split-payment 直返). 两种都兼容.
+    // BFF response shape: {code, message, data: {data: [...]}} (envelope), 也兼容直返 shape.
     const list = Array.isArray(resp.data)
       ? resp.data
       : Array.isArray(resp.data && resp.data.data)
       ? resp.data.data
       : [];
+
+    // (1) 头部下拉 (旧 UI)
     const sel = $('graph-key');
     sel.innerHTML = '<option value="">[ new graph ]</option>';
     list.forEach(g => {
@@ -849,16 +887,93 @@ async function loadGraphs() {
       sel.innerHTML += `<option value="${g.key}">${g.name || g.key}${statusLabel}</option>`;
     });
     sel.onchange = async () => {
-      if (!sel.value) { state.graph = { id:0, key:'', name:'', version:'1.0.0', spec:{triggers:[],nodes:[],edges:[]} }; render(); return; }
-      const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${sel.value}`);
-      const respG = await r.json();
-      // GetGraph 也可能被 BFF envelope: {code, message, data: <graph>}
-      state.graph = (respG.data && (respG.data.spec || respG.data.key)) ? respG.data : respG;
-      $('graph-name').value = state.graph.name || '';
-      render();
+      if (!sel.value) {
+        state.graph = { id:0, key:'', name:'', version:'1.0.0', spec:{triggers:[],nodes:[],edges:[]} };
+        render(); return;
+      }
+      await loadGraphIntoEditor(sel.value);
     };
-  } catch (e) { /* admin-backend 没起就忽略 */ }
+
+    // (2) 新的 Flow 列表面板
+    renderFlowsTable(list);
+  } catch (e) { console.warn('loadGraphs', e); }
 }
+
+// 把某条 graph 拉进 editor (供下拉框 + 行 "编辑" 按钮共用)
+async function loadGraphIntoEditor(key) {
+  const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${key}`);
+  const respG = await r.json();
+  state.graph = (respG.data && (respG.data.spec || respG.data.key)) ? respG.data : respG;
+  $('graph-name').value = state.graph.name || '';
+  $('graph-key').value = key;
+  render();
+}
+
+// 渲染 Flow 列表表格
+function renderFlowsTable(list) {
+  const tbody = document.getElementById('flows-tbody');
+  const countEl = document.getElementById('flows-count');
+  if (countEl) countEl.textContent = `(${list.length} 条)`;
+  if (!tbody) return;
+  if (list.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;padding:16px">— 暂无 Flow,点上方 [Save] 创建第一个 —</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(g => {
+    const s = g.status || 'draft';
+    const chipCls = s === 'active' ? 'status-active' : s === 'archived' ? 'status-archived' : 'status-draft';
+    const activateBtn = s !== 'active'
+      ? `<button class="row-btn success" onclick="changeFlowStatus('${g.key}','active')">✓ 生效</button>` : '';
+    const archiveBtn = s !== 'archived'
+      ? `<button class="row-btn" onclick="changeFlowStatus('${g.key}','archived')">⏸ 无效</button>` : '';
+    return `<tr>
+      <td><code style="font-size:11px">${g.key}</code></td>
+      <td>${escapeHtml(g.name || '')}</td>
+      <td style="text-align:center">${g.version || ''}</td>
+      <td style="text-align:center"><span class="status-chip ${chipCls}">${s}</span></td>
+      <td style="text-align:center;white-space:nowrap">
+        <button class="row-btn" onclick="loadGraphIntoEditor('${g.key}')">✎ 编辑</button>
+        ${activateBtn}
+        ${archiveBtn}
+        <button class="row-btn danger" onclick="deleteFlow('${g.key}')">🗑 删除</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// 改 graph 状态: 拉完整 graph → 改 status → 重新 Save
+async function changeFlowStatus(key, newStatus) {
+  if (!confirm(`确认把 ${key} 状态改成 "${newStatus}"?`)) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${key}`);
+    const resp = await r.json();
+    const g = (resp.data && (resp.data.spec || resp.data.key)) ? resp.data : resp;
+    g.status = newStatus;
+    const r2 = await fetch(`${API_BASE}/api/moneyflow/graphs`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(g)
+    });
+    if (!r2.ok) { alert('状态变更失败: ' + await r2.text()); return; }
+    await loadGraphs(); // refresh list
+  } catch (e) { alert('状态变更出错: ' + e.message); }
+}
+
+// 删除 graph
+async function deleteFlow(key) {
+  if (!confirm(`确认彻底删除 ${key}?(此操作不可恢复)`)) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${key}`, { method: 'DELETE' });
+    if (!r.ok) { alert('删除失败: ' + await r.text()); return; }
+    await loadGraphs();
+  } catch (e) { alert('删除出错: ' + e.message); }
+}
+
+// 刷新按钮
+document.addEventListener('DOMContentLoaded', () => {
+  const refreshBtn = document.getElementById('refresh-flows');
+  if (refreshBtn) refreshBtn.onclick = loadGraphs;
+});
 loadGraphs();
 render();
 </script>
