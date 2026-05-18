@@ -4,13 +4,16 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"database/sql" // RQ-1: DBRetryQueue 用
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql" // RQ-1: MySQL driver
 	"github.com/spf13/viper"
 	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/trace"
@@ -26,6 +29,16 @@ import (
 	"github.com/xiongwp/payment-core/internal/server"
 	"github.com/xiongwp/payment-core/internal/service"
 )
+
+// envInt RQ-1: 读环境变量为 int, 失败回退默认.
+func envInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
 
 func main() {
 	metrics.Register()
@@ -318,20 +331,42 @@ func startGRPC(lc fx.Lifecycle, s *server.Server, v *viper.Viper, logger *zap.Lo
 	})
 }
 
-// startRetryWorker 把内存版 RetryQueue 接到 PaymentService，并启 goroutine 轮询。
+// startRetryWorker RQ-1: 把 RetryQueue 接到 PaymentService，并启 goroutine 轮询。
 //
-// 当前用 MemoryRetryQueue（进程内）：
-//   - 简单可用，单实例下完整闭环
-//   - 进程重启会丢失 in-flight retry 任务（首发已在 outbox 表里，不会真丢钱：
-//     payment-channel 侧 UNIQUE(idempotency_key) 让首发的最终结果可由 reconplatform
-//     对账兜底）
-//   - 多实例下重试会重复执行 — 由 idempotency_key 保证不重复扣款
-//
-// 生产 P1 改造：换 routing.DBRetryQueue（落 outbox 表 + 行锁 claim）。
+// 后端选择 (PAYCORE_RETRY_DSN 控制):
+//   - DSN 配齐 → DBRetryQueue (MySQL); 跨副本共享 + 进程重启不丢任务 + lease-based
+//     防并发抢占; 启动期自建 payment_retry_queue 表 (idempotent).
+//   - DSN 空 → MemoryRetryQueue (向后兼容, dev/单测/单副本); 进程重启丢 in-flight,
+//     由 reconplatform 兜底.
 //
 // fallback 配置走 config-center 热更新，key="payment-core/routing.fallback"。
 func startRetryWorker(lc fx.Lifecycle, svc *service.PaymentService, cli *configcenter.Client, logger *zap.Logger) {
-	queue := routing.NewMemoryRetryQueue()
+	var queue routing.RetryQueue = routing.NewMemoryRetryQueue()
+	if dsn := os.Getenv("PAYCORE_RETRY_DSN"); dsn != "" {
+		db, err := sql.Open("mysql", dsn)
+		if err != nil {
+			logger.Fatal("open mysql for retry queue", zap.Error(err))
+		}
+		db.SetMaxOpenConns(envInt("PAYCORE_RETRY_DB_MAX_OPEN", 20))
+		db.SetMaxIdleConns(envInt("PAYCORE_RETRY_DB_MAX_IDLE", 5))
+		db.SetConnMaxLifetime(30 * time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := db.PingContext(ctx); err != nil {
+			cancel()
+			logger.Fatal("ping mysql", zap.Error(err))
+		}
+		if err := routing.EnsureSchema(ctx, db); err != nil {
+			cancel()
+			logger.Fatal("ensure retry_queue schema", zap.Error(err))
+		}
+		cancel()
+		queue = routing.NewDBRetryQueue(db, logger)
+		logger.Info("retry queue: MySQL DBRetryQueue (cross-replica)")
+		// fx OnStop: close db pool
+		lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return db.Close() }})
+	} else {
+		logger.Warn("retry queue: memory only (set PAYCORE_RETRY_DSN for cross-replica + crash-safe queue)")
+	}
 	svc.SetRetryQueue(queue)
 
 	// 接入 fallback 配置 hot reload

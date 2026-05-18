@@ -284,3 +284,40 @@ func ddlPaymentRetryQueue() string {
 	const ddl = `CREATE TABLE IF NOT EXISTS payment_retry_queue (...)`
 	return strings.TrimSpace(ddl)
 }
+
+// EnsureSchema RQ-1: 启动期自建表 (dev/staging 用; 生产推荐 migrate 工具).
+//
+// 与 schema_retry_queue.sql 保持一致 — DDL 内联以避免运行时读文件 (镜像 distroless
+// 不一定挂 .sql). 老库通过 IF NOT EXISTS 幂等迁移.
+func EnsureSchema(ctx context.Context, db *sql.DB) error {
+	const ddl = `CREATE TABLE IF NOT EXISTS payment_retry_queue (
+		id                  VARCHAR(64)  NOT NULL,
+		payment_intent_id   VARCHAR(64)  NOT NULL,
+		idempotency_key     VARCHAR(128) NOT NULL,
+		amount              BIGINT       NOT NULL,
+		currency            VARCHAR(8)   NOT NULL,
+		payment_method      VARCHAR(32)  NOT NULL DEFAULT '',
+		country             VARCHAR(4)   NOT NULL DEFAULT '',
+		bin                 VARCHAR(16)  NOT NULL DEFAULT '',
+		failed_adapter      VARCHAR(64)  NOT NULL DEFAULT '',
+		reason              VARCHAR(64)  NOT NULL DEFAULT '',
+		attempt             INT          NOT NULL DEFAULT 0,
+		next_retry_at       DATETIME(6)  NOT NULL,
+		last_error_msg      TEXT,
+		metadata            JSON,
+		state               ENUM('pending','leased','done') NOT NULL DEFAULT 'pending',
+		lease_owner         VARCHAR(128) DEFAULT NULL,
+		lease_expires_at    DATETIME(6)  DEFAULT NULL,
+		created_at          DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+		updated_at          DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+		PRIMARY KEY (id),
+		UNIQUE KEY uk_pi_idem (payment_intent_id, idempotency_key),
+		KEY idx_state_next   (state, next_retry_at),
+		KEY idx_lease        (lease_owner, lease_expires_at)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='payment-core retry queue (DBRetryQueue backend)'`
+	_, err := db.ExecContext(ctx, ddl)
+	if err != nil {
+		return fmt.Errorf("ensure payment_retry_queue schema: %w", err)
+	}
+	return nil
+}
