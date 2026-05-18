@@ -720,7 +720,8 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 		// 派生的 rule 调一次 UpsertRules. 自愈历史漏同步 (e.g. graph 是手动 INSERT
 		// 进 moneyflow_graphs 表绕过 SaveGraph saga, 或 saga 期间 accounting 故障).
 		// 异步执行, 不阻塞 gRPC 上线.
-		go reconcileGraphRules(ctx, graphRepo, ruleSync, log)
+		// 注: 本调用在 runAdminGRPCServer 作用域内, 用入参 graphs (grpcsvc.GraphRepo).
+		go reconcileGraphRules(ctx, graphs, ruleSync, log)
 	} else {
 		log.Warn("split-payment: ACCOUNTING_HTTP_URL empty, saga + retry features disabled")
 	}
@@ -814,7 +815,10 @@ func adminTokenInterceptor(expectedToken string) grpc.UnaryServerInterceptor {
 //
 // 这是兜底, 不是替代 SaveGraph saga; saga 在 SaveGraph 时是 fail-fast (abort + 回滚),
 // 这里只是开机自检 + 自愈历史漂移.
-func reconcileGraphRules(ctx context.Context, graphs workflow.GraphRepo, sync grpcsvc.AccountingRuleSyncer, log *zap.Logger) {
+//
+// 用 grpcsvc.GraphRepo 而不是 workflow.GraphRepo: 调用点在 runAdminGRPCServer 函数内
+// 入参类型是 grpcsvc.GraphRepo (两者都有 List(ctx, status) 方法, 此处只需 List).
+func reconcileGraphRules(ctx context.Context, graphs grpcsvc.GraphRepo, sync grpcsvc.AccountingRuleSyncer, log *zap.Logger) {
 	if graphs == nil || sync == nil {
 		return
 	}
