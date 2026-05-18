@@ -1,12 +1,12 @@
 // Package main is the REST-to-gRPC gateway for the accounting system admin API.
-// It listens for HTTP requests on :9090 and forwards them to the accounting-system
-// gRPC server (AccountingAdminService) running on :50051.
+// uber/fx 装配, 跟 order-core / accounting-system 同款风格.
+// HTTP :9090, 转发到 accounting-system gRPC :50051 (AccountingAdminService).
 package main
 
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -14,23 +14,62 @@ import (
 	"time"
 
 	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
+	fx.New(
+		fx.Provide(
+			newLogger,
+			newGRPCConn,
+			newAdminClient,
+			newGateway,
+			newHTTPServer,
+		),
+		fx.Invoke(startHTTPServer),
+		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
+			return &fxevent.ZapLogger{Logger: log.Named("fx")}
+		}),
+	).Run()
+}
+
+func newLogger(lc fx.Lifecycle) (*zap.Logger, error) {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, fmt.Errorf("zap build: %w", err)
+	}
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { _ = logger.Sync(); return nil }})
+	return logger, nil
+}
+
+func newGRPCConn(lc fx.Lifecycle, log *zap.Logger) (*grpc.ClientConn, error) {
 	grpcAddr := envOr("ACCOUNTING_GRPC_ADDR", "localhost:50051")
 	conn, err := grpc.NewClient(grpcAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		log.Fatalf("failed to connect to accounting-system gRPC at %s: %v", grpcAddr, err)
+		log.Error("dial accounting-system gRPC failed",
+			zap.String("addr", grpcAddr), zap.Error(err))
+		return nil, fmt.Errorf("grpc.NewClient %s: %w", grpcAddr, err)
 	}
-	defer conn.Close()
+	log.Info("accounting-system gRPC client ready", zap.String("addr", grpcAddr))
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
+	return conn, nil
+}
 
-	adminClient := accountingv1.NewAccountingAdminServiceClient(conn)
-	gw := &gateway{admin: adminClient}
+func newAdminClient(conn *grpc.ClientConn) accountingv1.AccountingAdminServiceClient {
+	return accountingv1.NewAccountingAdminServiceClient(conn)
+}
 
+func newGateway(adminClient accountingv1.AccountingAdminServiceClient) *gateway {
+	return &gateway{admin: adminClient}
+}
+
+func newHTTPServer(gw *gateway) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/hot-accounts/reload", gw.handleHotAccountReload)
 	mux.HandleFunc("/v1/hot-accounts/", gw.handleHotAccountByID)
@@ -43,17 +82,32 @@ func main() {
 	})
 
 	port := envOr("PORT", "9090")
-	log.Printf("accounting-grpc-api gateway listening on :%s → gRPC %s", port, grpcAddr)
-	srv := &http.Server{
+	return &http.Server{
 		Addr:         ":" + port,
 		Handler:      corsMiddleware(mux),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("HTTP server error: %v", err)
-	}
+}
+
+func startHTTPServer(lc fx.Lifecycle, srv *http.Server, log *zap.Logger) {
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			log.Info("accounting-grpc-api gateway listening", zap.String("addr", srv.Addr))
+			go func() {
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Error("HTTP server failed", zap.Error(err))
+				}
+			}()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			shutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			return srv.Shutdown(shutCtx)
+		},
+	})
 }
 
 type gateway struct {

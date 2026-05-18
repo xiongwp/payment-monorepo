@@ -12,6 +12,7 @@ require (
 	github.com/twmb/franz-go v1.20.7
 	github.com/xiongwp/payment-util v0.0.0
 	go.starlark.net v0.0.0-20240725214946-42030a7cedce
+	go.uber.org/fx v1.20.1
 	go.uber.org/zap v1.27.0
 	gopkg.in/yaml.v3 v3.0.1
 )

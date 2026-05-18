@@ -8,6 +8,7 @@ go 1.21
 require (
 	google.golang.org/grpc v1.64.0
 	google.golang.org/protobuf v1.34.1
+	go.uber.org/fx v1.20.1
 )
 
 require (

@@ -81,7 +81,7 @@ func main() {
 	defer cancel()
 
 	// SP-AC-7: HTTP server 已废除, split-payment 现是纯 gRPC 内部服务.
-	// SPLIT_GRPC_PORT 由 runAdminGRPCServer 读取 (默认 9098).
+	// gRPC 端口由 cfg.Server.GRPCPort 控制 (默认 9098, yaml + env override).
 	accAddr := cfg.Accounting.GRPCAddr
 
 	// 1. accounting client (gRPC).
@@ -137,21 +137,22 @@ func main() {
 		cronAccRepo workflow.AccountListerRepo
 		cronPoRepo  workflow.PayoutInserterRepo
 	)
-	if dsn := os.Getenv("SPLIT_PAYMENT_DSN"); dsn != "" {
+	if dsn := cfg.Database.DSN; dsn != "" {
 		var err error
 		db, err = sql.Open("mysql", dsn)
 		if err != nil {
 			log.Fatal("open mysql", zap.Error(err))
 		}
-		// SP-AC-7 P4: pool size 调大并 env 化 — 之前 20/5 在多副本高 QPS 下偏小,
+		// SP-AC-7 P4: pool size 调大并 yaml 化 — 之前 20/5 在多副本高 QPS 下偏小,
 		// MySQL idle 连接复用率不够, 高峰期会大量打开 + tear down.
-		maxOpen := envInt("SPLIT_PAYMENT_DB_MAX_OPEN", 100)
-		maxIdle := envInt("SPLIT_PAYMENT_DB_MAX_IDLE", 20)
+		maxOpen := cfg.Database.MaxOpenConns
+		maxIdle := cfg.Database.MaxIdleConns
 		db.SetMaxOpenConns(maxOpen)
 		db.SetMaxIdleConns(maxIdle)
-		db.SetConnMaxLifetime(30 * time.Minute)
+		db.SetConnMaxLifetime(cfg.Database.ConnMaxLifetime)
 		log.Info("split-payment DB pool sized",
-			zap.Int("max_open", maxOpen), zap.Int("max_idle", maxIdle))
+			zap.Int("max_open", maxOpen), zap.Int("max_idle", maxIdle),
+			zap.Duration("conn_max_lifetime", cfg.Database.ConnMaxLifetime))
 		if err := db.PingContext(context.Background()); err != nil {
 			log.Fatal("ping mysql", zap.Error(err))
 		}
@@ -186,22 +187,26 @@ func main() {
 		mr := repo.NewMemoryRunRepo()
 		// 启动期 seed 示例 graphs (从 examples/ 目录读) — 仅 memory 模式;
 		// MySQL 模式由 admin UI / migrate 工具填.
-		seedExampleGraphs(mg, log)
+		seedExampleGraphs(mg, cfg.Seed.GraphDir, log)
 		graphRepo = mg
 		runRepo = mr
-		log.Info("repos: memory (set SPLIT_PAYMENT_DSN to use MySQL)")
+		log.Info("repos: memory (set database.dsn to use MySQL)")
 	}
 
 	// SP-8: optional Kafka event publisher.
-	// SPLIT_PAYMENT_KAFKA_BROKERS 配了就连 Kafka, 没配走 NoopEventPublisher (dev / 单节点).
+	// kafka.brokers 配了就连 Kafka, 没配走 NoopEventPublisher (dev / 单节点).
 	var eventPub workflow.EventPublisher = workflow.NoopEventPublisher{}
-	if brokers := envOr("SPLIT_PAYMENT_KAFKA_BROKERS", ""); brokers != "" {
-		evCfg := workflow.DefaultKafkaEventConfig(splitCSV(brokers))
-		evCfg.Topic = envOr("SPLIT_PAYMENT_EVENT_TOPIC", evCfg.Topic)
-		evCfg.LiveMode = envOr("RECON_ENV", "dev") != "dev"
+	if brokers := cfg.Kafka.Brokers; len(brokers) > 0 {
+		evCfg := workflow.DefaultKafkaEventConfig(brokers)
+		if cfg.Kafka.EventTopic != "" {
+			evCfg.Topic = cfg.Kafka.EventTopic
+		}
+		evCfg.LiveMode = cfg.Env != "dev"
 		kp, kerr := workflow.NewKafkaEventPublisher(evCfg, log)
 		if kerr != nil {
 			log.Warn("kafka event publisher init failed (using noop)",
+				zap.Strings("brokers", brokers),
+				zap.String("topic", evCfg.Topic),
 				zap.Error(kerr))
 		} else {
 			eventPub = kp
@@ -211,7 +216,7 @@ func main() {
 				zap.Bool("livemode", evCfg.LiveMode))
 		}
 	} else {
-		log.Info("event publisher: noop (set SPLIT_PAYMENT_KAFKA_BROKERS to enable)")
+		log.Info("event publisher: noop (set kafka.brokers to enable)")
 	}
 
 	// 4. workflow engine — SP-6 + SP-3A
@@ -274,9 +279,9 @@ func main() {
 		log.Info("reversal retry worker started")
 	}
 
-	// SP-3A: 接持久化 saga (MySQL 模式 + env SPLIT_PAYMENT_SAGA=1 才启).
+	// SP-3A: 接持久化 saga (MySQL 模式 + saga.enabled 才启).
 	// 默认 dev 走老路径方便调试,生产强烈建议开 saga (失败可恢复 + 自动 compensate).
-	if envOr("SPLIT_PAYMENT_SAGA", "") == "1" && engTrRepo != nil {
+	if cfg.Saga.Enabled && engTrRepo != nil {
 		sagaDeps := workflow.StepDeps{
 			// SP-AC-7: Accounting 字段删除 (saga step 当前实现只翻状态)
 			TransferRepo:    engTrRepo,
@@ -287,8 +292,8 @@ func main() {
 			Events:          eventPub,
 		}
 		var sagaStore workflow.SagaStore
-		if dsn := os.Getenv("SPLIT_PAYMENT_DSN"); dsn != "" {
-			db, _ := sql.Open("mysql", dsn)
+		if db != nil {
+			// 复用上面已 Open 的 *sql.DB, 别再 open 第二条连接 (避免 pool 翻倍 + 漏关).
 			sagaStore = repo.NewMySQLSagaStore(db)
 		} else {
 			sagaStore = workflow.NewMemorySagaStore()
@@ -299,7 +304,7 @@ func main() {
 			Logger:  zapSagaLogger{log: log},
 		}
 		engine.SagaDeps = &sagaDeps
-		log.Info("saga mode: enabled (SPLIT_PAYMENT_SAGA=1)")
+		log.Info("saga mode: enabled (saga.enabled=true)")
 
 		// 启动期 resume 未完成的 saga (进程崩溃恢复)
 		go func() {
@@ -313,32 +318,28 @@ func main() {
 			}
 		}()
 	} else {
-		log.Info("saga mode: disabled (set SPLIT_PAYMENT_SAGA=1 to enable persistent saga)")
+		log.Info("saga mode: disabled (set saga.enabled=true / SPLIT_PAYMENT_SAGA=1 to enable persistent saga)")
 	}
 
 	// SP-3B: Risk + AML gate (optional, dev 默认走 AlwaysAllow 占位).
 	// 生产由 main.go 注入真实 RiskClient (gRPC 调 risk-manage / aml-screening 服务).
 	{
 		riskCfg := workflow.DefaultRiskGateConfig()
-		if v := envOr("SPLIT_PAYMENT_AML_THRESHOLD_CENTS", ""); v != "" {
-			var n int64
-			fmt.Sscanf(v, "%d", &n)
-			if n > 0 {
-				riskCfg.AMLThresholdMinor = n
-			}
+		if cfg.Risk.AMLThresholdMinor > 0 {
+			riskCfg.AMLThresholdMinor = cfg.Risk.AMLThresholdMinor
 		}
-		if envOr("SPLIT_PAYMENT_RISK_FAIL_OPEN", "") == "1" {
+		if cfg.Risk.FailOpen {
 			riskCfg.FailSafeReject = false
 		}
-		// SP-FIN-1: 真实 HTTP client (env 配了 URL 走真实, 否则 AlwaysAllow 占位).
+		// SP-FIN-1: 真实 HTTP client (yaml 配了 URL 走真实, 否则 AlwaysAllow 占位).
 		var riskCli workflow.RiskClient = workflow.AlwaysAllowRisk{}
 		var amlCli workflow.AMLClient = workflow.AlwaysAllowAML{}
-		if u := envOr("RISK_HTTP_URL", ""); u != "" {
-			riskCli = workflow.NewHTTPRiskClient(u, envOr("RISK_AUTH_TOKEN", ""))
+		if u := cfg.Risk.HTTPURL; u != "" {
+			riskCli = workflow.NewHTTPRiskClient(u, cfg.Risk.AuthToken)
 			log.Info("risk client: http", zap.String("url", u))
 		}
-		if u := envOr("AML_HTTP_URL", ""); u != "" {
-			amlCli = workflow.NewHTTPAMLClient(u, envOr("AML_AUTH_TOKEN", ""))
+		if u := cfg.Risk.AMLHTTPURL; u != "" {
+			amlCli = workflow.NewHTTPAMLClient(u, cfg.Risk.AMLAuthToken)
 			log.Info("aml client: http", zap.String("url", u))
 		}
 		engine.RiskGate = &workflow.RiskGate{
@@ -363,9 +364,9 @@ func main() {
 		log.Info("accounting meta client: disabled (accounting gRPC conn nil)")
 	}
 
-	// SP-3C + SP-FIN-1: FX client (env FX_HTTP_URL 配了走真实, 否则 static 占位).
-	if u := envOr("FX_HTTP_URL", ""); u != "" {
-		engine.FX = workflow.NewHTTPFXClient(u, envOr("FX_AUTH_TOKEN", ""))
+	// SP-3C + SP-FIN-1: FX client (fx.http_url 配了走真实, 否则 static 占位).
+	if u := cfg.FX.HTTPURL; u != "" {
+		engine.FX = workflow.NewHTTPFXClient(u, cfg.FX.AuthToken)
 		log.Info("fx client: http", zap.String("url", u))
 	} else {
 		engine.FX = workflow.StaticFXClient{
@@ -396,7 +397,7 @@ func main() {
 	_ = runRepo // 当前 gRPC AdminService 还没加 ListRuns / GetRun / ApproveRun 等方法
 
 	log.Info("split-payment internal gRPC service starting",
-		zap.String("grpc_port", envOr("SPLIT_GRPC_PORT", "9098")),
+		zap.Int("grpc_port", cfg.Server.GRPCPort),
 		zap.String("accounting", accAddr))
 
 	// SP-AC-7: gRPC AdminService — admin-web BFF 通过此端口调.
@@ -406,11 +407,11 @@ func main() {
 	if engine.AccountingMeta != nil {
 		grpcAcct = grpcsvcAcctAdapter{inner: engine.AccountingMeta}
 	}
-	go runAdminGRPCServer(ctx, log, sgGraphs, grpcAcct)
+	go runAdminGRPCServer(ctx, cfg, log, sgGraphs, grpcAcct)
 
 	// SP-AC-7 L1+P9: split-payment admin HTTP — /healthz + /readiness + /metrics.
-	// 跟 gRPC :9098 错开 (默认 :9099), env SPLIT_ADMIN_HTTP_PORT 可覆盖.
-	adminSrv := observability.NewAdminServer(envOr("SPLIT_ADMIN_HTTP_PORT", "9099"), log, logLevel)
+	// 跟 gRPC :9098 错开 (默认 :9099), admin.http_port yaml 可覆盖.
+	adminSrv := observability.NewAdminServer(fmt.Sprintf("%d", cfg.Admin.HTTPPort), log, logLevel)
 	// readiness 探针: MySQL ping (DSN 配了才探).
 	if db != nil {
 		adminSrv.AddReadyCheck("mysql", func(c context.Context) error {
@@ -447,7 +448,7 @@ func main() {
 		clear := workflow.ClearingClient(workflow.NoopClearingClient{Log: log})
 		// TODO: 真实 ClearingClient → 新增 internal/clients/clearing.go HTTP impl.
 		// 占位 Noop 行为: 标 in_transit 假装已发送.
-		_ = envOr("CLEARING_HTTP_URL", "") // reserved for future HTTP impl
+		_ = cfg.Clearing.HTTPURL // reserved for future HTTP impl
 		dispatchPayoutRepo, _ := cronPoRepo.(workflow.PendingPayoutsRepo)
 		if dispatchPayoutRepo != nil {
 			disp := &workflow.PayoutDispatchWorker{
@@ -472,14 +473,12 @@ func main() {
 			Events:   eventPub,
 			Log:      log,
 		}
-		// LiveMode 由 env 控制, 默认 dev=false 只 log 不真创建
-		if envOr("SPLIT_PAYMENT_PAYOUT_LIVE", "") == "1" {
+		// LiveMode 由 yaml 控制, 默认 dev=false 只 log 不真创建
+		if cfg.Workers.PayoutCron.LiveMode {
 			cron.Cfg.LiveMode = true
 		}
-		if interval := envOr("SPLIT_PAYMENT_PAYOUT_CRON_INTERVAL", ""); interval != "" {
-			if d, derr := time.ParseDuration(interval); derr == nil {
-				cron.Cfg.Interval = d
-			}
+		if cfg.Workers.PayoutCron.Interval > 0 {
+			cron.Cfg.Interval = cfg.Workers.PayoutCron.Interval
 		}
 		// SP-AC-7 X3: 多副本 lease, 同一时刻只有一个副本跑 cron.
 		// memory 模式 (db nil) 退化为无锁直跑 (单副本 OK).
@@ -547,12 +546,12 @@ func main() {
 	}
 
 	// SP-9: Kafka subscriber 订 refund-engine 的 refund.completed 事件 → engine.HandleRefund.
-	// 复用上面的 brokers env. SPLIT_PAYMENT_REFUND_TOPIC 配可改默认 topic.
-	if envOr("SPLIT_PAYMENT_KAFKA_BROKERS", "") != "" && refundTrRepo != nil && refundRvRepo != nil {
-		go runRefundSubscriber(ctx, engine, log,
+	// 复用上面的 brokers. kafka.refund.topic yaml 可改默认 topic.
+	if len(cfg.Kafka.Brokers) > 0 && refundTrRepo != nil && refundRvRepo != nil {
+		go runRefundSubscriber(ctx, cfg, engine, log,
 			refundTrRepo, refundFeeRepo, refundRvRepo)
 	} else {
-		log.Info("refund subscriber: disabled (set SPLIT_PAYMENT_KAFKA_BROKERS + MySQL mode to enable)")
+		log.Info("refund subscriber: disabled (set kafka.brokers + MySQL mode to enable)")
 	}
 
 	// 事件驱动入口:
@@ -584,26 +583,14 @@ func parseLogLevel(s string) zap.AtomicLevel {
 	}
 }
 
-func envInt(k string, def int) int {
-	if v := os.Getenv(k); v != "" {
-		var n int
-		_, err := fmt.Sscanf(v, "%d", &n)
-		if err == nil && n > 0 {
-			return n
-		}
-	}
-	return def
-}
+// envOr / envInt 已删除 — A 方案 (CFG-2): 所有可配置项走 cfg.X.Y (yaml + env override).
+// 历史 env 名 (SPLIT_PAYMENT_DSN / SPLIT_GRPC_PORT 等) 由 internal/config.bindLegacyEnv
+// 绑到对应 cfg key, 保持 docker-compose 平滑迁移.
 
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
+func seedExampleGraphs(r *repo.MemoryGraphRepo, dir string, log *zap.Logger) {
+	if dir == "" {
+		dir = "./examples/moneyflow-graphs" // 跟 setDefaults 同步, double safety.
 	}
-	return def
-}
-
-func seedExampleGraphs(r *repo.MemoryGraphRepo, log *zap.Logger) {
-	dir := envOr("MONEYFLOW_SEED_DIR", "./examples/moneyflow-graphs")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		log.Info("seed dir not found, skipping", zap.String("dir", dir))
@@ -665,20 +652,21 @@ func maskDSN(dsn string) string {
 // runAdminGRPCServer — SP-AC-7 启动 split-payment gRPC AdminService.
 //
 // admin-web BFF 通过这个 gRPC 端口调 Graph CRUD / DryRun / TriggerEvent.
-// 监听端口由 env SPLIT_GRPC_PORT 控制 (默认 9098).
+// 监听端口由 cfg.Server.GRPCPort 控制 (默认 9098).
 //
-// ruleSync 来自 env ACCOUNTING_HTTP_URL (e.g. http://accounting-service:8888),
+// ruleSync 来自 cfg.Accounting.HTTPURL (e.g. http://accounting-service:8888),
 // SaveGraph 时把派生的 rules POST 到 /admin/transaction-rules. 空 → 关掉同步.
-func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.GraphRepo, acct grpcsvc.AccountingMetaCaller) {
-	port := envOr("SPLIT_GRPC_PORT", "9098")
+func runAdminGRPCServer(ctx context.Context, cfg *config.Config, log *zap.Logger, graphs grpcsvc.GraphRepo, acct grpcsvc.AccountingMetaCaller) {
+	port := fmt.Sprintf("%d", cfg.Server.GRPCPort)
 	lis, err := net.Listen("tcp", ":"+port)
 	if err != nil {
-		log.Error("split gRPC listen failed", zap.Error(err))
+		log.Error("split gRPC listen failed",
+			zap.String("port", port), zap.Error(err))
 		return
 	}
 	var ruleSync grpcsvc.AccountingRuleSyncer
 	var orderReset grpcsvc.AccountingOrderResetter
-	if base := envOr("ACCOUNTING_HTTP_URL", ""); base != "" {
+	if base := cfg.Accounting.HTTPURL; base != "" {
 		base = strings.TrimRight(base, "/")
 		// SP-AC-7 O3: 加 circuit breaker — accounting admin HTTP 连续 5 次失败 → 30s 熔断, fail-fast.
 		cb := observability.NewCircuitBreaker("accounting_admin_http", observability.CircuitConfig{
@@ -698,12 +686,12 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 		// 注: 本调用在 runAdminGRPCServer 作用域内, 用入参 graphs (grpcsvc.GraphRepo).
 		go reconcileGraphRules(ctx, graphs, ruleSync, log)
 	} else {
-		log.Warn("split-payment: ACCOUNTING_HTTP_URL empty, saga + retry features disabled")
+		log.Warn("split-payment: accounting.http_url empty, saga + retry features disabled")
 	}
 	// SP-AC-7 S1+S2: token auth interceptor.
-	//   - env SPLIT_PAYMENT_ADMIN_TOKEN 配了 → 所有 gRPC 调用必须带 metadata X-Admin-Token 等值
+	//   - cfg.Server.AdminToken 配了 → 所有 gRPC 调用必须带 metadata X-Admin-Token 等值
 	//   - 空 → DEV 模式 ⚠ log warn 提醒生产应该配
-	authToken := envOr("SPLIT_PAYMENT_ADMIN_TOKEN", "")
+	authToken := cfg.Server.AdminToken
 	var opts []grpc.ServerOption
 	// SP-AC-7 PH3-2: mTLS server credentials (双向认证). 没配证书走明文 (dev 模式 warn).
 	if serverCreds, terr := buildServerCreds(log); terr != nil {
@@ -737,15 +725,21 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 	// SP-AC-7 S6 + PROD3: 资金审计 — Zap (本地 stdout) + Kafka 独立 topic (隔离权限/留存).
 	// Kafka 不可达 → ChainAuditSink 会自动跳过, 退化为仅 zap.
 	auditSinks := []grpcsvc.AuditSink{&grpcsvc.ZapAuditSink{Log: log.Named("audit")}}
-	if brokers := splitCSV(envOr("SPLIT_PAYMENT_KAFKA_BROKERS", "")); len(brokers) > 0 {
-		kAudit, kErr := grpcsvc.NewKafkaAuditSink(brokers,
-			envOr("SPLIT_PAYMENT_AUDIT_TOPIC", "split-payment.audit"), log)
+	if brokers := cfg.Kafka.Brokers; len(brokers) > 0 {
+		auditTopic := cfg.Kafka.AuditTopic
+		if auditTopic == "" {
+			auditTopic = "split-payment.audit"
+		}
+		kAudit, kErr := grpcsvc.NewKafkaAuditSink(brokers, auditTopic, log)
 		if kErr != nil {
-			log.Warn("kafka audit sink init failed; falling back to zap only", zap.Error(kErr))
+			log.Warn("kafka audit sink init failed; falling back to zap only",
+				zap.Strings("brokers", brokers),
+				zap.String("topic", auditTopic),
+				zap.Error(kErr))
 		} else {
 			defer kAudit.Close()
 			auditSinks = append(auditSinks, kAudit)
-			log.Info("kafka audit sink wired", zap.String("topic", envOr("SPLIT_PAYMENT_AUDIT_TOPIC", "split-payment.audit")))
+			log.Info("kafka audit sink wired", zap.String("topic", auditTopic))
 		}
 	}
 	auditSink := &grpcsvc.ChainAuditSink{Sinks: auditSinks}
@@ -1215,40 +1209,8 @@ func (l logAudit) Write(_ context.Context, ev map[string]any) error {
 	return nil
 }
 
-// splitCSV "a,b, c" → ["a","b","c"]; 用于 brokers 配置.
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	out := []string{}
-	cur := ""
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == ',' {
-			if cur != "" {
-				out = append(out, trimSpaces(cur))
-				cur = ""
-			}
-			continue
-		}
-		cur += string(c)
-	}
-	if cur != "" {
-		out = append(out, trimSpaces(cur))
-	}
-	return out
-}
-
-func trimSpaces(s string) string {
-	start, end := 0, len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
-		end--
-	}
-	return s[start:end]
-}
+// splitCSV / trimSpaces 已删除 — viper 直接 unmarshal "a,b,c" → []string;
+// kafka.brokers 在 yaml 写数组形式, env override 写 CSV, viper 自动处理.
 
 // runRefundSubscriber SP-9: 订 refund-engine 的 refund.completed Kafka topic, 调 engine.HandleRefund.
 //
@@ -1260,17 +1222,30 @@ func trimSpaces(s string) string {
 //   - HandleRefund 业务失败 → 累计 retry header, 超 maxRetry → DLQ + commit; 否则不 commit 下次再试
 func runRefundSubscriber(
 	ctx context.Context,
+	cfg *config.Config,
 	engine *workflow.Engine,
 	log *zap.Logger,
 	trRepo workflow.TransferReverseRepo,
 	feeRepo workflow.AppFeeRefundRepo,
 	rvRepo workflow.ReversalExtRepo,
 ) {
-	brokers := splitCSV(envOr("SPLIT_PAYMENT_KAFKA_BROKERS", ""))
-	topic := envOr("SPLIT_PAYMENT_REFUND_TOPIC", "recon.refund.events")
-	dlqTopic := envOr("SPLIT_PAYMENT_REFUND_DLQ_TOPIC", topic+".dlq")
-	groupID := envOr("SPLIT_PAYMENT_REFUND_GROUP", "split-payment-refund-handler")
-	maxRetry := envInt("SPLIT_PAYMENT_REFUND_MAX_RETRY", 5)
+	brokers := cfg.Kafka.Brokers
+	topic := cfg.Kafka.Refund.Topic
+	if topic == "" {
+		topic = "recon.refund.events"
+	}
+	dlqTopic := cfg.Kafka.Refund.DLQTopic
+	if dlqTopic == "" {
+		dlqTopic = topic + ".dlq"
+	}
+	groupID := cfg.Kafka.Refund.Group
+	if groupID == "" {
+		groupID = "split-payment-refund-handler"
+	}
+	maxRetry := cfg.Kafka.Refund.MaxRetry
+	if maxRetry <= 0 {
+		maxRetry = 5
+	}
 	if len(brokers) == 0 {
 		return
 	}

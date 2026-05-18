@@ -6,6 +6,7 @@ require (
 	github.com/go-sql-driver/mysql v1.8.1 // MF-1: MySQL driver
 	github.com/prometheus/client_golang v1.23.2 // SP-AC-7 P9: metrics
 	github.com/spf13/viper v1.19.0 // config YAML + env override
+	go.uber.org/fx v1.20.1 // fx DI, 跟 order-core / accounting-system 同款
 	github.com/twmb/franz-go v1.18.0 // SP-8/11: Kafka client (events + refund subscriber)
 	github.com/xiongwp/payment-util v0.0.1 // SP-AC-7 L2+X2: hardened gRPC dial
 	go.uber.org/zap v1.27.0

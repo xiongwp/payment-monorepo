@@ -1,26 +1,27 @@
-// aml-screening cmd/server — 入口.
+// aml-screening cmd/server — uber/fx 装配, 跟 order-core / accounting-system 同款风格.
 //
 // Env:
-//   AML_ADDR           监听地址, 默认 ":8088"
-//   AML_ADMIN_TOKEN    /admin/* 鉴权 token (空则不校验, 仅 dev)
-//   AML_DEV_SEED       1 = 启动后灌测试名单 (dev), 默认 0
-//   AML_REFRESH_OFAC   1 = 启动 OFAC SDN 24h 周期刷新, 默认 0 (拉外网)
-//   AML_BLOCK_THRESH   默认 90
-//   AML_REVIEW_THRESH  默认 70
-
+//
+//	AML_ADDR           监听地址, 默认 ":8088"
+//	AML_ADMIN_TOKEN    /admin/* 鉴权 token (空则不校验, 仅 dev)
+//	AML_DEV_SEED       1 = 启动后灌测试名单 (dev), 默认 0
+//	AML_REFRESH_OFAC   1 = 启动 OFAC SDN 24h 周期刷新, 默认 0 (拉外网)
+//	AML_BLOCK_THRESH   默认 90
+//	AML_REVIEW_THRESH  默认 70
 package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 
 	"reconcile-system/packages/aml-screening/internal/adminhttp"
@@ -33,9 +34,38 @@ import (
 )
 
 func main() {
-	log, _ := zap.NewProduction()
-	defer log.Sync()
+	fx.New(
+		fx.Provide(
+			newLogger,
+			newScreeningCfg,
+			newStore,
+			newPromRegistry,
+			newAuditSink,
+			newRefreshers,
+			newAdminServer,
+			newHTTPServer,
+		),
+		fx.Invoke(
+			startRefreshers,
+			startHTTPServer,
+			seedDevIfRequested,
+		),
+		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
+			return &fxevent.ZapLogger{Logger: log.Named("fx")}
+		}),
+	).Run()
+}
 
+func newLogger(lc fx.Lifecycle) (*zap.Logger, error) {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, fmt.Errorf("zap build: %w", err)
+	}
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { _ = logger.Sync(); return nil }})
+	return logger, nil
+}
+
+func newScreeningCfg() screening.Config {
 	cfg := screening.DefaultConfig()
 	if v := getEnvInt("AML_BLOCK_THRESH"); v > 0 {
 		cfg.BlockThreshold = v
@@ -43,33 +73,33 @@ func main() {
 	if v := getEnvInt("AML_REVIEW_THRESH"); v > 0 {
 		cfg.ReviewThreshold = v
 	}
+	return cfg
+}
 
-	mem := store.NewMemStore()
+func newStore() *store.MemStore { return store.NewMemStore() }
 
-	if os.Getenv("AML_DEV_SEED") == "1" {
-		if err := sources.SeedDev(mem); err != nil {
-			log.Fatal("seed dev", zap.Error(err))
-		}
-		log.Info("aml-screening seeded dev entries")
-	}
-
-	// metrics
+func newPromRegistry() *prometheus.Registry {
 	reg := prometheus.NewRegistry()
 	metrics.MustRegister(reg)
+	return reg
+}
 
-	// audit — AUDITLOG_URL 设了走 HTTPSink (真接 audit-log), 否则降级 LogSink
-	auditSink := audit.NewHTTPSink(audit.HTTPConfig{
+func newAuditSink(lc fx.Lifecycle, log *zap.Logger) *audit.HTTPSink {
+	sink := audit.NewHTTPSink(audit.HTTPConfig{
 		BaseURL: os.Getenv("AUDITLOG_URL"),
 		Token:   os.Getenv("AUDITLOG_TOKEN"),
 		Service: "aml-screening",
 	}, log)
-	defer auditSink.Stop()
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { sink.Stop(); return nil }})
+	return sink
+}
 
-	// refreshers (按 env 开关)
-	refreshers := map[domain.ListSource]*sources.Refresher{}
+// newRefreshers 按 env 开关 OFAC SDN 周期刷新.
+func newRefreshers(mem *store.MemStore, log *zap.Logger) map[domain.ListSource]*sources.Refresher {
+	out := map[domain.ListSource]*sources.Refresher{}
 	if os.Getenv("AML_REFRESH_OFAC") == "1" {
 		fetcher := sources.NewOFACFetcher()
-		refreshers[domain.SourceOFACSDN] = &sources.Refresher{
+		out[domain.SourceOFACSDN] = &sources.Refresher{
 			Source:   domain.SourceOFACSDN,
 			Interval: 24 * time.Hour,
 			Fetch:    fetcher.Fetch,
@@ -78,52 +108,77 @@ func main() {
 			Log:      log,
 		}
 	}
+	return out
+}
 
-	srv := &adminhttp.Server{
+func newAdminServer(mem *store.MemStore, cfg screening.Config, sink *audit.HTTPSink,
+	refreshers map[domain.ListSource]*sources.Refresher, log *zap.Logger) *adminhttp.Server {
+	return &adminhttp.Server{
 		Store:      mem,
 		Cfg:        cfg,
-		Audit:      auditSink,
+		Audit:      sink,
 		AdminToken: os.Getenv("AML_ADMIN_TOKEN"),
 		Log:        log,
 		Refreshers: refreshers,
 	}
+}
 
+func newHTTPServer(srv *adminhttp.Server, reg *prometheus.Registry) *http.Server {
 	addr := os.Getenv("AML_ADDR")
 	if addr == "" {
 		addr = ":8088"
 	}
-
-	// admin / business 一个端口; metrics 分独立端口避免被外网爆探测
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.Handle("/", srv.Routes())
+	return &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+}
 
-	httpSrv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
+// startRefreshers OFAC 刷新 goroutine (有的话).
+func startRefreshers(lc fx.Lifecycle, refreshers map[domain.ListSource]*sources.Refresher, log *zap.Logger) {
+	ctx, cancel := context.WithCancel(context.Background())
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			for _, r := range refreshers {
+				go r.Loop(ctx)
+			}
+			if len(refreshers) > 0 {
+				log.Info("aml refreshers started", zap.Int("count", len(refreshers)))
+			}
+			return nil
+		},
+		OnStop: func(_ context.Context) error { cancel(); return nil },
+	})
+}
+
+func startHTTPServer(lc fx.Lifecycle, srv *http.Server, log *zap.Logger) {
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			log.Info("aml-screening listening", zap.String("addr", srv.Addr))
+			go func() {
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Error("server failed", zap.String("addr", srv.Addr), zap.Error(err))
+				}
+			}()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			shCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			return srv.Shutdown(shCtx)
+		},
+	})
+}
+
+// seedDevIfRequested AML_DEV_SEED=1 时灌测试名单.
+func seedDevIfRequested(mem *store.MemStore, log *zap.Logger) {
+	if os.Getenv("AML_DEV_SEED") != "1" {
+		return
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	// refreshers go
-	for _, r := range refreshers {
-		go r.Loop(ctx)
+	if err := sources.SeedDev(mem); err != nil {
+		log.Fatal("seed dev failed", zap.Error(err))
 	}
-
-	go func() {
-		log.Info("aml-screening listening", zap.String("addr", addr))
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal("server", zap.Error(err))
-		}
-	}()
-
-	<-ctx.Done()
-	log.Info("shutting down...")
-	shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shCancel()
-	_ = httpSrv.Shutdown(shCtx)
+	log.Info("aml-screening seeded dev entries")
 }
 
 func getEnvInt(k string) int {

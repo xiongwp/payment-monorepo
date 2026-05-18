@@ -194,25 +194,50 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("seed.graph_dir", "./examples/moneyflow-graphs")
 }
 
-// bindLegacyEnv 历史包袱: 老 env 名 (如 ACCOUNTING_GRPC_ADDR / REGISTRY_ENDPOINTS) 不带
-// SPLIT_PAYMENT_ 前缀, viper.AutomaticEnv 抓不到. 这里显式绑定让旧 docker-compose 平滑迁移.
-// 新 deployment 推荐用 SPLIT_PAYMENT_xxx 前缀; 老 env 留 6 个月后可删.
+// bindLegacyEnv 历史包袱: 老 env 名 (如 ACCOUNTING_GRPC_ADDR / SPLIT_GRPC_PORT / SPLIT_PAYMENT_DSN)
+// 不符合 viper SetEnvPrefix("SPLIT_PAYMENT") 的形态 (前缀错 / 分隔符错), AutomaticEnv 抓不到.
+// 这里显式绑定让旧 docker-compose 平滑迁移. 新 deployment 推荐用 SPLIT_PAYMENT_xxx 前缀; 老 env 留 6 个月后可删.
 func bindLegacyEnv(v *viper.Viper) {
 	pairs := map[string]string{
-		"accounting.grpc_addr":         "ACCOUNTING_GRPC_ADDR",
-		"accounting.http_url":          "ACCOUNTING_HTTP_URL",
-		"registry.endpoints":           "REGISTRY_ENDPOINTS",
-		"risk.http_url":                "RISK_HTTP_URL",
-		"risk.auth_token":              "RISK_AUTH_TOKEN",
-		"risk.aml_http_url":            "AML_HTTP_URL",
-		"risk.aml_auth_token":          "AML_AUTH_TOKEN",
-		"fx.http_url":                  "FX_HTTP_URL",
-		"fx.auth_token":                "FX_AUTH_TOKEN",
-		"clearing.http_url":            "CLEARING_HTTP_URL",
-		"mtls.server_cert":             "MTLS_SERVER_CERT",
-		"mtls.server_key":              "MTLS_SERVER_KEY",
-		"mtls.ca_cert":                 "MTLS_CA_CERT",
-		"otel.exporter_otlp_endpoint":  "OTEL_EXPORTER_OTLP_ENDPOINT",
+		// 外部基础设施 (无 SPLIT_PAYMENT_ 前缀, 通用 env 名跟其它服务共享):
+		"accounting.grpc_addr":        "ACCOUNTING_GRPC_ADDR",
+		"accounting.http_url":         "ACCOUNTING_HTTP_URL",
+		"registry.endpoints":          "REGISTRY_ENDPOINTS",
+		"risk.http_url":               "RISK_HTTP_URL",
+		"risk.auth_token":             "RISK_AUTH_TOKEN",
+		"risk.aml_http_url":           "AML_HTTP_URL",
+		"risk.aml_auth_token":         "AML_AUTH_TOKEN",
+		"fx.http_url":                 "FX_HTTP_URL",
+		"fx.auth_token":               "FX_AUTH_TOKEN",
+		"clearing.http_url":           "CLEARING_HTTP_URL",
+		"mtls.server_cert":            "MTLS_SERVER_CERT",
+		"mtls.server_key":             "MTLS_SERVER_KEY",
+		"mtls.ca_cert":                "MTLS_CA_CERT",
+		"otel.exporter_otlp_endpoint": "OTEL_EXPORTER_OTLP_ENDPOINT",
+		"env":                         "RECON_ENV",
+
+		// SPLIT_xxx (历史: 短前缀, 跟 SPLIT_PAYMENT_xxx 区分开):
+		"server.grpc_port": "SPLIT_GRPC_PORT",
+		"admin.http_port":  "SPLIT_ADMIN_HTTP_PORT",
+		"seed.graph_dir":   "MONEYFLOW_SEED_DIR",
+
+		// SPLIT_PAYMENT_xxx 历史无 . 分隔, AutomaticEnv 按 . → _ 转换抓不到, 显式绑定:
+		"database.dsn":            "SPLIT_PAYMENT_DSN",
+		"database.max_open_conns": "SPLIT_PAYMENT_DB_MAX_OPEN",
+		"database.max_idle_conns": "SPLIT_PAYMENT_DB_MAX_IDLE",
+		"saga.enabled":            "SPLIT_PAYMENT_SAGA",
+		"workers.payout_cron.live_mode": "SPLIT_PAYMENT_PAYOUT_LIVE",
+		"workers.payout_cron.interval":  "SPLIT_PAYMENT_PAYOUT_CRON_INTERVAL",
+		"risk.aml_threshold_minor":      "SPLIT_PAYMENT_AML_THRESHOLD_CENTS",
+		"risk.fail_open":                "SPLIT_PAYMENT_RISK_FAIL_OPEN",
+		"kafka.brokers":                 "SPLIT_PAYMENT_KAFKA_BROKERS",
+		"kafka.event_topic":             "SPLIT_PAYMENT_EVENT_TOPIC",
+		"kafka.audit_topic":             "SPLIT_PAYMENT_AUDIT_TOPIC",
+		"kafka.refund.topic":            "SPLIT_PAYMENT_REFUND_TOPIC",
+		"kafka.refund.dlq_topic":        "SPLIT_PAYMENT_REFUND_DLQ_TOPIC",
+		"kafka.refund.group":            "SPLIT_PAYMENT_REFUND_GROUP",
+		"kafka.refund.max_retry":        "SPLIT_PAYMENT_REFUND_MAX_RETRY",
+		"server.admin_token":            "SPLIT_PAYMENT_ADMIN_TOKEN",
 	}
 	for key, env := range pairs {
 		_ = v.BindEnv(key, env)
