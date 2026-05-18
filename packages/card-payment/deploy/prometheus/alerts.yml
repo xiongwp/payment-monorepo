@@ -1,0 +1,77 @@
+# GAP-2: Prometheus alert rules for card-payment.
+#
+# 卡支付资金安全 / 合规要求高, 阈值比一般 service 严格.
+groups:
+  - name: card-payment.slo
+    interval: 30s
+    rules:
+      # ── Authorize 错误率 ──
+      - alert: CardPaymentAuthorizeErrorHigh
+        expr: |
+          sum by (network) (rate(paycard_authorize_total{result=~"error|timeout"}[5m]))
+            / sum by (network) (rate(paycard_authorize_total[5m])) > 0.02
+        for: 10m
+        labels: { severity: critical, service: card-payment, team: payments }
+        annotations:
+          summary: "{{ $labels.network }} Authorize 错误率 > 2%"
+          description: "Visa/MC/Amex/JCB 任何一个 network 错误率上 2% 都属业务事故"
+
+      # ── Authorize denied 率突变 ──
+      - alert: CardPaymentDenialRateSpike
+        expr: |
+          (sum by (network) (rate(paycard_authorize_total{result="denied"}[10m]))
+             / sum by (network) (rate(paycard_authorize_total[10m])))
+          - (sum by (network) (rate(paycard_authorize_total{result="denied"}[24h] offset 10m))
+             / sum by (network) (rate(paycard_authorize_total[24h] offset 10m))) > 0.10
+        for: 15m
+        labels: { severity: warning, service: card-payment, team: risk }
+        annotations:
+          summary: "{{ $labels.network }} denied 率比 24h 基线高 > 10%"
+          description: "可能 risk 规则误杀 / 卡组织端策略变更 / 商户集成 bug. 与风控团队联动."
+
+      # ── Network adapter 错误 ──
+      - alert: CardPaymentNetworkErrorHigh
+        expr: |
+          sum by (network, kind) (rate(paycard_network_error_total[5m])) > 5
+        for: 5m
+        labels: { severity: critical, service: card-payment, team: payments }
+        annotations:
+          summary: "{{ $labels.network }} {{ $labels.kind }} 错误 > 5/s"
+          description: "kind=timeout/tls/http_5xx 都是上游基础设施异常. 检查 mTLS 证书 / 上游服务 / 网络."
+
+      # ── Authorize latency ──
+      - alert: CardPaymentAuthorizeP99High
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, network) (rate(paycard_authorize_duration_seconds_bucket[5m]))
+          ) > 5
+        for: 10m
+        labels: { severity: warning, service: card-payment, team: payments }
+        annotations:
+          summary: "{{ $labels.network }} Authorize p99 > 5s"
+
+      # ── HSM / detokenize 失败 (合规 + 资金) ──
+      - alert: CardPaymentDetokenizeFailing
+        expr: rate(paycard_detokenize_error_total[5m]) > 0.1
+        for: 5m
+        labels: { severity: critical, service: card-payment, team: payments }
+        annotations:
+          summary: "Detokenize 失败 > 0.1/s — card-center 故障?"
+
+  - name: card-payment.availability
+    interval: 30s
+    rules:
+      - alert: CardPaymentInstanceDown
+        expr: up{job="card-payment"} == 0
+        for: 2m
+        labels: { severity: critical, service: card-payment, team: payments }
+        annotations:
+          summary: "card-payment instance {{ $labels.instance }} down"
+
+      - alert: CardPaymentMTLSCertExpiringSoon
+        expr: paycard_mtls_cert_expiry_seconds < 7 * 24 * 3600
+        for: 1h
+        labels: { severity: warning, service: card-payment, team: security }
+        annotations:
+          summary: "card-payment mTLS 证书 7 天内过期"
+          description: "cert-manager 应该已经 renew; 如果未自动 renew 立刻人工介入."

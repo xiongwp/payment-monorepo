@@ -1,0 +1,63 @@
+# GAP-2: Prometheus alert rules for payment-channel.
+groups:
+  - name: payment-channel.slo
+    interval: 30s
+    rules:
+      # ── adapter 失败率 (按 adapter 维度) ──
+      - alert: PayChannelAdapterErrorHigh
+        expr: |
+          sum by (adapter) (rate(paychan_acquirer_call_total{result=~"error|timeout|denied"}[5m]))
+            / sum by (adapter) (rate(paychan_acquirer_call_total[5m])) > 0.05
+        for: 10m
+        labels: { severity: warning, service: payment-channel, team: payments }
+        annotations:
+          summary: "payment-channel adapter {{ $labels.adapter }} 错误率 > 5%"
+
+      # ── webhook 签名失败 (security 信号) ──
+      - alert: PayChannelWebhookSignatureFailureHigh
+        expr: |
+          sum by (adapter) (rate(paychan_webhook_received_total{signature_ok="false"}[5m]))
+            / sum by (adapter) (rate(paychan_webhook_received_total[5m])) > 0.01
+        for: 5m
+        labels: { severity: critical, service: payment-channel, team: payments }
+        annotations:
+          summary: "{{ $labels.adapter }} webhook 签名失败率 > 1% — 疑似伪造/凭证轮换问题"
+
+      # ── webhook 转发 order-core 失败 ──
+      - alert: PayChannelWebhookForwardFailing
+        expr: |
+          sum by (adapter) (rate(paychan_webhook_forward_total{result!="ok"}[5m]))
+            / sum by (adapter) (rate(paychan_webhook_forward_total[5m])) > 0.05
+        for: 10m
+        labels: { severity: critical, service: payment-channel, team: payments }
+        annotations:
+          summary: "{{ $labels.adapter }} webhook → order-core 转发失败 > 5%"
+
+      # ── adapter latency p99 ──
+      - alert: PayChannelAdapterLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, adapter) (rate(paychan_acquirer_call_duration_seconds_bucket[5m]))
+          ) > 10
+        for: 10m
+        labels: { severity: warning, service: payment-channel, team: payments }
+        annotations:
+          summary: "{{ $labels.adapter }} call p99 > 10s"
+
+      # ── idempotent replay 异常 (突增意味着客户端在大量重试) ──
+      - alert: PayChannelIdempotentReplaySpike
+        expr: rate(paychan_idempotent_replay_total[5m]) > 5
+        for: 10m
+        labels: { severity: info, service: payment-channel, team: payments }
+        annotations:
+          summary: "幂等回放 > 5/s — 上游客户端疑似超时重试; 检查 latency"
+
+  - name: payment-channel.availability
+    interval: 30s
+    rules:
+      - alert: PayChannelInstanceDown
+        expr: up{job="payment-channel"} == 0
+        for: 2m
+        labels: { severity: critical, service: payment-channel, team: payments }
+        annotations:
+          summary: "payment-channel instance {{ $labels.instance }} down"

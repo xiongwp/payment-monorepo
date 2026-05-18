@@ -1,0 +1,71 @@
+{
+  "title": "payment-core SLO",
+  "tags": ["payment-core", "payments"],
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {"name": "datasource", "type": "datasource", "query": "prometheus"},
+      {"name": "adapter", "type": "query", "datasource": "${datasource}", "query": "label_values(paycore_adapter_call_total, adapter)", "multi": true, "includeAll": true}
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Route success rate (5m)",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "targets": [{
+        "expr": "sum(rate(paycore_route_total{result=\"matched\"}[5m])) / sum(rate(paycore_route_total[5m]))",
+        "refId": "A"
+      }],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 0.95}, {"color": "green", "value": 0.99}]}}}
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Adapter calls / s",
+      "gridPos": {"x": 6, "y": 0, "w": 12, "h": 8},
+      "targets": [{
+        "expr": "sum by (adapter, result) (rate(paycore_adapter_call_total{adapter=~\"$adapter\"}[1m]))",
+        "legendFormat": "{{adapter}}/{{result}}",
+        "refId": "A"
+      }]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Circuit breaker state",
+      "gridPos": {"x": 0, "y": 4, "w": 6, "h": 4},
+      "targets": [{
+        "expr": "paycore_circuit_state{adapter=~\"$adapter\"}",
+        "legendFormat": "{{adapter}}/{{state}}",
+        "refId": "A"
+      }]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "gRPC latency p50/p95/p99",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(paycore_grpc_request_duration_seconds_bucket[5m])))", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(paycore_grpc_request_duration_seconds_bucket[5m])))", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(paycore_grpc_request_duration_seconds_bucket[5m])))", "legendFormat": "p99"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "DB pool utilization",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "paycore_db_in_use", "legendFormat": "in_use"},
+        {"expr": "paycore_db_idle", "legendFormat": "idle"},
+        {"expr": "paycore_db_max_open", "legendFormat": "max_open"}
+      ]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Rate limit hits / s",
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 6},
+      "targets": [{"expr": "rate(paycore_rate_limit_total[1m])", "legendFormat": "limit hits"}]
+    },
+    {
+      "id": 7, "type": "stat", "title": "Active goroutines",
+      "gridPos": {"x": 12, "y": 16, "w": 6, "h": 4},
+      "targets": [{"expr": "go_goroutines{job=\"payment-core\"}"}]
+    }
+  ]
+}

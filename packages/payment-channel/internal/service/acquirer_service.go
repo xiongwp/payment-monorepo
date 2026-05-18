@@ -20,6 +20,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/xiongwp/payment-channel/internal/breaker" // GAP-3: per-(adapter, action) CB
 	"github.com/xiongwp/payment-channel/internal/channel"
 	"github.com/xiongwp/payment-channel/internal/domain"
 	"github.com/xiongwp/payment-channel/internal/metrics"
@@ -92,18 +93,30 @@ type AcquirerService struct {
 	logger *zap.Logger
 	now    func() time.Time
 	idem   *idemCache
+	// GAP-3: 每个 (adapter, action) 一组 breaker.
+	// 5xx / network / timeout 超阈值 → 熔断, fast-fail 给上游让其降级 / 切备用通道,
+	// 不再傻等 30s timeout 一个一个失败.
+	breakers *breaker.Manager
 }
 
 func NewAcquirerService(reg channel.Registry, txRepo repo.AcquirerTxRepository, idgen repo.IDIssuer, logger *zap.Logger) *AcquirerService {
 	return &AcquirerService{
-		reg:    reg,
-		txRepo: txRepo,
-		idgen:  idgen,
-		logger: logger,
-		now:    time.Now,
-		idem:   newIdemCache(),
+		reg:      reg,
+		txRepo:   txRepo,
+		idgen:    idgen,
+		logger:   logger,
+		now:      time.Now,
+		idem:     newIdemCache(),
+		breakers: breaker.NewManager(breaker.DefaultConfig()),
 	}
 }
+
+// SetBreakerManager 允许外部注入自定义 breaker 配置 (例如运维通过 config-center 调阈值).
+// 默认 NewAcquirerService 用 breaker.DefaultConfig — 大部分场景够用.
+func (s *AcquirerService) SetBreakerManager(m *breaker.Manager) { s.breakers = m }
+
+// Breakers 暴露给运维 admin HTTP (e.g. /ops/circuit/states + /ops/circuit/reset).
+func (s *AcquirerService) Breakers() *breaker.Manager { return s.breakers }
 
 // lookupIdem 缓存优先查 acquirer_tx；命中即返回，未命中落 DB。
 // 仅缓存 NON-NIL 命中（首次请求/未存在不缓存——意义不大且会延迟首次写入的可见性）。
@@ -181,9 +194,22 @@ func (s *AcquirerService) Charge(ctx context.Context, adapterName string, req *c
 		return nil, err
 	}
 
-	// 3. 真实调用 adapter。
+	// 3. 真实调用 adapter (GAP-3: CB 包一层).
+	//    Allow → 拒绝时直接 fast-fail (state=unknown, 让 PendingQueryWorker 走 Query 推进),
+	//    避免 adapter 故障时 N 笔 charge 全部卡 30s 超时.
+	brk := s.breakers.Get(adapterName, string(domain.ActionCharge))
 	start := s.now()
-	resp, callErr := ad.Charge(ctx, req)
+	var resp *channel.ChargeResponse
+	var callErr error
+	if brkErr := brk.Allow(); brkErr != nil {
+		callErr = brkErr // ErrCircuitOpen — 当作"上游不可用 / 结果未知"处理
+		metrics.AcquirerCallTotal.WithLabelValues(adapterName, string(domain.ActionCharge), "circuit_open").Inc()
+	} else {
+		resp, callErr = ad.Charge(ctx, req)
+		// Record success=true if NOT upstream infra failure (5xx/timeout/network).
+		// 业务级 denied / 4xx 不算 breaker failure.
+		brk.Record(!isUpstreamInfraFailure(callErr))
+	}
 	lat := int(s.now().Sub(start).Milliseconds())
 	metrics.AcquirerCallDuration.WithLabelValues(adapterName, string(domain.ActionCharge)).Observe(time.Since(start).Seconds())
 
@@ -457,4 +483,18 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// isUpstreamInfraFailure GAP-3: 判断 adapter 调用结果是否算上游"基础设施失败" —
+// 用于决定要不要给 CB 记 fail.
+//
+// 算 failure (Record(false)):
+//   - callErr != nil (timeout / DNS / TCP / 5xx)
+//   - 也含 ctx canceled / deadline exceeded — 当 unknown 处理, 上报为 fail 让 CB 跳闸保护
+//
+// 不算 failure (Record(true)):
+//   - callErr == nil 即业务级 4xx (denied / invalid card / fraud) — 上游正常工作
+//     只是这单业务上拒, 不该熔断整个 adapter.
+func isUpstreamInfraFailure(callErr error) bool {
+	return callErr != nil
 }

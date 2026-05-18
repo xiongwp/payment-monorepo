@@ -1,0 +1,79 @@
+{
+  "title": "order-core SLO",
+  "tags": ["order-core", "payments"],
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [{"name": "datasource", "type": "datasource", "query": "prometheus"}]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "PI succeeded rate (5m)",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "targets": [{
+        "expr": "sum(rate(order_payment_intent_status_transition_total{to=\"succeeded\"}[5m])) / sum(rate(order_payment_intent_status_transition_total[5m]))"
+      }],
+      "fieldConfig": {"defaults": {"unit": "percentunit"}}
+    },
+    {
+      "id": 2, "type": "stat", "title": "PI failed rate (5m)",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+      "targets": [{
+        "expr": "sum(rate(order_payment_intent_status_transition_total{to=\"failed\"}[5m])) / sum(rate(order_payment_intent_status_transition_total[5m]))"
+      }],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "thresholds": {"steps": [{"color": "green"}, {"color": "yellow", "value": 0.05}, {"color": "red", "value": 0.10}]}}}
+    },
+    {
+      "id": 3, "type": "stat", "title": "Stuck PROCESSING (gauge)",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "targets": [{"expr": "order_stuck_processing"}]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "PI status transitions / s",
+      "gridPos": {"x": 0, "y": 4, "w": 24, "h": 8},
+      "targets": [{
+        "expr": "sum by (to) (rate(order_payment_intent_status_transition_total[1m]))",
+        "legendFormat": "→ {{to}}"
+      }]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Channel charge result",
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+      "targets": [{
+        "expr": "sum by (result) (rate(order_channel_charge_total[1m]))",
+        "legendFormat": "{{result}}"
+      }]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Accounting outbox depth",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "order_acct_outbox_pending", "legendFormat": "pending"},
+        {"expr": "order_acct_outbox_oldest_pending_age_seconds", "legendFormat": "oldest_age_s"}
+      ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Refund retry rate",
+      "gridPos": {"x": 0, "y": 20, "w": 12, "h": 6},
+      "targets": [{"expr": "rate(order_refund_retry_total[1m])"}]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Webhook delivery latency",
+      "gridPos": {"x": 12, "y": 20, "w": 12, "h": 6},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, rate(order_webhook_delivery_latency_seconds_bucket[5m]))", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.99, rate(order_webhook_delivery_latency_seconds_bucket[5m]))", "legendFormat": "p99"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "DB pool utilization",
+      "gridPos": {"x": 0, "y": 26, "w": 24, "h": 6},
+      "targets": [
+        {"expr": "order_core_db_in_use", "legendFormat": "{{shard}} in_use"},
+        {"expr": "order_core_db_max_open", "legendFormat": "{{shard}} max_open"}
+      ]
+    }
+  ]
+}

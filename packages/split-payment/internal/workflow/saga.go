@@ -99,6 +99,9 @@ type SagaInstance struct {
 	Steps         []SagaStep `json:"steps"`
 	StartedAt     time.Time  `json:"started_at"`
 	CompletedAt   time.Time  `json:"completed_at,omitempty"`
+	// ErrorMsg 末次失败原因 (R9 resume compensate / forward 失败时填). 仅给 UI / log 用,
+	// 不影响状态机. 空 = 历史无错误 / 已恢复.
+	ErrorMsg string `json:"error_msg,omitempty"`
 }
 
 // SagaStore 状态持久化.

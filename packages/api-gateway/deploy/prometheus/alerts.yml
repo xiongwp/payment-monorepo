@@ -1,0 +1,62 @@
+# GAP-2: Prometheus alert rules for api-gateway.
+groups:
+  - name: api-gateway.slo
+    interval: 30s
+    rules:
+      # ── 5xx 比例 ──
+      - alert: APIGateway5xxHigh
+        expr: |
+          sum(rate(api_gateway_http_requests_total{status_code=~"5.."}[5m]))
+            / sum(rate(api_gateway_http_requests_total[5m])) > 0.01
+        for: 10m
+        labels: { severity: critical, service: api-gateway, team: payments }
+        annotations:
+          summary: "api-gateway 5xx > 1% (10m)"
+
+      # ── 4xx 突增 (caller 端问题, 但仍需关注) ──
+      - alert: APIGateway4xxSpike
+        expr: |
+          sum(rate(api_gateway_http_requests_total{status_code=~"4.."}[5m]))
+            / sum(rate(api_gateway_http_requests_total[5m])) > 0.20
+        for: 15m
+        labels: { severity: warning, service: api-gateway, team: payments }
+        annotations:
+          summary: "api-gateway 4xx > 20% — 客户端集成异常?"
+
+      # ── auth reject 突增 (可能被攻击) ──
+      - alert: APIGatewayAuthRejectSurge
+        expr: rate(api_gateway_http_auth_rejects_total[5m]) > 50
+        for: 5m
+        labels: { severity: critical, service: api-gateway, team: security }
+        annotations:
+          summary: "auth 拒绝 > 50/s — 可能爆破攻击"
+
+      # ── rate limit 持续命中 ──
+      - alert: APIGatewayRateLimitHotMerchant
+        expr: |
+          topk(5, rate(api_gateway_http_rate_limit_hits_total[5m])) > 10
+        for: 10m
+        labels: { severity: warning, service: api-gateway, team: payments }
+        annotations:
+          summary: "api-gateway: 限流命中 hot merchant > 10/s"
+
+      # ── 延迟 ──
+      - alert: APIGatewayLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, path_prefix) (rate(api_gateway_http_request_duration_seconds_bucket[5m]))
+          ) > 3
+        for: 10m
+        labels: { severity: warning, service: api-gateway, team: payments }
+        annotations:
+          summary: "api-gateway p99 > 3s ({{ $labels.path_prefix }})"
+
+  - name: api-gateway.availability
+    interval: 30s
+    rules:
+      - alert: APIGatewayInstanceDown
+        expr: up{job="api-gateway"} == 0
+        for: 2m
+        labels: { severity: critical, service: api-gateway, team: payments }
+        annotations:
+          summary: "api-gateway instance {{ $labels.instance }} down"

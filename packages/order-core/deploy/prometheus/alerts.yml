@@ -1,0 +1,104 @@
+# GAP-2: Prometheus alert rules for order-core.
+groups:
+  - name: order-core.slo
+    interval: 30s
+    rules:
+      # ── PI 流转失败 ──
+      - alert: OrderCorePIFailureRateHigh
+        expr: |
+          sum(rate(order_payment_intent_status_transition_total{to="failed"}[5m]))
+            / sum(rate(order_payment_intent_status_transition_total[5m])) > 0.10
+        for: 10m
+        labels: { severity: warning, service: order-core, team: payments }
+        annotations:
+          summary: "order-core PI 失败率 > 10%"
+          description: "PI → failed 转化 {{ $value | humanizePercentage }}; 可能是 channel 出错或 risk 拒绝率上升."
+
+      # ── 卡在 PROCESSING ──
+      - alert: OrderCoreStuckProcessing
+        expr: order_stuck_processing > 50
+        for: 15m
+        labels: { severity: critical, service: order-core, team: payments }
+        annotations:
+          summary: "order-core 卡 PROCESSING > 50 单 (15m)"
+          description: "ReconcileWorker 没拉回; 检查 payment-core 连通 + ChargeExpireWorker 状态."
+
+      # ── Channel 调用失败 ──
+      - alert: OrderCoreChannelChargeFailing
+        expr: |
+          sum(rate(order_channel_charge_total{result=~"error|timeout"}[5m]))
+            / sum(rate(order_channel_charge_total[5m])) > 0.05
+        for: 10m
+        labels: { severity: warning, service: order-core, team: payments }
+        annotations:
+          summary: "order-core → payment-core charge 错误率 > 5%"
+
+      # ── Refund retry ──
+      - alert: OrderCoreRefundRetryLoop
+        expr: rate(order_refund_retry_total[5m]) > 5
+        for: 10m
+        labels: { severity: warning, service: order-core, team: payments }
+        annotations:
+          summary: "退款重试 > 5/s 持续 10 分钟 — channel 持续失败?"
+
+      # ── Accounting outbox 积压 ──
+      - alert: OrderCoreAcctOutboxBacklog
+        expr: order_acct_outbox_pending > 500
+        for: 10m
+        labels: { severity: critical, service: order-core, team: payments }
+        annotations:
+          summary: "accounting_outbox 积压 > 500"
+          description: "outbox worker 跑不过来 或 accounting-system 故障. 检查 worker 日志 + accounting-system 健康."
+
+      - alert: OrderCoreAcctOutboxOldestStale
+        expr: order_acct_outbox_oldest_pending_age_seconds > 600
+        for: 5m
+        labels: { severity: critical, service: order-core, team: payments }
+        annotations:
+          summary: "accounting_outbox 最老 pending > 10min — 资金一致性风险"
+
+      # ── Webhook delivery latency ──
+      - alert: OrderCoreWebhookDeliveryP99High
+        expr: |
+          histogram_quantile(0.99, rate(order_webhook_delivery_latency_seconds_bucket[5m])) > 5
+        for: 10m
+        labels: { severity: warning, service: order-core, team: payments }
+        annotations:
+          summary: "下游 webhook 推送 p99 > 5s"
+
+      # ── Notification 失败 ──
+      - alert: OrderCoreNotifyFailureRate
+        expr: |
+          sum(rate(order_notify_total{result="failure"}[5m]))
+            / sum(rate(order_notify_total[5m])) > 0.10
+        for: 10m
+        labels: { severity: warning, service: order-core, team: payments }
+        annotations:
+          summary: "商户通知失败率 > 10%"
+
+      # ── DB pool ──
+      - alert: OrderCoreDBPoolExhaustion
+        expr: order_core_db_in_use / order_core_db_max_open > 0.9
+        for: 5m
+        labels: { severity: warning, service: order-core, team: payments }
+        annotations:
+          summary: "order-core DB pool > 90% utilization"
+
+  - name: order-core.availability
+    interval: 30s
+    rules:
+      - alert: OrderCoreInstanceDown
+        expr: up{job="order-core"} == 0
+        for: 2m
+        labels: { severity: critical, service: order-core, team: payments }
+        annotations:
+          summary: "order-core instance {{ $labels.instance }} down"
+
+      - alert: OrderCoreGRPC5xxHigh
+        expr: |
+          sum(rate(order_grpc_request_total{code=~"Internal|Unavailable|DataLoss"}[5m]))
+            / sum(rate(order_grpc_request_total[5m])) > 0.01
+        for: 10m
+        labels: { severity: warning, service: order-core, team: payments }
+        annotations:
+          summary: "order-core gRPC 5xx > 1%"

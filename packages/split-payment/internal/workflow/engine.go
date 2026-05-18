@@ -10,7 +10,6 @@ package workflow
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -19,6 +18,12 @@ import (
 
 	"go.uber.org/zap"
 )
+
+// AuditClient is the minimal audit sink interface used by Engine. Implementations
+// (e.g. logAudit in cmd/server) only need to fulfil Write.
+type AuditClient interface {
+	Write(ctx context.Context, ev map[string]any) error
+}
 
 // Engine 主对象。
 //
