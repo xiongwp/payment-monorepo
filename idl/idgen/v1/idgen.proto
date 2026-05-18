@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package idgen.v1;
+
+option go_package = "reconcile-system/packages/id-generator/kitex_gen/idgen/v1;idgenv1";
+
+// IDService — 雪花 + segment 双源 ID 生成.
+//
+// 部署:
+//   id-generator 多副本 + etcd workerId 分配; 调用方走 kitexutil.EtcdResolver
+//   选 round_robin LB, 单次 RPC < 1ms.
+service IDService {
+  // GetID 单条 — Snowflake++ (region+worker+ts+seq), int64.
+  rpc GetID (IDRequest) returns (IDResponse);
+
+  // GetIDs 批 — segment buffer 一次扣 N 个, 减少 RTT.
+  rpc GetIDs (BatchRequest) returns (BatchResponse);
+}
+
+message IDRequest {
+  int64 user_id = 1;  // 路由 hint (无影响业务时填 0)
+}
+
+message IDResponse {
+  int64 id = 1;
+}
+
+message BatchRequest {
+  int32 count = 1;  // 1..1000
+}
+
+message BatchResponse {
+  repeated int64 ids = 1;
+}

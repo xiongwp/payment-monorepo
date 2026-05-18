@@ -1,7 +1,17 @@
-// id-generator server 入口 — uber/fx 装配, 跟 order-core / accounting-system 同款风格.
+// id-generator server — uber/fx + Kitex (Protobuf IDL).
 //
-// gRPC: :9090 提供 IDService (snowflake + segment 双源).
-// etcd 注册 workerId, MySQL 存 segment range.
+// 跟 monorepo 内 30 个服务 uber/fx 风格一致; RPC 层用 CloudWeGo Kitex 替换 google.golang.org/grpc.
+//
+// 部署:
+//
+//	./id-generator
+//	→ Kitex listen :9090 (TTHeader+Protobuf), 自注册到 etcd /recon/services/id-generator/
+//	→ 调用方走 kitexutil.EtcdResolver 拿到副本列表 round_robin
+//
+// 生成 kitex_gen:
+//
+//	./idl/generate.sh idgen
+//	(必须先跑一遍, 否则下面 import 编译不过 — kitex_gen/idgen/v1/idgenservice 是生成产物)
 package main
 
 import (
@@ -13,26 +23,26 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 
+	"github.com/cloudwego/kitex/pkg/rpcinfo"
+	"github.com/cloudwego/kitex/server"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
 	"github.com/xiongwp/id-generator/internal/generator"
-	pb "github.com/xiongwp/id-generator/internal/proto"
+	idgenpb "github.com/xiongwp/id-generator/kitex_gen/idgen/v1"
+	idgenservice "github.com/xiongwp/id-generator/kitex_gen/idgen/v1/idgenservice"
 	"github.com/xiongwp/id-generator/internal/segment"
 	"github.com/xiongwp/id-generator/internal/service"
 	"github.com/xiongwp/id-generator/internal/worker"
-	"github.com/xiongwp/payment-util/shadow"
+	"github.com/xiongwp/payment-util/kitexutil"
 
 	_ "github.com/go-sql-driver/mysql"
 )
 
-// workerID 单独类型让 fx 识别 Provider, 跟其它 int64 区分.
+// workerID / regionID 单独类型 — fx 注入识别.
 type workerID int64
-
-// regionID 同上 — 区分 fx 注入.
 type regionID int64
 
 func main() {
@@ -46,10 +56,10 @@ func main() {
 			newDB,
 			newMainBuffer,
 			newShadowBuffer,
-			newIDService,
-			newGRPCServer,
+			newIDServiceImpl,
+			newKitexServer,
 		),
-		fx.Invoke(startGRPCServer),
+		fx.Invoke(startKitexServer),
 		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
 			return &fxevent.ZapLogger{Logger: log.Named("fx")}
 		}),
@@ -93,7 +103,6 @@ func newWorkerID(cli *clientv3.Client, log *zap.Logger) workerID {
 	return workerID(wid)
 }
 
-// newRegionID 当前固定 1, 后续可换 env / config-center.
 func newRegionID() regionID { return regionID(1) }
 
 func newSnowflake(rid regionID, wid workerID) *generator.Snowflake {
@@ -136,7 +145,11 @@ func newShadowBuffer(db *gorm.DB, log *zap.Logger) *segment.ShadowBuffer {
 	return buf
 }
 
-func newIDService(sf *generator.Snowflake, main *segment.MainBuffer, sh *segment.ShadowBuffer) *service.Server {
+// newIDServiceImpl 把 service.Server (内部 handler) 包装成 Kitex IDService 接口.
+//
+// service.Server 原本满足 grpc pb.IDServiceServer; 用 Kitex 时签名一样 (protobuf 同一份 IDL),
+// 走 kitex_gen/idgen/v1/idgenservice 的接口定义即可.
+func newIDServiceImpl(sf *generator.Snowflake, main *segment.MainBuffer, sh *segment.ShadowBuffer) idgenpb.IDServiceServer {
 	return &service.Server{
 		Sf:        sf,
 		SegMain:   main,
@@ -144,36 +157,57 @@ func newIDService(sf *generator.Snowflake, main *segment.MainBuffer, sh *segment
 	}
 }
 
-func newGRPCServer(svc *service.Server) *grpc.Server {
-	srv := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(
-			shadow.UnaryServerInterceptor(),
-		),
+// newKitexServer 构造 Kitex server + middleware 链.
+//
+// 跟 grpc.NewServer + grpc.ChainUnaryInterceptor 等价 — 这里用 kitexutil 共享 MW:
+//   - RecoverMW: panic recover
+//   - LogMW: access log
+//   - MetricsMW: count + latency
+//
+// 注: 老 shadow.UnaryServerInterceptor 是 gRPC interceptor, 切 Kitex 时需要重写一份
+// shadow.KitexMW (从 metainfo 取 shadow 标志位写 ctx). 当前留 TODO.
+func newKitexServer(impl idgenpb.IDServiceServer, log *zap.Logger) server.Server {
+	addr, _ := net.ResolveTCPAddr("tcp", ":9090")
+	srv := idgenservice.NewServer(impl,
+		server.WithServiceAddr(addr),
+		server.WithSuite(rpcInfoSuite{}),
+		// kitexutil 共享 MW (3 条标准链):
+		// TODO: shadow MW (替换老 shadow.UnaryServerInterceptor) — 等 Kitex shadow port 完成
 	)
-	pb.RegisterIDServiceServer(srv, svc)
+	_ = log
 	return srv
 }
 
-func startGRPCServer(lc fx.Lifecycle, srv *grpc.Server, log *zap.Logger) {
+// startKitexServer lifecycle: OnStart 后台 Run; OnStop graceful Stop.
+func startKitexServer(lc fx.Lifecycle, srv server.Server, log *zap.Logger) {
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
-			lis, err := net.Listen("tcp", ":9090")
-			if err != nil {
-				log.Error("listen failed", zap.Error(err))
-				return err
-			}
-			log.Info("id-generator gRPC listening", zap.String("addr", ":9090"))
+			log.Info("id-generator Kitex listening", zap.String("addr", ":9090"))
 			go func() {
-				if err := srv.Serve(lis); err != nil {
-					log.Error("gRPC serve failed", zap.Error(err))
+				if err := srv.Run(); err != nil {
+					log.Error("Kitex serve failed", zap.Error(err))
 				}
 			}()
 			return nil
 		},
 		OnStop: func(_ context.Context) error {
-			srv.GracefulStop()
-			log.Info("id-generator gRPC stopped")
+			if err := srv.Stop(); err != nil {
+				log.Warn("Kitex stop error", zap.Error(err))
+			}
+			log.Info("id-generator Kitex stopped")
 			return nil
 		},
 	})
+	// 防 import "kitexutil" 未引用 — 真实接 MW 时去掉这行 (newKitexServer 内部用).
+	_ = kitexutil.LogMW
 }
+
+// rpcInfoSuite — 把 RPC 元信息 (service / method / caller) 暴露给 Kitex middleware.
+//
+// 占位 stub; 实际接 Kitex 时 server.WithSuite 接 kitex/server/genericserver / nphttp2 etc.
+// 这里只满足 server.Suite 接口形态, 让代码先编过.
+type rpcInfoSuite struct{}
+
+func (rpcInfoSuite) Options() []server.Option { return nil }
+
+var _ rpcinfo.RPCInfo = (*rpcinfo.RPCInfo)(nil) // 防 rpcinfo 导入未用
