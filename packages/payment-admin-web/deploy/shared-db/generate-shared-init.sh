@@ -30,6 +30,7 @@ CARD_CENTER_GEN="$ROOT/card-center/database/userdb/scripts/generate.sh"
 CARD_PAYMENT_GEN="$ROOT/card-payment/database/cardpaymentdb/scripts/generate.sh"
 CARD_CENTER_META_INIT="$ROOT/card-center/database/metadb/init/init.sql"
 CARD_PAYMENT_META_INIT="$ROOT/card-payment/database/metadb/init/init.sql"
+SPLIT_PAYMENT_META_INIT="$ROOT/split-payment/database/metadb/init/init.sql"
 
 [[ -x "$PAYCHAN_GEN"        ]] || { echo "FATAL: $PAYCHAN_GEN 不存在或不可执行"; exit 1; }
 [[ -x "$ORDER_GEN"          ]] || { echo "FATAL: $ORDER_GEN 不存在或不可执行"; exit 1; }
@@ -184,6 +185,12 @@ ACCT_META_SHADOW="$ROOT/accounting-system/database/metadb/init/init_shadow.sql"
     echo ""
     echo "-- ==== card-payment meta (card_payment_meta) ===="
     cat "$CARD_PAYMENT_META_INIT"
+  fi
+  # split-payment meta (dev 联栈与其它 meta 同居 shared-meta; 12 张表 + split_user 账号).
+  if [[ -s "$SPLIT_PAYMENT_META_INIT" ]]; then
+    echo ""
+    echo "-- ==== split-payment meta (split_payment: moneyflow_graphs / runs / outbox / saga / Stripe-style + cron_lease) ===="
+    cat "$SPLIT_PAYMENT_META_INIT"
   fi
   # ── meta 影子表（按文件存在性可选追加；依赖前面主表已建）──
   for shadow in "$PAYCHAN_META_SHADOW" "$ORDER_META_SHADOW" "$USER_MERCHANT_META_SHADOW" "$ACCT_META_SHADOW"; do
