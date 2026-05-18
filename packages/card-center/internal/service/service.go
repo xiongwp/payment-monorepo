@@ -18,6 +18,7 @@ import (
 
 	"github.com/xiongwp/card-center/internal/repo"
 	"github.com/xiongwp/card-center/internal/vault"
+	"github.com/xiongwp/payment-util/cachelib" // CACHE-4
 )
 
 // AuditEmitter 异步发审计事件到 Kafka（实现见 internal/audit）
@@ -52,6 +53,12 @@ type Service struct {
 	payToken    repo.PaymentTokenRepo
 	audit       AuditEmitter
 	logger      *zap.Logger
+	// CACHE-4: ListUserCards 共享缓存. nil → 不缓存 (透传 DB).
+	//
+	// SECURITY: 只缓存 CardDisplay (masked PAN + network + expiry), 绝不缓存 PAN 明文.
+	// Detokenize 路径**不能**缓存 — token 是 one-time-use, MarkUsed 在 DB 中强制唯一,
+	// 缓存 PAN 既破坏一次性保证, 也扩大攻击面 (Redis 泄漏 = PAN 泄漏).
+	cardListCache cachelib.Cache
 }
 
 // NewService 构造
@@ -63,6 +70,17 @@ func NewService(v *vault.Vault, stored repo.StoredCardRepo, payToken repo.Paymen
 		audit:    audit,
 		logger:   logger,
 	}
+}
+
+// SetCardListCache CACHE-4: 注入 ListUserCards 跨副本缓存层.
+//
+// 用法: NewService(...) 后调用; 不调 → 关闭缓存 (向后兼容).
+// 建议 TTL 5min — 用户加/删卡后 DeleteCardByID/Tokenize 主动失效兜底.
+func (s *Service) SetCardListCache(c cachelib.Cache) { s.cardListCache = c }
+
+// cardListCacheKey 拼用户卡列表 cache key.
+func cardListCacheKey(userID int64) string {
+	return "card-center:user-cards:" + fmtUserID(userID)
 }
 
 // ─── Tokenize ──────────────────────────────────────────────────────────────
@@ -127,9 +145,11 @@ func (s *Service) Tokenize(ctx context.Context, in *TokenizeInput) (*TokenizeOut
 	s.audit.Emit(ctx, AuditEvent{
 		Op: "tokenize", Caller: in.Caller, CallerIP: in.CallerIP,
 		UserID: in.UserID, TokenHash: tokenHash, KMSKid: kid,
-		MaskedPAN: masked, Network: network, // 取证展示用脱敏字段
+		MaskedPAN: masked, Network: network,
 		Result: "ok", TraceID: in.TraceID, CreatedAt: time.Now(),
 	})
+	// CACHE-4: 新卡入库 → 失效该用户卡列表 cache.
+	s.invalidateUserCardList(ctx, in.UserID)
 	return &TokenizeOutput{StoredToken: stored, MaskedPAN: masked, Network: network, KMSKid: kid}, nil
 }
 
@@ -298,6 +318,26 @@ func (s *Service) ListUserCards(ctx context.Context, userID int64, caller, calle
 	if userID == 0 {
 		return nil, fmt.Errorf("ListUserCards: user_id required")
 	}
+	// CACHE-4: read-through. cache miss → DB → 回填. singleflight 防雪崩.
+	// 走 cachelib.ReadThrough 让 50 个并发 checkout 不会一起打 DB.
+	if s.cardListCache != nil {
+		cards, err := cachelib.ReadThrough[[]*CardDisplay](ctx, s.cardListCache,
+			cardListCacheKey(userID),
+			func(ctx context.Context) ([]*CardDisplay, error) {
+				return s.listUserCardsFromDB(ctx, userID)
+			},
+			cachelib.ReadThroughOptions{TTL: 5 * time.Minute},
+		)
+		if err == nil {
+			s.audit.Emit(ctx, AuditEvent{
+				Op: "list_cards", Caller: caller, CallerIP: callerIP,
+				UserID: userID, Result: "ok", TraceID: traceID, CreatedAt: time.Now(),
+			})
+			return cards, nil
+		}
+		// cache 层错 → degrade 到直接 DB
+		s.logger.Warn("card list cache failed; falling back to DB", zap.Error(err))
+	}
 	rows, err := s.stored.ListActiveByUser(ctx, userID)
 	if err != nil {
 		s.audit.Emit(ctx, AuditEvent{
@@ -328,6 +368,36 @@ func (s *Service) ListUserCards(ctx context.Context, userID int64, caller, calle
 }
 
 // ─── DeleteCard / RevokeStoredToken ─────────────────────────────────────────
+
+// listUserCardsFromDB CACHE-4: 抽出来供 ReadThrough loader 用; 不带 audit 副作用.
+func (s *Service) listUserCardsFromDB(ctx context.Context, userID int64) ([]*CardDisplay, error) {
+	rows, err := s.stored.ListActiveByUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list cards: %w", err)
+	}
+	out := make([]*CardDisplay, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, &CardDisplay{
+			UserCardID: r.ID,
+			MaskedPAN:  r.MaskedPAN,
+			Network:    r.Network,
+			ExpMonth:   r.ExpMonth,
+			ExpYear:    r.ExpYear,
+			HolderName: r.HolderName,
+			Status:     r.Status,
+			CreatedAt:  r.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
+// invalidateUserCardList CACHE-4: 写路径 (Tokenize/Delete*) 调用; nil-safe.
+func (s *Service) invalidateUserCardList(ctx context.Context, userID int64) {
+	if s.cardListCache == nil {
+		return
+	}
+	_ = cachelib.Invalidate(ctx, s.cardListCache, cardListCacheKey(userID))
+}
 
 // DeleteCardByID 按 (user_id, user_card_id) 删卡。
 //
@@ -361,6 +431,8 @@ func (s *Service) DeleteCardByID(ctx context.Context, userID, userCardID int64, 
 	if err != nil {
 		return nil, err
 	}
+	// CACHE-4: 删卡 → 失效该用户卡列表 cache.
+	s.invalidateUserCardList(ctx, userID)
 	return &CardDisplay{
 		UserCardID: row.ID,
 		MaskedPAN:  row.MaskedPAN,
@@ -386,6 +458,10 @@ func (s *Service) DeleteCard(ctx context.Context, userID int64, storedToken, rea
 		Result: result, Reason: reason,
 		TraceID: traceID, CreatedAt: time.Now(),
 	})
+	// CACHE-4: 删卡 → 失效该用户卡列表 cache.
+	if err == nil {
+		s.invalidateUserCardList(ctx, userID)
+	}
 	return err
 }
 

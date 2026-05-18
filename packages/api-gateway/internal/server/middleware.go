@@ -409,7 +409,7 @@ func IdempotencyMiddleware(store IdempotencyStore, logger *zap.Logger) func(http
 				http.Error(w, `{"error":"Idempotency-Key too long (max 255 chars)"}`, http.StatusBadRequest)
 				return
 			}
-			merchant, _ := MerchantIDFromContext(r.Context())
+			merchant := merchantIDFromContext(r)
 			cacheKey := merchant + ":" + r.URL.Path + ":" + key
 			if cached, ok := store.Get(cacheKey); ok {
 				logger.Info("idempotency replay",
