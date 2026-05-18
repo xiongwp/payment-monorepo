@@ -86,6 +86,19 @@ spec:
               value: "20"
             - name: SPLIT_PAYMENT_LOG_LEVEL
               value: "info"
+            # SP-AC-7 PH3-2: mTLS — 强制 split-payment ↔ accounting 双向认证.
+            - name: ENVIRONMENT
+              value: "production"
+            - name: MTLS_SERVER_CERT
+              value: "/etc/certs/server.crt"
+            - name: MTLS_SERVER_KEY
+              value: "/etc/certs/server.key"
+            - name: MTLS_CA_CERT
+              value: "/etc/certs/ca.crt"
+          volumeMounts:
+            - name: mtls-certs
+              mountPath: /etc/certs
+              readOnly: true
           resources:
             requests:
               cpu: 200m
@@ -121,6 +134,20 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+      # SP-AC-7 PH3-2: mTLS 证书 — cert-manager 自动签发 → Secret split-payment-mtls.
+      # 见 deploy/k8s/cert-manager-cert.yaml (Phase 3 secret-management 文档).
+      volumes:
+        - name: mtls-certs
+          secret:
+            secretName: split-payment-mtls
+            defaultMode: 0444
+            items:
+              - key: tls.crt
+                path: server.crt
+              - key: tls.key
+                path: server.key
+              - key: ca.crt
+                path: ca.crt
 ---
 apiVersion: v1
 kind: Service

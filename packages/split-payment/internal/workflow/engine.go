@@ -132,6 +132,10 @@ type RunRepo interface {
 	Save(ctx context.Context, p *domain.RunPlan) (int64, error)
 	Update(ctx context.Context, p *domain.RunPlan) error
 	GetByCharge(ctx context.Context, chargeID string) ([]*domain.RunPlan, error)
+	// SP-AC-7 PH3-7: HoldUnstickWorker 用 — 拉到期的 hold 行 (hold_released=0 AND hold_until<now).
+	ListExpiredHolds(ctx context.Context, now time.Time, limit int) ([]*domain.RunPlan, error)
+	// SP-AC-7 PH3-7: 释放 hold 后标 hold_released=1.
+	MarkHoldReleased(ctx context.Context, runID int64) error
 }
 
 // BusinessEvent Kafka / 内部事件总线收到的事件。

@@ -64,11 +64,18 @@ func EnsureSchema(ctx context.Context, db *sql.DB) error {
 			voucher_no      VARCHAR(64)  DEFAULT NULL,
 			error_msg       TEXT         DEFAULT NULL,
 			trace_id        VARCHAR(64)  DEFAULT NULL,
+			-- SP-AC-7 PH3-7: hold-period 字段供 HoldUnstickWorker 用.
+			hold_until      DATETIME     DEFAULT NULL,
+			hold_released   TINYINT(1)   NOT NULL DEFAULT 0,
 			created_at      DATETIME     NOT NULL,
 			KEY idx_charge (charge_id),
 			KEY idx_graph (graph_id),
-			KEY idx_event_created (trigger_event, created_at)
+			KEY idx_event_created (trigger_event, created_at),
+			KEY idx_hold_expired (hold_released, hold_until)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		// 老库升级 (新加列): MySQL 8.0.29+ 才有 ADD COLUMN IF NOT EXISTS; 老版本 fallback 靠错误吞掉.
+		`ALTER TABLE moneyflow_runs ADD COLUMN IF NOT EXISTS hold_until DATETIME DEFAULT NULL`,
+		`ALTER TABLE moneyflow_runs ADD COLUMN IF NOT EXISTS hold_released TINYINT(1) NOT NULL DEFAULT 0`,
 	}
 	for _, s := range stmts {
 		if _, err := db.ExecContext(ctx, s); err != nil {
@@ -249,6 +256,67 @@ func (r *MySQLRunRepo) GetByCharge(ctx context.Context, chargeID string) ([]*dom
 	}
 	defer rows.Close()
 	return collectRuns(rows)
+}
+
+// SP-AC-7 PH3-7: ListExpiredHolds 拉到期未释放的 hold (hold_released=0 AND hold_until<=now),
+// HoldUnstickWorker 用 — 把 unsettled 资金搬到正式账户.
+//
+// 只查 status=completed 的 plan (失败/进行中的 plan 不会有真 unsettled 资金).
+// idx_hold_expired(hold_released, hold_until) 走索引扫描, limit 默认 100.
+func (r *MySQLRunRepo) ListExpiredHolds(ctx context.Context, now time.Time, limit int) ([]*domain.RunPlan, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
+		       amount_minor, currency, attributes_json, movements_json,
+		       status, voucher_no, error_msg, trace_id, created_at
+		  FROM moneyflow_runs
+		 WHERE hold_released = 0
+		   AND hold_until IS NOT NULL
+		   AND hold_until <= ?
+		   AND status = 'completed'
+		 ORDER BY hold_until ASC
+		 LIMIT ?`, now.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list expired holds: %w", err)
+	}
+	defer rows.Close()
+	return collectRuns(rows)
+}
+
+// SP-AC-7 PH3-7: MarkHoldReleased 标 hold_released=1, 防 worker 重复扫.
+// CAS 风格 — 只翻 0→1, 防多副本竞争 (虽然外层已有 lease, 仍是双保险).
+func (r *MySQLRunRepo) MarkHoldReleased(ctx context.Context, runID int64) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE moneyflow_runs
+		   SET hold_released = 1
+		 WHERE id = ?
+		   AND hold_released = 0`, runID)
+	if err != nil {
+		return fmt.Errorf("mark hold released: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		// 别的 worker 已经处理或行不存在 — 当作非错(幂等).
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SP-AC-7 PH3-7: SetHoldUntil 给 run plan 设 hold 到期时间.
+// 用法: engine.Handle 在创建 plan 时如果场景有 hold 期 (e.g. marketplace_split
+// 配 hold_days=7), 调本方法填 hold_until = now + N days.
+//
+// 不动 hold_released — 默认为 0 (新行).
+func (r *MySQLRunRepo) SetHoldUntil(ctx context.Context, runID int64, holdUntil time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE moneyflow_runs SET hold_until = ? WHERE id = ?`,
+		holdUntil.UTC(), runID)
+	if err != nil {
+		return fmt.Errorf("set hold_until: %w", err)
+	}
+	return nil
 }
 
 // ListByStatus SP-FIN-4 4-eyes approval 列表用 — 拉指定 status 的 plan, created_at desc.

@@ -19,6 +19,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/xiongwp/payment-util/obsbootstrap"
+
 	"reconcile-system/packages/refund-engine/internal/clients"
 	"reconcile-system/packages/refund-engine/internal/domain"
 	"reconcile-system/packages/refund-engine/internal/workflow"
@@ -137,6 +139,25 @@ func main() {
 			logger.Error("listen", zap.Error(err))
 		}
 	}()
+
+	// SP-AC-7 SHARED-3: admin HTTP (/metrics + /healthz + pprof + log-level).
+	adminPort := os.Getenv("REFUND_ADMIN_HTTP_PORT")
+	if adminPort == "" {
+		adminPort = "9099"
+	}
+	logLevel := zap.NewAtomicLevelAt(zap.InfoLevel)
+	admin := obsbootstrap.NewAdminServer(obsbootstrap.AdminConfig{
+		ServiceName: "refund-engine",
+		Port:        adminPort,
+		Logger:      logger,
+		LogLevel:    logLevel,
+	})
+	go func() {
+		if err := admin.Run(ctx); err != nil {
+			logger.Error("admin http exited", zap.Error(err))
+		}
+	}()
+
 	<-ctx.Done()
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutCancel()

@@ -43,10 +43,12 @@ import (
 
 	_ "github.com/go-sql-driver/mysql" // MF-1: mysql driver
 	"github.com/twmb/franz-go/pkg/kgo" // SP-11 refund kafka subscriber
+	"github.com/xiongwp/payment-util/mtls" // SP-AC-7 PH3-2: mTLS scaffolding
 	"github.com/xiongwp/payment-util/serviceregistry" // SP-AC-7 L2+X2: hardened gRPC dial
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"            // SP-AC-7 PH3-2: mTLS server creds 类型
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -79,9 +81,15 @@ func main() {
 	//
 	// REGISTRY_ENDPOINTS (etcd) 配了就走真服务发现; 没配则降级直连 fallback addr (dev 模式).
 	registryEndpoints := splitCSV(envOr("REGISTRY_ENDPOINTS", ""))
+	// SP-AC-7 PH3-2: mTLS — MTLS_SERVER_CERT/KEY/CA 配齐就走 mTLS 双向认证;
+	// 没配或 INSECURE_DIAL=1 退化 insecure (dev); ENVIRONMENT=prod 没配证书会在 LoadFromEnv 阶段 fail-fast.
+	clientCreds, err := buildClientCreds(log)
+	if err != nil {
+		log.Fatal("build mTLS client credentials", zap.Error(err))
+	}
 	conn, err := serviceregistry.DialWithFallback(
 		registryEndpoints, "accounting-service", accAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		clientCreds,
 	)
 	if err != nil {
 		log.Fatal("dial accounting", zap.Error(err))
@@ -100,6 +108,9 @@ func main() {
 	var (
 		graphRepo workflow.GraphRepo
 		runRepo   workflow.RunRepo
+		// db: outer scope — 各种 worker (reversalApply / outbox / cron lease / hold worker)
+		// 都引用 db, 必须 hoist 出 if dsn 块 (避免之前的 :=  scope 化 bug).
+		db *sql.DB
 		// SP-6 typed repos 注到 engine 用 (nil = 跑老路径不持 typed 对象)
 		engAccRepo  workflow.AccountRepo
 		engTrRepo   workflow.TransferRepo
@@ -114,7 +125,8 @@ func main() {
 		cronPoRepo  workflow.PayoutInserterRepo
 	)
 	if dsn := os.Getenv("SPLIT_PAYMENT_DSN"); dsn != "" {
-		db, err := sql.Open("mysql", dsn)
+		var err error
+		db, err = sql.Open("mysql", dsn)
 		if err != nil {
 			log.Fatal("open mysql", zap.Error(err))
 		}
@@ -520,18 +532,40 @@ func main() {
 		}
 		go recLease.RunWithLease(ctx, recWk.Run)
 
-		// SP-AC-7 L8: HoldUnstickWorker — 之前实现完整但 main.go 0 caller.
-		// 当前 RunRepo 没暴露 ListExpiredHolds (需要 moneyflow_runs.hold_until 字段, 后续 schema migration),
-		// 先挂 NoopPendingHoldsRepo, worker 结构性启动但 tick 时无事可做. 后接真 repo 即可.
+		// SP-AC-7 PH3-7: HoldUnstickWorker 真实接线.
+		// - Plans: MySQLRunRepo 现已实现 ListExpiredHolds + MarkHoldReleased (memory 模式
+		//   退化到 NoopPendingHoldsRepo, 不发钱).
+		// - Releaser: MetaHoldReleaser 走 AccountingMetaCaller.CreateTransaction
+		//   (跟主链路同一条 gRPC, 复用 circuit breaker + token auth).
+		var holdPlans workflow.PendingHoldsRepo = workflow.NoopPendingHoldsRepo{}
+		if mysqlRunRepo, ok := runRepo.(workflow.PendingHoldsRepo); ok {
+			holdPlans = mysqlRunRepo
+			log.Info("hold unstick worker: using MySQLRunRepo as PendingHoldsRepo")
+		} else {
+			log.Warn("hold unstick worker: memory mode — using NoopPendingHoldsRepo")
+		}
+		var holdReleaser workflow.HoldReleaser
+		if engine.AccountingMeta != nil {
+			holdReleaser = workflow.NewMetaHoldReleaser(engine.AccountingMeta, log)
+		}
+		holdLease := &workflow.CronLease{
+			DB: db, Name: "hold_unstick_worker",
+			Holder: workflow.DefaultHolder(), TTL: 30 * time.Second, Log: log,
+		}
 		holdWorker := &workflow.HoldUnstickWorker{
 			Cfg:      workflow.DefaultHoldUnstickConfig(),
-			Plans:    workflow.NoopPendingHoldsRepo{},
-			Releaser: nil, // SP-FIN-3 接 accounting; nil 等价于仅发 hold.released 事件
+			Plans:    holdPlans,
+			Releaser: holdReleaser,
 			Events:   eventPub,
 			Log:      log,
 		}
-		log.Warn("HoldUnstickWorker started with NoopPendingHoldsRepo — hold release 暂未生效, 等 RunRepo.ListExpiredHolds 实现")
-		go holdWorker.Run(ctx)
+		if db != nil {
+			go holdLease.RunWithLease(ctx, holdWorker.Run)
+			log.Info("hold unstick worker started (lease-protected)")
+		} else {
+			go holdWorker.Run(ctx)
+			log.Info("hold unstick worker started (no lease — memory mode)")
+		}
 	}
 
 	// SP-9: Kafka subscriber 订 refund-engine 的 refund.completed 事件 → engine.HandleRefund.
@@ -686,6 +720,15 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 	//   - 空 → DEV 模式 ⚠ log warn 提醒生产应该配
 	authToken := envOr("SPLIT_PAYMENT_ADMIN_TOKEN", "")
 	var opts []grpc.ServerOption
+	// SP-AC-7 PH3-2: mTLS server credentials (双向认证). 没配证书走明文 (dev 模式 warn).
+	if serverCreds, terr := buildServerCreds(log); terr != nil {
+		log.Fatal("build mTLS server credentials", zap.Error(terr))
+	} else if serverCreds != nil {
+		opts = append(opts, grpc.Creds(serverCreds))
+		log.Info("split-payment gRPC: mTLS enabled (require + verify client cert)")
+	} else {
+		log.Warn("split-payment gRPC: mTLS DISABLED — set MTLS_SERVER_CERT/KEY/CA env vars in production")
+	}
 	// SP-AC-7 L3+P1: gRPC server keepalive + 限流, 防超长闲连接 / 巨型 payload 打挂进程.
 	opts = append(opts,
 		grpc.MaxConcurrentStreams(64),
@@ -1055,6 +1098,57 @@ func (a accountingGRPCAdapter) CreateTransaction(ctx context.Context, req *domai
 		Status:    resp.Status,
 		Error:     resp.ErrorMessage,
 	}, nil
+}
+
+// ─── SP-AC-7 PH3-2: mTLS 工具 ─────────────────────────────────────────
+//
+// buildClientCreds  — 用于 dial accounting-system gRPC (client 侧 mTLS).
+// buildServerCreds  — 用于 grpc.NewServer (server 侧 mTLS, 强校验 client cert).
+//
+// 行为:
+//   - mtls.LoadFromEnv() 失败 (e.g. ENVIRONMENT=prod 且 cert 不全) → fail-fast.
+//   - InsecureDev (INSECURE_DIAL=1, 非 prod) 或证书路径全为空 → 退化 insecure (dev 模式).
+//   - 否则加载 cert/key/CA 构造 mTLS credentials.
+//
+// 环境变量:
+//   MTLS_SERVER_CERT  /etc/certs/server.crt
+//   MTLS_SERVER_KEY   /etc/certs/server.key
+//   MTLS_CA_CERT      /etc/certs/ca.crt
+//   ENVIRONMENT       prod|production → 强制 mTLS
+//   INSECURE_DIAL     1 → 允许 dev 模式跳过 mTLS
+
+func buildClientCreds(log *zap.Logger) (grpc.DialOption, error) {
+	cfg, err := mtls.LoadFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("mtls.LoadFromEnv (client): %w", err)
+	}
+	if cfg.InsecureDev || (cfg.ServerCertPath == "" && cfg.ServerKeyPath == "" && cfg.CACertPath == "") {
+		log.Warn("accounting client dial: INSECURE (no mTLS) — set MTLS_* env vars in production")
+		return grpc.WithTransportCredentials(insecure.NewCredentials()), nil
+	}
+	creds, err := cfg.ClientCredentials()
+	if err != nil {
+		return nil, fmt.Errorf("mtls.ClientCredentials: %w", err)
+	}
+	log.Info("accounting client dial: mTLS enabled",
+		zap.String("cert", cfg.ServerCertPath), zap.String("ca", cfg.CACertPath))
+	return grpc.WithTransportCredentials(creds), nil
+}
+
+func buildServerCreds(log *zap.Logger) (credentials.TransportCredentials, error) {
+	cfg, err := mtls.LoadFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("mtls.LoadFromEnv (server): %w", err)
+	}
+	if cfg.InsecureDev || (cfg.ServerCertPath == "" && cfg.ServerKeyPath == "" && cfg.CACertPath == "") {
+		_ = log
+		return nil, nil // dev mode — caller log warn 后退化明文
+	}
+	creds, err := cfg.ServerCredentials()
+	if err != nil {
+		return nil, fmt.Errorf("mtls.ServerCredentials: %w", err)
+	}
+	return creds, nil
 }
 
 // zapSagaLogger 适配 zap 到 workflow.Logger 接口 (kv 风格).

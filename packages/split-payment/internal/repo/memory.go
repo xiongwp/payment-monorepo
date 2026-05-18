@@ -154,6 +154,14 @@ func (r *MemoryRunRepo) GetByCharge(_ context.Context, chargeID string) ([]*doma
 	return out, nil
 }
 
+// ListExpiredHolds SP-AC-7 PH3-7 内存模式: 永远返空 (dev 不真跑 hold).
+func (r *MemoryRunRepo) ListExpiredHolds(_ context.Context, _ time.Time, _ int) ([]*domain.RunPlan, error) {
+	return nil, nil
+}
+
+// MarkHoldReleased SP-AC-7 PH3-7 内存模式 noop.
+func (r *MemoryRunRepo) MarkHoldReleased(_ context.Context, _ int64) error { return nil }
+
 // Searchable 支持按 trigger event 模糊过滤 (admin 后台查询用)。
 func (r *MemoryRunRepo) Search(_ context.Context, eventLike string, limit int) ([]*domain.RunPlan, error) {
 	r.mu.RLock()
