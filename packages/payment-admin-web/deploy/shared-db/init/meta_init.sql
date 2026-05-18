@@ -681,134 +681,25 @@ CREATE TABLE IF NOT EXISTS `network_call_log` (
     KEY `idx_created`      (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Network call audit (no PAN)';
 
--- ==== database meta _shadow ====
--- paychan_meta 的影子表（压测 / shadow 流量）。
--- 依赖：init.sql 必须已经导入完成（CREATE TABLE LIKE 需要主表存在）。
+-- ==== split-payment meta (split_payment: moneyflow_graphs / runs / outbox / saga / Stripe-style + cron_lease) ====
+-- split-payment / split_payment meta schema —— 由 stack/init-db/bootstrap.sh 灌入.
 --
--- leaf_alloc 也建一份独立影子号段：压测 shadow 流量从 leaf_alloc_shadow 取号，
--- 主流量号段不被压测消耗。两张表的 max_id 各自递增、互不影响。
-USE `paychan_meta`;
-
-CREATE TABLE IF NOT EXISTS `leaf_alloc_shadow` LIKE `leaf_alloc`;
-
--- ==== database meta _shadow ====
--- order_meta 的影子表（压测 / shadow 流量）。
--- 依赖：init.sql 必须已经导入完成（CREATE TABLE LIKE 需要主表存在）。
+-- 风格跟 user-merchant-core / payment-channel / order-core / accounting-system /
+-- card-center / card-payment 一致 (single init.sql, CREATE IF NOT EXISTS 幂等).
 --
--- leaf_alloc 也建一份独立影子号段：压测 shadow 流量从 leaf_alloc_shadow 取号，
--- 主流量号段不被压测消耗。两张表的 max_id 各自递增、互不影响。
-USE `order_meta`;
-
-CREATE TABLE IF NOT EXISTS `leaf_alloc_shadow`         LIKE `leaf_alloc`;
-CREATE TABLE IF NOT EXISTS `webhook_deliveries_shadow` LIKE `webhook_deliveries`;
--- admin_audit_log_shadow 已迁到 shard（见 orderdb/init/N_init_shadow.sql 里
--- 的 admin_audit_log_shadow_NN）；主表 admin_audit_log 在 order_meta 已删，
--- 这里不再 CREATE LIKE。
-CREATE TABLE IF NOT EXISTS `gl_account_shadow`         LIKE `gl_account`;
-CREATE TABLE IF NOT EXISTS `gl_transaction_shadow`     LIKE `gl_transaction`;
-CREATE TABLE IF NOT EXISTS `gl_entry_shadow`           LIKE `gl_entry`;
-
--- ==== database meta _shadow ====
--- user_merchant_meta 影子表（压测 / shadow 流量）。
--- 依赖：init.sql 必须已经导入完成（CREATE TABLE LIKE 需要主表存在）。
---
--- 分库分表后 meta 留下的表（leaf_alloc / RBAC 字典 / idempotency / email_codes /
--- 审计 / lookup 反查索引）每张都有 _shadow 副本；users / merchants 等 11 张
--- 业务分片表的 _shadow 在 user_merchant_db_0..9 里，不在 meta（见
--- database/userdb/init/N_init_shadow.sql）。
-USE `user_merchant_meta`;
-
--- 号段独立（影子流量取 ID 不消耗主用户号段）
-CREATE TABLE IF NOT EXISTS `leaf_alloc_shadow`            LIKE `leaf_alloc`;
-
--- 幂等 / 验证码
-CREATE TABLE IF NOT EXISTS `idempotency_key_shadow`       LIKE `idempotency_key`;
-CREATE TABLE IF NOT EXISTS `email_codes_shadow`           LIKE `email_codes`;
-
--- 反查二级索引（meta；指向 user_merchant_db_*.users_NN(_shadow) 等分片表）
-CREATE TABLE IF NOT EXISTS `user_lookup_shadow`           LIKE `user_lookup`;
-CREATE TABLE IF NOT EXISTS `merchant_lookup_shadow`       LIKE `merchant_lookup`;
-CREATE TABLE IF NOT EXISTS `session_lookup_shadow`        LIKE `session_lookup`;
-CREATE TABLE IF NOT EXISTS `auth_lookup_shadow`           LIKE `auth_lookup`;
-
--- 合规审计（append-only）
-CREATE TABLE IF NOT EXISTS `merchant_kyc_audit_shadow`    LIKE `merchant_kyc_audit`;
--- admin_audit_log_shadow 已迁到 shard（见 user-merchant-core/database/userdb/
--- init/N_init_shadow.sql 里的 admin_audit_log_shadow_NN）；主表 admin_audit_log
--- 在 user_merchant_meta 已删，这里不再 CREATE LIKE。
-
--- RBAC 字典（虽然角色 / 权限通常静态，shadow 隔离避免压测期 admin 写覆盖主表）
-CREATE TABLE IF NOT EXISTS `roles_shadow`                 LIKE `roles`;
-CREATE TABLE IF NOT EXISTS `permissions_shadow`           LIKE `permissions`;
-CREATE TABLE IF NOT EXISTS `role_permissions_shadow`      LIKE `role_permissions`;
-
--- ─── leaf_alloc_shadow seed：起点对齐 payment-util/shadow 的数字 layout ────
---
--- 与 payment-util/shadow/identity.go 的段定义保持一致：
---   ShadowUserIDMin       = 9_000_000_000        (1e9 × 9)
---   MerchantIDShadowMul   = 1_000_000_000_000_000_000  (1e18)
---   EntityIDShadowMul     = 1_000_000_000_000_000_000  (1e18)
---
--- 这样 shadow 流量从 idgen 拿到的 ID 直接落在影子段，不需要后续 caller 加偏移。
-INSERT IGNORE INTO `leaf_alloc_shadow` (`biz_tag`, `max_id`, `step`, `description`) VALUES
-    ('user_merchant.user',           9000000000,          100000, 'Shadow user id (>= ShadowUserIDMin = 9e9)'),
-    ('user_merchant.merchant',       1000000000000000001, 100000, 'Shadow merchant id (high bit 1 = shadow per layout)'),
-    ('user_merchant.kyc_document',   1000000000000000001, 100000, 'Shadow KYC document id (entity layout high bit = shadow)');
-
--- ==== database meta _shadow ====
--- account_meta 影子表（压测 / shadow 流量）。
--- 依赖：init.sql 必须已经导入（CREATE TABLE LIKE 需要主表存在）。
---
--- 影子表 = 主表的 LIKE 副本 + 字典 seed 同步 + 号段起点对齐 shadow 段。
-USE `account_meta`;
-
--- 号段独立
-CREATE TABLE IF NOT EXISTS `leaf_alloc_shadow`              LIKE `leaf_alloc`;
-
--- 字典 / 配置类表
-CREATE TABLE IF NOT EXISTS `account_type_info_shadow`        LIKE `account_type_info`;
-CREATE TABLE IF NOT EXISTS `account_business_type_info_shadow` LIKE `account_business_type_info`;
-CREATE TABLE IF NOT EXISTS `transaction_rule_shadow`         LIKE `transaction_rule`;
-CREATE TABLE IF NOT EXISTS `hot_account_config_shadow`       LIKE `hot_account_config`;
-CREATE TABLE IF NOT EXISTS `buffer_account_config_shadow`    LIKE `buffer_account_config`;
-CREATE TABLE IF NOT EXISTS `service_instance_shadow`         LIKE `service_instance`;
--- system_config / system_config_shadow 已删除（v2 迁到全平台 config-center
--- 服务，namespace=accounting-system；shadow 流量同样消费 config-center key，
--- 无需独立 _shadow 表）。
-
--- ─── 字典 seed 复制：shadow 流量也要能查这些固定枚举 ──────────────────────
--- 业务字典（业务类型 / 账户类型 / 交易规则）在主和影流量下语义一致，
--- 直接拷贝主表的 seed 即可；shadow 流量绝不修改这些字典。
-INSERT IGNORE INTO `account_business_type_info_shadow` SELECT * FROM `account_business_type_info`;
-INSERT IGNORE INTO `account_type_info_shadow`           SELECT * FROM `account_type_info`;
-INSERT IGNORE INTO `transaction_rule_shadow`            SELECT * FROM `transaction_rule`;
-INSERT IGNORE INTO `hot_account_config_shadow`          SELECT * FROM `hot_account_config`;
-INSERT IGNORE INTO `buffer_account_config_shadow`       SELECT * FROM `buffer_account_config`;
-
--- ─── leaf_alloc_shadow seed：起点对齐 payment-util/shadow 数字 layout ────
---
--- 与 payment-util/shadow/identity.go 段定义对齐：
---   ShadowUserIDMin       = 9_000_000_000              (1e9 × 9)，shadow 真实用户段
---   EntityIDShadowMul     = 1_000_000_000_000_000_000  (1e18)，shadow entity ID 段
---
--- shadow 号段从这个起点开始递增，业务侧 caller 拿到的 ID 直接带 shadow 高位标识。
--- 注：accounting-system 内部生成的 user_id（fleet 平台账户）走 [9e9, 9e9+99]
--- 段，业务用户 user_id 走 [9e9+100, 9.9e9]；fleet seed 见各 shard 的
--- *_init_tmp_shadow.sql。
-INSERT IGNORE INTO `leaf_alloc_shadow` (`biz_tag`, `max_id`, `step`, `description`) VALUES
-    ('accounting.user',           9000000100,          100000, 'Shadow user id (≥ 9e9 + 100，预留 fleet)'),
-    ('accounting.voucher',        1000000000000000001, 100000, 'Shadow voucher id (entity layout high bit = shadow)'),
-    ('accounting.tcc',            1000000000000000001, 100000, 'Shadow tcc id (entity layout high bit = shadow)'),
-    ('accounting.batch_order',    1000000000000000001, 100000, 'Shadow batch order id'),
-    ('accounting.account',        90000000000,         100000, 'Shadow account_id (high bit 1 in 19-digit account layout)');
-
--- ==== recon_cdc binlog 用户 ====
-CREATE USER IF NOT EXISTS 'recon_cdc'@'%' IDENTIFIED WITH mysql_native_password BY 'recon_cdc_pwd';
-ALTER USER 'recon_cdc'@'%' IDENTIFIED WITH mysql_native_password BY 'recon_cdc_pwd';
-GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'recon_cdc'@'%';
-GRANT SELECT ON *.* TO 'recon_cdc'@'%';
-FLUSH PRIVILEGES;
-
+-- 表清单 (11 张):
+--   moneyflow_graphs        Graph DSL
+--   moneyflow_runs          一次 TriggerEvent 的 RunPlan
+--   moneyflow_graph_versions SP-7 版本快照
+--   connected_accounts      Stripe-style connected account
+--   transfers               Stripe-style transfer
+--   application_fees        Stripe-style fee
+--   payouts                 Stripe-style payout
+--   reversals               Stripe-style reversal
+--   moneyflow_sagas         SP-3A 持久化 saga 状态
+--   event_outbox            L5 事件 outbox
+--   reversal_retry_outbox   R5 反转重试 outbox
+--   cron_lease              X3 多副本 cron 互斥 lease
 
 CREATE DATABASE IF NOT EXISTS split_payment CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -1031,3 +922,131 @@ CREATE TABLE IF NOT EXISTS cron_lease (
     leased_until DATETIME     NOT NULL DEFAULT '1970-01-01 00:00:00',
     updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ==== database meta _shadow ====
+-- paychan_meta 的影子表（压测 / shadow 流量）。
+-- 依赖：init.sql 必须已经导入完成（CREATE TABLE LIKE 需要主表存在）。
+--
+-- leaf_alloc 也建一份独立影子号段：压测 shadow 流量从 leaf_alloc_shadow 取号，
+-- 主流量号段不被压测消耗。两张表的 max_id 各自递增、互不影响。
+USE `paychan_meta`;
+
+CREATE TABLE IF NOT EXISTS `leaf_alloc_shadow` LIKE `leaf_alloc`;
+
+-- ==== database meta _shadow ====
+-- order_meta 的影子表（压测 / shadow 流量）。
+-- 依赖：init.sql 必须已经导入完成（CREATE TABLE LIKE 需要主表存在）。
+--
+-- leaf_alloc 也建一份独立影子号段：压测 shadow 流量从 leaf_alloc_shadow 取号，
+-- 主流量号段不被压测消耗。两张表的 max_id 各自递增、互不影响。
+USE `order_meta`;
+
+CREATE TABLE IF NOT EXISTS `leaf_alloc_shadow`         LIKE `leaf_alloc`;
+CREATE TABLE IF NOT EXISTS `webhook_deliveries_shadow` LIKE `webhook_deliveries`;
+-- admin_audit_log_shadow 已迁到 shard（见 orderdb/init/N_init_shadow.sql 里
+-- 的 admin_audit_log_shadow_NN）；主表 admin_audit_log 在 order_meta 已删，
+-- 这里不再 CREATE LIKE。
+CREATE TABLE IF NOT EXISTS `gl_account_shadow`         LIKE `gl_account`;
+CREATE TABLE IF NOT EXISTS `gl_transaction_shadow`     LIKE `gl_transaction`;
+CREATE TABLE IF NOT EXISTS `gl_entry_shadow`           LIKE `gl_entry`;
+
+-- ==== database meta _shadow ====
+-- user_merchant_meta 影子表（压测 / shadow 流量）。
+-- 依赖：init.sql 必须已经导入完成（CREATE TABLE LIKE 需要主表存在）。
+--
+-- 分库分表后 meta 留下的表（leaf_alloc / RBAC 字典 / idempotency / email_codes /
+-- 审计 / lookup 反查索引）每张都有 _shadow 副本；users / merchants 等 11 张
+-- 业务分片表的 _shadow 在 user_merchant_db_0..9 里，不在 meta（见
+-- database/userdb/init/N_init_shadow.sql）。
+USE `user_merchant_meta`;
+
+-- 号段独立（影子流量取 ID 不消耗主用户号段）
+CREATE TABLE IF NOT EXISTS `leaf_alloc_shadow`            LIKE `leaf_alloc`;
+
+-- 幂等 / 验证码
+CREATE TABLE IF NOT EXISTS `idempotency_key_shadow`       LIKE `idempotency_key`;
+CREATE TABLE IF NOT EXISTS `email_codes_shadow`           LIKE `email_codes`;
+
+-- 反查二级索引（meta；指向 user_merchant_db_*.users_NN(_shadow) 等分片表）
+CREATE TABLE IF NOT EXISTS `user_lookup_shadow`           LIKE `user_lookup`;
+CREATE TABLE IF NOT EXISTS `merchant_lookup_shadow`       LIKE `merchant_lookup`;
+CREATE TABLE IF NOT EXISTS `session_lookup_shadow`        LIKE `session_lookup`;
+CREATE TABLE IF NOT EXISTS `auth_lookup_shadow`           LIKE `auth_lookup`;
+
+-- 合规审计（append-only）
+CREATE TABLE IF NOT EXISTS `merchant_kyc_audit_shadow`    LIKE `merchant_kyc_audit`;
+-- admin_audit_log_shadow 已迁到 shard（见 user-merchant-core/database/userdb/
+-- init/N_init_shadow.sql 里的 admin_audit_log_shadow_NN）；主表 admin_audit_log
+-- 在 user_merchant_meta 已删，这里不再 CREATE LIKE。
+
+-- RBAC 字典（虽然角色 / 权限通常静态，shadow 隔离避免压测期 admin 写覆盖主表）
+CREATE TABLE IF NOT EXISTS `roles_shadow`                 LIKE `roles`;
+CREATE TABLE IF NOT EXISTS `permissions_shadow`           LIKE `permissions`;
+CREATE TABLE IF NOT EXISTS `role_permissions_shadow`      LIKE `role_permissions`;
+
+-- ─── leaf_alloc_shadow seed：起点对齐 payment-util/shadow 的数字 layout ────
+--
+-- 与 payment-util/shadow/identity.go 的段定义保持一致：
+--   ShadowUserIDMin       = 9_000_000_000        (1e9 × 9)
+--   MerchantIDShadowMul   = 1_000_000_000_000_000_000  (1e18)
+--   EntityIDShadowMul     = 1_000_000_000_000_000_000  (1e18)
+--
+-- 这样 shadow 流量从 idgen 拿到的 ID 直接落在影子段，不需要后续 caller 加偏移。
+INSERT IGNORE INTO `leaf_alloc_shadow` (`biz_tag`, `max_id`, `step`, `description`) VALUES
+    ('user_merchant.user',           9000000000,          100000, 'Shadow user id (>= ShadowUserIDMin = 9e9)'),
+    ('user_merchant.merchant',       1000000000000000001, 100000, 'Shadow merchant id (high bit 1 = shadow per layout)'),
+    ('user_merchant.kyc_document',   1000000000000000001, 100000, 'Shadow KYC document id (entity layout high bit = shadow)');
+
+-- ==== database meta _shadow ====
+-- account_meta 影子表（压测 / shadow 流量）。
+-- 依赖：init.sql 必须已经导入（CREATE TABLE LIKE 需要主表存在）。
+--
+-- 影子表 = 主表的 LIKE 副本 + 字典 seed 同步 + 号段起点对齐 shadow 段。
+USE `account_meta`;
+
+-- 号段独立
+CREATE TABLE IF NOT EXISTS `leaf_alloc_shadow`              LIKE `leaf_alloc`;
+
+-- 字典 / 配置类表
+CREATE TABLE IF NOT EXISTS `account_type_info_shadow`        LIKE `account_type_info`;
+CREATE TABLE IF NOT EXISTS `account_business_type_info_shadow` LIKE `account_business_type_info`;
+CREATE TABLE IF NOT EXISTS `transaction_rule_shadow`         LIKE `transaction_rule`;
+CREATE TABLE IF NOT EXISTS `hot_account_config_shadow`       LIKE `hot_account_config`;
+CREATE TABLE IF NOT EXISTS `buffer_account_config_shadow`    LIKE `buffer_account_config`;
+CREATE TABLE IF NOT EXISTS `service_instance_shadow`         LIKE `service_instance`;
+-- system_config / system_config_shadow 已删除（v2 迁到全平台 config-center
+-- 服务，namespace=accounting-system；shadow 流量同样消费 config-center key，
+-- 无需独立 _shadow 表）。
+
+-- ─── 字典 seed 复制：shadow 流量也要能查这些固定枚举 ──────────────────────
+-- 业务字典（业务类型 / 账户类型 / 交易规则）在主和影流量下语义一致，
+-- 直接拷贝主表的 seed 即可；shadow 流量绝不修改这些字典。
+INSERT IGNORE INTO `account_business_type_info_shadow` SELECT * FROM `account_business_type_info`;
+INSERT IGNORE INTO `account_type_info_shadow`           SELECT * FROM `account_type_info`;
+INSERT IGNORE INTO `transaction_rule_shadow`            SELECT * FROM `transaction_rule`;
+INSERT IGNORE INTO `hot_account_config_shadow`          SELECT * FROM `hot_account_config`;
+INSERT IGNORE INTO `buffer_account_config_shadow`       SELECT * FROM `buffer_account_config`;
+
+-- ─── leaf_alloc_shadow seed：起点对齐 payment-util/shadow 数字 layout ────
+--
+-- 与 payment-util/shadow/identity.go 段定义对齐：
+--   ShadowUserIDMin       = 9_000_000_000              (1e9 × 9)，shadow 真实用户段
+--   EntityIDShadowMul     = 1_000_000_000_000_000_000  (1e18)，shadow entity ID 段
+--
+-- shadow 号段从这个起点开始递增，业务侧 caller 拿到的 ID 直接带 shadow 高位标识。
+-- 注：accounting-system 内部生成的 user_id（fleet 平台账户）走 [9e9, 9e9+99]
+-- 段，业务用户 user_id 走 [9e9+100, 9.9e9]；fleet seed 见各 shard 的
+-- *_init_tmp_shadow.sql。
+INSERT IGNORE INTO `leaf_alloc_shadow` (`biz_tag`, `max_id`, `step`, `description`) VALUES
+    ('accounting.user',           9000000100,          100000, 'Shadow user id (≥ 9e9 + 100，预留 fleet)'),
+    ('accounting.voucher',        1000000000000000001, 100000, 'Shadow voucher id (entity layout high bit = shadow)'),
+    ('accounting.tcc',            1000000000000000001, 100000, 'Shadow tcc id (entity layout high bit = shadow)'),
+    ('accounting.batch_order',    1000000000000000001, 100000, 'Shadow batch order id'),
+    ('accounting.account',        90000000000,         100000, 'Shadow account_id (high bit 1 in 19-digit account layout)');
+
+-- ==== recon_cdc binlog 用户 ====
+CREATE USER IF NOT EXISTS 'recon_cdc'@'%' IDENTIFIED WITH mysql_native_password BY 'recon_cdc_pwd';
+ALTER USER 'recon_cdc'@'%' IDENTIFIED WITH mysql_native_password BY 'recon_cdc_pwd';
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'recon_cdc'@'%';
+GRANT SELECT ON *.* TO 'recon_cdc'@'%';
+FLUSH PRIVILEGES;
