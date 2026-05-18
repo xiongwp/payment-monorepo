@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"reconcile-system/packages/split-payment/internal/clients"
+	"reconcile-system/packages/split-payment/internal/config"
 	"reconcile-system/packages/split-payment/internal/domain"
 	"reconcile-system/packages/split-payment/internal/grpcsvc"
 	"reconcile-system/packages/split-payment/internal/observability"
@@ -55,9 +56,15 @@ import (
 )
 
 func main() {
+	// A 方案 (config 抽 yaml): 启动期一次性加载所有配置, 业务路径走 cfg.X.Y 不再散落 envOr.
+	// 优先级: ./config/config.yaml → $SPLIT_PAYMENT_CONFIG → env override (SPLIT_PAYMENT_* + 历史 env 名).
+	cfg, cfgErr := config.Load("")
+	if cfgErr != nil {
+		fmt.Fprintln(os.Stderr, "config.Load:", cfgErr)
+		os.Exit(1)
+	}
 	// SP-AC-7 O4: zap AtomicLevel — 让 /admin/log-level 能在线调级.
-	// parseLogLevel 已返 zap.AtomicLevel, 直接用; 不要再套 NewAtomicLevelAt (它收 zapcore.Level).
-	logLevel := parseLogLevel(envOr("SPLIT_PAYMENT_LOG_LEVEL", "info"))
+	logLevel := parseLogLevel(cfg.Log.Level)
 	logCfg := zap.NewProductionConfig()
 	logCfg.Level = logLevel
 	log, _ := logCfg.Build()
@@ -75,7 +82,7 @@ func main() {
 
 	// SP-AC-7: HTTP server 已废除, split-payment 现是纯 gRPC 内部服务.
 	// SPLIT_GRPC_PORT 由 runAdminGRPCServer 读取 (默认 9098).
-	accAddr := envOr("ACCOUNTING_GRPC_ADDR", "accounting-system:9091")
+	accAddr := cfg.Accounting.GRPCAddr
 
 	// 1. accounting client (gRPC).
 	//
@@ -86,7 +93,7 @@ func main() {
 	//   - HTTP/2 keepalive 10s+3s 探活, 副本被 kill 后 ~13s 内 client 端 detect
 	//
 	// REGISTRY_ENDPOINTS (etcd) 配了就走真服务发现; 没配则降级直连 fallback addr (dev 模式).
-	registryEndpoints := splitCSV(envOr("REGISTRY_ENDPOINTS", ""))
+	registryEndpoints := cfg.Registry.Endpoints
 	// SP-AC-7 PH3-2: mTLS — MTLS_SERVER_CERT/KEY/CA 配齐就走 mTLS 双向认证;
 	// 没配或 INSECURE_DIAL=1 退化 insecure (dev); ENVIRONMENT=prod 没配证书会在 LoadFromEnv 阶段 fail-fast.
 	clientCreds, err := buildClientCreds(log)
