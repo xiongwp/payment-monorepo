@@ -27,7 +27,7 @@ type Client struct {
 	bearer  string
 }
 
-// Config 客户端配置.
+// Config 客户端配置. mTLS 字段已删除 — 内部 service mesh 不走 TLS.
 type Config struct {
 	// Endpoint: 静态地址 (host:port), 仅在 RegistryEndpoints 为空时用作 fallback.
 	Endpoint string
@@ -35,12 +35,6 @@ type Config struct {
 	RegistryEndpoints []string
 	BearerToken       string
 	RPCTimeout        time.Duration
-	// mTLS (Kitex 通过 client.WithTransportProtocol + tls.Config 配; 当前 stub 不接 TLS).
-	ClientCert string
-	ClientKey  string
-	ServerCA   string
-	// dev 路径允许 insecure; prod assertProdSafety 会拒.
-	Insecure bool
 }
 
 // New dial kms-manage via Kitex.
@@ -55,24 +49,13 @@ func New(cfg Config) (*Client, error) {
 		return nil, errors.New("kmsclient: endpoint or registry_endpoints required")
 	}
 	opts := []client.Option{
-		// 跟历史 retry / keepalive 参数对齐 (Kitex 等价配置, 真实接 Kitex 时取消注释)
-		// client.WithRPCTimeout(7 * time.Second),
-		// client.WithConnectTimeout(3 * time.Second),
+		client.WithHostPorts(cfg.Endpoint),
 	}
-
-	// 服务发现 — etcd 优先, fallback 直连.
-	// TODO: 接真实 etcd cli 后注入 kitexutil.NewEtcdResolver; 当前 stub.
+	// 服务发现 — etcd 优先, fallback 直连. 接真实 etcd cli 后注入 kitexutil.NewEtcdResolver.
 	if len(cfg.RegistryEndpoints) > 0 {
-		// resolver, err := buildEtcdResolver(cfg.RegistryEndpoints)
-		// opts = append(opts, client.WithResolver(resolver))
+		// TODO: resolver, _ := buildEtcdResolver(cfg.RegistryEndpoints); opts = append(opts, client.WithResolver(resolver))
 		_ = cfg.RegistryEndpoints
-	} else {
-		opts = append(opts, client.WithHostPorts(cfg.Endpoint))
 	}
-
-	// mTLS — Kitex 用 tls.Config + client.WithTransportProtocol(transport.GRPC) (兼容模式)
-	// 或者 client.WithTLS(tlsCfg) (纯 TTHeader 模式). 当前 stub 走 insecure.
-	// TODO: 接 buildTLS(cfg) 后 opts = append(opts, client.WithTLSConfig(tlsCfg))
 
 	api, err := kmsservice.NewClient("kms-manage", opts...)
 	if err != nil {

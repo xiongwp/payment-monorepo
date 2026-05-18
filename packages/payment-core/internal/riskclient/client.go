@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
-	"github.com/xiongwp/payment-util/kitexutil"
-	"github.com/xiongwp/payment-util/mtls"
 
 	riskv1 "reconcile-system/packages/risk-manage/kitex_gen/risk/v1"
 	riskservice "reconcile-system/packages/risk-manage/kitex_gen/risk/v1/riskservice"

@@ -10,7 +10,6 @@ import (
 
 	"github.com/cloudwego/kitex/client"
 	"github.com/xiongwp/payment-util/kitexutil"
-	"github.com/xiongwp/payment-util/mtls"
 
 	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
 	kmsservice "reconcile-system/packages/kms-manage/kitex_gen/kms/v1/kmsservice"
@@ -46,42 +45,22 @@ type kitexClient struct {
 // registry 非空 → kitexutil.EtcdResolver, Kitex 自动 round_robin LB;
 // 空 → 直连 endpoint (dev / 单仓).
 //
-// mTLS: MTLS_SERVER_CERT/KEY/CA 配了 → 走 Kitex TLS; 否则 insecure (dev).
+// 内部 service mesh 不走 mTLS (按用户决策); 边缘网关单向 TLS 在 ingress 层做.
 func Dial(registry []string, endpoint, bearerToken string, rpcTimeout time.Duration) (Client, error) {
 	if rpcTimeout <= 0 {
 		rpcTimeout = 3 * time.Second
 	}
-
-	// mTLS check — payment-util/mtls.LoadFromEnv 仍可用拿 cert 路径; prod 时缺证书 fail-fast.
-	mtlsCfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		return nil, err
-	}
-
 	opts := []client.Option{
 		client.WithRPCTimeout(rpcTimeout),
-		// TODO: shadow + trace MW — port 老 grpc 版 shadow.UnaryClientInterceptor + trace.UnaryClientInterceptor
-		//   到 kitexutil.ShadowMW / kitexutil.TraceMW, 然后这里 client.WithMiddleware(...).
+		client.WithHostPorts(endpoint),
+		// TODO: shadow + trace MW (port 老 grpc shadow.UnaryClientInterceptor / trace.UnaryClientInterceptor)
+	}
+	if len(registry) > 0 {
+		// TODO: opts = append(opts, client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, "")))
+		_ = registry
 	}
 
 	const serviceName = "kms-manage"
-	if len(registry) > 0 {
-		// TODO: 接 etcd client 后注入 kitexutil.NewEtcdResolver(etcdCli, "")
-		// resolver, _ := buildEtcdResolver(registry)
-		// opts = append(opts, client.WithResolver(resolver))
-		_ = registry
-		opts = append(opts, client.WithHostPorts(endpoint))
-	} else {
-		opts = append(opts, client.WithHostPorts(endpoint))
-	}
-
-	// mTLS: Kitex 用 tls.Config 直接装; mtls 包当前只暴露 grpc credentials.
-	// TODO: payment-util/mtls 加 KitexTLSConfig() *tls.Config, 然后 client.WithTLSConfig(...)
-	if !mtlsCfg.InsecureDev && (mtlsCfg.ServerCertPath != "" || mtlsCfg.CACertPath != "") {
-		// 占位: 真接 Kitex mTLS 时 opts = append(opts, client.WithTLSConfig(mtlsCfg.KitexTLSConfig()))
-		_ = mtlsCfg
-	}
-
 	api, err := kmsservice.NewClient(serviceName, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kmsclient kitex dial: %w", err)
