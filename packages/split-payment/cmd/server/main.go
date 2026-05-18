@@ -56,7 +56,8 @@ import (
 
 func main() {
 	// SP-AC-7 O4: zap AtomicLevel — 让 /admin/log-level 能在线调级.
-	logLevel := zap.NewAtomicLevelAt(parseLogLevel(envOr("SPLIT_PAYMENT_LOG_LEVEL", "info")))
+	// parseLogLevel 已返 zap.AtomicLevel, 直接用; 不要再套 NewAtomicLevelAt (它收 zapcore.Level).
+	logLevel := parseLogLevel(envOr("SPLIT_PAYMENT_LOG_LEVEL", "info"))
 	logCfg := zap.NewProductionConfig()
 	logCfg.Level = logLevel
 	log, _ := logCfg.Build()
@@ -66,6 +67,11 @@ func main() {
 	// 不外发, 仅保证 ctx 传递. 接 OTLP exporter 时改 observability.InitTracer 内部即可.
 	shutdownTracer := observability.InitTracer("split-payment")
 	defer shutdownTracer(context.Background())
+
+	// 主 ctx 早建 — 下面 schema migration / outbox worker / retry worker 都依赖它.
+	// SIGINT / SIGTERM 触发 → ctx.Done() → 所有 goroutine 优雅退.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// SP-AC-7: HTTP server 已废除, split-payment 现是纯 gRPC 内部服务.
 	// SPLIT_GRPC_PORT 由 runAdminGRPCServer 读取 (默认 9098).
@@ -409,9 +415,6 @@ func main() {
 	// 不再通过 HTTP 暴露给前端. 4-eyes approval / runs/search 等查询如需要, 后续
 	// 在 grpcsvc.AdminService 里加 RPC 方法.
 	_ = runRepo // 当前 gRPC AdminService 还没加 ListRuns / GetRun / ApproveRun 等方法
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	log.Info("split-payment internal gRPC service starting",
 		zap.String("grpc_port", envOr("SPLIT_GRPC_PORT", "9098")),
