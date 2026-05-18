@@ -46,12 +46,20 @@ import (
 	"github.com/xiongwp/payment-util/serviceregistry" // SP-AC-7 L2+X2: hardened gRPC dial
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func main() {
 	log, _ := zap.NewProduction()
 	defer log.Sync()
+
+	// SP-AC-7 P10: OTel trace context propagation (W3C traceparent). 当前用 noop tracer,
+	// 不外发, 仅保证 ctx 传递. 接 OTLP exporter 时改 observability.InitTracer 内部即可.
+	shutdownTracer := observability.InitTracer("split-payment")
+	defer shutdownTracer(context.Background())
 
 	// SP-AC-7: HTTP server 已废除, split-payment 现是纯 gRPC 内部服务.
 	// SPLIT_GRPC_PORT 由 runAdminGRPCServer 读取 (默认 9098).
@@ -106,9 +114,15 @@ func main() {
 		if err != nil {
 			log.Fatal("open mysql", zap.Error(err))
 		}
-		db.SetMaxOpenConns(20)
-		db.SetMaxIdleConns(5)
+		// SP-AC-7 P4: pool size 调大并 env 化 — 之前 20/5 在多副本高 QPS 下偏小,
+		// MySQL idle 连接复用率不够, 高峰期会大量打开 + tear down.
+		maxOpen := envInt("SPLIT_PAYMENT_DB_MAX_OPEN", 100)
+		maxIdle := envInt("SPLIT_PAYMENT_DB_MAX_IDLE", 20)
+		db.SetMaxOpenConns(maxOpen)
+		db.SetMaxIdleConns(maxIdle)
 		db.SetConnMaxLifetime(30 * time.Minute)
+		log.Info("split-payment DB pool sized",
+			zap.Int("max_open", maxOpen), zap.Int("max_idle", maxIdle))
 		if err := db.PingContext(context.Background()); err != nil {
 			log.Fatal("ping mysql", zap.Error(err))
 		}
@@ -209,6 +223,54 @@ func main() {
 		TransferReverseRepo: refundTrRepo,
 		AppFeeRefundRepo:    refundFeeRepo,
 		ReversalInsertRepo:  refundRvRepo,
+		// SP-AC-7 R1: refund 写两表用 sql.Tx 包. DSN 配了才有 db, memory 模式 ReversalApply=nil 退化两步.
+	}
+	if db != nil {
+		engine.ReversalApply = &reversalApplyAdapter{db: db}
+
+		// SP-AC-7 L5: Event 发布走 outbox + 后台 drain worker.
+		// 业务路径写 outbox (跟主数据可同 tx, 至少一次保证); worker 异步推 Kafka.
+		// Kafka 没配的话退化为只入 outbox 不推送 (后续配上 Kafka 自动 catch-up).
+		if err := repo.EnsureEventOutboxSchema(ctx, db); err != nil {
+			log.Warn("event_outbox schema migration failed; events 走原 fire-and-forget 模式", zap.Error(err))
+		} else if eventPub != nil {
+			evOutbox := &repo.EventOutbox{DB: db}
+			// 把 engine.Events 换成 outbox publisher
+			engine.Events = &workflow.OutboxEventPublisher{
+				Outbox: &eventOutboxEnqAdapter{ob: evOutbox},
+				Log:    log,
+			}
+			// 起 worker drain outbox → 真 Kafka.
+			if kp, ok := eventPub.(*workflow.KafkaEventPublisher); ok {
+				outboxWk := &workflow.EventOutboxWorker{
+					Cfg:    workflow.DefaultEventOutboxConfig(),
+					Outbox: &eventOutboxClaimAdapter{ob: evOutbox},
+					Sender: &kafkaEventSenderAdapter{pub: kp},
+					Log:    log,
+				}
+				go outboxWk.Run(ctx)
+				log.Info("event outbox worker started; engine.Events now goes through transactional outbox")
+			} else {
+				log.Warn("eventPub is not KafkaEventPublisher (noop?); outbox will accumulate without drain")
+			}
+		}
+
+		// SP-AC-7 R5: Reversal 失败 outbox 重试.
+		if err := repo.EnsureReversalOutboxSchema(ctx, db); err != nil {
+			log.Warn("reversal_retry_outbox schema migration failed; retry queue disabled", zap.Error(err))
+		} else {
+			revOutbox := &repo.ReversalOutbox{DB: db, Log: log}
+			engine.ReversalRetry = &reversalOutboxAdapter{ob: revOutbox}
+			// 起 worker 周期消费.
+			retryWk := &workflow.ReversalRetryWorker{
+				Cfg:     workflow.DefaultReversalRetryConfig(),
+				Outbox:  &reversalOutboxClaimAdapter{ob: revOutbox},
+				Applier: engine.ReversalApply,
+				Log:     log,
+			}
+			go retryWk.Run(ctx)
+			log.Info("reversal retry worker started")
+		}
 	}
 
 	// SP-3A: 接持久化 saga (MySQL 模式 + env SPLIT_PAYMENT_SAGA=1 才启).
@@ -411,7 +473,38 @@ func main() {
 				cron.Cfg.Interval = d
 			}
 		}
-		go cron.Run(ctx)
+		// SP-AC-7 X3: 多副本 lease, 同一时刻只有一个副本跑 cron.
+		// memory 模式 (db nil) 退化为无锁直跑 (单副本 OK).
+		if db != nil {
+			if err := workflow.EnsureCronLeaseSchema(ctx, db); err != nil {
+				log.Warn("cron_lease schema migration failed; falling back to no-lease (可能重复扫)", zap.Error(err))
+				go cron.Run(ctx)
+			} else {
+				lease := &workflow.CronLease{
+					DB:     db,
+					Name:   "payout_cron",
+					Holder: workflow.DefaultHolder(),
+					TTL:    30 * time.Second,
+					Log:    log,
+				}
+				go lease.RunWithLease(ctx, cron.Run)
+			}
+		} else {
+			go cron.Run(ctx)
+		}
+
+		// SP-AC-7 L8: HoldUnstickWorker — 之前实现完整但 main.go 0 caller.
+		// 当前 RunRepo 没暴露 ListExpiredHolds (需要 moneyflow_runs.hold_until 字段, 后续 schema migration),
+		// 先挂 NoopPendingHoldsRepo, worker 结构性启动但 tick 时无事可做. 后接真 repo 即可.
+		holdWorker := &workflow.HoldUnstickWorker{
+			Cfg:      workflow.DefaultHoldUnstickConfig(),
+			Plans:    workflow.NoopPendingHoldsRepo{},
+			Releaser: nil, // SP-FIN-3 接 accounting; nil 等价于仅发 hold.released 事件
+			Events:   eventPub,
+			Log:      log,
+		}
+		log.Warn("HoldUnstickWorker started with NoopPendingHoldsRepo — hold release 暂未生效, 等 RunRepo.ListExpiredHolds 实现")
+		go holdWorker.Run(ctx)
 	}
 
 	// SP-9: Kafka subscriber 订 refund-engine 的 refund.completed 事件 → engine.HandleRefund.
@@ -437,6 +530,17 @@ func main() {
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────
+
+func envInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		var n int
+		_, err := fmt.Sscanf(v, "%d", &n)
+		if err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
 
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
@@ -536,6 +640,15 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 	//   - 空 → DEV 模式 ⚠ log warn 提醒生产应该配
 	authToken := envOr("SPLIT_PAYMENT_ADMIN_TOKEN", "")
 	var opts []grpc.ServerOption
+	// SP-AC-7 L3+P1: gRPC server keepalive + 限流, 防超长闲连接 / 巨型 payload 打挂进程.
+	//   - KeepaliveEnforcementPolicy 配合 client 端 hardenedOptions (10s ping), 否则会 GOAWAY enhance_your_calm.
+	//   - MaxConcurrentStreams 64 防恶意客户端打开过多并发流耗光资源.
+	//   - MaxRecvMsgSize 16MB 兼容大 graph spec_json (默认 4MB 不够大 graph).
+	opts = append(opts,
+		grpc.MaxConcurrentStreams(64),
+		grpc.MaxRecvMsgSize(16*1024*1024),
+		serviceregistry.HardenedServerOptions()[0], // KeepaliveEnforcementPolicy
+	)
 	if authToken != "" {
 		opts = append(opts, grpc.UnaryInterceptor(adminTokenInterceptor(authToken)))
 		log.Info("split-payment gRPC: admin token auth enabled")
@@ -543,7 +656,9 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 		log.Warn("split-payment gRPC: AUTH DISABLED — set SPLIT_PAYMENT_ADMIN_TOKEN env var in production")
 	}
 	srv := grpc.NewServer(opts...)
-	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, log))
+	// SP-AC-7 S6: 资金审计 - 默认 zap sink, 生产应换 KafkaAuditSink (推送到独立审计 topic).
+	auditSink := &grpcsvc.ZapAuditSink{Log: log.Named("audit")}
+	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, auditSink, log))
 	log.Info("split-payment gRPC AdminService listening", zap.String("port", port))
 	go func() { <-ctx.Done(); srv.GracefulStop() }()
 	if err := srv.Serve(lis); err != nil {
@@ -632,6 +747,37 @@ func (h *httpRuleSyncer) UpsertRules(ctx context.Context, rules []grpcsvc.RuleSp
 	return nil
 }
 
+// DeleteRules SP-AC-7 R2: SaveGraph saga 补偿. DELETE /admin/transaction-rules + body {hash_keys}.
+func (h *httpRuleSyncer) DeleteRules(ctx context.Context, hashKeys []string) error {
+	if len(hashKeys) == 0 {
+		return nil
+	}
+	body, _ := json.Marshal(map[string]any{"hash_keys": hashKeys})
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodDelete,
+		h.baseURL+"/admin/transaction-rules", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build delete req: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("accounting unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("accounting HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	if h.log != nil {
+		h.log.Info("rule delete (saga compensation) OK",
+			zap.Int("count", len(hashKeys)),
+			zap.String("response", string(respBody)))
+	}
+	return nil
+}
+
 // httpOrderResetter — TriggerEvent 遇到卡 Processing 时, POST accounting
 // /admin/transaction-orders/{order_no}/reset 主动解锁.
 //
@@ -677,6 +823,93 @@ func (h *httpOrderResetter) ResetOrder(ctx context.Context, orderNo, businessNo 
 			zap.String("response", string(respBody)))
 	}
 	return nil
+}
+
+// reversalApplyAdapter — SP-AC-7 R1: 实现 workflow.ReversalApplier 接口, 调 repo.ApplyReversalAtomic.
+type reversalApplyAdapter struct{ db *sql.DB }
+
+func (a *reversalApplyAdapter) Apply(ctx context.Context, rv *domain.Reversal, deltaReversed int64) error {
+	return repo.ApplyReversalAtomic(ctx, a.db, rv, deltaReversed)
+}
+
+// ─── SP-AC-7 L5: Event outbox adapters ──────────────────────────────────────
+type eventOutboxEnqAdapter struct{ ob *repo.EventOutbox }
+
+func (a *eventOutboxEnqAdapter) Enqueue(ctx context.Context, eventType string, payloadJSON []byte) error {
+	return a.ob.Enqueue(ctx, eventType, payloadJSON)
+}
+
+type eventOutboxClaimAdapter struct{ ob *repo.EventOutbox }
+
+func (a *eventOutboxClaimAdapter) Claim(ctx context.Context, limit int) ([]workflow.EventOutboxJob, error) {
+	rows, err := a.ob.Claim(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]workflow.EventOutboxJob, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, workflow.EventOutboxJob{
+			ID: r.ID, EventType: r.EventType, PayloadJSON: r.PayloadJSON,
+			RetryCount: r.RetryCount, MaxRetry: r.MaxRetry,
+		})
+	}
+	return out, nil
+}
+
+func (a *eventOutboxClaimAdapter) MarkSent(ctx context.Context, id int64) error {
+	return a.ob.MarkSent(ctx, id)
+}
+
+func (a *eventOutboxClaimAdapter) MarkDeadLetter(ctx context.Context, id int64, lastErr string) error {
+	return a.ob.MarkDeadLetter(ctx, id, lastErr)
+}
+
+func (a *eventOutboxClaimAdapter) UpdateError(ctx context.Context, id int64, lastErr string) error {
+	return a.ob.UpdateError(ctx, id, lastErr)
+}
+
+// kafkaEventSenderAdapter 把 workflow.KafkaEventPublisher 适配成 workflow.EventSender.
+type kafkaEventSenderAdapter struct{ pub *workflow.KafkaEventPublisher }
+
+func (a *kafkaEventSenderAdapter) Send(ctx context.Context, eventType string, payload []byte) error {
+	return a.pub.SendRaw(ctx, eventType, payload)
+}
+
+// reversalOutboxAdapter — SP-AC-7 R5: 实现 workflow.ReversalRetryEnqueuer 接口.
+type reversalOutboxAdapter struct{ ob *repo.ReversalOutbox }
+
+func (a *reversalOutboxAdapter) Enqueue(ctx context.Context, reversalID, transferID string, deltaMinor int64, lastErr error) error {
+	return a.ob.Enqueue(ctx, reversalID, transferID, deltaMinor, lastErr)
+}
+
+// reversalOutboxClaimAdapter — workflow.ReversalOutboxClaimer 接口适配, 把 repo.ReversalOutboxRow → workflow.ReversalOutboxJob.
+type reversalOutboxClaimAdapter struct{ ob *repo.ReversalOutbox }
+
+func (a *reversalOutboxClaimAdapter) Claim(ctx context.Context, limit int) ([]workflow.ReversalOutboxJob, error) {
+	rows, err := a.ob.Claim(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]workflow.ReversalOutboxJob, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, workflow.ReversalOutboxJob{
+			ID: r.ID, ReversalID: r.ReversalID, TransferID: r.TransferID,
+			DeltaMinor: r.DeltaMinor, RetryCount: r.RetryCount, MaxRetry: r.MaxRetry,
+		})
+	}
+	return out, nil
+}
+
+func (a *reversalOutboxClaimAdapter) MarkDone(ctx context.Context, id int64) error {
+	return a.ob.MarkDone(ctx, id)
+}
+
+func (a *reversalOutboxClaimAdapter) MarkDeadLetter(ctx context.Context, id int64, lastErr string) error {
+	return a.ob.MarkDeadLetter(ctx, id, lastErr)
+}
+
+func (a *reversalOutboxClaimAdapter) UpdateError(ctx context.Context, id int64, lastErr string) error {
+	return a.ob.UpdateError(ctx, id, lastErr)
 }
 
 // grpcsvcAcctAdapter — workflow.AccountingMetaCaller ↔ grpcsvc.AccountingMetaCaller 适配.
@@ -766,9 +999,9 @@ func trimSpaces(s string) string {
 // 用 franz-go 跟其它 Kafka client 风格对齐 (跟 reconplatform / KafkaEventPublisher 一致).
 // 单个进程一个 consumer group, 多副本部署时按 partition 自动分担.
 //
-// 失败处理:
-//   - 单条解析失败 → log error 跳过 (DLQ 留 Phase 3)
-//   - HandleRefund 返 err → log + 不 commit, 下次重试
+// SP-AC-7 L4: 失败处理升级:
+//   - 解析失败的 bad msg → 写 DLQ topic + commit + metric, 不阻塞队列
+//   - HandleRefund 业务失败 → 累计 retry header, 超 maxRetry → DLQ + commit; 否则不 commit 下次再试
 func runRefundSubscriber(
 	ctx context.Context,
 	engine *workflow.Engine,
@@ -779,7 +1012,9 @@ func runRefundSubscriber(
 ) {
 	brokers := splitCSV(envOr("SPLIT_PAYMENT_KAFKA_BROKERS", ""))
 	topic := envOr("SPLIT_PAYMENT_REFUND_TOPIC", "recon.refund.events")
+	dlqTopic := envOr("SPLIT_PAYMENT_REFUND_DLQ_TOPIC", topic+".dlq")
 	groupID := envOr("SPLIT_PAYMENT_REFUND_GROUP", "split-payment-refund-handler")
+	maxRetry := envInt("SPLIT_PAYMENT_REFUND_MAX_RETRY", 5)
 	if len(brokers) == 0 {
 		return
 	}
@@ -795,10 +1030,23 @@ func runRefundSubscriber(
 		return
 	}
 	defer cl.Close()
+	// SP-AC-7 L4: 独立 DLQ producer (跟 consumer 共 broker, 不同语义).
+	dlqCl, derr := kgo.NewClient(
+		kgo.SeedBrokers(brokers...),
+		kgo.RecordRetries(3),
+		kgo.RequestTimeoutOverhead(5*time.Second),
+	)
+	if derr != nil {
+		log.Error("refund DLQ producer init failed; bad messages will only be logged", zap.Error(derr))
+	} else {
+		defer dlqCl.Close()
+	}
 	log.Info("refund subscriber started",
 		zap.Strings("brokers", brokers),
 		zap.String("topic", topic),
-		zap.String("group", groupID))
+		zap.String("dlq_topic", dlqTopic),
+		zap.String("group", groupID),
+		zap.Int("max_retry", maxRetry))
 
 	for {
 		if ctx.Err() != nil {
@@ -818,18 +1066,33 @@ func runRefundSubscriber(
 			rec := iter.Next()
 			var ev workflow.RefundEvent
 			if err := json.Unmarshal(rec.Value, &ev); err != nil {
-				log.Warn("refund event parse failed",
+				log.Error("refund event parse failed → DLQ",
 					zap.String("topic", rec.Topic), zap.Error(err))
-				toCommit = append(toCommit, rec) // bad msg 跳过
+				observability.RefundEventCount.WithLabelValues("parse_error").Inc()
+				sendToDLQ(ctx, dlqCl, dlqTopic, rec, "parse_error: "+err.Error(), log)
+				toCommit = append(toCommit, rec)
 				continue
 			}
 			if err := engine.HandleRefund(ctx, ev, trRepo, feeRepo, rvRepo); err != nil {
+				retryCount := getRetryHeader(rec)
 				log.Error("HandleRefund failed",
 					zap.String("refund_id", ev.RefundID),
 					zap.String("charge_id", ev.ChargeID),
+					zap.Int("retry", retryCount),
 					zap.Error(err))
-				continue // 不 commit, 重试
+				observability.RefundEventCount.WithLabelValues("handle_error").Inc()
+				if retryCount >= maxRetry {
+					log.Error("HandleRefund exhausted retries → DLQ",
+						zap.String("refund_id", ev.RefundID),
+						zap.Int("max_retry", maxRetry))
+					sendToDLQ(ctx, dlqCl, dlqTopic, rec,
+						fmt.Sprintf("max_retry_exceeded(%d): %v", maxRetry, err), log)
+					toCommit = append(toCommit, rec)
+					continue
+				}
+				continue // 还没到上限, 不 commit, 下次重试
 			}
+			observability.RefundEventCount.WithLabelValues("ok").Inc()
 			toCommit = append(toCommit, rec)
 		}
 		if len(toCommit) > 0 {
@@ -838,4 +1101,47 @@ func runRefundSubscriber(
 			}
 		}
 	}
+}
+
+// sendToDLQ — SP-AC-7 L4: 把坏 / 重试上限的消息推到 DLQ topic 留底, 带 forensics header.
+// dlqCl nil → 仅 log warn (DLQ producer 起不来时不阻塞主流程).
+func sendToDLQ(ctx context.Context, dlqCl *kgo.Client, dlqTopic string, orig *kgo.Record, reason string, log *zap.Logger) {
+	if dlqCl == nil {
+		log.Warn("DLQ producer nil; bad msg dropped after log",
+			zap.String("orig_topic", orig.Topic), zap.String("reason", reason))
+		return
+	}
+	rec := &kgo.Record{
+		Topic: dlqTopic,
+		Key:   orig.Key,
+		Value: orig.Value,
+		Headers: []kgo.RecordHeader{
+			{Key: "x-orig-topic", Value: []byte(orig.Topic)},
+			{Key: "x-orig-partition", Value: []byte(fmt.Sprintf("%d", orig.Partition))},
+			{Key: "x-orig-offset", Value: []byte(fmt.Sprintf("%d", orig.Offset))},
+			{Key: "x-dlq-reason", Value: []byte(reason)},
+			{Key: "x-dlq-ts", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
+		},
+	}
+	dlqCl.Produce(ctx, rec, func(_ *kgo.Record, err error) {
+		if err != nil {
+			log.Error("DLQ produce failed",
+				zap.String("dlq_topic", dlqTopic), zap.String("reason", reason), zap.Error(err))
+		}
+	})
+}
+
+// getRetryHeader — 从 record header 找 x-retry-count, 没有视为 0.
+// 注: Kafka 不允许修改已 produce 的 record header, 实际累计需要 producer 端在重投时
+// 主动写入新 record 带 incremented header. 当前实现读到的是 producer 提供的次数;
+// 后续 outbox 重投 worker 应在 republish 时 ++ 这个 header.
+func getRetryHeader(rec *kgo.Record) int {
+	for _, h := range rec.Headers {
+		if h.Key == "x-retry-count" {
+			var n int
+			_, _ = fmt.Sscanf(string(h.Value), "%d", &n)
+			return n
+		}
+	}
+	return 0
 }

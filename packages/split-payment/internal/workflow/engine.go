@@ -58,6 +58,12 @@ type Engine struct {
 	AppFeeRefundRepo    AppFeeRefundRepo
 	ReversalInsertRepo  ReversalExtRepo
 
+	// SP-AC-7 R1: refund 写两表的原子 helper. nil → 退化到非事务的两步写 (有不一致窗口).
+	ReversalApply ReversalApplier
+
+	// SP-AC-7 R5: Reversal 失败时把任务排入 outbox 让后台 worker 重试. nil → 退化 (失败只 log).
+	ReversalRetry ReversalRetryEnqueuer
+
 	// SP-3B Risk + AML gate. 可选, nil → 跳过风控直接执行.
 	RiskGate *RiskGate
 

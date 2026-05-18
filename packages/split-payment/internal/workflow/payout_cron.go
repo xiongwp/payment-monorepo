@@ -264,6 +264,19 @@ type HoldUnstickWorker struct {
 	Log      *zap.Logger
 }
 
+// NoopPendingHoldsRepo SP-AC-7 L8: 默认实现, 永远返空列表.
+// 真实生产需要在 RunRepo 上加 ListExpiredHolds 方法 (查 moneyflow_runs.hold_until < now
+// AND hold_released = 0). 当前 schema 未含 hold_until 字段, 算 Phase-3 schema migration.
+//
+// 用法 (main.go): 没有真实 PendingHoldsRepo 实现时挂这个, 让 HoldUnstickWorker 结构性启动
+// (避免 nil panic), 等真实实现到位再换.
+type NoopPendingHoldsRepo struct{}
+
+// ListExpiredHolds 永远返空.
+func (NoopPendingHoldsRepo) ListExpiredHolds(_ context.Context, _ time.Time, _ int) ([]*domain.RunPlan, error) {
+	return nil, nil
+}
+
 // Run 阻塞 ticker.
 func (w *HoldUnstickWorker) Run(ctx context.Context) {
 	if w.Cfg.Interval <= 0 {

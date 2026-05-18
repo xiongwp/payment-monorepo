@@ -31,6 +31,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 // designerHTML — MF-2 frontend designer 直接 embed 进二进制.
@@ -226,15 +227,29 @@ func (h *MoneyflowHandler) getConn() (*grpc.ClientConn, error) {
 	if !strings.Contains(target, ":///") {
 		target = "passthrough:///" + target
 	}
-	conn, err := grpc.NewClient(
-		target,
+	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	}
+	// SP-AC-7 S1: 若 env SPLIT_PAYMENT_ADMIN_TOKEN 配了, BFF 调 split-payment 时每个 unary 调用
+	// 自动在 metadata 加 X-Admin-Token. dev 模式 (空 token) 仍然能拨, split-payment 那边 log warn 即可.
+	if token := envOr("SPLIT_PAYMENT_ADMIN_TOKEN", ""); token != "" {
+		dialOpts = append(dialOpts, grpc.WithUnaryInterceptor(adminTokenClientInterceptor(token)))
+	}
+	conn, err := grpc.NewClient(target, dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", target, err)
 	}
 	h.conn = conn
 	return conn, nil
+}
+
+// adminTokenClientInterceptor 把 x-admin-token 加进 outgoing context.
+func adminTokenClientInterceptor(token string) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any,
+		cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-admin-token", token)
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
 }
 
 // Proxy mux 注册: /api/moneyflow/* → 路由到 gRPC 方法.

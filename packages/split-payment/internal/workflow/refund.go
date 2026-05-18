@@ -50,6 +50,12 @@ type ReversalExtRepo interface {
 	Insert(ctx context.Context, rv *domain.Reversal) error
 }
 
+// ReversalApplier SP-AC-7 R1: 原子地把 (INSERT reversal + UPDATE transfer.reversed_amount) 包进一个 DB 事务.
+// 实现见 repo.ApplyReversalAtomic; main.go 把 *sql.DB 闭包进来注入. nil → refund.go 退化到非事务写两步.
+type ReversalApplier interface {
+	Apply(ctx context.Context, rv *domain.Reversal, deltaReversed int64) error
+}
+
 // TransferReverseRepo SP-9 用: 拉 transfer_group + 累加 reversed_amount.
 type TransferReverseRepo interface {
 	ListByGroup(ctx context.Context, group string) ([]*domain.Transfer, error)
@@ -177,23 +183,57 @@ func (e *Engine) HandleRefund(
 			GraphRunID:     plan.ID,
 			CreatedAt:      now,
 		}
-		if err := rvRepo.Insert(ctx, rv); err != nil {
-			e.Log.Error("reversal insert failed",
-				zap.String("refund_id", ev.RefundID),
-				zap.String("transfer_id", t.ID), zap.Error(err))
-			if firstErr == nil {
-				firstErr = err
+		// SP-AC-7 R1: 优先用 atomic applier (一个 sql.Tx 把 INSERT reversal + UPDATE transfer 包起来).
+		// 退化路径 (applier nil) 保留, 但会 log warn 提醒资金一致性窗口.
+		if e.ReversalApply != nil {
+			rv.Status = domain.ReversalStatusSucceeded
+			if err := e.ReversalApply.Apply(ctx, rv, allocs[i]); err != nil {
+				e.Log.Error("ApplyReversalAtomic failed",
+					zap.String("refund_id", ev.RefundID),
+					zap.String("transfer_id", t.ID), zap.Error(err))
+				// SP-AC-7 R5: 失败 → 排入 outbox 让 ReversalRetryWorker 后台重试.
+				// 没接 retry queue 时退化为 firstErr 返回 (Kafka consumer 会重投).
+				if e.ReversalRetry != nil {
+					if qErr := e.ReversalRetry.Enqueue(ctx, rv.ID, t.ID, allocs[i], err); qErr != nil {
+						e.Log.Error("ReversalRetry enqueue failed; falling back to first-err",
+							zap.String("reversal_id", rv.ID), zap.Error(qErr))
+						if firstErr == nil {
+							firstErr = err
+						}
+					} else {
+						e.Log.Info("reversal failure enqueued for retry",
+							zap.String("reversal_id", rv.ID),
+							zap.String("transfer_id", t.ID))
+					}
+				} else if firstErr == nil {
+					firstErr = err
+				}
+				rv.Status = domain.ReversalStatusFailed
+				rv.FailureMessage = err.Error()
+				continue
 			}
-			continue
+		} else {
+			// 退化路径: 非事务两步 (有不一致窗口, dev/memory 模式).
+			e.Log.Warn("ReversalApplier not wired; refund 走非事务两步路径, 资金不一致窗口存在",
+				zap.String("transfer_id", t.ID))
+			if err := rvRepo.Insert(ctx, rv); err != nil {
+				e.Log.Error("reversal insert failed",
+					zap.String("refund_id", ev.RefundID),
+					zap.String("transfer_id", t.ID), zap.Error(err))
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			if err := trRepo.AddReversedAmount(ctx, t.ID, allocs[i]); err != nil {
+				e.Log.Error("AddReversedAmount failed",
+					zap.String("transfer_id", t.ID), zap.Error(err))
+				rv.Status = domain.ReversalStatusFailed
+				rv.FailureMessage = err.Error()
+				continue
+			}
+			rv.Status = domain.ReversalStatusSucceeded
 		}
-		if err := trRepo.AddReversedAmount(ctx, t.ID, allocs[i]); err != nil {
-			e.Log.Error("AddReversedAmount failed",
-				zap.String("transfer_id", t.ID), zap.Error(err))
-			rv.Status = domain.ReversalStatusFailed
-			rv.FailureMessage = err.Error()
-			continue
-		}
-		rv.Status = domain.ReversalStatusSucceeded
 		e.publishEvent(ctx, EventReversalSucceeded, rv)
 		// 同步 update transfer 状态事件
 		if allocs[i] >= t.RemainingReversible() {

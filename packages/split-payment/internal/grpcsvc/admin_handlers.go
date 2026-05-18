@@ -16,6 +16,7 @@ import (
 	"reconcile-system/packages/split-payment/internal/workflow"
 
 	"go.uber.org/zap"
+	"google.golang.org/grpc/metadata"
 )
 
 // GraphRepo 跟 adminhttp.GraphRepo 同形态接口, 复制一份避免 internal 包循环 import.
@@ -54,8 +55,12 @@ type RuleSpec struct {
 
 // AccountingRuleSyncer — SaveGraph 时把 graph 派生出的 rules 推到 accounting.
 // 实现一般是 HTTP POST /admin/transaction-rules. nil → SaveGraph 跳过同步 (best-effort 退化).
+//
+// SP-AC-7 R2: DeleteRules 是 saga 补偿入口 — Upsert OK 但本地 graph save 失败时,
+// caller 应该调本方法回滚 accounting 端已 upsert 的 rule. Hash keys 数组对应 RuleSpec.HashKey.
 type AccountingRuleSyncer interface {
 	UpsertRules(ctx context.Context, rules []RuleSpec) error
+	DeleteRules(ctx context.Context, hashKeys []string) error
 }
 
 // AccountingOrderResetter — TriggerEvent 遇到卡 Processing 时主动重置.
@@ -71,12 +76,13 @@ type Server struct {
 	Accounting AccountingMetaCaller    // nil → TriggerEvent 返错; DryRun 不受影响
 	RuleSync   AccountingRuleSyncer    // nil → SaveGraph 跳过 rule 同步
 	OrderReset AccountingOrderResetter // nil → TriggerEvent 卡 Processing 时只能等 background recovery
+	Audit      AuditSink               // nil → 不写资金审计 (强烈建议生产配, 见 audit.go)
 	Log        *zap.Logger
 }
 
 // NewServer.
-func NewServer(graphs GraphRepo, accounting AccountingMetaCaller, ruleSync AccountingRuleSyncer, orderReset AccountingOrderResetter, log *zap.Logger) *Server {
-	return &Server{Graphs: graphs, Accounting: accounting, RuleSync: ruleSync, OrderReset: orderReset, Log: log}
+func NewServer(graphs GraphRepo, accounting AccountingMetaCaller, ruleSync AccountingRuleSyncer, orderReset AccountingOrderResetter, audit AuditSink, log *zap.Logger) *Server {
+	return &Server{Graphs: graphs, Accounting: accounting, RuleSync: ruleSync, OrderReset: orderReset, Audit: audit, Log: log}
 }
 
 // ListGraphs.
@@ -178,9 +184,32 @@ func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGra
 	// Saga step 2: 本地持久化 graph
 	if _, err := s.Graphs.Save(ctx, g); err != nil {
 		outcome = "local_save_failed"
-		// 注: 此处 graph save 失败, accounting 的 rule 已经 upsert. rule 是幂等的
-		// 元数据, 残留不会造成数据不一致 (没有对应 graph 触发就用不到), 下次 SaveGraph
-		// 重试会覆盖. 不做补偿 cancel.
+		// SP-AC-7 R2: 本地 graph save 失败 → 补偿删除已 upsert 的 accounting rule.
+		// 资金安全考虑: 残留 rule 虽然幂等但是孤儿数据, 长期累积会让 admin UI 混乱;
+		// 而且能调 TriggerEvent (绕开 SaveGraph) 利用孤儿 rule 落账. 必须回滚.
+		if s.RuleSync != nil {
+			rules := deriveRulesFromGraph(g)
+			if len(rules) > 0 {
+				hashKeys := make([]string, 0, len(rules))
+				for _, r := range rules {
+					hashKeys = append(hashKeys, r.HashKey)
+				}
+				if compErr := s.RuleSync.DeleteRules(ctx, hashKeys); compErr != nil {
+					// 补偿失败 → 残留, 但至少 log + 给 caller 一个明确告警, 让人工跟进.
+					if s.Log != nil {
+						s.Log.Error("SaveGraph saga compensation FAILED — accounting rule 残留, 需人工 DELETE",
+							zap.String("graph_key", g.Key),
+							zap.Strings("hash_keys", hashKeys),
+							zap.Error(compErr))
+					}
+					return nil, fmt.Errorf("graph save failed (%v); compensate failed too: %w (rules 残留, 人工 cleanup)", err, compErr)
+				}
+				if s.Log != nil {
+					s.Log.Info("SaveGraph saga: rolled back accounting rules due to local save failure",
+						zap.String("graph_key", g.Key), zap.Int("rolled_back", len(hashKeys)))
+				}
+			}
+		}
 		return nil, err
 	}
 	return &SaveGraphResponse{Key: g.Key, Version: g.Version}, nil
@@ -361,6 +390,24 @@ func (s *Server) TriggerEvent(ctx context.Context, req *TriggerEventRequest) (*T
 			tx.EventCode,
 			observability.VoucherStatusLabel(int8(v.Status)),
 		).Inc()
+		// SP-AC-7 S6: 资金审计 - 每个 voucher 写一条独立 audit, 不阻塞业务即可.
+		// SP-AC-7 P10: log + audit 都加 trace_id (从 OTel ctx 抓).
+		if s.Audit != nil {
+			actor := extractActor(ctx)
+			_ = s.Audit.Write(ctx, AuditEvent{
+				Action:     "moneyflow.trigger",
+				GraphKey:   req.GraphKey,
+				BusinessNo: tc.ChargeID,
+				EventCode:  tx.EventCode,
+				OrderNo:    tx.OrderNo,
+				VoucherNo:  v.VoucherNo,
+				Status:     v.Status,
+				Actor:      actor,
+				OccurredAt: time.Now().UTC(),
+				Error:      v.Error,
+				TraceID:    observability.TraceIDFromCtx(ctx),
+			})
+		}
 		resp.Vouchers = append(resp.Vouchers, v)
 	}
 	if len(failedTx) > 0 {
@@ -384,4 +431,26 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// extractActor 从 gRPC metadata 抽 actor 信息.
+//   - x-actor 优先 (BFF 应该传入业务侧用户身份)
+//   - x-admin-token 兜底, 不记原文 (脱敏: 只记前 8 字节 hash 用)
+//   - 都没有 → "unknown"
+func extractActor(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return "unknown"
+	}
+	if v := md.Get("x-actor"); len(v) > 0 && v[0] != "" {
+		return v[0]
+	}
+	if v := md.Get("x-admin-token"); len(v) > 0 && v[0] != "" {
+		t := v[0]
+		if len(t) > 8 {
+			return "token-" + t[:8]
+		}
+		return "token-" + t
+	}
+	return "unknown"
 }

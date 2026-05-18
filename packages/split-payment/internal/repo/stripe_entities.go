@@ -594,6 +594,73 @@ func (r *ReversalRepo) ListByTransfer(ctx context.Context, transferID string) ([
 	return out, rows.Err()
 }
 
+// ─── SP-AC-7 R1: 原子 helper: Reversal Insert + Transfer AddReversedAmount 同事务 ───
+//
+// 之前 refund.go 串行调 ReversalRepo.Insert 后再 TransferRepo.AddReversedAmount, 中间挂掉
+// 会出现 "reversal 写入但 transfer.reversed_amount 没累加" 的不一致.
+//
+// 这里假设 Reversal 跟 Transfer 在同一 *sql.DB (split-payment 单 MySQL 实例), 共享 conn pool,
+// 用 sql.Tx 包起来. 若未来 Reversal 跨库, 需要走 outbox 模式.
+
+// ApplyReversalAtomic 在单事务内: INSERT reversal + UPDATE transfer.reversed_amount.
+// reversalDB 必须跟 transferDB 同一 *sql.DB; 调用方负责保证.
+func ApplyReversalAtomic(ctx context.Context, db *sql.DB, rv *domain.Reversal, deltaReversed int64) error {
+	if db == nil {
+		return errors.New("nil db")
+	}
+	if rv == nil {
+		return errors.New("nil reversal")
+	}
+	if rv.ID == "" {
+		return errors.New("reversal.id required")
+	}
+	if rv.CreatedAt.IsZero() {
+		rv.CreatedAt = time.Now().UTC()
+	}
+	meta, _ := json.Marshal(rv.Metadata)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+	}()
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO reversals
+		(id, transfer, amount_minor, currency, reason, status, failure_message,
+		 idempotency_key, graph_run_id, metadata_json, created_at)
+		VALUES (?, ?, ?, ?, ?,  ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE id=id`,
+		rv.ID, rv.Transfer, rv.AmountMinor, rv.Currency, rv.Reason,
+		rv.Status, rv.FailureMessage, rv.IdempotencyKey, rv.GraphRunID, meta, rv.CreatedAt,
+	); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("insert reversal: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE transfers
+		   SET reversed_amount = reversed_amount + ?,
+		       status = CASE
+		         WHEN reversed_amount + ? >= amount_minor THEN 'reversed'
+		         WHEN reversed_amount + ? > 0 THEN 'partially_reversed'
+		         ELSE status
+		       END
+		 WHERE id=?`, deltaReversed, deltaReversed, deltaReversed, rv.Transfer,
+	); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("update transfer reversed_amount: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────
 
 // nullTime: zero time → SQL NULL.

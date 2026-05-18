@@ -715,6 +715,33 @@ func (s *Server) handleTransactionRules(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeJSON(w, http.StatusOK, rows)
+	case http.MethodDelete:
+		// SP-AC-7 R2: SaveGraph saga 补偿. body: {hash_keys:[...]}.
+		var body struct {
+			HashKeys []string `json:"hash_keys"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
+			return
+		}
+		if len(body.HashKeys) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hash_keys array required"})
+			return
+		}
+		deleted, err := s.ruleRepo.DeleteByHashKeys(r.Context(), body.HashKeys)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		// 删完触发 reload, 让 in-memory snapshot 立即不再返已删 rule
+		if err := s.ruleRepo.Reload(r.Context()); err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"deleted": deleted,
+				"warning": "delete OK but reload failed: " + err.Error(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
 	case http.MethodPost:
 		// 用 anonymous struct 显式带 json tag 解析 — model.TransactionRule 只有 gorm tag
 		// 没 json tag, snake_case 入参会拿不到值. 这里 DTO 解完再 copy 进 model.

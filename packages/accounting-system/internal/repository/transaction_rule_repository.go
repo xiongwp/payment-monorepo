@@ -47,6 +47,11 @@ type TransactionRuleRepository interface {
 	// (product_code, event_code) 对同步成 accounting 的 rule 元数据.
 	// 注意: 只写 DB, 不触发 Reload (调用方批量 upsert 完后显式调一次 Reload).
 	UpsertRule(ctx context.Context, rule *model.TransactionRule) error
+
+	// DeleteByHashKeys 按 hash_key 批量删除 transaction_rule 行.
+	// SP-AC-7 R2: SaveGraph saga 补偿用 — accounting rule 已 upsert 但本地 graph 保存失败时
+	// 调用此方法回滚 rule. 返删除条数; hash_keys 中找不到的行被忽略 (idempotent).
+	DeleteByHashKeys(ctx context.Context, hashKeys []string) (int64, error)
 }
 
 // ruleSnapshot 不可变快照：替换时 atomic.Store 整个指针，读端无锁。
@@ -283,4 +288,30 @@ func (r *transactionRuleRepository) UpsertRule(ctx context.Context, rule *model.
 		rule.FromDirection, rule.ToDirection,
 		rule.TransactionType, rule.BookkeepingMode,
 	).Error
+}
+
+// DeleteByHashKeys 批量按 hash_key 删 transaction_rule.
+//
+// SP-AC-7 R2: SaveGraph saga 补偿入口. 之前 SaveGraph 流程:
+//   1. accounting upsert rule
+//   2. 本地 INSERT graph  ← 这步挂掉, rule 在 accounting 已残留
+// 残留 rule 跟孤儿 (没有 graph 引用), 短期幂等无害, 但攻击面 + 运维混淆. 改完
+// SaveGraph saga, 第 2 步失败 → 调本方法回滚第 1 步.
+//
+// 幂等: hashKeys 为空 / 找不到的行都 OK, 不报错. 返实际删除条数 (供 caller log).
+func (r *transactionRuleRepository) DeleteByHashKeys(ctx context.Context, hashKeys []string) (int64, error) {
+	if len(hashKeys) == 0 {
+		return 0, nil
+	}
+	db, err := r.dbManager.GetMetaDB()
+	if err != nil {
+		return 0, fmt.Errorf("delete rule: get meta db: %w", err)
+	}
+	res := db.WithContext(ctx).Exec(
+		`DELETE FROM transaction_rule WHERE hash_key IN (?)`, hashKeys,
+	)
+	if res.Error != nil {
+		return 0, fmt.Errorf("delete rule by hash_keys: %w", res.Error)
+	}
+	return res.RowsAffected, nil
 }
