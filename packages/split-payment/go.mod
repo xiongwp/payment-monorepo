@@ -7,6 +7,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2 // SP-AC-7 P9: metrics
 	github.com/twmb/franz-go v1.18.0 // SP-8/11: Kafka client (events + refund subscriber)
 	github.com/xiongwp/payment-util v0.0.1 // SP-AC-7 L2+X2: hardened gRPC dial
+	github.com/spf13/viper v1.19.0 // config YAML + env override
 	go.uber.org/zap v1.27.0
 	google.golang.org/grpc v1.80.0
 )
