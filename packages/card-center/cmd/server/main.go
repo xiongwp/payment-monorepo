@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	kitexserver "github.com/cloudwego/kitex/server"
 	"github.com/spf13/viper"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -27,6 +28,8 @@ import (
 	"google.golang.org/grpc/keepalive"
 
 	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+
+	cardcenterservice "reconcile-system/packages/card-center/kitex_gen/cardcenter/v1/cardcenterservice"
 
 	"github.com/xiongwp/card-center/internal/audit"
 	"github.com/xiongwp/card-center/internal/httpsauth"
@@ -332,58 +335,46 @@ func newService(v *vault.Vault, sr repo.StoredCardRepo, pr repo.PaymentTokenRepo
 //
 // dev 路径：tls.cert/key 都没配时，**自动降级到明文 listener** 让 card-center 能起来。
 // 适合本机 / docker-compose 调试。assertProdSafety 在 env=prod 下会拦截这种降级。
-func newGRPCServer(v *viper.Viper, svc *service.Service, logger *zap.Logger) (*grpc.Server, *server.Server, error) {
+func newGRPCServer(v *viper.Viper, svc *service.Service, logger *zap.Logger) (kitexserver.Server, *server.Server, error) {
 	allowMap := v.GetStringMapStringSlice("auth.client_cn")
 	allow := server.NewClientCNAllowList(allowMap)
 
 	opts := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(
-			trace.UnaryServerInterceptor(logger),
-			shadow.UnaryServerInterceptor(),
-			server.UnaryClientCNInterceptor(allow),
-		),
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime: 5 * time.Second, PermitWithoutStream: true,
-		}),
+		// TODO: kitexutil MW 三件套 (Trace / Shadow / ClientCN) — 等 kitexutil port 完成后接.
+		// 当前 gRPC interceptor 等价 MW 都标 TODO 待实现:
+		//   - trace.UnaryServerInterceptor(logger) → kitexutil.TraceMW(logger)
+		//   - shadow.UnaryServerInterceptor() → kitexutil.ShadowMW()
+		//   - server.UnaryClientCNInterceptor(allow) → kitexutil.MTLSClientCNMW(allow)  [mTLS 已不需要, 可删]
 	}
-	certPath := v.GetString("tls.cert")
-	keyPath := v.GetString("tls.key")
-	if certPath != "" && keyPath != "" {
-		tlsCfg, err := buildTLSConfig(v)
-		if err != nil {
-			return nil, nil, fmt.Errorf("tls config: %w", err)
-		}
-		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsCfg)))
-		logger.Info("card-center gRPC: mTLS enabled")
-	} else {
-		logger.Warn("card-center gRPC: NO TLS (dev mode); env=prod will fail at assertProdSafety")
-	}
+	// mTLS 已不需要 (内部 service mesh 明文跑), tls.cert/key 配置废弃.
+	_ = opts
 
-	srv := grpc.NewServer(opts...)
+	addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", v.GetInt("server.grpc_port")))
 	bs := server.NewServer(svc, logger)
-	bs.Register(srv)
+	srv := cardcenterservice.NewServer(bs,
+		kitexserver.WithServiceAddr(addr),
+	)
 	return srv, bs, nil
 }
 
-func startGRPC(lc fx.Lifecycle, srv *grpc.Server, _ *server.Server, v *viper.Viper, logger *zap.Logger) error {
+func startGRPC(lc fx.Lifecycle, srv kitexserver.Server, _ *server.Server, v *viper.Viper, logger *zap.Logger) error {
 	port := v.GetInt("server.grpc_port")
 	if port == 0 {
 		port = 9443
 	}
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		return err
-	}
-	logger.Info("card-center mTLS gRPC listening", zap.Int("port", port))
+	logger.Info("card-center Kitex listening", zap.Int("port", port))
 	go func() {
-		if err := srv.Serve(lis); err != nil {
-			logger.Error("grpc serve", zap.Error(err))
+		if err := srv.Run(); err != nil {
+			logger.Error("kitex serve", zap.Error(err))
 		}
 	}()
 	lc.Append(fx.Hook{
 		OnStop: func(ctx context.Context) error {
 			done := make(chan struct{})
-			go func() { srv.GracefulStop(); close(done) }()
+			go func() {
+				_ = srv.Stop()
+				close(done)
+			}()
 			select {
 			case <-done:
 			case <-time.After(15 * time.Second):

@@ -1,11 +1,22 @@
 # Kitex 迁移 — 推进记录 + 剩余 checklist
 
+## 决策
+
+- **mTLS**: 内部 service mesh **不走 TLS** (用户 2026-05 决策).
+  原 `payment-util/mtls.LoadFromEnv` 调用 / `MTLS_*` env / `client.WithTLSConfig`
+  全部从迁移清单去除. 边缘 ingress (k8s gateway) 仍是 TLS 终端,
+  内部 RPC 都明文跑 + service mesh 网络隔离保证.
+- **wire 协议**: Kitex 默认 TTHeader + Protobuf
+- **IDL**: Protobuf (复用现有 `packages/<svc>/api/proto/**`)
+
 ## 已完成 ✓
 
-| Service | 角色 | Server | Client 切换方 |
-|---------|------|:------:|---------------|
-| **id-generator** | leaf | ✓ | (订单 / 支付内部调, 暂无显式 client wrapper 文件) |
-| **kms-manage** | leaf | ✓ | card-center ✓ / payment-core / user-merchant-core / payment-admin-web ⏳ |
+| Service | Server | Callers |
+|---------|:------:|---------|
+| **id-generator** | ✓ | (无显式 client wrapper) |
+| **kms-manage** | ✓ | card-center ✓ / payment-core ✓ / user-merchant-core ✓ / payment-admin-web ✓ |
+| **risk-manage** | ✓ | payment-core ✓ / payment-admin-web ✓ |
+| **accounting-system** (proto only) | ⚠ 部分 | 0/5 — 见下 |
 
 共享基础设施 ✓:
 - `payment-util/kitexutil/` — EtcdResolver + Auth/Log/Metrics/Recover/CB middleware
@@ -83,10 +94,23 @@ Bearer token 透传:
 6. 同步改所有 caller 的 `internal/<svc>client/client.go` (跟 card-center kmsclient 同款 diff)
 7. 验证 `go build ./...` (跨服务跑 unit test)
 
-## 风险点 (per idl/README.md "风险点")
+## accounting-system 卡点 (KX-4)
 
-- Kitex 默认 TTHeader+Protobuf, **跟 gRPC wire 不互通**: server + client 必须同时切; 否则一边 OK 一边 connection refused
-- 老 `payment-util/shadow.UnaryServerInterceptor` 是 gRPC interceptor: 需要重写一份 `shadow.KitexMW` (从 metainfo 取 shadow header 注 ctx)
-- mTLS: 老 `mtls.LoadFromEnv()` 给的是 `grpc.DialOption`, Kitex 用 `tls.Config` 直接装 `client.WithTLSConfig`; payment-util 需要加 `mtls.KitexClientConfig() *tls.Config`
-- rate_limit / SAN whitelist (kms-manage): 当前 main.go 留 TODO; 真接 Kitex middleware 时把老 `RateLimitInterceptor` / `ClientIdentityInterceptor` port 一份到 kitexutil
-- 服务发现: 当前 `kitexutil.EtcdResolver` 是 stub Instance impl, 真接 Kitex 时换成 `discovery.Instance` 接口 (kitex/pkg/discovery)
+accounting-system 比预期复杂:
+- proto 里只声明 1 个 service (`AccountingService`)
+- 但 `internal/grpc/server.go` 注册 4 个 service:
+  `AccountingService` / `AccountingAdminService` / `FreezeService` / `TransactionService`
+- 后 3 个 service 是手写 grpc service (admin_extensions.go / freeze_extensions.go / transaction_service.go), 没有 .proto
+- Kitex 是 IDL-driven, 必须先给这 3 个 service 写 .proto, 然后 MultiService 模式注册
+
+**KX-4 当前状态**: idl/accounting/v1/accounting.proto 已就绪 (只含 AccountingService),
+kitex_gen/README.md 已落档 plan. 后续需要把 3 个手写 service 反向写成 proto 再继续.
+
+## 风险点 (mTLS 已 ✗ 不需要)
+
+- Kitex 默认 TTHeader+Protobuf, **跟 gRPC wire 不互通**: server + client 必须同时切
+- ~~mTLS~~ 用户决策不要, 内部 mesh 明文跑
+- 老 `payment-util/shadow.UnaryServerInterceptor` (gRPC) 需要 port `kitexutil.ShadowMW` (从 metainfo 取 shadow header)
+- 老 `payment-util/trace.UnaryServerInterceptor` (gRPC) 需要 port `kitexutil.TraceMW`
+- rate_limit / SAN whitelist (kms-manage): TODO 留 kitexutil 接好后展开
+- 服务发现: `kitexutil.EtcdResolver` stub Instance impl 待跟 Kitex `discovery.Instance` 对齐

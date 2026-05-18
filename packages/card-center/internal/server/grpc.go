@@ -1,7 +1,7 @@
-// Package server 提供 gRPC handler，把 cardcenter.v1 proto 转到 service.Service。
+// Package server 提供 Kitex handler, 把 cardcenter.v1 proto 转到 service.Service.
 //
-// 注意：本 handler **不**直接接触 PAN（仅在 DetokenizeResponse 内回传，调用方
-// 接到后必须立即用、立即清栈，本服务自己不能 log）。
+// 注意: 本 handler **不**直接接触 PAN (仅在 DetokenizeResponse 内回传, 调用方
+// 接到后必须立即用、立即清栈, 本服务自己不能 log).
 package server
 
 import (
@@ -11,20 +11,19 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	cardcenterv1 "github.com/xiongwp/card-center/api/proto/cardcenter/v1"
+	cardcenterv1 "reconcile-system/packages/card-center/kitex_gen/cardcenter/v1"
+
 	"github.com/xiongwp/card-center/internal/repo"
 	"github.com/xiongwp/card-center/internal/service"
 	"github.com/xiongwp/payment-util/trace"
 )
 
-// Server 实现 cardcenterv1.CardCenterServer
+// Server 实现 Kitex cardcenterservice.Server 接口 (跟 gRPC 同方法签名).
+// 切 Kitex 后不再 embed UnimplementedCardCenterServer.
 type Server struct {
-	cardcenterv1.UnimplementedCardCenterServer
-
 	svc    *service.Service
 	logger *zap.Logger
 }
@@ -34,10 +33,9 @@ func NewServer(svc *service.Service, logger *zap.Logger) *Server {
 	return &Server{svc: svc, logger: logger}
 }
 
-// Register 把 server 挂到 grpc.Server
-func (s *Server) Register(g *grpc.Server) {
-	cardcenterv1.RegisterCardCenterServer(g, s)
-}
+// Register Kitex 不用后置 Register, 这里保留 no-op 兼容老接口. cmd/server/main.go
+// 直接用 cardcenterservice.NewServer(impl, opts...) 在构造时完成 service 注册.
+func (s *Server) Register() {}
 
 // ─── Tokenize ──────────────────────────────────────────────────────────────
 

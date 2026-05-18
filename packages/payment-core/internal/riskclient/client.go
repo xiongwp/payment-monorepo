@@ -112,21 +112,13 @@ func Dial(registry []string, endpoint string, rpcTimeout time.Duration) (Client,
 		return nil, fmt.Errorf("riskclient.Dial: endpoint and registry both empty")
 	}
 	const serviceName = "risk-manage"
-	// mTLS check (prod fail-fast if certs 缺); Kitex 当前 stub 不接 TLS, 待 mtls.KitexTLSConfig 完成.
-	mtlsCfg, mtlsErr := mtls.LoadFromEnv()
-	if mtlsErr != nil {
-		return nil, fmt.Errorf("riskclient.Dial: mtls config: %w", mtlsErr)
-	}
-	_ = mtlsCfg // TODO: 接 mtls.KitexTLSConfig 后 opts = append(opts, client.WithTLSConfig(...))
-
+	// 内部 service mesh 不走 mTLS (按用户决策); 边缘网关单向 TLS 在 ingress 层做.
 	opts := []client.Option{
 		client.WithRPCTimeout(rpcTimeout),
 		client.WithHostPorts(endpoint),
-		// TODO: 接 etcd resolver — client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, ""))
-		// TODO: shadow MW (risk-manage 看到 x-shadow=1 短路 ALLOW)
-		// TODO: trace MW
+		// TODO: shadow / trace MW (port 老 grpc shadow.UnaryClientInterceptor + trace.UnaryClientInterceptor)
 	}
-	_ = registry // TODO: etcd resolver
+	_ = registry // TODO: etcd resolver (kitexutil.NewEtcdResolver)
 
 	api, err := riskservice.NewClient(serviceName, opts...)
 	if err != nil {
