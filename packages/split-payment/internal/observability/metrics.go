@@ -68,6 +68,92 @@ var RefundEventCount = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help:      "Refund Kafka events consumed by outcome.",
 }, []string{"outcome"}) // "ok" / "parse_error" / "handle_error"
 
+// ─── SP-AC-7 O2: Outbox depth gauges (周期性 scrape, OutboxMetricsCollector 填) ───
+
+// OutboxDepth — 各 outbox 表的 pending 行数. label: name="event_outbox"/"reversal_retry_outbox"
+var OutboxDepth = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: "split_payment",
+	Subsystem: "outbox",
+	Name:      "depth",
+	Help:      "Current pending row count per outbox table.",
+}, []string{"name"})
+
+// OutboxDeadLetter — dead_letter 行数, 超 max_retry 累积.
+var OutboxDeadLetter = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: "split_payment",
+	Subsystem: "outbox",
+	Name:      "dead_letter_total",
+	Help:      "Current dead_letter row count per outbox table (need human action).",
+}, []string{"name"})
+
+// OutboxOldestAgeSeconds — 最老 pending 行的年龄 (秒). 高值 → worker 卡死或速率不够.
+var OutboxOldestAgeSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: "split_payment",
+	Subsystem: "outbox",
+	Name:      "oldest_age_seconds",
+	Help:      "Age in seconds of the oldest pending row per outbox table.",
+}, []string{"name"})
+
+// ─── SP-AC-7 O2: DB query metrics ──────────────────────────────────────────
+
+// DBQueryDuration — DB query 端到端耗时, label: table + op.
+// 由 InstrumentedDB wrapper 自动埋, 业务代码无感知.
+var DBQueryDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	Namespace: "split_payment",
+	Subsystem: "db",
+	Name:      "query_duration_seconds",
+	Help:      "DB query duration in seconds, by table and operation.",
+	Buckets:   []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
+}, []string{"table", "op"}) // op: select/insert/update/delete/other
+
+// DBSlowQuery — 慢查询计数 (> 200ms).
+var DBSlowQuery = promauto.NewCounterVec(prometheus.CounterOpts{
+	Namespace: "split_payment",
+	Subsystem: "db",
+	Name:      "slow_query_total",
+	Help:      "Total slow queries (>200ms), by table.",
+}, []string{"table"})
+
+// DBOpenConnections / DBInUse / DBWaitCount — 由 main.go 周期性从 sql.DB.Stats() 推送.
+var (
+	DBOpenConnections = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "split_payment",
+		Subsystem: "db",
+		Name:      "open_connections",
+		Help:      "DB pool open connections.",
+	})
+	DBInUseConnections = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "split_payment",
+		Subsystem: "db",
+		Name:      "in_use_connections",
+		Help:      "DB pool in-use connections.",
+	})
+	DBWaitCount = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "split_payment",
+		Subsystem: "db",
+		Name:      "wait_count_total",
+		Help:      "Cumulative number of times a query had to wait for a free connection.",
+	})
+)
+
+// ─── SP-AC-7 O3: Circuit breaker state ────────────────────────────────────
+
+// CircuitStateGauge — 各下游断路器当前状态: 0=closed (正常), 1=half-open, 2=open (熔断中).
+var CircuitStateGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: "split_payment",
+	Subsystem: "circuit",
+	Name:      "state",
+	Help:      "Circuit breaker state per downstream (0=closed, 1=half_open, 2=open).",
+}, []string{"downstream"})
+
+// CircuitTrips — 断路器跳闸次数.
+var CircuitTrips = promauto.NewCounterVec(prometheus.CounterOpts{
+	Namespace: "split_payment",
+	Subsystem: "circuit",
+	Name:      "trips_total",
+	Help:      "Total circuit breaker trips per downstream.",
+}, []string{"downstream"})
+
 // VoucherStatusLabel 给 int8 status 转可读 string, 让 metric label 不暴露 magic number.
 func VoucherStatusLabel(s int8) string {
 	switch s {

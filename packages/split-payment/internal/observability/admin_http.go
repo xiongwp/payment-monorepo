@@ -11,20 +11,23 @@ package observability
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/pprof"
 	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // ReadyCheckFunc 一个就绪探针. 返 nil = 健康, 返 err = 503.
 // 调用方注册多个 (e.g. DB ping, accounting gRPC channel ready, Kafka producer ready).
 type ReadyCheckFunc func(ctx context.Context) error
 
-// AdminServer 暴露 health / metrics.
+// AdminServer 暴露 health / metrics / pprof / log-level 等运维入口.
 type AdminServer struct {
 	port   string
 	log    *zap.Logger
@@ -32,6 +35,9 @@ type AdminServer struct {
 
 	// draining 由 BeginDrain 设为 true, readiness 立即返 503, 用于优雅停机.
 	draining atomic.Bool
+
+	// SP-AC-7 O4: 动态 log level — POST /admin/log-level body {"level":"debug"} 调用 SetLevel.
+	logLevel zap.AtomicLevel
 
 	srv *http.Server
 }
@@ -42,11 +48,13 @@ type namedCheck struct {
 }
 
 // NewAdminServer 起一个 admin server. port 空 → 默认 9099.
-func NewAdminServer(port string, log *zap.Logger) *AdminServer {
+// level zap.AtomicLevel: 给 POST /admin/log-level 用 (调用方应把 zap.NewProduction
+// 改用 NewAtomicLevelWith 才能后续动态调级). 传 nil → 不暴露 log-level 端点.
+func NewAdminServer(port string, log *zap.Logger, level zap.AtomicLevel) *AdminServer {
 	if port == "" {
 		port = "9099"
 	}
-	return &AdminServer{port: port, log: log}
+	return &AdminServer{port: port, log: log, logLevel: level}
 }
 
 // AddReadyCheck 注册一条就绪探针. 多次调用累加, 任一返 err → readiness 整体 503.
@@ -65,6 +73,14 @@ func (a *AdminServer) Run(ctx context.Context) error {
 	mux.HandleFunc("/healthz", a.handleHealth)
 	mux.HandleFunc("/readiness", a.handleReadiness)
 	mux.Handle("/metrics", promhttp.Handler())
+	// SP-AC-7 O4: pprof endpoints — 性能 profile (生产受 token 保护; 这里 dev 模式直暴露).
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	// SP-AC-7 O4: 动态日志 level — GET 查, POST {"level":"debug"} 改.
+	mux.HandleFunc("/admin/log-level", a.handleLogLevel)
 
 	a.srv = &http.Server{
 		Addr:              ":" + a.port,
@@ -88,6 +104,36 @@ func (a *AdminServer) Run(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// handleLogLevel — SP-AC-7 O4: 动态 zap 日志 level 切换.
+//   GET                    → 返当前 level
+//   POST {"level":"debug"} → 切到 debug. 合法值: debug/info/warn/error
+func (a *AdminServer) handleLogLevel(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		_, _ = w.Write([]byte(a.logLevel.String()))
+	case http.MethodPost, http.MethodPut:
+		var body struct {
+			Level string `json:"level"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		var lvl zapcore.Level
+		if err := lvl.UnmarshalText([]byte(body.Level)); err != nil {
+			http.Error(w, "invalid level (use debug/info/warn/error): "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		a.logLevel.SetLevel(lvl)
+		if a.log != nil {
+			a.log.Info("log level changed via admin HTTP", zap.String("new_level", lvl.String()))
+		}
+		_, _ = w.Write([]byte("ok: " + lvl.String()))
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // handleHealth — 永远 200 (只要进程在跑 admin server 就视为活).

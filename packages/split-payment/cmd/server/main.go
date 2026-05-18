@@ -53,7 +53,11 @@ import (
 )
 
 func main() {
-	log, _ := zap.NewProduction()
+	// SP-AC-7 O4: zap AtomicLevel — 让 /admin/log-level 能在线调级.
+	logLevel := zap.NewAtomicLevelAt(parseLogLevel(envOr("SPLIT_PAYMENT_LOG_LEVEL", "info")))
+	logCfg := zap.NewProductionConfig()
+	logCfg.Level = logLevel
+	log, _ := logCfg.Build()
 	defer log.Sync()
 
 	// SP-AC-7 P10: OTel trace context propagation (W3C traceparent). 当前用 noop tracer,
@@ -412,7 +416,7 @@ func main() {
 
 	// SP-AC-7 L1+P9: split-payment admin HTTP — /healthz + /readiness + /metrics.
 	// 跟 gRPC :9098 错开 (默认 :9099), env SPLIT_ADMIN_HTTP_PORT 可覆盖.
-	adminSrv := observability.NewAdminServer(envOr("SPLIT_ADMIN_HTTP_PORT", "9099"), log)
+	adminSrv := observability.NewAdminServer(envOr("SPLIT_ADMIN_HTTP_PORT", "9099"), log, logLevel)
 	// readiness 探针: MySQL ping (DSN 配了才探).
 	if db != nil {
 		adminSrv.AddReadyCheck("mysql", func(c context.Context) error {
@@ -432,6 +436,16 @@ func main() {
 			log.Error("admin http server exited", zap.Error(err))
 		}
 	}()
+
+	// SP-AC-7 O2: DB stats + outbox depth gauge collectors.
+	if db != nil {
+		observability.StartDBStatsCollector(ctx, db, 30*time.Second, log)
+		scrapers := map[string]observability.OutboxScraper{
+			"event_outbox":          eventOutboxScraper(db),
+			"reversal_retry_outbox": reversalOutboxScraper(db),
+		}
+		observability.StartOutboxMetricsCollector(ctx, scrapers, 30*time.Second, log)
+	}
 
 	// SP-FIN-2: PayoutDispatchWorker — pending → in_transit 状态机.
 	// 调 clearing-settlement 服务 (env CLEARING_HTTP_URL 配了走真实, 否则 Noop).
@@ -493,6 +507,19 @@ func main() {
 			go cron.Run(ctx)
 		}
 
+		// SP-AC-7 PROD2: Daily trial balance reconciliation worker (lease protected).
+		recWk := &workflow.ReconcileWorker{
+			Cfg:  workflow.DefaultReconcileConfig(),
+			DB:   db,
+			Sink: &workflow.LogAlertSink{Log: log},
+			Log:  log,
+		}
+		recLease := &workflow.CronLease{
+			DB: db, Name: "reconcile_worker",
+			Holder: workflow.DefaultHolder(), TTL: 5 * time.Minute, Log: log,
+		}
+		go recLease.RunWithLease(ctx, recWk.Run)
+
 		// SP-AC-7 L8: HoldUnstickWorker — 之前实现完整但 main.go 0 caller.
 		// 当前 RunRepo 没暴露 ListExpiredHolds (需要 moneyflow_runs.hold_until 字段, 后续 schema migration),
 		// 先挂 NoopPendingHoldsRepo, worker 结构性启动但 tick 时无事可做. 后接真 repo 即可.
@@ -530,6 +557,20 @@ func main() {
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────
+
+// parseLogLevel — SP-AC-7 O4: env 字符串 → zap level.
+func parseLogLevel(s string) zap.AtomicLevel {
+	switch strings.ToLower(s) {
+	case "debug":
+		return zap.NewAtomicLevelAt(zap.DebugLevel)
+	case "warn", "warning":
+		return zap.NewAtomicLevelAt(zap.WarnLevel)
+	case "error":
+		return zap.NewAtomicLevelAt(zap.ErrorLevel)
+	default:
+		return zap.NewAtomicLevelAt(zap.InfoLevel)
+	}
+}
 
 func envInt(k string, def int) int {
 	if v := os.Getenv(k); v != "" {
@@ -627,11 +668,16 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 	var orderReset grpcsvc.AccountingOrderResetter
 	if base := envOr("ACCOUNTING_HTTP_URL", ""); base != "" {
 		base = strings.TrimRight(base, "/")
-		ruleSync = &httpRuleSyncer{baseURL: base, log: log}
-		orderReset = &httpOrderResetter{baseURL: base, log: log}
+		// SP-AC-7 O3: 加 circuit breaker — accounting admin HTTP 连续 5 次失败 → 30s 熔断, fail-fast.
+		cb := observability.NewCircuitBreaker("accounting_admin_http", observability.CircuitConfig{
+			FailureThreshold: 5, SuccessThreshold: 2, OpenDuration: 30 * time.Second,
+		})
+		ruleSync = &cbRuleSyncer{inner: &httpRuleSyncer{baseURL: base, log: log}, cb: cb}
+		orderReset = &cbOrderResetter{inner: &httpOrderResetter{baseURL: base, log: log}, cb: cb}
 		log.Info("split-payment: accounting admin HTTP wired",
 			zap.String("accounting_http", base),
-			zap.String("for", "SaveGraph saga + TriggerEvent retry"))
+			zap.String("for", "SaveGraph saga + TriggerEvent retry"),
+			zap.String("circuit", "accounting_admin_http"))
 	} else {
 		log.Warn("split-payment: ACCOUNTING_HTTP_URL empty, saga + retry features disabled")
 	}
@@ -641,23 +687,40 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 	authToken := envOr("SPLIT_PAYMENT_ADMIN_TOKEN", "")
 	var opts []grpc.ServerOption
 	// SP-AC-7 L3+P1: gRPC server keepalive + 限流, 防超长闲连接 / 巨型 payload 打挂进程.
-	//   - KeepaliveEnforcementPolicy 配合 client 端 hardenedOptions (10s ping), 否则会 GOAWAY enhance_your_calm.
-	//   - MaxConcurrentStreams 64 防恶意客户端打开过多并发流耗光资源.
-	//   - MaxRecvMsgSize 16MB 兼容大 graph spec_json (默认 4MB 不够大 graph).
 	opts = append(opts,
 		grpc.MaxConcurrentStreams(64),
 		grpc.MaxRecvMsgSize(16*1024*1024),
 		serviceregistry.HardenedServerOptions()[0], // KeepaliveEnforcementPolicy
 	)
+	// SP-AC-7 O1: 拦截器链 — panic recover → access log → metrics → token auth (token 在最里层让上层 log 能看到 token 验失败).
+	interceptors := []grpc.UnaryServerInterceptor{
+		grpcsvc.PanicRecoverInterceptor(log),
+		grpcsvc.AccessLogInterceptor(log),
+		grpcsvc.MetricsInterceptor(),
+	}
 	if authToken != "" {
-		opts = append(opts, grpc.UnaryInterceptor(adminTokenInterceptor(authToken)))
+		interceptors = append(interceptors, adminTokenInterceptor(authToken))
 		log.Info("split-payment gRPC: admin token auth enabled")
 	} else {
 		log.Warn("split-payment gRPC: AUTH DISABLED — set SPLIT_PAYMENT_ADMIN_TOKEN env var in production")
 	}
+	opts = append(opts, grpc.UnaryInterceptor(grpcsvc.ChainInterceptors(interceptors...)))
 	srv := grpc.NewServer(opts...)
-	// SP-AC-7 S6: 资金审计 - 默认 zap sink, 生产应换 KafkaAuditSink (推送到独立审计 topic).
-	auditSink := &grpcsvc.ZapAuditSink{Log: log.Named("audit")}
+	// SP-AC-7 S6 + PROD3: 资金审计 — Zap (本地 stdout) + Kafka 独立 topic (隔离权限/留存).
+	// Kafka 不可达 → ChainAuditSink 会自动跳过, 退化为仅 zap.
+	auditSinks := []grpcsvc.AuditSink{&grpcsvc.ZapAuditSink{Log: log.Named("audit")}}
+	if brokers := splitCSV(envOr("SPLIT_PAYMENT_KAFKA_BROKERS", "")); len(brokers) > 0 {
+		kAudit, kErr := grpcsvc.NewKafkaAuditSink(brokers,
+			envOr("SPLIT_PAYMENT_AUDIT_TOPIC", "split-payment.audit"), log)
+		if kErr != nil {
+			log.Warn("kafka audit sink init failed; falling back to zap only", zap.Error(kErr))
+		} else {
+			defer kAudit.Close()
+			auditSinks = append(auditSinks, kAudit)
+			log.Info("kafka audit sink wired", zap.String("topic", envOr("SPLIT_PAYMENT_AUDIT_TOPIC", "split-payment.audit")))
+		}
+	}
+	auditSink := &grpcsvc.ChainAuditSink{Sinks: auditSinks}
 	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, auditSink, log))
 	log.Info("split-payment gRPC AdminService listening", zap.String("port", port))
 	go func() { <-ctx.Done(); srv.GracefulStop() }()
@@ -830,6 +893,57 @@ type reversalApplyAdapter struct{ db *sql.DB }
 
 func (a *reversalApplyAdapter) Apply(ctx context.Context, rv *domain.Reversal, deltaReversed int64) error {
 	return repo.ApplyReversalAtomic(ctx, a.db, rv, deltaReversed)
+}
+
+// ─── SP-AC-7 O3: Circuit-breaker wrappers ────────────────────────────────────
+type cbRuleSyncer struct {
+	inner *httpRuleSyncer
+	cb    *observability.CircuitBreaker
+}
+
+func (w *cbRuleSyncer) UpsertRules(ctx context.Context, rules []grpcsvc.RuleSpec) error {
+	return w.cb.Do(ctx, func() error { return w.inner.UpsertRules(ctx, rules) })
+}
+
+func (w *cbRuleSyncer) DeleteRules(ctx context.Context, hashKeys []string) error {
+	return w.cb.Do(ctx, func() error { return w.inner.DeleteRules(ctx, hashKeys) })
+}
+
+type cbOrderResetter struct {
+	inner *httpOrderResetter
+	cb    *observability.CircuitBreaker
+}
+
+func (w *cbOrderResetter) ResetOrder(ctx context.Context, orderNo, businessNo string, force bool) error {
+	return w.cb.Do(ctx, func() error { return w.inner.ResetOrder(ctx, orderNo, businessNo, force) })
+}
+
+// ─── SP-AC-7 O2: Outbox metric scrapers ──────────────────────────────────────
+// 周期性 SELECT COUNT(*) / MAX(age) 把 outbox 状态推 Prometheus gauge.
+func eventOutboxScraper(db *sql.DB) observability.OutboxScraper {
+	return func(ctx context.Context) (observability.OutboxStat, error) {
+		var s observability.OutboxStat
+		row := db.QueryRowContext(ctx, `
+			SELECT
+			  COUNT(IF(status='pending',1,NULL)),
+			  COUNT(IF(status='dead_letter',1,NULL)),
+			  COALESCE(TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status='pending' THEN created_at END), NOW()), 0)
+			FROM event_outbox`)
+		return s, row.Scan(&s.PendingDepth, &s.DeadLetterCount, &s.OldestAgeSeconds)
+	}
+}
+
+func reversalOutboxScraper(db *sql.DB) observability.OutboxScraper {
+	return func(ctx context.Context) (observability.OutboxStat, error) {
+		var s observability.OutboxStat
+		row := db.QueryRowContext(ctx, `
+			SELECT
+			  COUNT(IF(status='pending',1,NULL)),
+			  COUNT(IF(status='dead_letter',1,NULL)),
+			  COALESCE(TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status='pending' THEN created_at END), NOW()), 0)
+			FROM reversal_retry_outbox`)
+		return s, row.Scan(&s.PendingDepth, &s.DeadLetterCount, &s.OldestAgeSeconds)
+	}
 }
 
 // ─── SP-AC-7 L5: Event outbox adapters ──────────────────────────────────────
