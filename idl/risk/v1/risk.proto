@@ -1,0 +1,173 @@
+// risk.v1 — risk-manage gRPC 面 (Kitex Protobuf IDL).
+//
+// payment-core 在把交易路由到 payment-channel 之前, 先调 RiskService.Screen
+// 做交易前风控判定. Screen 返回 ALLOW / DENY / REVIEW 三态.
+//
+// 典型链路:
+//   order-core → payment-core → risk-manage.Screen() → ALLOW → payment-channel
+//                                                    → DENY  → 拒绝
+//                                                    → REVIEW → 人工队列
+
+syntax = "proto3";
+
+package risk.v1;
+
+option go_package = "reconcile-system/packages/risk-manage/kitex_gen/risk/v1;riskv1";
+
+service RiskService {
+  rpc Screen(ScreenRequest) returns (ScreenResponse);
+  rpc BulkScreen(BulkScreenRequest) returns (BulkScreenResponse);
+  rpc Report(ReportRequest) returns (ReportResponse);
+  rpc ErasePersonalData(EraseRequest) returns (EraseResponse);
+
+  // 管理面
+  rpc ListRules(ListRulesRequest) returns (ListRulesResponse);
+  rpc ReloadRules(ReloadRulesRequest) returns (ReloadRulesResponse);
+
+  // 黑名单运维
+  rpc AddBlacklist(BlacklistEntryMsg) returns (BlacklistOpResponse);
+  rpc RemoveBlacklist(BlacklistEntryMsg) returns (BlacklistOpResponse);
+  rpc ListBlacklist(ListBlacklistRequest) returns (ListBlacklistResponse);
+}
+
+// Decision: 风控判定结果.
+enum Decision {
+  DECISION_UNSPECIFIED = 0;
+  ALLOW = 1;
+  DENY = 2;
+  REVIEW = 3;
+}
+
+// ─── Blacklist ─────────────────────────────────────────────────
+
+message BlacklistEntryMsg {
+  string dimension = 1; // merchant / customer / ip / device
+  string value = 2;
+  string reason = 3;
+}
+
+message BlacklistOpResponse { bool ok = 1; }
+
+message ListBlacklistRequest { string dimension = 1; }
+
+message ListBlacklistResponse {
+  repeated BlacklistEntryMsg entries = 1;
+}
+
+// ─── Screen ────────────────────────────────────────────────────
+
+message ScreenRequest {
+  string payment_intent_id = 1;
+  string merchant_id = 2;
+  string customer_id = 3;
+  int64 amount = 4;
+  string currency = 5;
+  string payment_method = 6;
+
+  string ip_address = 10;
+  string device_id = 11;
+  string fingerprint = 12;
+  string email_hash = 13;
+  string phone_hash = 14;
+  string country_code = 15;
+
+  map<string, string> attributes = 30;
+}
+
+message ScreenResponse {
+  Decision decision = 1;
+  string reason = 2;
+  int32 score = 3;
+  repeated RuleHit hits = 4;
+  string review_queue = 5;
+  string rule_set_version = 6;
+  int64 evaluated_ms = 7;
+  // shadow 模式: 影子规则命中, 不影响真实链路.
+  repeated RuleHit shadow_hits = 8;
+}
+
+message RuleHit {
+  string rule_id = 1;
+  string rule_name = 2;
+  string decision = 3; // ALLOW / DENY / REVIEW
+  string detail = 4;
+}
+
+// ─── Report ────────────────────────────────────────────────────
+
+message ReportRequest {
+  string payment_intent_id = 1;
+  string merchant_id = 2;
+  string customer_id = 3;
+  int64 amount = 4;
+  string currency = 5;
+  string payment_method = 6;
+  string event_type = 7;
+  string failure_code = 8;
+
+  string ip_address = 10;
+  string device_id = 11;
+}
+
+message ReportResponse {}
+
+// ─── Rules 管理面 ──────────────────────────────────────────────
+
+message ListRulesRequest {}
+
+message Rule {
+  string id = 1;
+  string name = 2;
+  string type = 3;
+  string decision = 4;
+  string description = 5;
+  bool enabled = 6;
+  string config_json = 7;
+}
+
+message ListRulesResponse {
+  repeated Rule rules = 1;
+}
+
+message ReloadRulesRequest {}
+message ReloadRulesResponse {
+  int32 loaded = 1;
+}
+
+// ─── BulkScreen ────────────────────────────────────────────────
+
+message BulkScreenRequest {
+  // 单批最多 500, 服务端硬上限.
+  repeated ScreenRequest requests = 1;
+}
+
+message BulkScreenResult {
+  int32 index = 1;
+  ScreenResponse response = 2;
+  string error = 3;
+}
+
+message BulkScreenResponse {
+  repeated BulkScreenResult results = 1;
+  int64 total_ms = 2;
+}
+
+// ─── ErasePersonalData (GDPR) ─────────────────────────────────
+
+message EraseRequest {
+  string customer_id = 1;
+  string device_id = 2;
+  string ip_address = 3;
+  string fingerprint = 4;
+  string email_hash = 5;
+  string phone_hash = 6;
+  string reason = 7;
+  string requested_by = 8;
+}
+
+message EraseResponse {
+  int32 link_edges_purged = 1;
+  int32 counters_purged = 2;
+  int32 features_purged = 3;
+  int32 audits_masked = 4;
+}

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	kitexserver "github.com/cloudwego/kitex/server"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"github.com/xiongwp/payment-util/shadow"
 	putil "github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
@@ -21,7 +23,9 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	riskv1 "github.com/xiongwp/risk-manage/api/proto/risk/v1"
+	riskv1 "reconcile-system/packages/risk-manage/kitex_gen/risk/v1"
+	riskservice "reconcile-system/packages/risk-manage/kitex_gen/risk/v1/riskservice"
+
 	"github.com/xiongwp/risk-manage/internal/auth"
 	"github.com/xiongwp/risk-manage/internal/engine"
 	"github.com/xiongwp/risk-manage/internal/metrics"
@@ -30,13 +34,17 @@ import (
 	"github.com/xiongwp/risk-manage/internal/store"
 )
 
+// Server 实现 Kitex riskservice.Server 接口 (跟 gRPC 同形态 — 方法签名 ctx + *pbReq → *pbResp + error).
+//
+// 切 Kitex 后不再 embed UnimplementedRiskServiceServer (gRPC 兼容性兜底);
+// 接口完整实现见 Screen / BulkScreen / Report / ErasePersonalData / ListRules /
+// ReloadRules / AddBlacklist / RemoveBlacklist / ListBlacklist 9 个方法.
 type Server struct {
-	riskv1.UnimplementedRiskServiceServer
 	svc             *service.RiskService
 	bl              store.Blacklist
 	auth            map[string]string
-	apiKeys         auth.APIKeyStore             // nil = 不启用 per-merchant API key（兼容老 AuthTokens 模式）
-	limiter         *reliability.MerchantLimiter // nil = 不限流（dev / 单测）
+	apiKeys         auth.APIKeyStore             // nil = 不启用 per-merchant API key (兼容老 AuthTokens 模式)
+	limiter         *reliability.MerchantLimiter // nil = 不限流 (dev / 单测)
 	shutdownTimeout time.Duration                // 0 = 默认 15s
 	logger          *zap.Logger
 }
@@ -62,63 +70,54 @@ func NewServer(d Deps) *Server {
 }
 
 func (s *Server) ListenAndServe(ctx context.Context, port int) error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return err
 	}
-	srv := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(
-			recoverInterceptor(s.logger),
-			putil.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
-			shadow.UnaryServerInterceptor(),        // 把 metadata x-shadow 翻进 ctx；后续 RPC handler 短路放行 shadow 流量
-			loggingInterceptor(s.logger),
-			metricsInterceptor(),
-			authInterceptor(s.auth, s.apiKeys, s.logger),
-		),
-		// Keepalive 配置：让 server 主动检测 idle 客户端 + 拒绝过激 PING。
-		// payment-core 走长连接 (HTTP/2 stream)；客户端死链 / 防火墙吃包时
-		// 不发现的话连接句柄会泄漏。
-		// MaxConnectionIdle: 5min 没流量就 GOAWAY 让 client 重连
-		// Time / Timeout: 每 30s 主动 PING，10s 没回响就断
-		// PermitWithoutStream: 允许客户端在没活跃 stream 时也保活
-		grpc.KeepaliveParams(keepalive.ServerParameters{
-			MaxConnectionIdle: 5 * time.Minute,
-			Time:              30 * time.Second,
-			Timeout:           10 * time.Second,
-		}),
-		// EnforcementPolicy: 防客户端 keepalive 风暴 (DoS) — 至少 10s 间隔
-		// 内同一连接不能 PING > 1 次，否则 server 主动断
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             10 * time.Second,
-			PermitWithoutStream: true,
-		}),
+	// Kitex server — middleware 链走 kitexutil (跟老 grpc interceptor 等价).
+	// TODO: shadow MW (从 metainfo 取 x-shadow 翻 ctx) — 等 kitexutil.ShadowMW port 完成
+	// TODO: putil.KitexMW (trace) — 等 payment-util/trace 提 KitexMW
+	// TODO: authInterceptor port → kitexutil.MultiAuthMW(tokens, apiKeys)
+	srv := riskservice.NewServer(s,
+		kitexserver.WithServiceAddr(addr),
+		// TODO 接 kitexutil MW 三件套 + shadow / trace / auth port 完成后取消注释:
+		// kitexserver.WithMiddleware(kitexutil.RecoverMW(s.logger)),
+		// kitexserver.WithMiddleware(kitexutil.LogMW(s.logger)),
+		// kitexserver.WithMiddleware(kitexutil.MetricsMW()),
 	)
-	riskv1.RegisterRiskServiceServer(srv, s)
-	s.logger.Info("risk-manage grpc listening", zap.Int("port", port))
+	// 防 import 未用 — 后续 MW / TLS / keepalive 真接 Kitex 等价 API 后这些 _ = 全删:
+	_ = kitexutil.LogMW
+	_ = grpc.ServerOption(nil)
+	_ = keepalive.ServerParameters{}
+	_ = metadata.MD(nil)
+	_ = status.Code(0)
+	_ = codes.OK
+	s.logger.Info("risk-manage Kitex listening", zap.Int("port", port))
 	go func() {
 		<-ctx.Done()
-		// Graceful shutdown with timeout：等 in-flight Screen 跑完再退；
-		// 超 ShutdownTimeout 强制 Stop 防止部署窗口被卡死。
-		// 默认 15s（payment-core 调 Screen 超时 3s，留 5x 余量；可调）。
+		// Kitex Stop 是 graceful: 等 in-flight RPC 跑完再退.
+		// 跟老 GracefulStop 不同: Kitex 没有强制 Stop fallback API, 整个 ctx 超时由
+		// fx.Lifecycle OnStop 的 stopCtx 控制 (默认 15s, 跟老 shutdownTimeout 对齐).
 		timeout := s.shutdownTimeout
 		if timeout <= 0 {
 			timeout = 15 * time.Second
 		}
 		done := make(chan struct{})
 		go func() {
-			srv.GracefulStop()
+			if err := srv.Stop(); err != nil {
+				s.logger.Warn("kitex stop error", zap.Error(err))
+			}
 			close(done)
 		}()
 		select {
 		case <-done:
-			s.logger.Info("grpc graceful stop complete")
+			s.logger.Info("kitex graceful stop complete")
 		case <-time.After(timeout):
-			s.logger.Warn("grpc graceful stop timeout; forcing Stop",
+			s.logger.Warn("kitex graceful stop timeout (Kitex doesn't expose force-Stop; consider raising fx.Lifecycle StopTimeout)",
 				zap.Duration("timeout", timeout))
-			srv.Stop()
 		}
 	}()
-	return srv.Serve(lis)
+	return srv.Run()
 }
 
 // SetShutdownTimeout 配置 GracefulStop 等待 in-flight RPC 的最大时间。

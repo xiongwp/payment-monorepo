@@ -1,6 +1,7 @@
-// Package kmsclient wraps the kms-manage gRPC client behind the small
-// interface service.KMSClient expects. 现在拨号复用 pkg/grpcutil.Dial，
-// 自带 keepalive + bearer 注入 + trace 透传 + 可选重试。
+// Package kmsclient wraps the kms-manage Kitex client behind the small
+// interface service.KMSClient expects.
+//
+// 切 Kitex 后跟 gRPC wire 不互通; server side (kms-manage) 已同步切.
 package kmsclient
 
 import (
@@ -8,16 +9,16 @@ import (
 	"fmt"
 	"time"
 
-	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
-	"google.golang.org/grpc"
+	"github.com/cloudwego/kitex/client"
+	"github.com/xiongwp/payment-util/kitexutil"
+
+	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
+	kmsservice "reconcile-system/packages/kms-manage/kitex_gen/kms/v1/kmsservice"
 
 	"github.com/xiongwp/user-merchant-core/internal/metrics"
-	"github.com/xiongwp/user-merchant-core/pkg/grpcutil"
-	"github.com/xiongwp/user-merchant-core/pkg/tracex"
 )
 
-// track 包装 KMS 调用：记录 op + result + duration，喂给 Prometheus。
-// result 只分 success/error 两档；线上定位要 code 粒度再补 label。
+// track 包装 KMS 调用: 记 op + result + duration → Prometheus.
 func track(op string, fn func() error) error {
 	start := time.Now()
 	err := fn()
@@ -30,41 +31,51 @@ func track(op string, fn func() error) error {
 	return err
 }
 
-// Client adapts kmsv1.KMSServiceClient to service.KMSClient.
+// Client adapts kmsservice.Client (Kitex) to service.KMSClient.
 type Client struct {
-	conn *grpc.ClientConn
-	cli  kmsv1.KMSServiceClient
+	cli    kmsservice.Client
+	token  string
+	rpcT   time.Duration
 }
 
-// Dial creates a gRPC client to kms-manage.
-//   endpoint like "kms-manage:9290"
-//   rpcTimeout <=0 defaults to 5s
-//   bearerToken 非空则每请求自动注入 authorization: Bearer <...>
+// Dial creates a Kitex client to kms-manage.
+//
+//	endpoint like "kms-manage:9290"
+//	rpcTimeout <=0 defaults to 5s
+//	bearerToken 非空则每请求自动注入 X-Admin-Token (kitexutil.WithAdminToken)
 func Dial(endpoint, bearerToken string, rpcTimeout time.Duration) (*Client, error) {
 	if rpcTimeout <= 0 {
 		rpcTimeout = 5 * time.Second
 	}
-	conn, err := grpcutil.Dial(grpcutil.ClientDialOptions{
-		Endpoint:         endpoint,
-		Timeout:          rpcTimeout,
-		MaxRetries:       2, // Encrypt / Decrypt 是幂等的，short retry 是安全的
-		BearerToken:      bearerToken,
-		TraceMetadataKey: tracex.MetadataKey,
-	})
+	cli, err := kmsservice.NewClient("kms-manage",
+		client.WithHostPorts(endpoint),
+		client.WithRPCTimeout(rpcTimeout),
+		// 老 grpcutil.Dial 自带 retry 2 次, Kitex 等价: client.WithFailureRetry(retry.NewFailurePolicy())
+		// 当前 stub, 真接 Kitex 时取消注释.
+		// client.WithFailureRetry(retry.NewFailurePolicy()),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("dial kms-manage: %w", err)
+		return nil, fmt.Errorf("dial kms-manage (kitex): %w", err)
 	}
-	return &Client{conn: conn, cli: kmsv1.NewKMSServiceClient(conn)}, nil
+	return &Client{cli: cli, token: bearerToken, rpcT: rpcTimeout}, nil
 }
 
-// Close 关闭连接。优雅停机时 main 会调。
-func (c *Client) Close() error { return c.conn.Close() }
+// Close — Kitex 自带 connection pool, no-op 兼容老接口.
+func (c *Client) Close() error { return nil }
+
+func (c *Client) attachToken(ctx context.Context) context.Context {
+	if c.token != "" {
+		return kitexutil.WithAdminToken(ctx, c.token)
+	}
+	return ctx
+}
 
 // Encrypt satisfies service.KMSClient.
 func (c *Client) Encrypt(ctx context.Context, plaintext []byte, aad string) ([]byte, error) {
 	var out []byte
 	err := track("encrypt", func() error {
-		resp, err := c.cli.Encrypt(ctx, &kmsv1.EncryptRequest{Plaintext: plaintext, Context: aad})
+		cctx := c.attachToken(ctx)
+		resp, err := c.cli.Encrypt(cctx, &kmsv1.EncryptRequest{Plaintext: plaintext, Context: aad})
 		if err != nil {
 			return err
 		}
@@ -78,7 +89,8 @@ func (c *Client) Encrypt(ctx context.Context, plaintext []byte, aad string) ([]b
 func (c *Client) Decrypt(ctx context.Context, ciphertext []byte, aad string) ([]byte, error) {
 	var out []byte
 	err := track("decrypt", func() error {
-		resp, err := c.cli.Decrypt(ctx, &kmsv1.DecryptRequest{Ciphertext: string(ciphertext), Context: aad})
+		cctx := c.attachToken(ctx)
+		resp, err := c.cli.Decrypt(cctx, &kmsv1.DecryptRequest{Ciphertext: string(ciphertext), Context: aad})
 		if err != nil {
 			return err
 		}

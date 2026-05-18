@@ -15,6 +15,7 @@ replace (
 )
 
 require (
+	github.com/cloudwego/kitex v0.10.0
 	github.com/go-sql-driver/mysql v1.7.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7

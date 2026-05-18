@@ -3,6 +3,7 @@ module github.com/xiongwp/payment-admin-web/backend
 go 1.25.0
 
 require (
+	github.com/cloudwego/kitex v0.10.0
 	github.com/gorilla/mux v1.8.1
 	github.com/xiongwp/kms-manage v0.0.1
 	github.com/xiongwp/order-core v0.0.1

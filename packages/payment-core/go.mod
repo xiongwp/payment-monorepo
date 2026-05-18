@@ -16,6 +16,7 @@ replace (
 )
 
 require (
+	github.com/cloudwego/kitex v0.10.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/viper v1.19.0
 	github.com/xiongwp/kms-manage v0.0.1

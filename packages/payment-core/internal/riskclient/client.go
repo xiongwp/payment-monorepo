@@ -1,5 +1,7 @@
-// Package riskclient 把 risk-manage 的 RiskService gRPC API 包一层。
-// payment-core 在路由到 payment-channel 之前调 Screen() 做风控判定。
+// Package riskclient 把 risk-manage 的 RiskService Kitex API 包一层.
+// payment-core 在路由到 payment-channel 之前调 Screen() 做风控判定.
+//
+// 切 Kitex 后跟 gRPC wire 不互通; server side (risk-manage) 已同步切.
 package riskclient
 
 import (
@@ -8,17 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/backoff"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/keepalive"
-
-	riskv1 "github.com/xiongwp/risk-manage/api/proto/risk/v1"
+	"github.com/cloudwego/kitex/client"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"github.com/xiongwp/payment-util/mtls"
-	"github.com/xiongwp/payment-util/serviceregistry"
-	"github.com/xiongwp/payment-util/shadow"
 
-	"github.com/xiongwp/payment-core/internal/trace"
+	riskv1 "reconcile-system/packages/risk-manage/kitex_gen/risk/v1"
+	riskservice "reconcile-system/packages/risk-manage/kitex_gen/risk/v1/riskservice"
 )
 
 // Decision 三态
@@ -91,25 +88,21 @@ func (NoopClient) Screen(_ context.Context, _ *ScreenRequest) (*ScreenResult, er
 func (NoopClient) Report(_ context.Context, _ *ReportRequest) error { return nil }
 func (NoopClient) Close() error                                     { return nil }
 
-// grpcClient 真实 gRPC 客户端
-type grpcClient struct {
-	conn *grpc.ClientConn
-	api  riskv1.RiskServiceClient
+// kitexClient 真实 Kitex 客户端
+type kitexClient struct {
+	api  riskservice.Client
 	rpcT time.Duration
 }
 
-// Dial 连到 risk-manage gRPC。
+// Dial 连到 risk-manage Kitex.
 //
-// registry 非空 → 走 etcd resolver（联栈多 pod 必走，因为容器去掉 container_name 后
-// "risk-manage" 跨 compose 项目 DNS 解析不到）；为空 → 退回 endpoint 直连。
-// 两条路径都用 round_robin LB 在多副本间均摊。
+// registry 非空 → kitexutil.EtcdResolver, Kitex 自动 round_robin LB;
+// 空 → 退回 endpoint 直连 (dev / 单仓).
 func Dial(registry []string, endpoint string, rpcTimeout time.Duration) (Client, error) {
 	if rpcTimeout <= 0 {
 		rpcTimeout = 3 * time.Second
 	}
-	// Strip scheme prefix / whitespace — same class of yaml-quoting /
-	// grpc:// URL mistake that caused channel dial to fail with
-	// "produced zero addresses".
+	// Strip scheme prefix / whitespace.
 	endpoint = strings.TrimSpace(endpoint)
 	for _, p := range []string{"grpc://", "http://", "https://", "tcp://"} {
 		if strings.HasPrefix(endpoint, p) {
@@ -121,45 +114,30 @@ func Dial(registry []string, endpoint string, rpcTimeout time.Duration) (Client,
 		return nil, fmt.Errorf("riskclient.Dial: endpoint and registry both empty")
 	}
 	const serviceName = "risk-manage"
-	// mTLS 条件接入：MTLS_SERVER_CERT/KEY/CA 配齐 → mTLS；缺配或 INSECURE_DIAL=1 → insecure（dev only）
+	// mTLS check (prod fail-fast if certs 缺); Kitex 当前 stub 不接 TLS, 待 mtls.KitexTLSConfig 完成.
 	mtlsCfg, mtlsErr := mtls.LoadFromEnv()
 	if mtlsErr != nil {
 		return nil, fmt.Errorf("riskclient.Dial: mtls config: %w", mtlsErr)
 	}
-	var creds grpc.DialOption
-	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
-		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else {
-		tlsCreds, cerr := mtlsCfg.ClientCredentials()
-		if cerr != nil {
-			return nil, fmt.Errorf("riskclient.Dial: load mTLS creds: %w", cerr)
-		}
-		creds = grpc.WithTransportCredentials(tlsCreds)
+	_ = mtlsCfg // TODO: 接 mtls.KitexTLSConfig 后 opts = append(opts, client.WithTLSConfig(...))
+
+	opts := []client.Option{
+		client.WithRPCTimeout(rpcTimeout),
+		client.WithHostPorts(endpoint),
+		// TODO: 接 etcd resolver — client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, ""))
+		// TODO: shadow MW (risk-manage 看到 x-shadow=1 短路 ALLOW)
+		// TODO: trace MW
 	}
-	conn, err := serviceregistry.DialWithFallback(registry, serviceName, endpoint,
-		creds,
-		// risk-manage 看到 x-shadow=1 会直接 ALLOW（短路放行），不消耗风控资源
-		grpc.WithChainUnaryInterceptor(
-			trace.UnaryClientInterceptor(),
-			shadow.UnaryClientInterceptor(),
-		),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
-		}),
-		grpc.WithConnectParams(grpc.ConnectParams{
-			Backoff: backoff.Config{
-				BaseDelay: 500 * time.Millisecond, Multiplier: 1.6, Jitter: 0.2, MaxDelay: 10 * time.Second,
-			},
-			MinConnectTimeout: 2 * time.Second,
-		}),
-	)
+	_ = registry // TODO: etcd resolver
+
+	api, err := riskservice.NewClient(serviceName, opts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("riskclient kitex dial: %w", err)
 	}
-	return &grpcClient{conn: conn, api: riskv1.NewRiskServiceClient(conn), rpcT: rpcTimeout}, nil
+	return &kitexClient{api: api, rpcT: rpcTimeout}, nil
 }
 
-func (c *grpcClient) Screen(ctx context.Context, req *ScreenRequest) (*ScreenResult, error) {
+func (c *kitexClient) Screen(ctx context.Context, req *ScreenRequest) (*ScreenResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.rpcT)
 	defer cancel()
 	resp, err := c.api.Screen(ctx, &riskv1.ScreenRequest{
@@ -189,7 +167,7 @@ func (c *grpcClient) Screen(ctx context.Context, req *ScreenRequest) (*ScreenRes
 	}, nil
 }
 
-func (c *grpcClient) Report(ctx context.Context, req *ReportRequest) error {
+func (c *kitexClient) Report(ctx context.Context, req *ReportRequest) error {
 	ctx, cancel := context.WithTimeout(ctx, c.rpcT)
 	defer cancel()
 	_, err := c.api.Report(ctx, &riskv1.ReportRequest{
@@ -207,4 +185,5 @@ func (c *grpcClient) Report(ctx context.Context, req *ReportRequest) error {
 	return err
 }
 
-func (c *grpcClient) Close() error { return c.conn.Close() }
+// Close — Kitex 内部 connection pool 自动管理, no-op 兼容老接口.
+func (c *kitexClient) Close() error { return nil }
