@@ -148,31 +148,10 @@ func main() {
 		if err := db.PingContext(context.Background()); err != nil {
 			log.Fatal("ping mysql", zap.Error(err))
 		}
-		ensureCtx, ensureCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := repo.EnsureSchema(ensureCtx, db); err != nil {
-			log.Fatal("ensure schema", zap.Error(err))
-		}
-		ensureCancel()
+		// Schema 由 packages/split-payment/database/metadb/init/*.sql 在 MySQL 容器
+		// 启动时自动灌入 (跟 card-center / order-core 一致); 应用层不再做 DDL.
 		graphRepo = repo.NewMySQLGraphRepo(db)
 		runRepo = repo.NewMySQLRunRepo(db)
-		// SP-4: Stripe-style 实体表 (connected_accounts / transfers / fees / payouts / reversals)
-		ensure2, ensureCancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := repo.EnsureStripeSchema(ensure2, db); err != nil {
-			log.Fatal("ensure stripe schema", zap.Error(err))
-		}
-		ensureCancel2()
-		// SP-7: graph versioning schema
-		ensure3, ensureCancel3 := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := repo.EnsureVersioningSchema(ensure3, db); err != nil {
-			log.Warn("ensure versioning schema (continuing)", zap.Error(err))
-		}
-		ensureCancel3()
-		// SP-3A: saga store schema
-		ensure4, ensureCancel4 := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := repo.EnsureSagaSchema(ensure4, db); err != nil {
-			log.Warn("ensure saga schema (continuing)", zap.Error(err))
-		}
-		ensureCancel4()
 
 		accRepo := repo.NewAccountRepo(db)
 		trRepo := repo.NewTransferRepo(db)
@@ -253,16 +232,13 @@ func main() {
 		// SP-AC-7 L5: Event 发布走 outbox + 后台 drain worker.
 		// 业务路径写 outbox (跟主数据可同 tx, 至少一次保证); worker 异步推 Kafka.
 		// Kafka 没配的话退化为只入 outbox 不推送 (后续配上 Kafka 自动 catch-up).
-		if err := repo.EnsureEventOutboxSchema(ctx, db); err != nil {
-			log.Warn("event_outbox schema migration failed; events 走原 fire-and-forget 模式", zap.Error(err))
-		} else if eventPub != nil {
+		// 表 event_outbox 由 metadb/init/5_outbox.sql 启动期已建.
+		if eventPub != nil {
 			evOutbox := &repo.EventOutbox{DB: db}
-			// 把 engine.Events 换成 outbox publisher
 			engine.Events = &workflow.OutboxEventPublisher{
 				Outbox: &eventOutboxEnqAdapter{ob: evOutbox},
 				Log:    log,
 			}
-			// 起 worker drain outbox → 真 Kafka.
 			if kp, ok := eventPub.(*workflow.KafkaEventPublisher); ok {
 				outboxWk := &workflow.EventOutboxWorker{
 					Cfg:    workflow.DefaultEventOutboxConfig(),
@@ -278,21 +254,17 @@ func main() {
 		}
 
 		// SP-AC-7 R5: Reversal 失败 outbox 重试.
-		if err := repo.EnsureReversalOutboxSchema(ctx, db); err != nil {
-			log.Warn("reversal_retry_outbox schema migration failed; retry queue disabled", zap.Error(err))
-		} else {
-			revOutbox := &repo.ReversalOutbox{DB: db, Log: log}
-			engine.ReversalRetry = &reversalOutboxAdapter{ob: revOutbox}
-			// 起 worker 周期消费.
-			retryWk := &workflow.ReversalRetryWorker{
-				Cfg:     workflow.DefaultReversalRetryConfig(),
-				Outbox:  &reversalOutboxClaimAdapter{ob: revOutbox},
-				Applier: engine.ReversalApply,
-				Log:     log,
-			}
-			go retryWk.Run(ctx)
-			log.Info("reversal retry worker started")
+		// 表 reversal_retry_outbox 由 metadb/init/5_outbox.sql 启动期已建.
+		revOutbox := &repo.ReversalOutbox{DB: db, Log: log}
+		engine.ReversalRetry = &reversalOutboxAdapter{ob: revOutbox}
+		retryWk := &workflow.ReversalRetryWorker{
+			Cfg:     workflow.DefaultReversalRetryConfig(),
+			Outbox:  &reversalOutboxClaimAdapter{ob: revOutbox},
+			Applier: engine.ReversalApply,
+			Log:     log,
 		}
+		go retryWk.Run(ctx)
+		log.Info("reversal retry worker started")
 	}
 
 	// SP-3A: 接持久化 saga (MySQL 模式 + env SPLIT_PAYMENT_SAGA=1 才启).
@@ -504,20 +476,16 @@ func main() {
 		}
 		// SP-AC-7 X3: 多副本 lease, 同一时刻只有一个副本跑 cron.
 		// memory 模式 (db nil) 退化为无锁直跑 (单副本 OK).
+		// 表 cron_lease 由 metadb/init/6_cron_lease.sql 启动期已建.
 		if db != nil {
-			if err := workflow.EnsureCronLeaseSchema(ctx, db); err != nil {
-				log.Warn("cron_lease schema migration failed; falling back to no-lease (可能重复扫)", zap.Error(err))
-				go cron.Run(ctx)
-			} else {
-				lease := &workflow.CronLease{
-					DB:     db,
-					Name:   "payout_cron",
-					Holder: workflow.DefaultHolder(),
-					TTL:    30 * time.Second,
-					Log:    log,
-				}
-				go lease.RunWithLease(ctx, cron.Run)
+			lease := &workflow.CronLease{
+				DB:     db,
+				Name:   "payout_cron",
+				Holder: workflow.DefaultHolder(),
+				TTL:    30 * time.Second,
+				Log:    log,
 			}
+			go lease.RunWithLease(ctx, cron.Run)
 		} else {
 			go cron.Run(ctx)
 		}
