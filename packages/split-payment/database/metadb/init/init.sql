@@ -18,6 +18,15 @@
 --   cron_lease              X3 多副本 cron 互斥 lease
 
 CREATE DATABASE IF NOT EXISTS split_payment CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- 应用账号 split_user (跟 SPLIT_PAYMENT_DSN 对齐: split_user:password@tcp(shared-meta:3306)/split_payment).
+-- IF NOT EXISTS + ALTER 保证幂等; 已存在用户改密码也安全.
+CREATE USER IF NOT EXISTS 'split_user'@'%' IDENTIFIED BY 'password';
+ALTER USER 'split_user'@'%' IDENTIFIED BY 'password';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, REFERENCES
+  ON split_payment.* TO 'split_user'@'%';
+FLUSH PRIVILEGES;
+
 USE split_payment;
 
 -- ─── 1. moneyflow core ─────────────────────────────────────────────────
