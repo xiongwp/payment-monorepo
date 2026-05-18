@@ -215,6 +215,9 @@ func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGra
 	return &SaveGraphResponse{Key: g.Key, Version: g.Version}, nil
 }
 
+// DeriveRulesFromGraph 公开包装, 启动期 reconcileGraphRules 用.
+func DeriveRulesFromGraph(g *domain.Graph) []RuleSpec { return deriveRulesFromGraph(g) }
+
 // deriveRulesFromGraph 从 graph.spec 提取 (product_code, event_code) 唯一对, 每对生成一条 RuleSpec.
 //
 //   product_code = spec.scenario

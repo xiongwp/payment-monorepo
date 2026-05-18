@@ -715,6 +715,12 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 			zap.String("accounting_http", base),
 			zap.String("for", "SaveGraph saga + TriggerEvent retry"),
 			zap.String("circuit", "accounting_admin_http"))
+
+		// 启动期 reconcile: 扫所有 status=active 的 graph, 把 deriveRulesFromGraph
+		// 派生的 rule 调一次 UpsertRules. 自愈历史漏同步 (e.g. graph 是手动 INSERT
+		// 进 moneyflow_graphs 表绕过 SaveGraph saga, 或 saga 期间 accounting 故障).
+		// 异步执行, 不阻塞 gRPC 上线.
+		go reconcileGraphRules(ctx, graphRepo, ruleSync, log)
 	} else {
 		log.Warn("split-payment: ACCOUNTING_HTTP_URL empty, saga + retry features disabled")
 	}
@@ -789,6 +795,66 @@ func adminTokenInterceptor(expectedToken string) grpc.UnaryServerInterceptor {
 		}
 		return handler(ctx, req)
 	}
+}
+
+// reconcileGraphRules 启动期 self-heal: 扫所有 status=active 的 graph,
+// 把 DeriveRulesFromGraph 派生的 rule 调一次 UpsertRules.
+//
+// 触发场景:
+//   - 历史 graph 由 dev 脚本 / 手工 SQL 直接 INSERT 进 moneyflow_graphs 表, 绕过 SaveGraph saga
+//   - SaveGraph saga 时段 accounting 不可达 (graph 落了 split-payment 但 rule 没推过去)
+//   - DSN 切换 / 数据迁移后 rule 与 graph 脱节
+//
+// 行为:
+//   - 仅 status=active 的 graph 参与 (draft / archived 跳过, 避免污染)
+//   - UpsertRules 是 ON DUPLICATE KEY UPDATE 语义 — 重复调幂等, 不会破坏现有 rule
+//   - 单 graph 失败不阻断后续 graph (best-effort), 只 log; 总错数 > 0 时启动后 metrics
+//     里也会留下 trail
+//   - 异步执行 — gRPC 上线不等它完成 (大量 graph 时同步几百次会拖慢启动)
+//
+// 这是兜底, 不是替代 SaveGraph saga; saga 在 SaveGraph 时是 fail-fast (abort + 回滚),
+// 这里只是开机自检 + 自愈历史漂移.
+func reconcileGraphRules(ctx context.Context, graphs workflow.GraphRepo, sync grpcsvc.AccountingRuleSyncer, log *zap.Logger) {
+	if graphs == nil || sync == nil {
+		return
+	}
+	// 防止 ctx 已经在主流程 cancel: 用 1min 上限独立超时, 不绑主 ctx 的 cancel.
+	// 这是 best-effort, 启动期不该卡主流程超过 1 分钟.
+	rctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	list, err := graphs.List(rctx, "active")
+	if err != nil {
+		log.Warn("startup rule reconcile: list active graphs failed", zap.Error(err))
+		return
+	}
+	if len(list) == 0 {
+		log.Info("startup rule reconcile: no active graphs")
+		return
+	}
+
+	var totalRules, syncedGraphs, failedGraphs int
+	for _, g := range list {
+		rules := grpcsvc.DeriveRulesFromGraph(g)
+		if len(rules) == 0 {
+			continue
+		}
+		if err := sync.UpsertRules(rctx, rules); err != nil {
+			log.Warn("startup rule reconcile: upsert failed",
+				zap.String("graph_key", g.Key),
+				zap.Int("rule_count", len(rules)),
+				zap.Error(err))
+			failedGraphs++
+			continue
+		}
+		totalRules += len(rules)
+		syncedGraphs++
+	}
+	log.Info("startup rule reconcile complete",
+		zap.Int("active_graphs", len(list)),
+		zap.Int("synced_graphs", syncedGraphs),
+		zap.Int("failed_graphs", failedGraphs),
+		zap.Int("total_rules_upserted", totalRules))
 }
 
 // httpRuleSyncer — POST {rules:[...]} 到 accounting /admin/transaction-rules.
