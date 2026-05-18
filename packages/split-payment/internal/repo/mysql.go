@@ -73,16 +73,39 @@ func EnsureSchema(ctx context.Context, db *sql.DB) error {
 			KEY idx_event_created (trigger_event, created_at),
 			KEY idx_hold_expired (hold_released, hold_until)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		// 老库升级 (新加列): MySQL 8.0.29+ 才有 ADD COLUMN IF NOT EXISTS; 老版本 fallback 靠错误吞掉.
-		`ALTER TABLE moneyflow_runs ADD COLUMN IF NOT EXISTS hold_until DATETIME DEFAULT NULL`,
-		`ALTER TABLE moneyflow_runs ADD COLUMN IF NOT EXISTS hold_released TINYINT(1) NOT NULL DEFAULT 0`,
 	}
 	for _, s := range stmts {
 		if _, err := db.ExecContext(ctx, s); err != nil {
 			return fmt.Errorf("ensure schema: %w", err)
 		}
 	}
+	// 老库升级 (新加列): IF NOT EXISTS 需要 MySQL 8.0.29+ / MariaDB 10.0.2+;
+	// 兼容更老版本: try ALTER + 忽略 1060 duplicate column 错.
+	for _, alter := range []string{
+		`ALTER TABLE moneyflow_runs ADD COLUMN hold_until DATETIME DEFAULT NULL`,
+		`ALTER TABLE moneyflow_runs ADD COLUMN hold_released TINYINT(1) NOT NULL DEFAULT 0`,
+	} {
+		if _, err := db.ExecContext(ctx, alter); err != nil {
+			// 1060 = "Duplicate column name" → 列已存在, 忽略.
+			// 其它错 → 真问题, 报出来.
+			if !isDuplicateColumnErr(err) {
+				return fmt.Errorf("ensure schema (alter): %w", err)
+			}
+		}
+	}
 	return nil
+}
+
+// isDuplicateColumnErr 检测 MySQL/MariaDB error 1060 (Duplicate column name).
+// 不依赖 go-sql-driver/mysql.MySQLError 类型断言, 用字符串匹配兼容多 driver.
+func isDuplicateColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Error 1060") ||
+		strings.Contains(msg, "Duplicate column name") ||
+		strings.Contains(msg, "duplicate column")
 }
 
 // Save 创建或更新. key 已存在 → 升 version 字段 (按 semver) + UPDATE; 否则 INSERT.

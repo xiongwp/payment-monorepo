@@ -55,6 +55,9 @@ apply shared-meta "accounting-system/meta"  /sql/accounting-system/database/meta
 # 生产 SAQ-D 严格要求独立 DC，由 env=prod assertProdSafety 强制不同 DSN）。
 apply shared-meta "card-center/meta"        /sql/card-center/database/metadb/init/init.sql
 apply shared-meta "card-payment/meta"       /sql/card-payment/database/metadb/init/init.sql
+# split-payment 的 split_payment 库 (moneyflow_graphs / moneyflow_runs / saga /
+# outbox / cron_lease / Stripe-style 5 张表 — 共 11 张). 应用启动不再做 DDL.
+apply shared-meta "split-payment/meta"      /sql/split-payment/database/metadb/init/init.sql
 
 # ─── shared-shard-0 .. shared-shard-9 ─────────────────────────────────────
 for i in $(seq 0 9); do

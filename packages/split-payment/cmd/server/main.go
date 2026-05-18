@@ -148,31 +148,10 @@ func main() {
 		if err := db.PingContext(context.Background()); err != nil {
 			log.Fatal("ping mysql", zap.Error(err))
 		}
-		ensureCtx, ensureCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := repo.EnsureSchema(ensureCtx, db); err != nil {
-			log.Fatal("ensure schema", zap.Error(err))
-		}
-		ensureCancel()
+		// Schema 由 packages/split-payment/database/metadb/init/*.sql 在 MySQL 容器
+		// 启动时自动灌入 (跟 card-center / order-core 一致); 应用层不再做 DDL.
 		graphRepo = repo.NewMySQLGraphRepo(db)
 		runRepo = repo.NewMySQLRunRepo(db)
-		// SP-4: Stripe-style 实体表 (connected_accounts / transfers / fees / payouts / reversals)
-		ensure2, ensureCancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := repo.EnsureStripeSchema(ensure2, db); err != nil {
-			log.Fatal("ensure stripe schema", zap.Error(err))
-		}
-		ensureCancel2()
-		// SP-7: graph versioning schema
-		ensure3, ensureCancel3 := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := repo.EnsureVersioningSchema(ensure3, db); err != nil {
-			log.Warn("ensure versioning schema (continuing)", zap.Error(err))
-		}
-		ensureCancel3()
-		// SP-3A: saga store schema
-		ensure4, ensureCancel4 := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := repo.EnsureSagaSchema(ensure4, db); err != nil {
-			log.Warn("ensure saga schema (continuing)", zap.Error(err))
-		}
-		ensureCancel4()
 
 		accRepo := repo.NewAccountRepo(db)
 		trRepo := repo.NewTransferRepo(db)
@@ -253,16 +232,13 @@ func main() {
 		// SP-AC-7 L5: Event 发布走 outbox + 后台 drain worker.
 		// 业务路径写 outbox (跟主数据可同 tx, 至少一次保证); worker 异步推 Kafka.
 		// Kafka 没配的话退化为只入 outbox 不推送 (后续配上 Kafka 自动 catch-up).
-		if err := repo.EnsureEventOutboxSchema(ctx, db); err != nil {
-			log.Warn("event_outbox schema migration failed; events 走原 fire-and-forget 模式", zap.Error(err))
-		} else if eventPub != nil {
+		// 表 event_outbox 由 metadb/init/5_outbox.sql 启动期已建.
+		if eventPub != nil {
 			evOutbox := &repo.EventOutbox{DB: db}
-			// 把 engine.Events 换成 outbox publisher
 			engine.Events = &workflow.OutboxEventPublisher{
 				Outbox: &eventOutboxEnqAdapter{ob: evOutbox},
 				Log:    log,
 			}
-			// 起 worker drain outbox → 真 Kafka.
 			if kp, ok := eventPub.(*workflow.KafkaEventPublisher); ok {
 				outboxWk := &workflow.EventOutboxWorker{
 					Cfg:    workflow.DefaultEventOutboxConfig(),
@@ -278,21 +254,17 @@ func main() {
 		}
 
 		// SP-AC-7 R5: Reversal 失败 outbox 重试.
-		if err := repo.EnsureReversalOutboxSchema(ctx, db); err != nil {
-			log.Warn("reversal_retry_outbox schema migration failed; retry queue disabled", zap.Error(err))
-		} else {
-			revOutbox := &repo.ReversalOutbox{DB: db, Log: log}
-			engine.ReversalRetry = &reversalOutboxAdapter{ob: revOutbox}
-			// 起 worker 周期消费.
-			retryWk := &workflow.ReversalRetryWorker{
-				Cfg:     workflow.DefaultReversalRetryConfig(),
-				Outbox:  &reversalOutboxClaimAdapter{ob: revOutbox},
-				Applier: engine.ReversalApply,
-				Log:     log,
-			}
-			go retryWk.Run(ctx)
-			log.Info("reversal retry worker started")
+		// 表 reversal_retry_outbox 由 metadb/init/5_outbox.sql 启动期已建.
+		revOutbox := &repo.ReversalOutbox{DB: db, Log: log}
+		engine.ReversalRetry = &reversalOutboxAdapter{ob: revOutbox}
+		retryWk := &workflow.ReversalRetryWorker{
+			Cfg:     workflow.DefaultReversalRetryConfig(),
+			Outbox:  &reversalOutboxClaimAdapter{ob: revOutbox},
+			Applier: engine.ReversalApply,
+			Log:     log,
 		}
+		go retryWk.Run(ctx)
+		log.Info("reversal retry worker started")
 	}
 
 	// SP-3A: 接持久化 saga (MySQL 模式 + env SPLIT_PAYMENT_SAGA=1 才启).
@@ -504,20 +476,16 @@ func main() {
 		}
 		// SP-AC-7 X3: 多副本 lease, 同一时刻只有一个副本跑 cron.
 		// memory 模式 (db nil) 退化为无锁直跑 (单副本 OK).
+		// 表 cron_lease 由 metadb/init/6_cron_lease.sql 启动期已建.
 		if db != nil {
-			if err := workflow.EnsureCronLeaseSchema(ctx, db); err != nil {
-				log.Warn("cron_lease schema migration failed; falling back to no-lease (可能重复扫)", zap.Error(err))
-				go cron.Run(ctx)
-			} else {
-				lease := &workflow.CronLease{
-					DB:     db,
-					Name:   "payout_cron",
-					Holder: workflow.DefaultHolder(),
-					TTL:    30 * time.Second,
-					Log:    log,
-				}
-				go lease.RunWithLease(ctx, cron.Run)
+			lease := &workflow.CronLease{
+				DB:     db,
+				Name:   "payout_cron",
+				Holder: workflow.DefaultHolder(),
+				TTL:    30 * time.Second,
+				Log:    log,
 			}
+			go lease.RunWithLease(ctx, cron.Run)
 		} else {
 			go cron.Run(ctx)
 		}
@@ -715,6 +683,13 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 			zap.String("accounting_http", base),
 			zap.String("for", "SaveGraph saga + TriggerEvent retry"),
 			zap.String("circuit", "accounting_admin_http"))
+
+		// 启动期 reconcile: 扫所有 status=active 的 graph, 把 deriveRulesFromGraph
+		// 派生的 rule 调一次 UpsertRules. 自愈历史漏同步 (e.g. graph 是手动 INSERT
+		// 进 moneyflow_graphs 表绕过 SaveGraph saga, 或 saga 期间 accounting 故障).
+		// 异步执行, 不阻塞 gRPC 上线.
+		// 注: 本调用在 runAdminGRPCServer 作用域内, 用入参 graphs (grpcsvc.GraphRepo).
+		go reconcileGraphRules(ctx, graphs, ruleSync, log)
 	} else {
 		log.Warn("split-payment: ACCOUNTING_HTTP_URL empty, saga + retry features disabled")
 	}
@@ -789,6 +764,69 @@ func adminTokenInterceptor(expectedToken string) grpc.UnaryServerInterceptor {
 		}
 		return handler(ctx, req)
 	}
+}
+
+// reconcileGraphRules 启动期 self-heal: 扫所有 status=active 的 graph,
+// 把 DeriveRulesFromGraph 派生的 rule 调一次 UpsertRules.
+//
+// 触发场景:
+//   - 历史 graph 由 dev 脚本 / 手工 SQL 直接 INSERT 进 moneyflow_graphs 表, 绕过 SaveGraph saga
+//   - SaveGraph saga 时段 accounting 不可达 (graph 落了 split-payment 但 rule 没推过去)
+//   - DSN 切换 / 数据迁移后 rule 与 graph 脱节
+//
+// 行为:
+//   - 仅 status=active 的 graph 参与 (draft / archived 跳过, 避免污染)
+//   - UpsertRules 是 ON DUPLICATE KEY UPDATE 语义 — 重复调幂等, 不会破坏现有 rule
+//   - 单 graph 失败不阻断后续 graph (best-effort), 只 log; 总错数 > 0 时启动后 metrics
+//     里也会留下 trail
+//   - 异步执行 — gRPC 上线不等它完成 (大量 graph 时同步几百次会拖慢启动)
+//
+// 这是兜底, 不是替代 SaveGraph saga; saga 在 SaveGraph 时是 fail-fast (abort + 回滚),
+// 这里只是开机自检 + 自愈历史漂移.
+//
+// 用 grpcsvc.GraphRepo 而不是 workflow.GraphRepo: 调用点在 runAdminGRPCServer 函数内
+// 入参类型是 grpcsvc.GraphRepo (两者都有 List(ctx, status) 方法, 此处只需 List).
+func reconcileGraphRules(ctx context.Context, graphs grpcsvc.GraphRepo, sync grpcsvc.AccountingRuleSyncer, log *zap.Logger) {
+	if graphs == nil || sync == nil {
+		return
+	}
+	// 防止 ctx 已经在主流程 cancel: 用 1min 上限独立超时, 不绑主 ctx 的 cancel.
+	// 这是 best-effort, 启动期不该卡主流程超过 1 分钟.
+	rctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	list, err := graphs.List(rctx, "active")
+	if err != nil {
+		log.Warn("startup rule reconcile: list active graphs failed", zap.Error(err))
+		return
+	}
+	if len(list) == 0 {
+		log.Info("startup rule reconcile: no active graphs")
+		return
+	}
+
+	var totalRules, syncedGraphs, failedGraphs int
+	for _, g := range list {
+		rules := grpcsvc.DeriveRulesFromGraph(g)
+		if len(rules) == 0 {
+			continue
+		}
+		if err := sync.UpsertRules(rctx, rules); err != nil {
+			log.Warn("startup rule reconcile: upsert failed",
+				zap.String("graph_key", g.Key),
+				zap.Int("rule_count", len(rules)),
+				zap.Error(err))
+			failedGraphs++
+			continue
+		}
+		totalRules += len(rules)
+		syncedGraphs++
+	}
+	log.Info("startup rule reconcile complete",
+		zap.Int("active_graphs", len(list)),
+		zap.Int("synced_graphs", syncedGraphs),
+		zap.Int("failed_graphs", failedGraphs),
+		zap.Int("total_rules_upserted", totalRules))
 }
 
 // httpRuleSyncer — POST {rules:[...]} 到 accounting /admin/transaction-rules.
