@@ -5,12 +5,15 @@
 package metrics
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	_ "net/http/pprof" // ROI-2c: 注册 /debug/pprof/* 到 http.DefaultServeMux
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 var (
@@ -78,9 +81,49 @@ func Register() {
 }
 
 // Serve 单独的 metrics HTTP server。/metrics 总是 200 即使其余端口异常。
+//
+// ROI-2c: 兼容老 API; 内部调 ServeWithAdmin.
 func Serve(port int, logger *zap.Logger) *http.Server {
+	return ServeWithAdmin(port, logger, nil)
+}
+
+// ServeWithAdmin: 同 Serve 但加 /debug/pprof/* + /admin/log-level (level=nil 时 readonly).
+//
+// ROI-2c: 与 split-payment / payment-core / payment-channel 一致.
+// /healthz + /readyz 由主 HTTP server 处理 (api-gateway 是 HTTP gateway 自身, livez 走主端口);
+// 这里只补 metrics 端口的 ops surface.
+func ServeWithAdmin(port int, logger *zap.Logger, level *zap.AtomicLevel) *http.Server {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
+	// ROI-2c: pprof.
+	mux.Handle("/debug/pprof/", http.DefaultServeMux)
+	// ROI-2c: dynamic log level.
+	if level != nil {
+		mux.HandleFunc("/admin/log-level", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"level": level.Level().String()})
+			case http.MethodPut, http.MethodPost:
+				var body struct{ Level string `json:"level"` }
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "bad json", http.StatusBadRequest)
+					return
+				}
+				var l zapcore.Level
+				if err := l.UnmarshalText([]byte(body.Level)); err != nil {
+					http.Error(w, "bad level", http.StatusBadRequest)
+					return
+				}
+				level.SetLevel(l)
+				logger.Info("log level changed", zap.String("level", body.Level))
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"level": l.String()})
+			default:
+				http.Error(w, "method", http.StatusMethodNotAllowed)
+			}
+		})
+	}
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
 		Handler: mux,

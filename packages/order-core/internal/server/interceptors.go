@@ -17,6 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/xiongwp/order-core/internal/metrics"
+	"github.com/xiongwp/payment-util/piiredact" // ROI-2e: 替换 hardcoded 脱敏名单
 	"github.com/xiongwp/payment-util/ratelimit"
 )
 
@@ -69,77 +70,17 @@ func renderProto(v interface{}) string {
 	return "<non-proto>"
 }
 
-// sensitiveLogKeys 是 redactSensitive 的全局敏感字段名单。
+// redactSensitive 把 JSON 日志里的敏感字段脱敏.
 //
-// **P2-5 维护说明**：手动列表容易遗漏（业务侧加新字段不会同步）。长期方案是：
-//   1) struct tag 标记（`sensitive:"true"`），用反射遍历自动脱敏；
-//   2) 或换 zap 自定义 Encoder，提供 zap.Sensitive() 类型 + 受控编码；
-//   3) 或在 proto 层用 google.protobuf.FieldOption + custom plugin 在 .proto 文件
-//      标 [(sensitive) = true]，protojson marshal 时跳过。
+// ROI-2e: 老 hardcoded sensitiveLogKeys 名单已删除, 切换到 piiredact 公共包:
+//   - 字段名维度: RedactJSONString 用 DefaultFieldRules (~40 个模式) 扫 JSON keys,
+//     camelCase + snake_case 两种命名都覆盖.
+//   - 字符串维度: Luhn 扫描兜底任何漏网的卡号串.
+// 新增脱敏字段不再需要改本文件; 走 piiredact.SetDefault(...).With(...) 在 main.go 注入即可.
 //
-// 切换前的兜底是把已知的字段名集中维护，新加敏感字段时同步更新本切片。
-// 命名约定：camelCase 和 snake_case 都列（protojson 可能两种之一）。
-var sensitiveLogKeys = []string{
-	// 凭证 / token
-	`"clientSecret"`, `"client_secret"`,
-	`"webhookSecret"`, `"webhook_secret"`,
-	`"liveKey"`, `"live_key"`, `"testKey"`, `"test_key"`,
-	`"apiKey"`, `"api_key"`,
-	`"accessToken"`, `"access_token"`, `"refreshToken"`, `"refresh_token"`,
-	`"verificationToken"`, `"verification_token"`,
-	// 渠道密钥
-	`"acquirerSecret"`, `"acquirer_secret"`,
-	`"partnerSecret"`, `"partner_secret"`,
-	// 卡 / 银行账户
-	`"cardNumber"`, `"card_number"`, `"pan"`,
-	`"cvv"`, `"cvc"`, `"cvv2"`,
-	`"iban"`, `"accountNumber"`, `"account_number"`,
-	`"settlementAccount"`, `"settlement_account"`,
-	// 用户认证
-	`"password"`, `"otp"`, `"pin"`,
-	`"totpSecret"`, `"totp_secret"`,
-	// PII
-	`"taxId"`, `"tax_id"`,
-}
-
-// redactSensitive 把 JSON 日志里的敏感字段值截短，防止 client_secret / token / key 入磁盘。
-//
-// 受 sensitiveLogKeys 名单驱动；新增敏感字段必须同步更新名单。
+// 旧 redactField 字符串扫 + sensitiveLogKeys 列表移除 (60 行 → 1 行).
 func redactSensitive(s string) string {
-	for _, key := range sensitiveLogKeys {
-		s = redactField(s, key)
-	}
-	return s
-}
-
-func redactField(s, key string) string {
-	for {
-		idx := strings.Index(s, key+`:"`)
-		if idx < 0 {
-			idx = strings.Index(s, key+`": "`)
-			if idx < 0 {
-				return s
-			}
-		}
-		// find start of value
-		start := strings.Index(s[idx:], `"`)
-		if start < 0 {
-			return s
-		}
-		// skip key quote
-		valStart := idx + start + 1
-		valStart2 := strings.IndexByte(s[valStart:], '"')
-		if valStart2 < 0 {
-			return s
-		}
-		valStart += valStart2 + 1
-		valEnd := strings.IndexByte(s[valStart:], '"')
-		if valEnd < 0 {
-			return s
-		}
-		valEnd += valStart
-		s = s[:valStart] + "***REDACTED***" + s[valEnd:]
-	}
+	return piiredact.RedactJSONString(s)
 }
 
 // MetricsInterceptor 记录每个 gRPC 请求的计数 + 耗时

@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	_ "net/http/pprof" // ROI-2e: pprof handlers on http.DefaultServeMux
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // ─── PaymentIntent ────────────────────────────────────────────────────────────
@@ -275,6 +277,14 @@ type HealthProbe func() (name string, ok bool, detail string)
 //   /readyz : "can serve traffic" — runs every probe; returns 503 if any
 //             probe reports !ok. Used by K8s readiness + load-balancer drain.
 func StartServer(addr string, logger *zap.Logger, probes ...HealthProbe) {
+	StartServerWithLevel(addr, logger, nil, probes...)
+}
+
+// StartServerWithLevel 同 StartServer 但加 /debug/pprof + /admin/log-level.
+//
+// ROI-2e: 与 split-payment / payment-core / payment-channel / api-gateway / card-payment 一致.
+// level=nil 时 /admin/log-level 端点不挂.
+func StartServerWithLevel(addr string, logger *zap.Logger, level *zap.AtomicLevel, probes ...HealthProbe) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -284,6 +294,35 @@ func StartServer(addr string, logger *zap.Logger, probes ...HealthProbe) {
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		runReadyProbes(r.Context(), w, probes)
 	})
+	// ROI-2e: pprof.
+	mux.Handle("/debug/pprof/", http.DefaultServeMux)
+	// ROI-2e: log level.
+	if level != nil {
+		mux.HandleFunc("/admin/log-level", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"level": level.Level().String()})
+			case http.MethodPut, http.MethodPost:
+				var body struct{ Level string `json:"level"` }
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "bad json", http.StatusBadRequest)
+					return
+				}
+				var l zapcore.Level
+				if err := l.UnmarshalText([]byte(body.Level)); err != nil {
+					http.Error(w, "bad level", http.StatusBadRequest)
+					return
+				}
+				level.SetLevel(l)
+				logger.Info("log level changed", zap.String("level", body.Level))
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"level": l.String()})
+			default:
+				http.Error(w, "method", http.StatusMethodNotAllowed)
+			}
+		})
+	}
 	go func() {
 		logger.Info("metrics http listening", zap.String("addr", addr))
 		if err := http.ListenAndServe(addr, mux); err != nil {

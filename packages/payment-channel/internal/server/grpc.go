@@ -10,6 +10,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/xiongwp/payment-util/piiredact" // ROI-2b: PII-safe access log
 	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
@@ -105,6 +106,15 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 		grpc.ChainUnaryInterceptor(
 			RecoverInterceptor(s.logger),
 			trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
+			// ROI-2b: PII-safe access log — payload logging 通过 env PAYCHAN_LOG_PAYLOAD=1 开关.
+			// payment-channel 直接对接 PSP, request 里 buyer email/phone + card token 都是高 PII,
+			// 默认只记 method+code+duration; 排查时打开 PAYCHAN_LOG_PAYLOAD=1 拿 Luhn-脱敏后的 payload.
+			piiredact.LoggingInterceptor(s.logger, piiredact.LoggingOptions{
+				LogPayload: false, // 默认关; ops 手动改 env 重启可开
+				SkipMethods: map[string]struct{}{
+					"/grpc.health.v1.Health/Check": {},
+				},
+			}),
 			// shadow 标识翻进 ctx；AcquirerService 5 个方法入口检查 IsShadow 短路放行 —
 			// 压测流量绝不真打到外部渠道（GCash / Maya 等），返回 mock 结果。
 			shadow.UnaryServerInterceptor(),
