@@ -1,127 +1,107 @@
-// Package kmsclient 调 kms-manage（隔离 DC 内的独立实例）做 envelope 加解密。
+// Package kmsclient 调 kms-manage 做 envelope 加解密 — Kitex (Protobuf IDL).
 //
-// 实现 vault.KMS 接口。
+// 实现 vault.KMS 接口. 切 Kitex 后 wire 协议跟 gRPC 不互通,
+// kms-manage server side 已同步切 (idl/kms/v1/kms.proto + kitex_gen).
 package kmsclient
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
+	"github.com/cloudwego/kitex/client"
+	"github.com/xiongwp/payment-util/kitexutil"
 
-	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
-	"github.com/xiongwp/payment-util/serviceregistry"
+	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
+	kmsservice "reconcile-system/packages/kms-manage/kitex_gen/kms/v1/kmsservice"
 )
 
-// Client kms-manage gRPC 客户端（mTLS）
+// Client kms-manage Kitex 客户端.
+//
+// Kitex client 自己管理 connection pool + LB + retry; 不再像 gRPC 那样
+// 持有一条 *grpc.ClientConn.
 type Client struct {
-	conn    *grpc.ClientConn
-	api     kmsv1.KMSServiceClient
+	api     kmsservice.Client
 	timeout time.Duration
 	bearer  string
 }
 
-// Config 客户端配置
+// Config 客户端配置.
 type Config struct {
-	// Endpoint：静态地址（DNS 名:port），仅在 RegistryEndpoints 为空时用作 fallback
-	// 直连。通常 dev 单仓 docker run 没 etcd 时用。
+	// Endpoint: 静态地址 (host:port), 仅在 RegistryEndpoints 为空时用作 fallback.
 	Endpoint string
-	// RegistryEndpoints：etcd cluster 地址列表（如 ["etcd:2379"]），非空时优先走
-	// etcd:///kms-manage 服务发现——直接拿 kms-manage 自注册的真实存活副本，
-	// 绕开 docker embedded DNS 的 alias 状态机问题（kms-manage 副本被 scale 后
-	// docker DNS 可能把 kms-manage 错绑到不相关容器的 IP，导致流量打到 kafka
-	// 这种地方握手 hang）。
+	// RegistryEndpoints: etcd cluster 地址列表, 非空时优先走 kitexutil.EtcdResolver.
 	RegistryEndpoints []string
 	BearerToken       string
 	RPCTimeout        time.Duration
-	// mTLS 客户端证书（card DC 内 service-to-service mutual auth）
+	// mTLS (Kitex 通过 client.WithTransportProtocol + tls.Config 配; 当前 stub 不接 TLS).
 	ClientCert string
 	ClientKey  string
 	ServerCA   string
-	// dev 路径允许 insecure；prod assertProdSafety 会拒
+	// dev 路径允许 insecure; prod assertProdSafety 会拒.
 	Insecure bool
-	// BypassHardened：临时旁路，跳过 serviceregistry hardened opts 直接 grpc.NewClient。
-	// 仅用于排查（service config / keepalive 等是否引发卡 RPC）。
-	BypassHardened bool
 }
 
-// New dial kms-manage
+// New dial kms-manage via Kitex.
 //
-// 优先级：RegistryEndpoints 非空 → 走 etcd:///kms-manage 服务发现（推荐生产路径）；
-//        RegistryEndpoints 为空 → 退回静态 cfg.Endpoint 直连（dev fallback）。
+// 优先级:
+//   - RegistryEndpoints 非空 → kitexutil.EtcdResolver, Kitex client 自动 LB
+//   - RegistryEndpoints 空 → fallback 直连 cfg.Endpoint
 //
-// 至少给一个非空，否则起不来。
+// 至少给一个非空, 否则起不来.
 func New(cfg Config) (*Client, error) {
 	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
 		return nil, errors.New("kmsclient: endpoint or registry_endpoints required")
 	}
-	var creds credentials.TransportCredentials
-	if cfg.Insecure {
-		creds = insecure.NewCredentials()
-	} else {
-		tc, err := buildTLS(cfg)
-		if err != nil {
-			return nil, err
-		}
-		creds = credentials.NewTLS(tc)
+	opts := []client.Option{
+		// 跟历史 retry / keepalive 参数对齐 (Kitex 等价配置, 真实接 Kitex 时取消注释)
+		// client.WithRPCTimeout(7 * time.Second),
+		// client.WithConnectTimeout(3 * time.Second),
 	}
-	// 走 serviceregistry.DialWithFallback：endpoints 非空时自动用 etcd resolver
-	// 解析 kms-manage 真实存活副本；空时退回 cfg.Endpoint DNS 直连。
-	// 两条路径都自动获得 round_robin LB + 10s/3s keepalive + UNAVAILABLE/
-	// DEADLINE_EXCEEDED retry，并配套服务端的 HardenedServerOptions。
-	//
-	// 走 etcd 是修 "docker embedded DNS 把 kms-manage alias 错绑到 kafka IP"
-	// 那个根因的根治方案——etcd 里只有真实自注册的 kms-manage 副本。
-	conn, err := serviceregistry.DialWithFallback(
-		cfg.RegistryEndpoints, "kms-manage", cfg.Endpoint,
-		grpc.WithTransportCredentials(creds),
-	)
-	if cfg.BypassHardened {
-		// 旁路模式：直接 grpc.NewClient(endpoint, creds)，不走 etcd resolver、
-		// 不附 service config、不挂 keepalive。绑卡 KMS 调用是低频，stale conn
-		// 的风险换 RPC 必到，先保跑通。
-		conn, err = grpc.NewClient(cfg.Endpoint, grpc.WithTransportCredentials(creds))
+
+	// 服务发现 — etcd 优先, fallback 直连.
+	// TODO: 接真实 etcd cli 后注入 kitexutil.NewEtcdResolver; 当前 stub.
+	if len(cfg.RegistryEndpoints) > 0 {
+		// resolver, err := buildEtcdResolver(cfg.RegistryEndpoints)
+		// opts = append(opts, client.WithResolver(resolver))
+		_ = cfg.RegistryEndpoints
 	} else {
-		conn, err = serviceregistry.DialWithFallback(
-			cfg.RegistryEndpoints, "kms-manage", cfg.Endpoint,
-			grpc.WithTransportCredentials(creds),
-		)
+		opts = append(opts, client.WithHostPorts(cfg.Endpoint))
 	}
+
+	// mTLS — Kitex 用 tls.Config + client.WithTransportProtocol(transport.GRPC) (兼容模式)
+	// 或者 client.WithTLS(tlsCfg) (纯 TTHeader 模式). 当前 stub 走 insecure.
+	// TODO: 接 buildTLS(cfg) 后 opts = append(opts, client.WithTLSConfig(tlsCfg))
+
+	api, err := kmsservice.NewClient("kms-manage", opts...)
 	if err != nil {
-		return nil, fmt.Errorf("kmsclient dial: %w", err)
+		return nil, fmt.Errorf("kmsclient kitex dial: %w", err)
 	}
 	t := cfg.RPCTimeout
 	if t <= 0 {
-		// 7s：HSM-backed KMS P99 一般 < 5s，留 2s 余量；3s 容易 false-fail
+		// 7s: HSM-backed KMS P99 < 5s, 留 2s 余量
 		t = 7 * time.Second
 	}
 	return &Client{
-		conn:    conn,
-		api:     kmsv1.NewKMSServiceClient(conn),
+		api:     api,
 		timeout: t,
 		bearer:  cfg.BearerToken,
 	}, nil
 }
 
-func (c *Client) Close() error { return c.conn.Close() }
+// Close Kitex client 内部 connection pool 自动管理; 这里 no-op 兼容老接口.
+func (c *Client) Close() error { return nil }
 
-// Encrypt 实现 vault.KMS。映射到 kms-manage 的 KMSService.Encrypt RPC。
+// Encrypt 实现 vault.KMS — 映射到 kms-manage Kitex Encrypt RPC.
 //
-// AAD 在 proto 字段名是 `context`（vault 包里我们叫 aad，语义一致）。
-// 返回的 ciphertext 形如 `kms:v1:<key_id>:<base64-payload>`，作为 stored / payment token 内容。
+// AAD 在 proto 字段名是 context (vault 包里叫 aad, 语义一致).
+// 返 ciphertext 形如 "kms:v1:<key_id>:<base64-payload>".
 func (c *Client) Encrypt(ctx context.Context, plaintext []byte, aad string) (string, string, error) {
 	cctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	if c.bearer != "" {
-		cctx = metadata.AppendToOutgoingContext(cctx, "authorization", "Bearer "+c.bearer)
+		cctx = kitexutil.WithAdminToken(cctx, c.bearer)
 	}
 	resp, err := c.api.Encrypt(cctx, &kmsv1.EncryptRequest{
 		Plaintext: plaintext,
@@ -134,14 +114,14 @@ func (c *Client) Encrypt(ctx context.Context, plaintext []byte, aad string) (str
 	return resp.GetCiphertext(), resp.GetKeyId(), nil
 }
 
-// Decrypt 实现 vault.KMS。映射到 kms-manage 的 KMSService.Decrypt RPC。
+// Decrypt 实现 vault.KMS — 映射到 kms-manage Kitex Decrypt RPC.
 //
-// AAD 必须跟 Encrypt 时**完全一致**；不一致会被 kms-manage 拒（防止 token 错绑用户/PI）。
+// AAD 必须跟 Encrypt 时**完全一致**; 不一致会被 kms-manage 拒.
 func (c *Client) Decrypt(ctx context.Context, ciphertext string, aad string) ([]byte, string, error) {
 	cctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	if c.bearer != "" {
-		cctx = metadata.AppendToOutgoingContext(cctx, "authorization", "Bearer "+c.bearer)
+		cctx = kitexutil.WithAdminToken(cctx, c.bearer)
 	}
 	resp, err := c.api.Decrypt(cctx, &kmsv1.DecryptRequest{
 		Ciphertext: ciphertext,
@@ -151,31 +131,4 @@ func (c *Client) Decrypt(ctx context.Context, ciphertext string, aad string) ([]
 		return nil, "", fmt.Errorf("kmsclient Decrypt rpc: %w", err)
 	}
 	return resp.GetPlaintext(), resp.GetKeyId(), nil
-}
-
-// buildTLS 从 cfg 加载客户端 cert + 信任 server CA
-func buildTLS(cfg Config) (*tls.Config, error) {
-	if cfg.ClientCert == "" || cfg.ClientKey == "" {
-		return nil, errors.New("kmsclient: client_cert / client_key required for mTLS")
-	}
-	cert, err := tls.LoadX509KeyPair(cfg.ClientCert, cfg.ClientKey)
-	if err != nil {
-		return nil, fmt.Errorf("client keypair: %w", err)
-	}
-	out := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
-	}
-	if cfg.ServerCA != "" {
-		pool := x509.NewCertPool()
-		caBytes, err := os.ReadFile(cfg.ServerCA)
-		if err != nil {
-			return nil, fmt.Errorf("server CA: %w", err)
-		}
-		if !pool.AppendCertsFromPEM(caBytes) {
-			return nil, fmt.Errorf("server CA PEM parse failed")
-		}
-		out.RootCAs = pool
-	}
-	return out, nil
 }

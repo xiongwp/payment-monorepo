@@ -3,6 +3,7 @@ module github.com/xiongwp/card-center
 go 1.25.0
 
 require (
+	github.com/cloudwego/kitex v0.10.0
 	github.com/go-sql-driver/mysql v1.7.0
 	github.com/spf13/viper v1.19.0
 	github.com/xiongwp/kms-manage v0.0.0-00010101000000-000000000000
