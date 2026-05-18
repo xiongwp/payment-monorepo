@@ -232,6 +232,28 @@ func (p *KafkaEventPublisher) partitionKey(obj any, fallback string) string {
 // Close 关 client.
 func (p *KafkaEventPublisher) Close() { p.cl.Close() }
 
+// SendRaw — SP-AC-7 L5: 同步发送已序列化好的 outbox payload (跳过 wrap Event 结构,
+// 因为 outbox 表里存的就是 marshal 完的 Event JSON).
+//
+// 这个方法是 EventOutboxWorker → Kafka 的入口, ProduceSync 等 ACK 后才返回, 给 worker
+// 准确的 "成功 / 失败" 信号. 失败 → worker 走重试逻辑.
+//
+// 跟 Publish 区别: Publish 是 fire-and-forget (业务路径), SendRaw 是同步 (worker 路径).
+func (p *KafkaEventPublisher) SendRaw(ctx context.Context, eventType string, payload []byte) error {
+	rec := &kgo.Record{
+		Topic:   p.cfg.Topic,
+		Value:   payload,
+		Headers: []kgo.RecordHeader{{Key: "type", Value: []byte(eventType)}},
+	}
+	res := p.cl.ProduceSync(ctx, rec)
+	if err := res.FirstErr(); err != nil {
+		p.failed.Add(1)
+		return fmt.Errorf("ProduceSync: %w", err)
+	}
+	p.produced.Add(1)
+	return nil
+}
+
 // Flush 阻塞等所有 in-flight 完成.
 func (p *KafkaEventPublisher) Flush(ctx context.Context) error {
 	return p.cl.Flush(ctx)

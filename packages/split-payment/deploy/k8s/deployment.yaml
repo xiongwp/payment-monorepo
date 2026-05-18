@@ -1,0 +1,222 @@
+# SP-AC-7 PROD1: K8s Deployment for split-payment.
+#
+# 设计要点:
+#   - replicas: 2 (足以扛单 region 日常负载, HPA 加大上限)
+#   - 资源请求 200m CPU / 256Mi memory, 上限 1 CPU / 1Gi
+#   - readinessProbe 走 /readiness (admin HTTP 9099)
+#   - livenessProbe 走 /healthz (即使下游挂也保持 alive, 防 K8s 不必要的 restart)
+#   - 优雅停机 terminationGracePeriodSeconds=30 + preStop sleep 5s, 让 LB 摘流
+#   - SecurityContext nonroot + readOnlyRootFilesystem (distroless 不需 shell)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: split-payment
+  namespace: payment
+  labels:
+    app: split-payment
+    tier: payment-orchestration
+  annotations:
+    # SP-AC-7 PH3-3: Reloader 监 Secret / ConfigMap 变更 → 自动滚动重启.
+    # Vault 改秘钥 → ESO 同步 Secret → Reloader 触发滚动, 无需人工 kubectl rollout restart.
+    reloader.stakater.com/auto: "true"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: split-payment
+  template:
+    metadata:
+      labels:
+        app: split-payment
+        tier: payment-orchestration
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9099"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: split-payment
+      terminationGracePeriodSeconds: 30
+      affinity:
+        # 反亲和 → 同 Deployment 副本尽量散到不同 node
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: split-payment
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: split-payment
+          image: split-payment:VERSION # CI/CD 替换为真实 tag (e.g. v1.0.3)
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: grpc
+              containerPort: 9098
+            - name: admin
+              containerPort: 9099
+          env:
+            - name: SPLIT_GRPC_PORT
+              value: "9098"
+            - name: SPLIT_ADMIN_HTTP_PORT
+              value: "9099"
+            - name: ACCOUNTING_GRPC_ADDR
+              value: "accounting-service.payment.svc:50051"
+            - name: ACCOUNTING_HTTP_URL
+              value: "http://accounting-service.payment.svc:8888"
+            - name: REGISTRY_ENDPOINTS
+              value: "etcd.payment.svc:2379"
+            - name: SPLIT_PAYMENT_KAFKA_BROKERS
+              value: "kafka.payment.svc:9092"
+            - name: SPLIT_PAYMENT_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: split-payment-secrets
+                  key: dsn
+            - name: SPLIT_PAYMENT_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: split-payment-secrets
+                  key: admin_token
+            - name: SPLIT_PAYMENT_DB_MAX_OPEN
+              value: "100"
+            - name: SPLIT_PAYMENT_DB_MAX_IDLE
+              value: "20"
+            - name: SPLIT_PAYMENT_LOG_LEVEL
+              value: "info"
+            # SP-AC-7 PH3-2: mTLS — 强制 split-payment ↔ accounting 双向认证.
+            - name: ENVIRONMENT
+              value: "production"
+            - name: MTLS_SERVER_CERT
+              value: "/etc/certs/server.crt"
+            - name: MTLS_SERVER_KEY
+              value: "/etc/certs/server.key"
+            - name: MTLS_CA_CERT
+              value: "/etc/certs/ca.crt"
+          volumeMounts:
+            - name: mtls-certs
+              mountPath: /etc/certs
+              readOnly: true
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # 给 LB 时间从 endpoints 摘掉本 Pod
+                command: ["/bin/sleep", "5"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      # SP-AC-7 PH3-2: mTLS 证书 — cert-manager 自动签发 → Secret split-payment-mtls.
+      # 见 deploy/k8s/cert-manager-cert.yaml (Phase 3 secret-management 文档).
+      volumes:
+        - name: mtls-certs
+          secret:
+            secretName: split-payment-mtls
+            defaultMode: 0444
+            items:
+              - key: tls.crt
+                path: server.crt
+              - key: tls.key
+                path: server.key
+              - key: ca.crt
+                path: ca.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: split-payment
+  namespace: payment
+  labels:
+    app: split-payment
+spec:
+  type: ClusterIP
+  selector:
+    app: split-payment
+  ports:
+    - name: grpc
+      port: 9098
+      targetPort: grpc
+      appProtocol: grpc
+    - name: admin
+      port: 9099
+      targetPort: admin
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: split-payment-pdb
+  namespace: payment
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: split-payment
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: split-payment-hpa
+  namespace: payment
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: split-payment
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 30
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: split-payment
+  namespace: payment

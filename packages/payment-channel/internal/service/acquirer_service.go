@@ -20,10 +20,12 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/xiongwp/payment-channel/internal/breaker" // GAP-3: per-(adapter, action) CB
 	"github.com/xiongwp/payment-channel/internal/channel"
 	"github.com/xiongwp/payment-channel/internal/domain"
 	"github.com/xiongwp/payment-channel/internal/metrics"
 	"github.com/xiongwp/payment-channel/internal/repo"
+	"github.com/xiongwp/payment-util/cachelib" // CACHE-2: L2 Redis 共享缓存
 	"github.com/xiongwp/payment-util/shadow"
 )
 
@@ -92,27 +94,68 @@ type AcquirerService struct {
 	logger *zap.Logger
 	now    func() time.Time
 	idem   *idemCache
+	// GAP-3: 每个 (adapter, action) 一组 breaker.
+	// 5xx / network / timeout 超阈值 → 熔断, fast-fail 给上游让其降级 / 切备用通道,
+	// 不再傻等 30s timeout 一个一个失败.
+	breakers *breaker.Manager
+	// CACHE-2: L2 共享缓存 (Redis-backed via cachelib). 跨副本可见.
+	// nil → 仅走 L1 idemCache (向后兼容; 单副本 / 无 Redis 部署 OK).
+	idemL2 cachelib.Cache
 }
 
 func NewAcquirerService(reg channel.Registry, txRepo repo.AcquirerTxRepository, idgen repo.IDIssuer, logger *zap.Logger) *AcquirerService {
 	return &AcquirerService{
-		reg:    reg,
-		txRepo: txRepo,
-		idgen:  idgen,
-		logger: logger,
-		now:    time.Now,
-		idem:   newIdemCache(),
+		reg:      reg,
+		txRepo:   txRepo,
+		idgen:    idgen,
+		logger:   logger,
+		now:      time.Now,
+		idem:     newIdemCache(),
+		breakers: breaker.NewManager(breaker.DefaultConfig()),
 	}
 }
 
+// SetBreakerManager 允许外部注入自定义 breaker 配置 (例如运维通过 config-center 调阈值).
+// 默认 NewAcquirerService 用 breaker.DefaultConfig — 大部分场景够用.
+func (s *AcquirerService) SetBreakerManager(m *breaker.Manager) { s.breakers = m }
+
+// Breakers 暴露给运维 admin HTTP (e.g. /ops/circuit/states + /ops/circuit/reset).
+func (s *AcquirerService) Breakers() *breaker.Manager { return s.breakers }
+
+// SetIdempotencyL2Cache CACHE-2: 注入跨副本 Redis 缓存层.
+//
+// 命中链: L1 (进程内 idemCache) → L2 (Redis cachelib) → L3 (DB FindByIdem).
+//
+// 不传 (默认) → 仅 L1 + L3. 多副本部署 + 高 webhook 重投率场景强烈建议接 Redis,
+// 避免每个副本独立从 DB 拉同一笔幂等记录.
+func (s *AcquirerService) SetIdempotencyL2Cache(c cachelib.Cache) { s.idemL2 = c }
+
 // lookupIdem 缓存优先查 acquirer_tx；命中即返回，未命中落 DB。
 // 仅缓存 NON-NIL 命中（首次请求/未存在不缓存——意义不大且会延迟首次写入的可见性）。
+// lookupIdem CACHE-2: 三层查找 L1 (process LRU) → L2 (Redis) → L3 (DB).
 func (s *AcquirerService) lookupIdem(ctx context.Context, adapter, action, piID, idem string) (*domain.AcquirerTx, error) {
 	k := idemCacheKey{piID: piID, adapter: adapter, idem: idem}
+	// L1
 	if tx, ok := s.idem.get(k); ok {
 		metrics.IdempotentLookupTotal.WithLabelValues(adapter, action, "cache", "hit").Inc()
 		return tx, nil
 	}
+	// L2 (Redis) — 跨副本共享. 任何后端错误降级到 L3, 不阻塞请求.
+	if s.idemL2 != nil {
+		raw, hit, err := s.idemL2.Get(ctx, idemRedisKey(adapter, piID, idem))
+		switch {
+		case err != nil:
+			s.logger.Warn("idem L2 cache get failed", zap.Error(err))
+		case hit && len(raw) > 0:
+			tx := &domain.AcquirerTx{}
+			if uerr := json.Unmarshal(raw, tx); uerr == nil {
+				metrics.IdempotentLookupTotal.WithLabelValues(adapter, action, "redis", "hit").Inc()
+				s.idem.set(k, tx) // L1 回填
+				return tx, nil
+			}
+		}
+	}
+	// L3 (DB)
 	tx, err := s.txRepo.FindByIdem(ctx, piID, adapter, idem)
 	if err != nil {
 		return nil, err
@@ -123,7 +166,18 @@ func (s *AcquirerService) lookupIdem(ctx context.Context, adapter, action, piID,
 	}
 	metrics.IdempotentLookupTotal.WithLabelValues(adapter, action, "db", "hit").Inc()
 	s.idem.set(k, tx)
+	// 回填 L2
+	if s.idemL2 != nil {
+		if b, merr := json.Marshal(tx); merr == nil {
+			_ = s.idemL2.Set(ctx, idemRedisKey(adapter, piID, idem), b, idemCacheTTL)
+		}
+	}
 	return tx, nil
+}
+
+// idemRedisKey 拼 Redis key — 加 prefix 防跨服务撞 key.
+func idemRedisKey(adapter, piID, idem string) string {
+	return "paychan:idem:" + adapter + ":" + piID + ":" + idem
 }
 
 // ─── Charge ──────────────────────────────────────────────────────────────
@@ -181,9 +235,22 @@ func (s *AcquirerService) Charge(ctx context.Context, adapterName string, req *c
 		return nil, err
 	}
 
-	// 3. 真实调用 adapter。
+	// 3. 真实调用 adapter (GAP-3: CB 包一层).
+	//    Allow → 拒绝时直接 fast-fail (state=unknown, 让 PendingQueryWorker 走 Query 推进),
+	//    避免 adapter 故障时 N 笔 charge 全部卡 30s 超时.
+	brk := s.breakers.Get(adapterName, string(domain.ActionCharge))
 	start := s.now()
-	resp, callErr := ad.Charge(ctx, req)
+	var resp *channel.ChargeResponse
+	var callErr error
+	if brkErr := brk.Allow(); brkErr != nil {
+		callErr = brkErr // ErrCircuitOpen — 当作"上游不可用 / 结果未知"处理
+		metrics.AcquirerCallTotal.WithLabelValues(adapterName, string(domain.ActionCharge), "circuit_open").Inc()
+	} else {
+		resp, callErr = ad.Charge(ctx, req)
+		// Record success=true if NOT upstream infra failure (5xx/timeout/network).
+		// 业务级 denied / 4xx 不算 breaker failure.
+		brk.Record(!isUpstreamInfraFailure(callErr))
+	}
 	lat := int(s.now().Sub(start).Milliseconds())
 	metrics.AcquirerCallDuration.WithLabelValues(adapterName, string(domain.ActionCharge)).Observe(time.Since(start).Seconds())
 
@@ -222,12 +289,13 @@ func (s *AcquirerService) Charge(ctx context.Context, adapterName string, req *c
 		}
 	}
 	_ = s.txRepo.UpdateResult(ctx, req.PiID, tx.ID, fields)
-	// 状态发生变化（pending → succeeded/failed）：清进程内 cache，下次查询走 DB
-	// 拿到最新行。多副本部署下，每个实例自己的 cache 由本地 Update 触发清除；
-	// 跨实例的 stale 仅在 cache TTL 内（≤60s），对幂等回放语义可接受
-	// （即便 race 拿到旧 pending 行，replay 也只是返回上一次的 response，调用方依旧
-	//  得到一致的「这笔 charge 是 pending」语义）。
+	// 状态发生变化（pending → succeeded/failed）：清缓存 (L1 + L2), 下次查询走 DB.
+	// L1 (process) 立即生效; L2 (Redis) 跨副本一致约 50ms 内, 期间残留 stale entry
+	// 风险可接受 — replay 拿旧值会返同一份响应, 语义一致.
 	s.idem.invalidate(idemCacheKey{piID: req.PiID, adapter: adapterName, idem: req.IdempotencyKey})
+	if s.idemL2 != nil {
+		_ = s.idemL2.Del(ctx, idemRedisKey(adapterName, req.PiID, req.IdempotencyKey))
+	}
 	metrics.AcquirerCallTotal.WithLabelValues(adapterName, string(domain.ActionCharge), result).Inc()
 
 	return resp, callErr
@@ -414,8 +482,11 @@ func (s *AcquirerService) finalizeOp(
 		}
 	}
 	_ = s.txRepo.UpdateResult(ctx, piID, tx.ID, fields)
-	// 同 Charge：state 更新后立即清进程内 cache，下次查询走 DB 拿最新结果
+	// 同 Charge: state 更新后清 L1 + L2 cache, 下次查询走 DB 拿最新结果.
 	s.idem.invalidate(idemCacheKey{piID: piID, adapter: adapterName, idem: tx.IdempotencyKey})
+	if s.idemL2 != nil {
+		_ = s.idemL2.Del(ctx, idemRedisKey(adapterName, piID, tx.IdempotencyKey))
+	}
 	metrics.AcquirerCallTotal.WithLabelValues(adapterName, string(action), result).Inc()
 }
 
@@ -457,4 +528,18 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// isUpstreamInfraFailure GAP-3: 判断 adapter 调用结果是否算上游"基础设施失败" —
+// 用于决定要不要给 CB 记 fail.
+//
+// 算 failure (Record(false)):
+//   - callErr != nil (timeout / DNS / TCP / 5xx)
+//   - 也含 ctx canceled / deadline exceeded — 当 unknown 处理, 上报为 fail 让 CB 跳闸保护
+//
+// 不算 failure (Record(true)):
+//   - callErr == nil 即业务级 4xx (denied / invalid card / fraud) — 上游正常工作
+//     只是这单业务上拒, 不该熔断整个 adapter.
+func isUpstreamInfraFailure(callErr error) bool {
+	return callErr != nil
 }

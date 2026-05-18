@@ -1,0 +1,57 @@
+{
+  "title": "card-payment SLO",
+  "tags": ["card-payment", "payments"],
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {"name": "datasource", "type": "datasource", "query": "prometheus"},
+      {"name": "network", "type": "query", "datasource": "${datasource}", "query": "label_values(paycard_authorize_total, network)", "multi": true, "includeAll": true}
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Authorize success rate",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "targets": [{
+        "expr": "sum(rate(paycard_authorize_total{result=\"ok\"}[5m])) / sum(rate(paycard_authorize_total[5m]))"
+      }],
+      "fieldConfig": {"defaults": {"unit": "percentunit"}}
+    },
+    {
+      "id": 2, "type": "stat", "title": "Denial rate (5m)",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+      "targets": [{
+        "expr": "sum(rate(paycard_authorize_total{result=\"denied\"}[5m])) / sum(rate(paycard_authorize_total[5m]))"
+      }],
+      "fieldConfig": {"defaults": {"unit": "percentunit"}}
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Authorize calls by network/result",
+      "gridPos": {"x": 0, "y": 4, "w": 24, "h": 8},
+      "targets": [{
+        "expr": "sum by (network, result) (rate(paycard_authorize_total{network=~\"$network\"}[1m]))",
+        "legendFormat": "{{network}}/{{result}}"
+      }]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Authorize latency p50/p95/p99",
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le, network) (rate(paycard_authorize_duration_seconds_bucket[5m])))", "legendFormat": "{{network}} p50"},
+        {"expr": "histogram_quantile(0.95, sum by (le, network) (rate(paycard_authorize_duration_seconds_bucket[5m])))", "legendFormat": "{{network}} p95"},
+        {"expr": "histogram_quantile(0.99, sum by (le, network) (rate(paycard_authorize_duration_seconds_bucket[5m])))", "legendFormat": "{{network}} p99"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Network errors by kind",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+      "targets": [{
+        "expr": "sum by (network, kind) (rate(paycard_network_error_total[1m]))",
+        "legendFormat": "{{network}}/{{kind}}"
+      }]
+    }
+  ]
+}

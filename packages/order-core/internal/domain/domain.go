@@ -93,6 +93,10 @@ var ErrInvalidTransition = errors.New("invalid status transition")
 // ErrValidation 业务校验失败
 var ErrValidation = errors.New("validation failed")
 
+// ErrIdempotentReplay ROI-3: 同一 idempotency_key 重复调用时返回 — caller 应当作 success
+// 处理并使用响应中携带的 PI/Charge 快照 (避免对客户重复扣款).
+var ErrIdempotentReplay = errors.New("idempotent replay; returning original result")
+
 // ErrRefundAmountExceeded 退款金额超出可退余额
 var ErrRefundAmountExceeded = errors.New("refund amount exceeds available")
 

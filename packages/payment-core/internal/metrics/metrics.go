@@ -4,11 +4,13 @@ package metrics
 import (
 	"encoding/json"
 	"net/http"
+	_ "net/http/pprof" // ROI-2a: 注册 /debug/pprof/* 到 DefaultServeMux
 	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // BreakerRegistry is the minimal surface the metrics HTTP server needs from
@@ -134,9 +136,51 @@ var draining atomic.Bool
 // BeginDrain 标记进入 drain 状态：/readyz 返回 503。
 func BeginDrain() { draining.Store(true) }
 
+// StartServer 启动 admin HTTP — /metrics + /healthz + /readyz + /ops/circuit/*.
+//
+// ROI-2a: 用 StartServerWithLevel 替代; 老 API 保留向后兼容, 内部转发.
 func StartServer(addr string, logger *zap.Logger, breakers BreakerRegistry) {
+	StartServerWithLevel(addr, logger, breakers, nil)
+}
+
+// StartServerWithLevel 启动 admin HTTP — 加 /debug/pprof/* (CPU/heap profiling)
+// + /admin/log-level (动态调日志级别, level=nil 时端点 readonly).
+//
+// 与 split-payment / refund-engine / accounting-system 一致, 但保留 payment-core
+// 已有的 /ops/circuit/* 端点 (admin UI reset 熔断器用).
+func StartServerWithLevel(addr string, logger *zap.Logger, breakers BreakerRegistry, level *zap.AtomicLevel) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
+	// ROI-2a: pprof — /debug/pprof/{,heap,goroutine,profile,trace,...}
+	// http.DefaultServeMux 在 import _ "net/http/pprof" 时自动注册; 这里转发过来.
+	mux.Handle("/debug/pprof/", http.DefaultServeMux)
+	// ROI-2a: 日志级别动态调 — GET 返当前 level, PUT {"level":"debug"} 切换.
+	if level != nil {
+		mux.HandleFunc("/admin/log-level", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"level": level.Level().String()})
+			case http.MethodPut, http.MethodPost:
+				var body struct{ Level string `json:"level"` }
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "bad json", http.StatusBadRequest)
+					return
+				}
+				var l zapcore.Level
+				if err := l.UnmarshalText([]byte(body.Level)); err != nil {
+					http.Error(w, "bad level (try: debug/info/warn/error)", http.StatusBadRequest)
+					return
+				}
+				level.SetLevel(l)
+				logger.Info("log level changed", zap.String("level", body.Level))
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"level": l.String()})
+			default:
+				http.Error(w, "method", http.StatusMethodNotAllowed)
+			}
+		})
+	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

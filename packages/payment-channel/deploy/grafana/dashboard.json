@@ -1,0 +1,65 @@
+{
+  "title": "payment-channel SLO",
+  "tags": ["payment-channel", "payments"],
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [
+      {"name": "datasource", "type": "datasource", "query": "prometheus"},
+      {"name": "adapter", "type": "query", "datasource": "${datasource}", "query": "label_values(paychan_acquirer_call_total, adapter)", "multi": true, "includeAll": true}
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Adapter success rate (5m)",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "targets": [{
+        "expr": "sum(rate(paychan_acquirer_call_total{result=\"ok\"}[5m])) / sum(rate(paychan_acquirer_call_total[5m]))",
+        "refId": "A"
+      }],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 0.95}, {"color": "green", "value": 0.99}]}}}
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Acquirer calls by adapter/result",
+      "gridPos": {"x": 6, "y": 0, "w": 12, "h": 8},
+      "targets": [{
+        "expr": "sum by (adapter, result) (rate(paychan_acquirer_call_total{adapter=~\"$adapter\"}[1m]))",
+        "legendFormat": "{{adapter}}/{{result}}"
+      }]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Adapter latency p99",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [{
+        "expr": "histogram_quantile(0.99, sum by (le, adapter) (rate(paychan_acquirer_call_duration_seconds_bucket{adapter=~\"$adapter\"}[5m])))",
+        "legendFormat": "{{adapter}} p99"
+      }],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Webhook received (signature_ok / dedup)",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [{
+        "expr": "sum by (adapter, signature_ok, dedupe) (rate(paychan_webhook_received_total[1m]))",
+        "legendFormat": "{{adapter}}/sig={{signature_ok}}/dedup={{dedupe}}"
+      }]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Webhook forward to order-core",
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 6},
+      "targets": [{
+        "expr": "sum by (adapter, result) (rate(paychan_webhook_forward_total[1m]))",
+        "legendFormat": "{{adapter}}/{{result}}"
+      }]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Idempotent replays + lookups",
+      "gridPos": {"x": 12, "y": 16, "w": 12, "h": 6},
+      "targets": [
+        {"expr": "sum by (adapter) (rate(paychan_idempotent_replay_total[1m]))", "legendFormat": "{{adapter}} replays"},
+        {"expr": "sum by (source, result) (rate(paychan_idempotent_lookup_total[1m]))", "legendFormat": "{{source}}/{{result}}"}
+      ]
+    }
+  ]
+}

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync" // GAP-4: idempotency store
 	"time"
 
 	"github.com/xiongwp/payment-util/shadow"
@@ -277,6 +278,183 @@ func APIKeyMiddleware(apiKeys map[string]string, logger *zap.Logger) func(http.H
 		})
 	}
 }
+
+// ─── GAP-4: Idempotency-Key 中间件 ────────────────────────────────────────────
+//
+// 强制资金类 path (POST /pay, POST /refunds, POST /payment_intents, ...) 必带
+// Idempotency-Key 头. 防止 client 端 TCP 重试 / 双击 / 网络抖动导致同一笔交易
+// 在 order-core / payment-core 多次落地.
+//
+// 实现:
+//   - 检查 IdempotencyRequired path + POST 方法 → 必带 header (否则 400).
+//   - 进程内 LRU 缓存 (key+merchant_id, status+body) 24h TTL — 命中直接回放.
+//   - cache miss → 走 next handler, 完成后把 status+body 落 cache.
+//
+// 限制 (单机内存):
+//   - 多副本之间不共享缓存; 流量经 LB 撞到不同副本 → 一致性靠 order-core 自身幂等
+//     兜底 (ROI-3 已加). 这一层是"快速 short-circuit", 不是唯一防御.
+//   - 大规模应换 Redis backend; 接口 IdempotencyStore 已抽好.
+
+// IdempotencyStore 持久化层抽象 — 默认 in-memory, 生产换 Redis.
+type IdempotencyStore interface {
+	Get(key string) (*CachedResponse, bool)
+	Put(key string, resp *CachedResponse)
+}
+
+// CachedResponse 单次响应快照.
+type CachedResponse struct {
+	StatusCode int
+	Body       []byte
+	StoredAt   time.Time
+}
+
+// memIdempotencyStore 进程内 map + RWMutex.
+//
+// 生产 (>2 副本) 必须换 Redis: 见 IdempotencyStore.Put 实现样本.
+type memIdempotencyStore struct {
+	mu  sync.RWMutex
+	m   map[string]*CachedResponse
+	ttl time.Duration
+}
+
+// NewMemIdempotencyStore.
+func NewMemIdempotencyStore(ttl time.Duration) IdempotencyStore {
+	s := &memIdempotencyStore{m: make(map[string]*CachedResponse), ttl: ttl}
+	// 简单 GC goroutine — 每 5min 清过期.
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for range t.C {
+			s.gc()
+		}
+	}()
+	return s
+}
+
+func (s *memIdempotencyStore) Get(key string) (*CachedResponse, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.m[key]
+	if !ok {
+		return nil, false
+	}
+	if time.Since(r.StoredAt) > s.ttl {
+		return nil, false
+	}
+	return r, true
+}
+
+func (s *memIdempotencyStore) Put(key string, resp *CachedResponse) {
+	s.mu.Lock()
+	s.m[key] = resp
+	s.mu.Unlock()
+}
+
+func (s *memIdempotencyStore) gc() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range s.m {
+		if time.Since(v.StoredAt) > s.ttl {
+			delete(s.m, k)
+		}
+	}
+}
+
+// idempotencyRequiredPaths 强制要求 Idempotency-Key 的 path 前缀.
+// 资金类写操作必须命中此列表才能放行.
+var idempotencyRequiredPaths = []string{
+	"/pay",
+	"/refunds",
+	"/payment_intents",
+	"/charges",
+	"/transfers",
+	"/payouts",
+}
+
+func isIdempotencyRequired(method, path string) bool {
+	if method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch {
+		return false
+	}
+	for _, p := range idempotencyRequiredPaths {
+		if path == p || strings.HasPrefix(path, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// IdempotencyMiddleware GAP-4: 强制 /pay 等资金 path 必带 Idempotency-Key, 缓存响应 24h.
+//
+// Key 拼接: merchant_id + ":" + path + ":" + Idempotency-Key (相同 key 跨 merchant
+// 不复用, 跨 path 不复用 — 防意外 cache hit).
+//
+// store nil → 自动 NewMemIdempotencyStore(24h). 生产建议 caller 自传 Redis 实现.
+func IdempotencyMiddleware(store IdempotencyStore, logger *zap.Logger) func(http.Handler) http.Handler {
+	if store == nil {
+		store = NewMemIdempotencyStore(24 * time.Hour)
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !isIdempotencyRequired(r.Method, r.URL.Path) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+			if key == "" {
+				http.Error(w, `{"error":"Idempotency-Key header required for write operations"}`, http.StatusBadRequest)
+				return
+			}
+			// 长度上限 — Stripe 是 255, 这里同步.
+			if len(key) > 255 {
+				http.Error(w, `{"error":"Idempotency-Key too long (max 255 chars)"}`, http.StatusBadRequest)
+				return
+			}
+			merchant := merchantIDFromContext(r)
+			cacheKey := merchant + ":" + r.URL.Path + ":" + key
+			if cached, ok := store.Get(cacheKey); ok {
+				logger.Info("idempotency replay",
+					zap.String("merchant", merchant),
+					zap.String("path", r.URL.Path),
+					zap.String("idempotency_key", key),
+					zap.Int("cached_status", cached.StatusCode))
+				w.Header().Set("Idempotent-Replayed", "true")
+				w.WriteHeader(cached.StatusCode)
+				_, _ = w.Write(cached.Body)
+				return
+			}
+			// cache miss — wrap ResponseWriter to capture body
+			rec := &idempotencyRecorder{ResponseWriter: w, status: http.StatusOK}
+			next.ServeHTTP(rec, r)
+			// 只 cache 成功响应 (2xx). 4xx/5xx 不 cache, 让 client 可以纠正后重试.
+			if rec.status >= 200 && rec.status < 300 {
+				store.Put(cacheKey, &CachedResponse{
+					StatusCode: rec.status,
+					Body:       rec.body,
+					StoredAt:   time.Now(),
+				})
+			}
+		})
+	}
+}
+
+// idempotencyRecorder 抓取 handler 返回的 status + body.
+type idempotencyRecorder struct {
+	http.ResponseWriter
+	status int
+	body   []byte
+}
+
+func (r *idempotencyRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *idempotencyRecorder) Write(b []byte) (int, error) {
+	r.body = append(r.body, b...)
+	return r.ResponseWriter.Write(b)
+}
+
+// ─── 原有代码 ──────────────────────────────────────────────────────────
 
 // isAuthExemptPath 跳过 X-API-Key 校验（这些路径用 JWT/Cookie 自己鉴权或本就
 // 是匿名 health probe）。**注意**：跳过 API-key 不等于跳过限流——

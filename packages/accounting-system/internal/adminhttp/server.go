@@ -50,6 +50,7 @@ type Server struct {
 	instanceRepo     repository.ServiceInstanceRepository
 	hotAccountRepo   repository.HotAccountRepository
 	ruleRepo         repository.TransactionRuleRepository // 用于 ListAccountTypes
+	orderRepo        repository.TransactionOrderRepository // SP-AC-7 trigger 重试 用 (ResetForRetry)
 	accountingSvc    service.AccountingService
 	dayCutSvc        service.DayCutService                // 用于 /admin/day-cut/resume
 	systemConfigSvc  service.SystemConfigService          // wrap config-center SDK；保留 Reload 入口给 ConfigSyncWorker
@@ -90,6 +91,7 @@ func NewServer(
 	instanceRepo repository.ServiceInstanceRepository,
 	hotAccountRepo repository.HotAccountRepository,
 	ruleRepo repository.TransactionRuleRepository,
+	orderRepo repository.TransactionOrderRepository,
 	accountingSvc service.AccountingService,
 	dayCutSvc service.DayCutService,
 	systemConfigSvc service.SystemConfigService,
@@ -127,6 +129,7 @@ func NewServer(
 		instanceRepo:     instanceRepo,
 		hotAccountRepo:   hotAccountRepo,
 		ruleRepo:         ruleRepo,
+		orderRepo:        orderRepo,
 		accountingSvc:    accountingSvc,
 		dayCutSvc:        dayCutSvc,
 		systemConfigSvc:  systemConfigSvc,
@@ -158,8 +161,9 @@ func NewServer(
 	// SP-AC-7: admin-web designer picker 也走这里 (BFF 中转), 加 underscore alias 兼容.
 	// 真正的服务间 (split-payment → accounting) CreateTransaction 不走 HTTP, 见 gRPC TransactionService.
 	mux.HandleFunc("/admin/account_types", s.handleListAccountTypes)               // alias
-	mux.HandleFunc("/admin/transaction-rules", s.handleListTransactionRules)       // GET ?product= 列规则 (admin UI)
-	mux.HandleFunc("/admin/transaction_rules", s.handleListTransactionRules)       // alias
+	mux.HandleFunc("/admin/transaction-rules", s.handleTransactionRules)           // GET ?product= 列规则; POST upsert (SP-AC-7 split-payment SaveGraph 用)
+	mux.HandleFunc("/admin/transaction_rules", s.handleTransactionRules)           // alias
+	mux.HandleFunc("/admin/transaction-orders/", s.handleTransactionOrderActions)  // POST /admin/transaction-orders/{order_no}/reset  (SP-AC-7 trigger 重试)
 	// TCC 归档
 	mux.HandleFunc("/admin/tcc-archive/config", s.handleTccArchiveConfig)          // GET 当前生效的归档配置
 	mux.HandleFunc("/admin/tcc-archive/run", s.handleTccArchiveRun)                // POST 立即触发一次归档
@@ -691,31 +695,185 @@ func (s *Server) handleListAccountTypes(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, rows)
 }
 
-// handleListTransactionRules GET /admin/transaction-rules?product=XXX
+// handleTransactionRules /admin/transaction-rules.
 //
-// 列指定 product_code 下所有 TransactionRule. product 空 → 全部规则.
-// 供 split-payment designer 拉 event_code 下拉, 以及 admin rules 管理页.
-func (s *Server) handleListTransactionRules(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+// GET  ?product=XXX            列指定 product_code 下所有 TransactionRule. product 空 → 全部规则.
+// POST {rules:[TransactionRule]}  批量 upsert (split-payment SaveGraph 用),  hash_key 唯一,
+//                              upsert 完自动触发 Reload, in-memory snapshot 立即可见.
+//                              单条 upsert 失败立即中止并返回错误 + 已成功的 count.
+func (s *Server) handleTransactionRules(w http.ResponseWriter, r *http.Request) {
 	if s.ruleRepo == nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "rule repo not wired"})
 		return
 	}
-	product := r.URL.Query().Get("product")
-	rows, err := s.ruleRepo.ListRulesByProduct(r.Context(), product)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+	switch r.Method {
+	case http.MethodGet:
+		product := r.URL.Query().Get("product")
+		rows, err := s.ruleRepo.ListRulesByProduct(r.Context(), product)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, rows)
+	case http.MethodDelete:
+		// SP-AC-7 R2: SaveGraph saga 补偿. body: {hash_keys:[...]}.
+		var body struct {
+			HashKeys []string `json:"hash_keys"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
+			return
+		}
+		if len(body.HashKeys) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hash_keys array required"})
+			return
+		}
+		deleted, err := s.ruleRepo.DeleteByHashKeys(r.Context(), body.HashKeys)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		// 删完触发 reload, 让 in-memory snapshot 立即不再返已删 rule
+		if err := s.ruleRepo.Reload(r.Context()); err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"deleted": deleted,
+				"warning": "delete OK but reload failed: " + err.Error(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
+	case http.MethodPost:
+		// 用 anonymous struct 显式带 json tag 解析 — model.TransactionRule 只有 gorm tag
+		// 没 json tag, snake_case 入参会拿不到值. 这里 DTO 解完再 copy 进 model.
+		type ruleDTO struct {
+			ProductCode     string `json:"product_code"`
+			EventCode       string `json:"event_code"`
+			HashKey         string `json:"hash_key"`
+			DebitSubjectID  string `json:"debit_subject_id"`
+			CreditSubjectID string `json:"credit_subject_id"`
+			FromDirection   string `json:"from_direction"`
+			ToDirection     string `json:"to_direction"`
+			TransactionType int    `json:"transaction_type"`
+			BookkeepingMode string `json:"bookkeeping_mode"`
+		}
+		var body struct {
+			Rules []ruleDTO `json:"rules"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
+			return
+		}
+		if len(body.Rules) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "rules array required"})
+			return
+		}
+		succeeded := 0
+		for i, d := range body.Rules {
+			rule := &model.TransactionRule{
+				ProductCode:     d.ProductCode,
+				EventCode:       d.EventCode,
+				HashKey:         d.HashKey,
+				DebitSubjectID:  d.DebitSubjectID,
+				CreditSubjectID: d.CreditSubjectID,
+				FromDirection:   d.FromDirection,
+				ToDirection:     d.ToDirection,
+				TransactionType: d.TransactionType,
+				BookkeepingMode: d.BookkeepingMode,
+			}
+			if err := s.ruleRepo.UpsertRule(r.Context(), rule); err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]any{
+					"error":     fmt.Sprintf("rule[%d] (product=%s event=%s): %v", i, rule.ProductCode, rule.EventCode, err),
+					"succeeded": succeeded,
+					"total":     len(body.Rules),
+				})
+				return
+			}
+			succeeded++
+		}
+		// 全部 OK → 触发 reload 让 in-memory snapshot 立即可见
+		if err := s.ruleRepo.Reload(r.Context()); err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"upserted": succeeded,
+				"warning":  "upsert succeeded but reload failed: " + err.Error(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"upserted": succeeded})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
-	writeJSON(w, http.StatusOK, rows)
 }
 
 // SP-AC-7: handleCreateTransaction 已删除.
 // CreateTransaction 走 gRPC TransactionService (见 internal/grpc/server.go + admin_extensions.go).
 // HTTP admin 只留 ops + admin UI read-only.
+
+// handleTransactionOrderActions /admin/transaction-orders/{order_no}/reset
+//
+// SP-AC-7: trigger 部分失败可重试. body: {business_no, business_type?, force?}.
+//   - business_no: orderRepo route 用 (sharded by businessNo).
+//   - business_type: 一般空 (split-payment 不分 type).
+//   - force=true: 不管 status, 重置 status=Failed + retry_count=0 (admin 紧急通道).
+//
+// 异常场景:
+//   - status=Success         → 拒绝重置 (action=skipped_success), 资金安全保障.
+//   - Processing + voucher_no → phantom processing, 修正到 Success (action=phantom_fixed).
+//   - Processing + 空 voucher → 真 stuck, 改 Failed (action=unstuck), retry_count 不动.
+//   - 已 Failed              → 啥也不做 (action=already_failed), 直接可重试.
+//   - Pending                → 也归 Failed (action=reset_pending).
+func (s *Server) handleTransactionOrderActions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.orderRepo == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "order repo not wired"})
+		return
+	}
+	// 路径解析: /admin/transaction-orders/{order_no}/reset
+	prefix := "/admin/transaction-orders/"
+	rest := strings.TrimPrefix(r.URL.Path, prefix)
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[1] != "reset" {
+		http.Error(w, "expect /admin/transaction-orders/{order_no}/reset", http.StatusBadRequest)
+		return
+	}
+	orderNo := parts[0]
+	if orderNo == "" {
+		http.Error(w, "order_no required in path", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		BusinessNo   string `json:"business_no"`
+		BusinessType string `json:"business_type"`
+		Force        bool   `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		// 没 body 也接受 (默认 business_no=order_no 兜底,force=false).
+		body.BusinessNo = orderNo
+	}
+	if body.BusinessNo == "" {
+		body.BusinessNo = orderNo // shard 路由依据
+	}
+	res, err := s.orderRepo.ResetForRetry(r.Context(), orderNo, body.BusinessType, body.BusinessNo, body.Force)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error":    err.Error(),
+			"order_no": orderNo,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"order_no":      orderNo,
+		"action":        res.Action,
+		"prev_status":   res.PrevStatus,
+		"curr_status":   res.CurrStatus,
+		"voucher_no":    res.VoucherNo,
+		"retry_count":   res.RetryCount,
+		"max_retry":     res.MaxRetry,
+		"error_message": res.ErrorMessage,
+	})
+}
 
 // handleTccArchiveConfig GET /admin/tcc-archive/config
 // 返回当前 TccArchiveWorker 的运行时配置。

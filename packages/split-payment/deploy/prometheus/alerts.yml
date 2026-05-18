@@ -1,0 +1,156 @@
+# SP-AC-7 PROD4: Prometheus alert rules for split-payment.
+#
+# 10 条覆盖关键失败模式 + 资金安全. 严重度 critical/warning 分级,
+# annotations 里给 runbook URL 占位 (生产填实际 wiki/runbook 链接).
+#
+# 部署: kubectl apply 到 PrometheusRule CRD; 或拷进 prometheus.yml rules 目录.
+
+groups:
+  - name: split-payment.fund-safety
+    interval: 30s
+    rules:
+      # ─── 资金安全 critical ─────────────────────────────────────────
+      - alert: SplitPaymentReconcileInconsistency
+        expr: |
+          increase(split_payment_reconcile_inconsistencies_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          team: payments
+        annotations:
+          summary: "Daily reconcile worker found {{ $value }} inconsistencies in {{ $labels.category }}"
+          description: |
+            split-payment ↔ accounting 跨数据不一致.
+            category={{ $labels.category }} (missing_voucher / orphan_transfer / orphan_reversal).
+          runbook: "https://wiki/runbook/split-payment-reconcile"
+
+      - alert: SplitPaymentReversalDeadLetter
+        expr: |
+          split_payment_outbox_dead_letter_total{name="reversal_retry_outbox"} > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: payments
+        annotations:
+          summary: "{{ $value }} Reversal stuck in dead_letter ≥ 5 min"
+          description: |
+            退款 Reversal 重试达上限, 资金未冲销 → 财务对账失败前兆.
+            人工查 reversal_retry_outbox WHERE status='dead_letter'.
+          runbook: "https://wiki/runbook/split-payment-reversal-dlq"
+
+      - alert: SplitPaymentVoucherFailureRate
+        expr: |
+          sum(rate(split_payment_voucher_status_total{status="failed"}[5m]))
+          /
+          sum(rate(split_payment_voucher_status_total[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: payments
+        annotations:
+          summary: "TriggerEvent voucher failure rate > 5% in last 5m"
+          description: "落账失败率持续偏高, 检查 accounting 是否健康 + circuit_state."
+          runbook: "https://wiki/runbook/split-payment-voucher-fail"
+
+  - name: split-payment.availability
+    interval: 30s
+    rules:
+      # ─── 可用性 warning/critical ───────────────────────────────────
+      - alert: SplitPaymentGRPCErrorRate
+        expr: |
+          sum by (method) (rate(split_payment_grpc_server_handled_total{code!="OK"}[5m]))
+          /
+          sum by (method) (rate(split_payment_grpc_server_handled_total[5m]))
+          > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: payments
+        annotations:
+          summary: "gRPC {{ $labels.method }} error rate > 10% in 5m"
+          description: "检查 method-specific 错误日志."
+
+      - alert: SplitPaymentGRPCHighLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, method) (rate(split_payment_grpc_server_handled_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          team: payments
+        annotations:
+          summary: "gRPC {{ $labels.method }} p99 > 2s"
+          description: "下游慢? Check accounting RPC duration."
+
+      - alert: SplitPaymentCircuitBreakerOpen
+        expr: split_payment_circuit_state >= 2
+        for: 1m
+        labels:
+          severity: critical
+          team: payments
+        annotations:
+          summary: "Circuit breaker open: {{ $labels.downstream }}"
+          description: |
+            下游 {{ $labels.downstream }} 持续失败 → 已熔断. fail-fast 中, 影响业务.
+            检查下游服务状态.
+          runbook: "https://wiki/runbook/split-payment-circuit"
+
+      - alert: SplitPaymentPodDown
+        expr: |
+          sum(up{job="split-payment"}) < 1
+        for: 1m
+        labels:
+          severity: critical
+          team: payments
+        annotations:
+          summary: "All split-payment pods are DOWN"
+
+  - name: split-payment.outbox
+    interval: 30s
+    rules:
+      # ─── Outbox 堆积 ──────────────────────────────────────────────
+      - alert: SplitPaymentOutboxBacklog
+        expr: split_payment_outbox_depth > 1000
+        for: 5m
+        labels:
+          severity: warning
+          team: payments
+        annotations:
+          summary: "Outbox {{ $labels.name }} backlog > 1000 rows"
+          description: "Worker 速率跟不上写入. 看 retry_count / 错误原因."
+
+      - alert: SplitPaymentOutboxStale
+        expr: split_payment_outbox_oldest_age_seconds > 600
+        for: 5m
+        labels:
+          severity: warning
+          team: payments
+        annotations:
+          summary: "Outbox {{ $labels.name }} oldest pending > 10min"
+          description: "最老 pending 行年龄过大 → worker 卡死或处理速率不足."
+
+  - name: split-payment.kafka
+    interval: 30s
+    rules:
+      - alert: SplitPaymentRefundDLQGrowth
+        expr: |
+          increase(split_payment_refund_event_total{outcome="parse_error"}[10m]) > 5
+        for: 10m
+        labels:
+          severity: warning
+          team: payments
+        annotations:
+          summary: "Refund Kafka DLQ growing: {{ $value }} parse_error in 10min"
+          description: "上游 refund-engine 发出了畸形消息, 检查 schema 版本一致性."
+
+      - alert: SplitPaymentSagaStuck
+        expr: split_payment_saga_state_count{state="compensating"} > 10
+        for: 10m
+        labels:
+          severity: warning
+          team: payments
+        annotations:
+          summary: "{{ $value }} sagas stuck in compensating state for ≥ 10min"
+          description: "ResumeUnfinished 可能在 dead-lock 或单步 compensate 失败. 看 saga_state_count."

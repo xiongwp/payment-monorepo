@@ -326,6 +326,35 @@ func (s *piService) Confirm(ctx context.Context, id, paymentMethod, clientSecret
 	if clientSecret != "" && pi.ClientSecret != clientSecret {
 		return nil, nil, fmt.Errorf("%w: invalid client_secret", domain.ErrValidation)
 	}
+	// ROI-3: 幂等重放保护 — webhook / TCP 重试 / 用户双击都可能让同一 PI 被 Confirm 多次.
+	// 老行为: 第二次 Confirm 在 CAS 阶段拿 ErrInvalidTransition (PROCESSING→PROCESSING 不合法),
+	//        caller 不知道是真错 (PI 已被别人占) 还是自己的 retry — 容易触发误重试 / 漏 ack.
+	// 新行为: 若 PI 已经在 PROCESSING / SUCCEEDED 状态, 且当前 paymentMethod 与首次一致,
+	//        返回最近一次活跃 Charge 当作"幂等成功" — 跟 Stripe ConfirmPaymentIntent 语义一致.
+	//        不一致 (e.g. 想换 payment method) → 老 ErrInvalidTransition, caller 必须先 Cancel.
+	switch pi.Status {
+	case domain.PIStatusProcessing, domain.PIStatusSucceeded:
+		if pi.PaymentMethod != "" && pi.PaymentMethod != paymentMethod {
+			return nil, nil, fmt.Errorf("%w: PI already confirmed with payment_method=%q (got %q); cancel + recreate to switch",
+				domain.ErrInvalidTransition, pi.PaymentMethod, paymentMethod)
+		}
+		if len(pi.ActiveChargeIDs) > 0 {
+			latestChargeID := pi.ActiveChargeIDs[len(pi.ActiveChargeIDs)-1]
+			ch, err := s.chargeRepo.Get(ctx, pi.ID, latestChargeID)
+			if err == nil && ch != nil {
+				s.logger.Info("Confirm idempotent replay",
+					zap.String("pi_id", id),
+					zap.String("pi_status", string(pi.Status)),
+					zap.String("charge_id", ch.ID))
+				return pi, ch, nil
+			}
+			s.logger.Warn("Confirm replay: active charge id missing",
+				zap.String("pi_id", id), zap.String("charge_id", latestChargeID), zap.Error(err))
+		}
+		// active charge 没找到, 走老路径让 CAS 自然报错 (避免无声 succeed).
+	case domain.PIStatusCanceled, domain.PIStatusFailed:
+		return nil, nil, fmt.Errorf("%w: PI is %s; cannot confirm terminal state", domain.ErrInvalidTransition, pi.Status)
+	}
 	// 先抢占状态（CAS: 只有当前 status=pi.Status 时才能 → PROCESSING）
 	updated, err := s.piRepo.UpdateStatus(ctx, id, pi.Status, domain.PIStatusProcessing, func(p *domain.PaymentIntent) {
 		p.PaymentMethod = paymentMethod

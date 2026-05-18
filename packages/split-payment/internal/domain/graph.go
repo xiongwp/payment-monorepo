@@ -12,7 +12,10 @@
 
 package domain
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Graph 一个资金流图定义。
 type Graph struct {
@@ -54,11 +57,38 @@ type GraphSpec struct {
 }
 
 // ChargeStrategy 常量.
+//
+// SP-AC-7 PH3-8 决议 (2026-05):
+//   - Separate 是当前唯一真实实现 — Engine.Handle 走 translator 按 edges 拆 Transfer/Fee.
+//   - Direct / Destination 是 Stripe 概念占位, 当前 engine 不分支; 设置 = 无效果 (会被 ValidateChargeStrategy
+//     log warn 提醒). 保留字段 + 常量是为了 future routing (Phase 4 真接 Stripe Connect 时).
+//   - 空值默认 Separate (向后兼容).
 const (
-	ChargeStrategyDirect      = "direct"      // 顾客直付商户, 平台只抽 fee
-	ChargeStrategyDestination = "destination" // 平台收, 整笔 → 商户
-	ChargeStrategySeparate    = "separate"    // 平台收, 按 edge 规则分多个 Transfer (默认)
+	ChargeStrategyDirect      = "direct"      // ⚠ 占位 — 顾客直付商户, 平台只抽 fee. 尚未实现.
+	ChargeStrategyDestination = "destination" // ⚠ 占位 — 平台收, 整笔 → 商户. 尚未实现.
+	ChargeStrategySeparate    = "separate"    // 平台收, 按 edge 规则分多个 Transfer (默认 + 唯一真实实现).
 )
+
+// ValidateChargeStrategy 检查 ChargeStrategy 合法性, 并对未实现的模式提示警告.
+//
+// 返回:
+//   - normalized: 规整后的 strategy (空→Separate; 已知值原样返).
+//   - warn: 非空 → 调用方应 log warn (e.g. SaveGraph / Engine.Handle 入口).
+//   - err:  非空 → 拒绝该 graph (未知 strategy).
+func ValidateChargeStrategy(s string) (normalized string, warn string, err error) {
+	switch s {
+	case "":
+		return ChargeStrategySeparate, "", nil
+	case ChargeStrategySeparate:
+		return s, "", nil
+	case ChargeStrategyDirect:
+		return s, "charge_strategy=direct is reserved/not-implemented; engine falls back to separate routing", nil
+	case ChargeStrategyDestination:
+		return s, "charge_strategy=destination is reserved/not-implemented; engine falls back to separate routing", nil
+	default:
+		return "", "", fmt.Errorf("unknown charge_strategy %q (allowed: direct|destination|separate)", s)
+	}
+}
 
 // Trigger 触发条件: 哪个事件 + 什么 filter 命中时执行此 graph.
 type Trigger struct {

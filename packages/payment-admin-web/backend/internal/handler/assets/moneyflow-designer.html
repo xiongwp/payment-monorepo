@@ -175,6 +175,52 @@
   <button id="test-btn" class="secondary">Dry Run...</button>
   <button id="trigger-btn" style="background:#dc2626;color:#fff">⚡ Trigger Now</button>
 </header>
+
+<style>
+  /* SP-AC-7 右侧 Flow 列表 + 状态管理 — 嵌在 .panel-right 顶部 */
+  #flows-list { margin-bottom: 12px; }
+  #flows-list .flow-card {
+    border: 1px solid var(--border, #ddd);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    background: #fff;
+    cursor: pointer;
+    transition: box-shadow .15s, border-color .15s;
+  }
+  #flows-list .flow-card:hover {
+    box-shadow: 0 2px 6px rgba(0,0,0,.08);
+    border-color: #4040c0;
+  }
+  #flows-list .flow-card.selected {
+    border-color: #4040c0;
+    background: #f0f0ff;
+  }
+  #flows-list .flow-card .flow-name {
+    font-weight: 600; font-size: 13px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #flows-list .flow-card .flow-key {
+    font-family: monospace; font-size: 10px; color: #888;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #flows-list .flow-card .flow-meta {
+    display: flex; justify-content: space-between; align-items: center; margin-top: 4px;
+  }
+  #flows-list .flow-actions { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+  .status-chip { padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 600 }
+  .status-active   { background: #d1fae5; color: #065f46 }
+  .status-draft    { background: #fef3c7; color: #92400e }
+  .status-archived { background: #e5e7eb; color: #4b5563 }
+  .row-btn { padding: 2px 6px; border: 1px solid #ccc; background: #fff;
+             cursor: pointer; border-radius: 3px; font-size: 10px; flex: 1 }
+  .row-btn:hover { background: #f0f0ff }
+  .row-btn.danger { color: #dc2626; border-color: #fca5a5 }
+  .row-btn.success { color: #059669; border-color: #86efac }
+  @keyframes uiToastIn { from { transform: translateX(20px); opacity: 0 } to { transform: translateX(0); opacity: 1 } }
+  @keyframes uiOverlayIn { from { opacity: 0 } to { opacity: 1 } }
+</style>
+
 <main>
   <!-- 左: 节点 palette -->
   <aside class="panel">
@@ -240,8 +286,14 @@
     </svg>
   </div>
 
-  <!-- 右: 属性 + JSON 预览 -->
+  <!-- 右: Flow 列表 + 属性 + JSON 预览 -->
   <aside class="panel">
+    <h2 style="display:flex;justify-content:space-between;align-items:center">
+      <span>📋 Money Flows <span id="flows-count" style="color:#888;font-weight:400;font-size:11px"></span></span>
+      <button id="refresh-flows" style="padding:2px 8px;font-size:11px;font-weight:400">🔄</button>
+    </h2>
+    <div id="flows-list"></div>
+
     <h2>Selected element</h2>
     <div id="prop-form">
       <p style="color:#888; font-size:11px">点节点或边查看属性</p>
@@ -305,7 +357,6 @@ function render() {
       <!-- 右侧拖线 handle: 直接从这个圆点拖到另一节点连边 -->
       <circle class="node-handle" cx="${x+180}" cy="${y+22}" r="5" data-handle="${n.id}"/>
     `;
-    let dragging = false, ox = 0, oy = 0;
     const rect = g.querySelector('rect');
     const handle = g.querySelector('.node-handle');
     rect.onmousedown = (ev) => {
@@ -322,18 +373,27 @@ function render() {
         return;
       }
       selectNode(n.id);
-      dragging = true;
-      ox = ev.offsetX - x;
-      oy = ev.offsetY - y;
       ev.stopPropagation();
+      ev.preventDefault();
+      // 拖拽: 监听器挂 document, 避免 render() 重建 rect 后丢失事件链.
+      // 用 SVG 坐标系: 取 svg.getBoundingClientRect() 把 clientX/Y 换算到 svg 内部坐标.
+      const svgRect = svg.getBoundingClientRect();
+      const startX = ev.clientX, startY = ev.clientY;
+      const origX = n.x ?? 100, origY = n.y ?? 100;
+      const onMove = (mv) => {
+        // 实时更新模型 + 重绘. clientX-startX 是 viewport 像素位移,
+        // 跟 svg 内部坐标 1:1 (svg viewBox 没缩放).
+        n.x = origX + (mv.clientX - startX);
+        n.y = origY + (mv.clientY - startY);
+        render();
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
     };
-    rect.onmousemove = (ev) => {
-      if (!dragging) return;
-      n.x = ev.offsetX - ox;
-      n.y = ev.offsetY - oy;
-      render();
-    };
-    rect.onmouseup = () => { dragging = false; };
     // 拖线 handle: mousedown 启动连线模式, mouseup 在另一节点上则连边
     handle.onmousedown = (ev) => {
       ev.stopPropagation();
@@ -666,9 +726,9 @@ $('scenario').onchange = async () => {
 
 // ─── 工具栏按钮 ────────────────────────────────────────────────────
 $('add-node-btn').onclick = () => addNode('account');
-$('add-edge-btn').onclick = () => { state.mode = 'add-edge'; state.edgeFrom = null; alert('点 2 个节点连边'); };
+$('add-edge-btn').onclick = () => { state.mode = 'add-edge'; state.edgeFrom = null; uiToast('点 2 个节点连边', 'info'); };
 $('del-btn').onclick = delSelected;
-$('clear-btn').onclick = () => { if (confirm('清空 graph?')) { state.graph.spec.nodes = []; state.graph.spec.edges = []; render(); } };
+$('clear-btn').onclick = async () => { if (await uiConfirm('清空 graph?', { danger: true })) { state.graph.spec.nodes = []; state.graph.spec.edges = []; render(); } };
 
 // ─── save / export / dry-run ───────────────────────────────────────
 $('save-btn').onclick = async () => {
@@ -679,7 +739,7 @@ $('save-btn').onclick = async () => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(state.graph),
   });
-  if (r.ok) alert('saved ✓'); else alert('save failed: ' + await r.text());
+  if (r.ok) { uiToast('已保存 ✓', 'success'); await loadGraphs(); } else uiToast('保存失败: ' + await r.text(), 'error');
 };
 
 $('export-btn').onclick = () => {
@@ -728,9 +788,9 @@ $('import-file').onchange = async (e) => {
     if (typeof loadTransactionRules === 'function' && g.spec.scenario) {
       await loadTransactionRules(g.spec.scenario);
     }
-    alert(`imported ✓  nodes=${g.spec.nodes.length} edges=${g.spec.edges.length}`);
+    uiToast(`已导入 ✓ nodes=${g.spec.nodes.length} edges=${g.spec.edges.length}`, 'success');
   } catch (err) {
-    alert('import failed: ' + err.message);
+    uiToast('导入失败: ' + err.message, 'error');
   } finally {
     e.target.value = ''; // 允许重新选同一文件
   }
@@ -739,27 +799,33 @@ $('import-file').onchange = async (e) => {
 // Trigger Now — 真落账到 accounting (graph 必须先 Save 进 DB).
 // 每个 node.account_id_attr 弹 prompt 让运营填实际账号 + 金额; 没配三件套的 (平台固定户)
 // 自动用 node.id 兜底.
-$('trigger-btn').onclick = async () => {
-  if (!state.graph.key) { alert('先 Save graph 再 Trigger (TriggerEvent 按 key 查 graph).'); return; }
-  if (!confirm(`真触发 graph=${state.graph.key} ?  会调 accounting 真落账, 不可撤销 (只能反向退款).`)) return;
-  const charge = prompt('charge_id (业务幂等键)?', 'demo_' + Date.now());
-  if (!charge) return;
-  const totalCents = parseInt(prompt('总金额 (cents)?', '10000')) || 0;
-  if (!totalCents) return;
-
-  const attrs = {};
-  (state.graph.spec.nodes || []).forEach(n => {
-    if (!n.account_id_attr) return; // 平台固定户走 node.id 兜底
-    const ans = prompt(
-      `节点 ${n.id} (${n.label||''}) 三件套\n格式: account_id|amount_minor|currency`,
-      'test_' + n.id + '|' + totalCents + '|CNY'
-    );
-    if (!ans) return;
-    const [aid, amt, cur] = ans.split('|');
-    attrs[n.account_id_attr] = aid || ('test_' + n.id);
-    if (amt) attrs[n.account_id_attr + '_amount']   = amt;
-    if (cur) attrs[n.account_id_attr + '_currency'] = cur;
-  });
+// runTrigger: 抽出来的 trigger 逻辑, retry 时复用. 传 cached={charge, attrs, total} 则跳过 prompt 直接重试.
+async function runTrigger(cached) {
+  if (!state.graph.key) { uiToast('先 Save graph 再 Trigger (按 key 查 graph)', 'error'); return; }
+  let charge, totalCents, attrs;
+  if (cached) {
+    charge = cached.charge; totalCents = cached.totalCents; attrs = cached.attrs;
+    uiToast('正在重试同 business_no 的失败 leg...', 'info');
+  } else {
+    if (!(await uiConfirm(`真触发 graph="${state.graph.key}"?\n会调 accounting 真落账, 不可撤销(只能反向退款)。`, { danger: true }))) return;
+    charge = prompt('charge_id (业务幂等键)?', 'demo_' + Date.now());
+    if (!charge) return;
+    totalCents = parseInt(prompt('总金额 (cents)?', '10000')) || 0;
+    if (!totalCents) return;
+    attrs = {};
+    (state.graph.spec.nodes || []).forEach(n => {
+      if (!n.account_id_attr) return;
+      const ans = prompt(
+        `节点 ${n.id} (${n.label||''}) 三件套\n格式: account_id|amount_minor|currency`,
+        'test_' + n.id + '|' + totalCents + '|CNY'
+      );
+      if (!ans) return;
+      const [aid, amt, cur] = ans.split('|');
+      attrs[n.account_id_attr] = aid || ('test_' + n.id);
+      if (amt) attrs[n.account_id_attr + '_amount']   = amt;
+      if (cur) attrs[n.account_id_attr + '_currency'] = cur;
+    });
+  }
 
   const r = await fetch(`${API_BASE}/api/moneyflow/trigger`, {
     method: 'POST',
@@ -777,11 +843,61 @@ $('trigger-btn').onclick = async () => {
   });
   const txt = await r.text();
   try {
-    alert(JSON.stringify(JSON.parse(txt), null, 2));
+    const obj = JSON.parse(txt);
+    const pretty = JSON.stringify(obj, null, 2);
+    const pv = document.getElementById('json-preview');
+    if (pv) pv.textContent = pretty;
+    const vouchers = obj && obj.data && obj.data.vouchers;
+    if (Array.isArray(vouchers)) {
+      const ok = vouchers.filter(v => v.VoucherNo && v.Status === 2).length;
+      const fail = vouchers.length - ok;
+      // 把 cached context 存下来供 retry 用
+      state.lastTrigger = { charge, totalCents, attrs, vouchers };
+      renderTriggerResult(vouchers);
+      uiToast(`Trigger: ${ok}/${vouchers.length} 成功${fail ? `, ${fail} 待重试 — 点 🔄 重试同 business_no` : ''}`, fail ? 'error' : 'success');
+    } else {
+      uiToast('Trigger 已发送 (详见右侧 JSON Preview)', 'info');
+    }
   } catch (_) {
-    alert(txt);
+    uiToast('Trigger 异常: ' + txt, 'error');
   }
-};
+}
+
+// 渲染 trigger 结果到右侧 panel 上面: voucher 列表 + 重试按钮.
+function renderTriggerResult(vouchers) {
+  let host = document.getElementById('trigger-result');
+  if (!host) {
+    // 创建一个挂在 JSON Preview 前面的容器
+    const pv = document.getElementById('json-preview');
+    if (!pv || !pv.parentNode) return;
+    host = document.createElement('div');
+    host.id = 'trigger-result';
+    host.style.cssText = 'margin:10px 0';
+    pv.parentNode.insertBefore(host, pv);
+  }
+  const hasFail = vouchers.some(v => v.Status !== 2);
+  host.innerHTML = `
+    <h2 style="display:flex;justify-content:space-between;align-items:center">
+      <span>⚡ Trigger 结果</span>
+      ${hasFail ? '<button id="retry-trigger-btn" style="padding:3px 10px;font-size:11px;background:#dc2626;color:#fff;border:none;border-radius:3px;cursor:pointer">🔄 重试失败 leg</button>' : ''}
+    </h2>
+    <div style="max-height:180px;overflow-y:auto">
+    ${vouchers.map(v => {
+      const ok = v.Status === 2;
+      return `<div style="border-left:3px solid ${ok ? '#16a34a' : '#dc2626'};padding:4px 8px;margin-bottom:4px;background:${ok ? '#f0fdf4' : '#fef2f2'};font-size:11px">
+        <div style="font-weight:600">${escapeHtml(v.EventCode)} ${ok ? '✓' : '✗'}</div>
+        <div style="color:#666;font-family:monospace;font-size:10px;word-break:break-all">${escapeHtml(v.OrderNo)}</div>
+        ${v.VoucherNo ? `<div style="color:#16a34a">voucher: <code>${v.VoucherNo}</code></div>` : ''}
+        ${v.Error ? `<div style="color:#dc2626">${escapeHtml(v.Error)}</div>` : ''}
+      </div>`;
+    }).join('')}
+    </div>
+  `;
+  const retryBtn = host.querySelector('#retry-trigger-btn');
+  if (retryBtn) retryBtn.onclick = () => runTrigger(state.lastTrigger);
+}
+
+$('trigger-btn').onclick = () => runTrigger(null);
 
 $('test-btn').onclick = async () => {
   const charge = prompt('test charge_id?', 'ch_test');
@@ -814,33 +930,226 @@ $('test-btn').onclick = async () => {
   });
   const txt = await r.text();
   try {
-    // 美化打印 (translator 返的 plan 嵌在 data.plan 里)
     const obj = JSON.parse(txt);
-    alert(JSON.stringify(obj, null, 2));
+    const pv = document.getElementById('json-preview');
+    if (pv) pv.textContent = JSON.stringify(obj, null, 2);
+    uiToast('Dry Run 已生成 plan (详见右侧 JSON Preview)', 'info');
   } catch (_) {
-    alert(txt);
+    uiToast('Dry Run 异常: ' + txt, 'error');
   }
 };
 
-// 载入已有
+// 载入已有 — 同时填顶部 Flow 列表 + 老的下拉框
 async function loadGraphs() {
   try {
     const r = await fetch(`${API_BASE}/api/moneyflow/graphs`);
-    const list = await r.json();
+    const resp = await r.json();
+    // BFF response shape: {code, message, data: {data: [...]}} (envelope), 也兼容直返 shape.
+    const list = Array.isArray(resp.data)
+      ? resp.data
+      : Array.isArray(resp.data && resp.data.data)
+      ? resp.data.data
+      : [];
+
+    // (1) 头部下拉 (旧 UI)
     const sel = $('graph-key');
     sel.innerHTML = '<option value="">[ new graph ]</option>';
-    (list.data || []).forEach(g => {
-      sel.innerHTML += `<option value="${g.key}">${g.name}</option>`;
+    list.forEach(g => {
+      const statusLabel = g.status && g.status !== 'active' ? ` [${g.status}]` : '';
+      sel.innerHTML += `<option value="${g.key}">${g.name || g.key}${statusLabel}</option>`;
     });
     sel.onchange = async () => {
-      if (!sel.value) { state.graph = { id:0, key:'', name:'', version:'1.0.0', spec:{triggers:[],nodes:[],edges:[]} }; render(); return; }
-      const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${sel.value}`);
-      state.graph = await r.json();
-      $('graph-name').value = state.graph.name;
-      render();
+      if (!sel.value) {
+        state.graph = { id:0, key:'', name:'', version:'1.0.0', spec:{triggers:[],nodes:[],edges:[]} };
+        render(); return;
+      }
+      await loadGraphIntoEditor(sel.value);
     };
-  } catch (e) { /* admin-backend 没起就忽略 */ }
+
+    // (2) 右侧 Flow 列表
+    renderFlowsList(list);
+  } catch (e) { console.warn('loadGraphs', e); }
 }
+
+// 统一 unwrap BFF envelope: 真实 graph 可能在 resp, resp.data, 或 resp.data.data.
+// 判定: 找到带 .key 的那层就当作 graph.
+function unwrapGraph(resp) {
+  const candidates = [resp, resp && resp.data, resp && resp.data && resp.data.data];
+  for (const c of candidates) {
+    if (c && typeof c === 'object' && typeof c.key === 'string' && c.key) return c;
+  }
+  // 拿不到带 key 的, 回退最里一层非空对象
+  for (const c of candidates) {
+    if (c && typeof c === 'object') return c;
+  }
+  return {};
+}
+
+// 把某条 graph 拉进 editor + 立即在 canvas 渲染
+async function loadGraphIntoEditor(key) {
+  const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${key}`);
+  const respG = await r.json();
+  state.graph = unwrapGraph(respG);
+  // 兜底: spec 命名容错
+  if (!state.graph.spec && state.graph.Spec) state.graph.spec = state.graph.Spec;
+  if (!state.graph.spec) state.graph.spec = { triggers: [], nodes: [], edges: [] };
+  if (!state.graph.key) state.graph.key = key; // BFF 兜底
+  $('graph-name').value = state.graph.name || '';
+  $('graph-key').value = key;
+  // 高亮当前选中的卡片
+  document.querySelectorAll('#flows-list .flow-card').forEach(c => {
+    c.classList.toggle('selected', c.dataset.key === key);
+  });
+  render();
+}
+
+// 渲染右侧 Flow 卡片列表
+function renderFlowsList(list) {
+  const wrap = document.getElementById('flows-list');
+  const countEl = document.getElementById('flows-count');
+  if (countEl) countEl.textContent = `(${list.length})`;
+  if (!wrap) return;
+  if (list.length === 0) {
+    wrap.innerHTML = `<p style="color:#888;font-size:11px;text-align:center;padding:12px 0">— 暂无 Flow,点 [Save] 创建 —</p>`;
+    return;
+  }
+  const currentKey = (state.graph && state.graph.key) || '';
+  wrap.innerHTML = list.map(g => {
+    const s = g.status || 'draft';
+    const chipCls = s === 'active' ? 'status-active' : s === 'archived' ? 'status-archived' : 'status-draft';
+    const isSelected = g.key === currentKey;
+    const activateBtn = s !== 'active'
+      ? `<button class="row-btn success" data-act="status" data-status="active">✓ 生效</button>` : '';
+    const archiveBtn = s !== 'archived'
+      ? `<button class="row-btn" data-act="status" data-status="archived">⏸ 无效</button>` : '';
+    return `<div class="flow-card ${isSelected ? 'selected' : ''}" data-key="${g.key}">
+      <div class="flow-name">${escapeHtml(g.name || g.key)}</div>
+      <div class="flow-key">${g.key} <span style="color:#aaa">· v${g.version || '?'}</span></div>
+      <div class="flow-meta">
+        <span class="status-chip ${chipCls}">${s}</span>
+      </div>
+      <div class="flow-actions">
+        ${activateBtn}
+        ${archiveBtn}
+        <button class="row-btn danger" data-act="delete">🗑 删除</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // 绑事件 (避免 inline onclick 跟 CSP / 转义 graph key 麻烦)
+  wrap.querySelectorAll('.flow-card').forEach(card => {
+    const key = card.dataset.key;
+    // 点卡片本体 (非按钮区) → 立即加载到 canvas
+    card.addEventListener('click', (ev) => {
+      if (ev.target.closest('.row-btn')) return; // 按钮交给自己 handler
+      loadGraphIntoEditor(key);
+    });
+    // 操作按钮
+    card.querySelectorAll('.row-btn').forEach(btn => {
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const act = btn.dataset.act;
+        if (act === 'status') {
+          changeFlowStatus(key, btn.dataset.status);
+        } else if (act === 'delete') {
+          deleteFlow(key);
+        }
+      });
+    });
+  });
+}
+
+// 改 graph 状态: 拉完整 graph → 改 status → 重新 Save (走同样的 saga + 状态守门员)
+async function changeFlowStatus(key, newStatus) {
+  const labels = { active: '生效', archived: '无效', draft: '草稿' };
+  const ok = await uiConfirm(`确认把 "${key}" 改成 ${labels[newStatus] || newStatus}?`);
+  if (!ok) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${key}`);
+    const resp = await r.json();
+    const g = unwrapGraph(resp);
+    if (!g.key) g.key = key;
+    if (!g.spec && g.Spec) g.spec = g.Spec;
+    g.status = newStatus;
+    const r2 = await fetch(`${API_BASE}/api/moneyflow/graphs`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(g)
+    });
+    if (!r2.ok) { uiToast('状态变更失败: ' + await r2.text(), 'error'); return; }
+    uiToast(`已${labels[newStatus] || newStatus}: ${key}`, 'success');
+    await loadGraphs();
+  } catch (e) { uiToast('状态变更出错: ' + e.message, 'error'); }
+}
+
+// 删除 graph
+async function deleteFlow(key) {
+  const ok = await uiConfirm(`确认彻底删除 "${key}"?\n此操作不可恢复。`, { danger: true });
+  if (!ok) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/moneyflow/graphs/${key}`, { method: 'DELETE' });
+    if (!r.ok) { uiToast('删除失败: ' + await r.text(), 'error'); return; }
+    uiToast(`已删除: ${key}`, 'success');
+    await loadGraphs();
+  } catch (e) { uiToast('删除出错: ' + e.message, 'error'); }
+}
+
+// ─── 自定义弹窗 / Toast (替代 alert/confirm) ───────────────────────
+function uiToast(msg, kind = 'info') {
+  let host = document.getElementById('ui-toast-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'ui-toast-host';
+    host.style.cssText = 'position:fixed;top:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none';
+    document.body.appendChild(host);
+  }
+  const colors = {
+    info: { bg: '#eef2ff', bd: '#6366f1', fg: '#3730a3' },
+    success: { bg: '#dcfce7', bd: '#16a34a', fg: '#15803d' },
+    error: { bg: '#fee2e2', bd: '#dc2626', fg: '#991b1b' },
+  };
+  const c = colors[kind] || colors.info;
+  const el = document.createElement('div');
+  el.style.cssText = `pointer-events:auto;min-width:260px;max-width:420px;background:${c.bg};border-left:4px solid ${c.bd};color:${c.fg};padding:10px 14px;border-radius:6px;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.12);animation:uiToastIn .18s ease`;
+  el.textContent = msg;
+  host.appendChild(el);
+  setTimeout(() => { el.style.transition = 'opacity .3s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 320); }, 2800);
+}
+
+function uiConfirm(msg, opts = {}) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:9998;display:flex;align-items:center;justify-content:center;animation:uiOverlayIn .15s ease';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#fff;min-width:320px;max-width:480px;padding:20px 24px;border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.25);font-size:14px;line-height:1.55';
+    const danger = !!opts.danger;
+    box.innerHTML = `
+      <div style="font-weight:600;font-size:15px;margin-bottom:10px">${danger ? '⚠️ 确认操作' : '确认'}</div>
+      <div style="color:#444;white-space:pre-wrap;margin-bottom:18px">${escapeHtml(msg)}</div>
+      <div style="display:flex;justify-content:flex-end;gap:10px">
+        <button id="ui-cancel-btn" style="padding:6px 16px;border:1px solid #d4d4d8;background:#fff;border-radius:6px;cursor:pointer;font-size:13px">取消</button>
+        <button id="ui-ok-btn" style="padding:6px 16px;border:none;background:${danger ? '#dc2626' : '#4f46e5'};color:#fff;border-radius:6px;cursor:pointer;font-size:13px">确定</button>
+      </div>
+    `;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const cleanup = (v) => { overlay.remove(); resolve(v); };
+    box.querySelector('#ui-cancel-btn').onclick = () => cleanup(false);
+    box.querySelector('#ui-ok-btn').onclick = () => cleanup(true);
+    overlay.onclick = (e) => { if (e.target === overlay) cleanup(false); };
+    document.addEventListener('keydown', function onKey(ev) {
+      if (ev.key === 'Escape') { document.removeEventListener('keydown', onKey); cleanup(false); }
+      if (ev.key === 'Enter')  { document.removeEventListener('keydown', onKey); cleanup(true); }
+    });
+    setTimeout(() => box.querySelector('#ui-ok-btn').focus(), 50);
+  });
+}
+
+// 刷新按钮
+document.addEventListener('DOMContentLoaded', () => {
+  const refreshBtn = document.getElementById('refresh-flows');
+  if (refreshBtn) refreshBtn.onclick = loadGraphs;
+});
 loadGraphs();
 render();
 </script>

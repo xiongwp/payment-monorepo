@@ -2,13 +2,16 @@ package metrics
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
+	"net/http/pprof"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/xiongwp/payment-util/healthx"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // ─── 记账路径 ─────────────────────────────────────────────────────────────────
@@ -406,15 +409,66 @@ func RegisterDBStats(dbs map[string]*sql.DB) {
 	}
 }
 
-// StartServer 在指定端口启动 Prometheus /metrics HTTP 接口（非阻塞，在 goroutine 中运行）。
-// 显式 timeout 防止 slowloris：默认 http.ListenAndServe 走 DefaultServeMux 无任何 timeout，
-// 是公认的 CWE-400 漏洞模式。
+// StartServer 在指定端口启动 admin HTTP 接口（非阻塞）.
+//
+// 暴露端点 (跟其他服务 obsbootstrap 风格对齐):
+//   GET  /metrics          — Prometheus pull
+//   GET  /healthz          — liveness (永远 200, 不查依赖)
+//   GET  /readyz           — readiness (复用 healthz 行为兼容老用法; 真探针在 admin_http server)
+//   GET  /debug/pprof/*    — pprof profile
+//   GET/POST /admin/log-level — 动态 zap level (level 参数 nil 时只 GET, 不让外部修改)
+//
+// 显式 timeout 防止 slowloris (CWE-400).
+//
+// level 参数: 传 zap.NewAtomicLevelAt(...) 进来才能 POST 改; 老 caller 传 nil 即可
+// (POST 返 503).
 func StartServer(port string, logger *zap.Logger) {
+	StartServerWithLevel(port, logger, zap.AtomicLevel{})
+}
+
+// StartServerWithLevel — 新 caller 用, 支持动态 log level.
+func StartServerWithLevel(port string, logger *zap.Logger, level zap.AtomicLevel) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		// accounting 的 readiness 实际跟 adminhttp.handleReadiness 在 :8888 上, 这里 :metrics 端口
+		// 只暴露 liveness-like 兜底 (kept for 兼容).
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	// pprof
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	// 动态 log level
+	mux.HandleFunc("/admin/log-level", func(w http.ResponseWriter, r *http.Request) {
+		// level 是零值 AtomicLevel → 调用方没传, 拒绝改但允许 GET (返默认).
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(level.String()))
+			return
+		}
+		// 非空 AtomicLevel 才允许 POST.
+		var body struct {
+			Level string `json:"level"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		var lvl zapcore.Level
+		if err := lvl.UnmarshalText([]byte(body.Level)); err != nil {
+			http.Error(w, "invalid level (debug/info/warn/error): "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		level.SetLevel(lvl)
+		logger.Info("log level changed", zap.String("new_level", lvl.String()))
+		_, _ = w.Write([]byte("ok: " + lvl.String()))
 	})
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -425,9 +479,10 @@ func StartServer(port string, logger *zap.Logger) {
 		IdleTimeout:       30 * time.Second,
 	}
 	go func() {
-		logger.Info("prometheus metrics server started", zap.String("addr", srv.Addr))
+		logger.Info("metrics + admin server started", zap.String("addr", srv.Addr),
+			zap.Strings("endpoints", []string{"/metrics", "/healthz", "/readyz", "/debug/pprof/*", "/admin/log-level"}))
 		if err := srv.ListenAndServe(); err != nil {
-			logger.Error("prometheus metrics server stopped", zap.Error(err))
+			logger.Error("metrics server stopped", zap.Error(err))
 		}
 	}()
 }

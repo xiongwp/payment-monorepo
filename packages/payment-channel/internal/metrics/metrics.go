@@ -3,14 +3,17 @@ package metrics
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	_ "net/http/pprof" // ROI-2b: 注册 /debug/pprof/*
 	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/xiongwp/payment-util/healthx"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // AcquirerCallTotal 每个 adapter 动作的调用计数
@@ -93,9 +96,45 @@ type ShardPinger func(ctx context.Context) error
 // dbPing 为 nil 时退到老行为（仅 drain 检查 + 始终 200 if not draining），
 // 让其它入口（mockserver / loadtest）继续编译。
 func StartServer(addr string, logger *zap.Logger, dbPing ShardPinger) {
+	StartServerWithLevel(addr, logger, dbPing, nil)
+}
+
+// StartServerWithLevel 同 StartServer 但带 /debug/pprof + /admin/log-level.
+//
+// ROI-2b: level=nil 时 /admin/log-level 端点不挂; level 非 nil 时可远程切换日志级别.
+func StartServerWithLevel(addr string, logger *zap.Logger, dbPing ShardPinger, level *zap.AtomicLevel) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", healthx.Liveness)
+	// ROI-2b: pprof — CPU/heap/goroutine/trace profiling.
+	mux.Handle("/debug/pprof/", http.DefaultServeMux)
+	// ROI-2b: 日志级别动态调.
+	if level != nil {
+		mux.HandleFunc("/admin/log-level", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"level": level.Level().String()})
+			case http.MethodPut, http.MethodPost:
+				var body struct{ Level string `json:"level"` }
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "bad json", http.StatusBadRequest)
+					return
+				}
+				var l zapcore.Level
+				if err := l.UnmarshalText([]byte(body.Level)); err != nil {
+					http.Error(w, "bad level", http.StatusBadRequest)
+					return
+				}
+				level.SetLevel(l)
+				logger.Info("log level changed", zap.String("level", body.Level))
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"level": l.String()})
+			default:
+				http.Error(w, "method", http.StatusMethodNotAllowed)
+			}
+		})
+	}
 
 	probes := []healthx.Probe{
 		// drain probe 始终在；SIGTERM 后第一时间 fail

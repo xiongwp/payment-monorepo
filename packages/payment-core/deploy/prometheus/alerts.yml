@@ -1,0 +1,87 @@
+# GAP-2: Prometheus alert rules for payment-core.
+#
+# 部署: 把本文件挂到 Prometheus 的 rule_files (kubectl -n monitoring create configmap
+# prometheus-rules-payment-core --from-file=alerts.yml + Prometheus operator
+# PrometheusRule CR 也可).
+#
+# 阈值参考 split-payment alerts.yml — 同 payment 域 SLO 对齐.
+groups:
+  - name: payment-core.slo
+    interval: 30s
+    rules:
+      # ── 路由失败率 ──
+      - alert: PaymentCoreRouteNoMatchHigh
+        expr: |
+          sum(rate(paycore_route_total{result="no_match"}[5m]))
+            / sum(rate(paycore_route_total[5m])) > 0.02
+        for: 5m
+        labels: { severity: warning, service: payment-core, team: payments }
+        annotations:
+          summary: "payment-core: 路由 no_match > 2% (5m)"
+          description: "{{ $value | humanizePercentage }} 的 charge 找不到 adapter; 检查 routing rules / payment_method 字段."
+
+      # ── 上游 adapter 失败率 ──
+      - alert: PaymentCoreAdapterErrorHigh
+        expr: |
+          sum by (adapter) (rate(paycore_adapter_call_total{result=~"error|timeout"}[5m]))
+            / sum by (adapter) (rate(paycore_adapter_call_total[5m])) > 0.05
+        for: 10m
+        labels: { severity: warning, service: payment-core, team: payments }
+        annotations:
+          summary: "payment-core adapter {{ $labels.adapter }} 错误率 > 5%"
+          description: "{{ $value | humanizePercentage }}; 检查 circuit_breaker_state{adapter=\"{{ $labels.adapter }}\"} + adapter 日志."
+
+      # ── 熔断器打开 ──
+      - alert: PaymentCoreCircuitOpen
+        expr: paycore_circuit_state{state="open"} == 1
+        for: 2m
+        labels: { severity: critical, service: payment-core, team: payments }
+        annotations:
+          summary: "payment-core: adapter {{ $labels.adapter }} 熔断器开启"
+          description: "持续 2 分钟为 open 状态; ops 已收到 fast-fail. 排查上游或重置熔断器: POST /ops/circuit/reset?adapter={{ $labels.adapter }}"
+
+      # ── gRPC 5xx ──
+      - alert: PaymentCoreGRPC5xxHigh
+        expr: |
+          sum(rate(paycore_grpc_request_total{code=~"Internal|Unavailable|DataLoss"}[5m]))
+            / sum(rate(paycore_grpc_request_total[5m])) > 0.01
+        for: 10m
+        labels: { severity: warning, service: payment-core, team: payments }
+        annotations:
+          summary: "payment-core gRPC 5xx > 1%"
+
+      # ── 限流命中 ──
+      - alert: PaymentCoreRateLimitSpike
+        expr: rate(paycore_rate_limit_total[5m]) > 10
+        for: 5m
+        labels: { severity: warning, service: payment-core, team: payments }
+        annotations:
+          summary: "payment-core 限流命中率高 (> 10/s)"
+
+      # ── 全局 latency p99 ──
+      - alert: PaymentCoreLatencyP99High
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, method) (rate(paycore_grpc_request_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 10m
+        labels: { severity: warning, service: payment-core, team: payments }
+        annotations:
+          summary: "payment-core gRPC p99 > 2s ({{ $labels.method }})"
+
+  - name: payment-core.availability
+    interval: 30s
+    rules:
+      - alert: PaymentCoreInstanceDown
+        expr: up{job="payment-core"} == 0
+        for: 2m
+        labels: { severity: critical, service: payment-core, team: payments }
+        annotations:
+          summary: "payment-core instance {{ $labels.instance }} down"
+
+      - alert: PaymentCoreDBPoolExhaustion
+        expr: paycore_db_in_use / paycore_db_max_open > 0.9
+        for: 5m
+        labels: { severity: warning, service: payment-core, team: payments }
+        annotations:
+          summary: "payment-core DB pool > 90% utilization"

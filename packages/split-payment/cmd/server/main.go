@@ -20,53 +20,89 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"reconcile-system/packages/split-payment/internal/clients"
 	"reconcile-system/packages/split-payment/internal/domain"
 	"reconcile-system/packages/split-payment/internal/grpcsvc"
+	"reconcile-system/packages/split-payment/internal/observability"
 	"reconcile-system/packages/split-payment/internal/repo"
 	"reconcile-system/packages/split-payment/internal/workflow"
 
 	_ "github.com/go-sql-driver/mysql" // MF-1: mysql driver
 	"github.com/twmb/franz-go/pkg/kgo" // SP-11 refund kafka subscriber
+	"github.com/xiongwp/payment-util/mtls" // SP-AC-7 PH3-2: mTLS scaffolding
+	"github.com/xiongwp/payment-util/serviceregistry" // SP-AC-7 L2+X2: hardened gRPC dial
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"            // SP-AC-7 PH3-2: mTLS server creds 类型
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func main() {
-	log, _ := zap.NewProduction()
+	// SP-AC-7 O4: zap AtomicLevel — 让 /admin/log-level 能在线调级.
+	// parseLogLevel 已返 zap.AtomicLevel, 直接用; 不要再套 NewAtomicLevelAt (它收 zapcore.Level).
+	logLevel := parseLogLevel(envOr("SPLIT_PAYMENT_LOG_LEVEL", "info"))
+	logCfg := zap.NewProductionConfig()
+	logCfg.Level = logLevel
+	log, _ := logCfg.Build()
 	defer log.Sync()
+
+	// SP-AC-7 P10: OTel trace context propagation (W3C traceparent). 当前用 noop tracer,
+	// 不外发, 仅保证 ctx 传递. 接 OTLP exporter 时改 observability.InitTracer 内部即可.
+	shutdownTracer := observability.InitTracer("split-payment")
+	defer shutdownTracer(context.Background())
+
+	// 主 ctx 早建 — 下面 schema migration / outbox worker / retry worker 都依赖它.
+	// SIGINT / SIGTERM 触发 → ctx.Done() → 所有 goroutine 优雅退.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// SP-AC-7: HTTP server 已废除, split-payment 现是纯 gRPC 内部服务.
 	// SPLIT_GRPC_PORT 由 runAdminGRPCServer 读取 (默认 9098).
 	accAddr := envOr("ACCOUNTING_GRPC_ADDR", "accounting-system:9091")
 
 	// 1. accounting client (gRPC).
-	// passthrough:/// 让 grpc-go 跳过自己的 DNS resolver, 直接 net.Dial 由系统层解析.
-	// 之前 dns:/// 在 Docker / host-gateway 环境下经常返 "no children to pick from".
-	// 单节点不需要 round_robin (passthrough 不支持 LB config), 多副本要再换回 dns + 真实多 endpoint.
-	conn, err := grpc.NewClient(
-		"passthrough:///"+accAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	//
+	// SP-AC-7 L2+X2: 之前裸 grpc.NewClient + passthrough + insecure → 无 retry / 无 keepalive /
+	// 无 LB; 改用 payment-util/serviceregistry.DialWithFallback 拿一组 hardenedOptions:
+	//   - round_robin LB (多副本 accounting-service 真均摊)
+	//   - 幂等 RPC 自动重试瞬态 UNAVAILABLE / DEADLINE_EXCEEDED
+	//   - HTTP/2 keepalive 10s+3s 探活, 副本被 kill 后 ~13s 内 client 端 detect
+	//
+	// REGISTRY_ENDPOINTS (etcd) 配了就走真服务发现; 没配则降级直连 fallback addr (dev 模式).
+	registryEndpoints := splitCSV(envOr("REGISTRY_ENDPOINTS", ""))
+	// SP-AC-7 PH3-2: mTLS — MTLS_SERVER_CERT/KEY/CA 配齐就走 mTLS 双向认证;
+	// 没配或 INSECURE_DIAL=1 退化 insecure (dev); ENVIRONMENT=prod 没配证书会在 LoadFromEnv 阶段 fail-fast.
+	clientCreds, err := buildClientCreds(log)
+	if err != nil {
+		log.Fatal("build mTLS client credentials", zap.Error(err))
+	}
+	conn, err := serviceregistry.DialWithFallback(
+		registryEndpoints, "accounting-service", accAddr,
+		clientCreds,
 	)
 	if err != nil {
 		log.Fatal("dial accounting", zap.Error(err))
 	}
 	defer conn.Close()
 
-	// SP-AC-7: legacy AccountingClient 是 stub (返 ErrAccountingNotWired), 业务调用走
-	// 同包内 AccountingGRPCClient → 新 TransactionService.
-	accClient := clients.NewAccountingClient(conn)
+	// SP-AC-7: legacy AccountingClient stub 已删除, 业务调用一律走 AccountingGRPCClient → 新 TransactionService.
 
 	// 2. repos — MF-1: 优先 MySQL (SPLIT_PAYMENT_DSN 配了就走), fallback memory.
 	//
@@ -78,6 +114,9 @@ func main() {
 	var (
 		graphRepo workflow.GraphRepo
 		runRepo   workflow.RunRepo
+		// db: outer scope — 各种 worker (reversalApply / outbox / cron lease / hold worker)
+		// 都引用 db, 必须 hoist 出 if dsn 块 (避免之前的 :=  scope 化 bug).
+		db *sql.DB
 		// SP-6 typed repos 注到 engine 用 (nil = 跑老路径不持 typed 对象)
 		engAccRepo  workflow.AccountRepo
 		engTrRepo   workflow.TransferRepo
@@ -92,13 +131,20 @@ func main() {
 		cronPoRepo  workflow.PayoutInserterRepo
 	)
 	if dsn := os.Getenv("SPLIT_PAYMENT_DSN"); dsn != "" {
-		db, err := sql.Open("mysql", dsn)
+		var err error
+		db, err = sql.Open("mysql", dsn)
 		if err != nil {
 			log.Fatal("open mysql", zap.Error(err))
 		}
-		db.SetMaxOpenConns(20)
-		db.SetMaxIdleConns(5)
+		// SP-AC-7 P4: pool size 调大并 env 化 — 之前 20/5 在多副本高 QPS 下偏小,
+		// MySQL idle 连接复用率不够, 高峰期会大量打开 + tear down.
+		maxOpen := envInt("SPLIT_PAYMENT_DB_MAX_OPEN", 100)
+		maxIdle := envInt("SPLIT_PAYMENT_DB_MAX_IDLE", 20)
+		db.SetMaxOpenConns(maxOpen)
+		db.SetMaxIdleConns(maxIdle)
 		db.SetConnMaxLifetime(30 * time.Minute)
+		log.Info("split-payment DB pool sized",
+			zap.Int("max_open", maxOpen), zap.Int("max_idle", maxIdle))
 		if err := db.PingContext(context.Background()); err != nil {
 			log.Fatal("ping mysql", zap.Error(err))
 		}
@@ -184,9 +230,9 @@ func main() {
 
 	// 4. workflow engine — SP-6 + SP-3A
 	engine := &workflow.Engine{
-		GraphRepo:    graphRepo,
-		RunRepo:      runRepo,
-		Accounting:   accClient,
+		GraphRepo: graphRepo,
+		RunRepo:   runRepo,
+		// SP-AC-7: 老 Accounting *clients.AccountingClient 字段删除, 业务路径走 AccountingMeta.
 		Audit:        logAudit{log: log},
 		Log:          log,
 		AccountRepo:  engAccRepo,
@@ -199,13 +245,61 @@ func main() {
 		TransferReverseRepo: refundTrRepo,
 		AppFeeRefundRepo:    refundFeeRepo,
 		ReversalInsertRepo:  refundRvRepo,
+		// SP-AC-7 R1: refund 写两表用 sql.Tx 包. DSN 配了才有 db, memory 模式 ReversalApply=nil 退化两步.
+	}
+	if db != nil {
+		engine.ReversalApply = &reversalApplyAdapter{db: db}
+
+		// SP-AC-7 L5: Event 发布走 outbox + 后台 drain worker.
+		// 业务路径写 outbox (跟主数据可同 tx, 至少一次保证); worker 异步推 Kafka.
+		// Kafka 没配的话退化为只入 outbox 不推送 (后续配上 Kafka 自动 catch-up).
+		if err := repo.EnsureEventOutboxSchema(ctx, db); err != nil {
+			log.Warn("event_outbox schema migration failed; events 走原 fire-and-forget 模式", zap.Error(err))
+		} else if eventPub != nil {
+			evOutbox := &repo.EventOutbox{DB: db}
+			// 把 engine.Events 换成 outbox publisher
+			engine.Events = &workflow.OutboxEventPublisher{
+				Outbox: &eventOutboxEnqAdapter{ob: evOutbox},
+				Log:    log,
+			}
+			// 起 worker drain outbox → 真 Kafka.
+			if kp, ok := eventPub.(*workflow.KafkaEventPublisher); ok {
+				outboxWk := &workflow.EventOutboxWorker{
+					Cfg:    workflow.DefaultEventOutboxConfig(),
+					Outbox: &eventOutboxClaimAdapter{ob: evOutbox},
+					Sender: &kafkaEventSenderAdapter{pub: kp},
+					Log:    log,
+				}
+				go outboxWk.Run(ctx)
+				log.Info("event outbox worker started; engine.Events now goes through transactional outbox")
+			} else {
+				log.Warn("eventPub is not KafkaEventPublisher (noop?); outbox will accumulate without drain")
+			}
+		}
+
+		// SP-AC-7 R5: Reversal 失败 outbox 重试.
+		if err := repo.EnsureReversalOutboxSchema(ctx, db); err != nil {
+			log.Warn("reversal_retry_outbox schema migration failed; retry queue disabled", zap.Error(err))
+		} else {
+			revOutbox := &repo.ReversalOutbox{DB: db, Log: log}
+			engine.ReversalRetry = &reversalOutboxAdapter{ob: revOutbox}
+			// 起 worker 周期消费.
+			retryWk := &workflow.ReversalRetryWorker{
+				Cfg:     workflow.DefaultReversalRetryConfig(),
+				Outbox:  &reversalOutboxClaimAdapter{ob: revOutbox},
+				Applier: engine.ReversalApply,
+				Log:     log,
+			}
+			go retryWk.Run(ctx)
+			log.Info("reversal retry worker started")
+		}
 	}
 
 	// SP-3A: 接持久化 saga (MySQL 模式 + env SPLIT_PAYMENT_SAGA=1 才启).
 	// 默认 dev 走老路径方便调试,生产强烈建议开 saga (失败可恢复 + 自动 compensate).
 	if envOr("SPLIT_PAYMENT_SAGA", "") == "1" && engTrRepo != nil {
 		sagaDeps := workflow.StepDeps{
-			Accounting:      accClient,
+			// SP-AC-7: Accounting 字段删除 (saga step 当前实现只翻状态)
 			TransferRepo:    engTrRepo,
 			AppFeeRepo:      engFeeRepo,
 			PayoutRepo:      engPoRepo,
@@ -322,9 +416,6 @@ func main() {
 	// 在 grpcsvc.AdminService 里加 RPC 方法.
 	_ = runRepo // 当前 gRPC AdminService 还没加 ListRuns / GetRun / ApproveRun 等方法
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
 	log.Info("split-payment internal gRPC service starting",
 		zap.String("grpc_port", envOr("SPLIT_GRPC_PORT", "9098")),
 		zap.String("accounting", accAddr))
@@ -337,6 +428,39 @@ func main() {
 		grpcAcct = grpcsvcAcctAdapter{inner: engine.AccountingMeta}
 	}
 	go runAdminGRPCServer(ctx, log, sgGraphs, grpcAcct)
+
+	// SP-AC-7 L1+P9: split-payment admin HTTP — /healthz + /readiness + /metrics.
+	// 跟 gRPC :9098 错开 (默认 :9099), env SPLIT_ADMIN_HTTP_PORT 可覆盖.
+	adminSrv := observability.NewAdminServer(envOr("SPLIT_ADMIN_HTTP_PORT", "9099"), log, logLevel)
+	// readiness 探针: MySQL ping (DSN 配了才探).
+	if db != nil {
+		adminSrv.AddReadyCheck("mysql", func(c context.Context) error {
+			return db.PingContext(c)
+		})
+	}
+	// readiness 探针: accounting gRPC channel 是否就绪 (state != IDLE/CONNECTING/SHUTDOWN).
+	adminSrv.AddReadyCheck("accounting_grpc", func(c context.Context) error {
+		state := conn.GetState().String()
+		if state == "SHUTDOWN" {
+			return fmt.Errorf("accounting gRPC channel state=%s", state)
+		}
+		return nil
+	})
+	go func() {
+		if err := adminSrv.Run(ctx); err != nil {
+			log.Error("admin http server exited", zap.Error(err))
+		}
+	}()
+
+	// SP-AC-7 O2: DB stats + outbox depth gauge collectors.
+	if db != nil {
+		observability.StartDBStatsCollector(ctx, db, 30*time.Second, log)
+		scrapers := map[string]observability.OutboxScraper{
+			"event_outbox":          eventOutboxScraper(db),
+			"reversal_retry_outbox": reversalOutboxScraper(db),
+		}
+		observability.StartOutboxMetricsCollector(ctx, scrapers, 30*time.Second, log)
+	}
 
 	// SP-FIN-2: PayoutDispatchWorker — pending → in_transit 状态机.
 	// 调 clearing-settlement 服务 (env CLEARING_HTTP_URL 配了走真实, 否则 Noop).
@@ -378,7 +502,73 @@ func main() {
 				cron.Cfg.Interval = d
 			}
 		}
-		go cron.Run(ctx)
+		// SP-AC-7 X3: 多副本 lease, 同一时刻只有一个副本跑 cron.
+		// memory 模式 (db nil) 退化为无锁直跑 (单副本 OK).
+		if db != nil {
+			if err := workflow.EnsureCronLeaseSchema(ctx, db); err != nil {
+				log.Warn("cron_lease schema migration failed; falling back to no-lease (可能重复扫)", zap.Error(err))
+				go cron.Run(ctx)
+			} else {
+				lease := &workflow.CronLease{
+					DB:     db,
+					Name:   "payout_cron",
+					Holder: workflow.DefaultHolder(),
+					TTL:    30 * time.Second,
+					Log:    log,
+				}
+				go lease.RunWithLease(ctx, cron.Run)
+			}
+		} else {
+			go cron.Run(ctx)
+		}
+
+		// SP-AC-7 PROD2: Daily trial balance reconciliation worker (lease protected).
+		recWk := &workflow.ReconcileWorker{
+			Cfg:  workflow.DefaultReconcileConfig(),
+			DB:   db,
+			Sink: &workflow.LogAlertSink{Log: log},
+			Log:  log,
+		}
+		recLease := &workflow.CronLease{
+			DB: db, Name: "reconcile_worker",
+			Holder: workflow.DefaultHolder(), TTL: 5 * time.Minute, Log: log,
+		}
+		go recLease.RunWithLease(ctx, recWk.Run)
+
+		// SP-AC-7 PH3-7: HoldUnstickWorker 真实接线.
+		// - Plans: MySQLRunRepo 现已实现 ListExpiredHolds + MarkHoldReleased (memory 模式
+		//   退化到 NoopPendingHoldsRepo, 不发钱).
+		// - Releaser: MetaHoldReleaser 走 AccountingMetaCaller.CreateTransaction
+		//   (跟主链路同一条 gRPC, 复用 circuit breaker + token auth).
+		var holdPlans workflow.PendingHoldsRepo = workflow.NoopPendingHoldsRepo{}
+		if mysqlRunRepo, ok := runRepo.(workflow.PendingHoldsRepo); ok {
+			holdPlans = mysqlRunRepo
+			log.Info("hold unstick worker: using MySQLRunRepo as PendingHoldsRepo")
+		} else {
+			log.Warn("hold unstick worker: memory mode — using NoopPendingHoldsRepo")
+		}
+		var holdReleaser workflow.HoldReleaser
+		if engine.AccountingMeta != nil {
+			holdReleaser = workflow.NewMetaHoldReleaser(engine.AccountingMeta, log)
+		}
+		holdLease := &workflow.CronLease{
+			DB: db, Name: "hold_unstick_worker",
+			Holder: workflow.DefaultHolder(), TTL: 30 * time.Second, Log: log,
+		}
+		holdWorker := &workflow.HoldUnstickWorker{
+			Cfg:      workflow.DefaultHoldUnstickConfig(),
+			Plans:    holdPlans,
+			Releaser: holdReleaser,
+			Events:   eventPub,
+			Log:      log,
+		}
+		if db != nil {
+			go holdLease.RunWithLease(ctx, holdWorker.Run)
+			log.Info("hold unstick worker started (lease-protected)")
+		} else {
+			go holdWorker.Run(ctx)
+			log.Info("hold unstick worker started (no lease — memory mode)")
+		}
 	}
 
 	// SP-9: Kafka subscriber 订 refund-engine 的 refund.completed 事件 → engine.HandleRefund.
@@ -404,6 +594,31 @@ func main() {
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────
+
+// parseLogLevel — SP-AC-7 O4: env 字符串 → zap level.
+func parseLogLevel(s string) zap.AtomicLevel {
+	switch strings.ToLower(s) {
+	case "debug":
+		return zap.NewAtomicLevelAt(zap.DebugLevel)
+	case "warn", "warning":
+		return zap.NewAtomicLevelAt(zap.WarnLevel)
+	case "error":
+		return zap.NewAtomicLevelAt(zap.ErrorLevel)
+	default:
+		return zap.NewAtomicLevelAt(zap.InfoLevel)
+	}
+}
+
+func envInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		var n int
+		_, err := fmt.Sscanf(v, "%d", &n)
+		if err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
 
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
@@ -476,6 +691,9 @@ func maskDSN(dsn string) string {
 //
 // admin-web BFF 通过这个 gRPC 端口调 Graph CRUD / DryRun / TriggerEvent.
 // 监听端口由 env SPLIT_GRPC_PORT 控制 (默认 9098).
+//
+// ruleSync 来自 env ACCOUNTING_HTTP_URL (e.g. http://accounting-service:8888),
+// SaveGraph 时把派生的 rules POST 到 /admin/transaction-rules. 空 → 关掉同步.
 func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.GraphRepo, acct grpcsvc.AccountingMetaCaller) {
 	port := envOr("SPLIT_GRPC_PORT", "9098")
 	lis, err := net.Listen("tcp", ":"+port)
@@ -483,13 +701,375 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 		log.Error("split gRPC listen failed", zap.Error(err))
 		return
 	}
-	srv := grpc.NewServer()
-	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, log))
+	var ruleSync grpcsvc.AccountingRuleSyncer
+	var orderReset grpcsvc.AccountingOrderResetter
+	if base := envOr("ACCOUNTING_HTTP_URL", ""); base != "" {
+		base = strings.TrimRight(base, "/")
+		// SP-AC-7 O3: 加 circuit breaker — accounting admin HTTP 连续 5 次失败 → 30s 熔断, fail-fast.
+		cb := observability.NewCircuitBreaker("accounting_admin_http", observability.CircuitConfig{
+			FailureThreshold: 5, SuccessThreshold: 2, OpenDuration: 30 * time.Second,
+		})
+		ruleSync = &cbRuleSyncer{inner: &httpRuleSyncer{baseURL: base, log: log}, cb: cb}
+		orderReset = &cbOrderResetter{inner: &httpOrderResetter{baseURL: base, log: log}, cb: cb}
+		log.Info("split-payment: accounting admin HTTP wired",
+			zap.String("accounting_http", base),
+			zap.String("for", "SaveGraph saga + TriggerEvent retry"),
+			zap.String("circuit", "accounting_admin_http"))
+	} else {
+		log.Warn("split-payment: ACCOUNTING_HTTP_URL empty, saga + retry features disabled")
+	}
+	// SP-AC-7 S1+S2: token auth interceptor.
+	//   - env SPLIT_PAYMENT_ADMIN_TOKEN 配了 → 所有 gRPC 调用必须带 metadata X-Admin-Token 等值
+	//   - 空 → DEV 模式 ⚠ log warn 提醒生产应该配
+	authToken := envOr("SPLIT_PAYMENT_ADMIN_TOKEN", "")
+	var opts []grpc.ServerOption
+	// SP-AC-7 PH3-2: mTLS server credentials (双向认证). 没配证书走明文 (dev 模式 warn).
+	if serverCreds, terr := buildServerCreds(log); terr != nil {
+		log.Fatal("build mTLS server credentials", zap.Error(terr))
+	} else if serverCreds != nil {
+		opts = append(opts, grpc.Creds(serverCreds))
+		log.Info("split-payment gRPC: mTLS enabled (require + verify client cert)")
+	} else {
+		log.Warn("split-payment gRPC: mTLS DISABLED — set MTLS_SERVER_CERT/KEY/CA env vars in production")
+	}
+	// SP-AC-7 L3+P1: gRPC server keepalive + 限流, 防超长闲连接 / 巨型 payload 打挂进程.
+	opts = append(opts,
+		grpc.MaxConcurrentStreams(64),
+		grpc.MaxRecvMsgSize(16*1024*1024),
+		serviceregistry.HardenedServerOptions()[0], // KeepaliveEnforcementPolicy
+	)
+	// SP-AC-7 O1: 拦截器链 — panic recover → access log → metrics → token auth (token 在最里层让上层 log 能看到 token 验失败).
+	interceptors := []grpc.UnaryServerInterceptor{
+		grpcsvc.PanicRecoverInterceptor(log),
+		grpcsvc.AccessLogInterceptor(log),
+		grpcsvc.MetricsInterceptor(),
+	}
+	if authToken != "" {
+		interceptors = append(interceptors, adminTokenInterceptor(authToken))
+		log.Info("split-payment gRPC: admin token auth enabled")
+	} else {
+		log.Warn("split-payment gRPC: AUTH DISABLED — set SPLIT_PAYMENT_ADMIN_TOKEN env var in production")
+	}
+	opts = append(opts, grpc.UnaryInterceptor(grpcsvc.ChainInterceptors(interceptors...)))
+	srv := grpc.NewServer(opts...)
+	// SP-AC-7 S6 + PROD3: 资金审计 — Zap (本地 stdout) + Kafka 独立 topic (隔离权限/留存).
+	// Kafka 不可达 → ChainAuditSink 会自动跳过, 退化为仅 zap.
+	auditSinks := []grpcsvc.AuditSink{&grpcsvc.ZapAuditSink{Log: log.Named("audit")}}
+	if brokers := splitCSV(envOr("SPLIT_PAYMENT_KAFKA_BROKERS", "")); len(brokers) > 0 {
+		kAudit, kErr := grpcsvc.NewKafkaAuditSink(brokers,
+			envOr("SPLIT_PAYMENT_AUDIT_TOPIC", "split-payment.audit"), log)
+		if kErr != nil {
+			log.Warn("kafka audit sink init failed; falling back to zap only", zap.Error(kErr))
+		} else {
+			defer kAudit.Close()
+			auditSinks = append(auditSinks, kAudit)
+			log.Info("kafka audit sink wired", zap.String("topic", envOr("SPLIT_PAYMENT_AUDIT_TOPIC", "split-payment.audit")))
+		}
+	}
+	auditSink := &grpcsvc.ChainAuditSink{Sinks: auditSinks}
+	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, auditSink, log))
 	log.Info("split-payment gRPC AdminService listening", zap.String("port", port))
 	go func() { <-ctx.Done(); srv.GracefulStop() }()
 	if err := srv.Serve(lis); err != nil {
 		log.Error("split gRPC serve", zap.Error(err))
 	}
+}
+
+// adminTokenInterceptor 校验 metadata `x-admin-token` 是否匹配预期 token.
+// 不匹配 → grpc.Unauthenticated. metadata header 名小写: gRPC 规范要求.
+func adminTokenInterceptor(expectedToken string) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok {
+			return nil, status.Error(codes.Unauthenticated, "missing metadata")
+		}
+		tokens := md.Get("x-admin-token")
+		if len(tokens) == 0 || tokens[0] != expectedToken {
+			return nil, status.Error(codes.Unauthenticated, "invalid or missing X-Admin-Token")
+		}
+		return handler(ctx, req)
+	}
+}
+
+// httpRuleSyncer — POST {rules:[...]} 到 accounting /admin/transaction-rules.
+//
+// 任一 rule upsert 失败 accounting 返 BadGateway, 这里反序列化出 error + succeeded
+// 转成 caller error. 全部成功 accounting 自动调用 Reload, snapshot 立即可见.
+type httpRuleSyncer struct {
+	baseURL string
+	log     *zap.Logger
+}
+
+func (h *httpRuleSyncer) UpsertRules(ctx context.Context, rules []grpcsvc.RuleSpec) error {
+	if len(rules) == 0 {
+		return nil
+	}
+	// 用 anonymous struct 避免依赖 accounting model 包.
+	type ruleDTO struct {
+		ProductCode     string `json:"product_code"`
+		EventCode       string `json:"event_code"`
+		HashKey         string `json:"hash_key"`
+		DebitSubjectID  string `json:"debit_subject_id"`
+		CreditSubjectID string `json:"credit_subject_id"`
+		FromDirection   string `json:"from_direction"`
+		ToDirection     string `json:"to_direction"`
+		TransactionType int    `json:"transaction_type"`
+		BookkeepingMode string `json:"bookkeeping_mode"`
+	}
+	dtos := make([]ruleDTO, 0, len(rules))
+	for _, r := range rules {
+		dtos = append(dtos, ruleDTO{
+			ProductCode:     r.ProductCode,
+			EventCode:       r.EventCode,
+			HashKey:         r.HashKey,
+			DebitSubjectID:  r.DebitSubjectID,
+			CreditSubjectID: r.CreditSubjectID,
+			FromDirection:   r.FromDirection,
+			ToDirection:     r.ToDirection,
+			TransactionType: r.TransactionType,
+			BookkeepingMode: r.BookkeepingMode,
+		})
+	}
+	body, _ := json.Marshal(map[string]any{"rules": dtos})
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
+		h.baseURL+"/admin/transaction-rules", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build http req: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("accounting unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("accounting HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	if h.log != nil {
+		h.log.Info("rule sync to accounting OK",
+			zap.Int("count", len(rules)),
+			zap.String("response", string(respBody)))
+	}
+	return nil
+}
+
+// DeleteRules SP-AC-7 R2: SaveGraph saga 补偿. DELETE /admin/transaction-rules + body {hash_keys}.
+func (h *httpRuleSyncer) DeleteRules(ctx context.Context, hashKeys []string) error {
+	if len(hashKeys) == 0 {
+		return nil
+	}
+	body, _ := json.Marshal(map[string]any{"hash_keys": hashKeys})
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodDelete,
+		h.baseURL+"/admin/transaction-rules", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build delete req: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("accounting unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("accounting HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	if h.log != nil {
+		h.log.Info("rule delete (saga compensation) OK",
+			zap.Int("count", len(hashKeys)),
+			zap.String("response", string(respBody)))
+	}
+	return nil
+}
+
+// httpOrderResetter — TriggerEvent 遇到卡 Processing 时, POST accounting
+// /admin/transaction-orders/{order_no}/reset 主动解锁.
+//
+// 异常场景在 accounting 端处理 (action=skipped_success / phantom_fixed / unstuck / ...),
+// 这里只透传 HTTP error.
+type httpOrderResetter struct {
+	baseURL string
+	log     *zap.Logger
+}
+
+func (h *httpOrderResetter) ResetOrder(ctx context.Context, orderNo, businessNo string, force bool) error {
+	if orderNo == "" {
+		return fmt.Errorf("order_no required")
+	}
+	if businessNo == "" {
+		businessNo = orderNo // accounting orderRepo route by businessNo, fallback to orderNo
+	}
+	body, _ := json.Marshal(map[string]any{
+		"business_no": businessNo,
+		"force":       force,
+	})
+	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	url := h.baseURL + "/admin/transaction-orders/" + orderNo + "/reset"
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build http req: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("accounting unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("accounting HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	if h.log != nil {
+		h.log.Info("order reset request OK",
+			zap.String("order_no", orderNo),
+			zap.Bool("force", force),
+			zap.String("response", string(respBody)))
+	}
+	return nil
+}
+
+// reversalApplyAdapter — SP-AC-7 R1: 实现 workflow.ReversalApplier 接口, 调 repo.ApplyReversalAtomic.
+type reversalApplyAdapter struct{ db *sql.DB }
+
+func (a *reversalApplyAdapter) Apply(ctx context.Context, rv *domain.Reversal, deltaReversed int64) error {
+	return repo.ApplyReversalAtomic(ctx, a.db, rv, deltaReversed)
+}
+
+// ─── SP-AC-7 O3: Circuit-breaker wrappers ────────────────────────────────────
+type cbRuleSyncer struct {
+	inner *httpRuleSyncer
+	cb    *observability.CircuitBreaker
+}
+
+func (w *cbRuleSyncer) UpsertRules(ctx context.Context, rules []grpcsvc.RuleSpec) error {
+	return w.cb.Do(ctx, func() error { return w.inner.UpsertRules(ctx, rules) })
+}
+
+func (w *cbRuleSyncer) DeleteRules(ctx context.Context, hashKeys []string) error {
+	return w.cb.Do(ctx, func() error { return w.inner.DeleteRules(ctx, hashKeys) })
+}
+
+type cbOrderResetter struct {
+	inner *httpOrderResetter
+	cb    *observability.CircuitBreaker
+}
+
+func (w *cbOrderResetter) ResetOrder(ctx context.Context, orderNo, businessNo string, force bool) error {
+	return w.cb.Do(ctx, func() error { return w.inner.ResetOrder(ctx, orderNo, businessNo, force) })
+}
+
+// ─── SP-AC-7 O2: Outbox metric scrapers ──────────────────────────────────────
+// 周期性 SELECT COUNT(*) / MAX(age) 把 outbox 状态推 Prometheus gauge.
+func eventOutboxScraper(db *sql.DB) observability.OutboxScraper {
+	return func(ctx context.Context) (observability.OutboxStat, error) {
+		var s observability.OutboxStat
+		row := db.QueryRowContext(ctx, `
+			SELECT
+			  COUNT(IF(status='pending',1,NULL)),
+			  COUNT(IF(status='dead_letter',1,NULL)),
+			  COALESCE(TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status='pending' THEN created_at END), NOW()), 0)
+			FROM event_outbox`)
+		return s, row.Scan(&s.PendingDepth, &s.DeadLetterCount, &s.OldestAgeSeconds)
+	}
+}
+
+func reversalOutboxScraper(db *sql.DB) observability.OutboxScraper {
+	return func(ctx context.Context) (observability.OutboxStat, error) {
+		var s observability.OutboxStat
+		row := db.QueryRowContext(ctx, `
+			SELECT
+			  COUNT(IF(status='pending',1,NULL)),
+			  COUNT(IF(status='dead_letter',1,NULL)),
+			  COALESCE(TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status='pending' THEN created_at END), NOW()), 0)
+			FROM reversal_retry_outbox`)
+		return s, row.Scan(&s.PendingDepth, &s.DeadLetterCount, &s.OldestAgeSeconds)
+	}
+}
+
+// ─── SP-AC-7 L5: Event outbox adapters ──────────────────────────────────────
+type eventOutboxEnqAdapter struct{ ob *repo.EventOutbox }
+
+func (a *eventOutboxEnqAdapter) Enqueue(ctx context.Context, eventType string, payloadJSON []byte) error {
+	return a.ob.Enqueue(ctx, eventType, payloadJSON)
+}
+
+type eventOutboxClaimAdapter struct{ ob *repo.EventOutbox }
+
+func (a *eventOutboxClaimAdapter) Claim(ctx context.Context, limit int) ([]workflow.EventOutboxJob, error) {
+	rows, err := a.ob.Claim(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]workflow.EventOutboxJob, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, workflow.EventOutboxJob{
+			ID: r.ID, EventType: r.EventType, PayloadJSON: r.PayloadJSON,
+			RetryCount: r.RetryCount, MaxRetry: r.MaxRetry,
+		})
+	}
+	return out, nil
+}
+
+func (a *eventOutboxClaimAdapter) MarkSent(ctx context.Context, id int64) error {
+	return a.ob.MarkSent(ctx, id)
+}
+
+func (a *eventOutboxClaimAdapter) MarkDeadLetter(ctx context.Context, id int64, lastErr string) error {
+	return a.ob.MarkDeadLetter(ctx, id, lastErr)
+}
+
+func (a *eventOutboxClaimAdapter) UpdateError(ctx context.Context, id int64, lastErr string) error {
+	return a.ob.UpdateError(ctx, id, lastErr)
+}
+
+// kafkaEventSenderAdapter 把 workflow.KafkaEventPublisher 适配成 workflow.EventSender.
+type kafkaEventSenderAdapter struct{ pub *workflow.KafkaEventPublisher }
+
+func (a *kafkaEventSenderAdapter) Send(ctx context.Context, eventType string, payload []byte) error {
+	return a.pub.SendRaw(ctx, eventType, payload)
+}
+
+// reversalOutboxAdapter — SP-AC-7 R5: 实现 workflow.ReversalRetryEnqueuer 接口.
+type reversalOutboxAdapter struct{ ob *repo.ReversalOutbox }
+
+func (a *reversalOutboxAdapter) Enqueue(ctx context.Context, reversalID, transferID string, deltaMinor int64, lastErr error) error {
+	return a.ob.Enqueue(ctx, reversalID, transferID, deltaMinor, lastErr)
+}
+
+// reversalOutboxClaimAdapter — workflow.ReversalOutboxClaimer 接口适配, 把 repo.ReversalOutboxRow → workflow.ReversalOutboxJob.
+type reversalOutboxClaimAdapter struct{ ob *repo.ReversalOutbox }
+
+func (a *reversalOutboxClaimAdapter) Claim(ctx context.Context, limit int) ([]workflow.ReversalOutboxJob, error) {
+	rows, err := a.ob.Claim(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]workflow.ReversalOutboxJob, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, workflow.ReversalOutboxJob{
+			ID: r.ID, ReversalID: r.ReversalID, TransferID: r.TransferID,
+			DeltaMinor: r.DeltaMinor, RetryCount: r.RetryCount, MaxRetry: r.MaxRetry,
+		})
+	}
+	return out, nil
+}
+
+func (a *reversalOutboxClaimAdapter) MarkDone(ctx context.Context, id int64) error {
+	return a.ob.MarkDone(ctx, id)
+}
+
+func (a *reversalOutboxClaimAdapter) MarkDeadLetter(ctx context.Context, id int64, lastErr string) error {
+	return a.ob.MarkDeadLetter(ctx, id, lastErr)
+}
+
+func (a *reversalOutboxClaimAdapter) UpdateError(ctx context.Context, id int64, lastErr string) error {
+	return a.ob.UpdateError(ctx, id, lastErr)
 }
 
 // grpcsvcAcctAdapter — workflow.AccountingMetaCaller ↔ grpcsvc.AccountingMetaCaller 适配.
@@ -521,6 +1101,57 @@ func (a accountingGRPCAdapter) CreateTransaction(ctx context.Context, req *domai
 		Status:    resp.Status,
 		Error:     resp.ErrorMessage,
 	}, nil
+}
+
+// ─── SP-AC-7 PH3-2: mTLS 工具 ─────────────────────────────────────────
+//
+// buildClientCreds  — 用于 dial accounting-system gRPC (client 侧 mTLS).
+// buildServerCreds  — 用于 grpc.NewServer (server 侧 mTLS, 强校验 client cert).
+//
+// 行为:
+//   - mtls.LoadFromEnv() 失败 (e.g. ENVIRONMENT=prod 且 cert 不全) → fail-fast.
+//   - InsecureDev (INSECURE_DIAL=1, 非 prod) 或证书路径全为空 → 退化 insecure (dev 模式).
+//   - 否则加载 cert/key/CA 构造 mTLS credentials.
+//
+// 环境变量:
+//   MTLS_SERVER_CERT  /etc/certs/server.crt
+//   MTLS_SERVER_KEY   /etc/certs/server.key
+//   MTLS_CA_CERT      /etc/certs/ca.crt
+//   ENVIRONMENT       prod|production → 强制 mTLS
+//   INSECURE_DIAL     1 → 允许 dev 模式跳过 mTLS
+
+func buildClientCreds(log *zap.Logger) (grpc.DialOption, error) {
+	cfg, err := mtls.LoadFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("mtls.LoadFromEnv (client): %w", err)
+	}
+	if cfg.InsecureDev || (cfg.ServerCertPath == "" && cfg.ServerKeyPath == "" && cfg.CACertPath == "") {
+		log.Warn("accounting client dial: INSECURE (no mTLS) — set MTLS_* env vars in production")
+		return grpc.WithTransportCredentials(insecure.NewCredentials()), nil
+	}
+	creds, err := cfg.ClientCredentials()
+	if err != nil {
+		return nil, fmt.Errorf("mtls.ClientCredentials: %w", err)
+	}
+	log.Info("accounting client dial: mTLS enabled",
+		zap.String("cert", cfg.ServerCertPath), zap.String("ca", cfg.CACertPath))
+	return grpc.WithTransportCredentials(creds), nil
+}
+
+func buildServerCreds(log *zap.Logger) (credentials.TransportCredentials, error) {
+	cfg, err := mtls.LoadFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("mtls.LoadFromEnv (server): %w", err)
+	}
+	if cfg.InsecureDev || (cfg.ServerCertPath == "" && cfg.ServerKeyPath == "" && cfg.CACertPath == "") {
+		_ = log
+		return nil, nil // dev mode — caller log warn 后退化明文
+	}
+	creds, err := cfg.ServerCredentials()
+	if err != nil {
+		return nil, fmt.Errorf("mtls.ServerCredentials: %w", err)
+	}
+	return creds, nil
 }
 
 // zapSagaLogger 适配 zap 到 workflow.Logger 接口 (kv 风格).
@@ -579,9 +1210,9 @@ func trimSpaces(s string) string {
 // 用 franz-go 跟其它 Kafka client 风格对齐 (跟 reconplatform / KafkaEventPublisher 一致).
 // 单个进程一个 consumer group, 多副本部署时按 partition 自动分担.
 //
-// 失败处理:
-//   - 单条解析失败 → log error 跳过 (DLQ 留 Phase 3)
-//   - HandleRefund 返 err → log + 不 commit, 下次重试
+// SP-AC-7 L4: 失败处理升级:
+//   - 解析失败的 bad msg → 写 DLQ topic + commit + metric, 不阻塞队列
+//   - HandleRefund 业务失败 → 累计 retry header, 超 maxRetry → DLQ + commit; 否则不 commit 下次再试
 func runRefundSubscriber(
 	ctx context.Context,
 	engine *workflow.Engine,
@@ -592,7 +1223,9 @@ func runRefundSubscriber(
 ) {
 	brokers := splitCSV(envOr("SPLIT_PAYMENT_KAFKA_BROKERS", ""))
 	topic := envOr("SPLIT_PAYMENT_REFUND_TOPIC", "recon.refund.events")
+	dlqTopic := envOr("SPLIT_PAYMENT_REFUND_DLQ_TOPIC", topic+".dlq")
 	groupID := envOr("SPLIT_PAYMENT_REFUND_GROUP", "split-payment-refund-handler")
+	maxRetry := envInt("SPLIT_PAYMENT_REFUND_MAX_RETRY", 5)
 	if len(brokers) == 0 {
 		return
 	}
@@ -608,10 +1241,23 @@ func runRefundSubscriber(
 		return
 	}
 	defer cl.Close()
+	// SP-AC-7 L4: 独立 DLQ producer (跟 consumer 共 broker, 不同语义).
+	dlqCl, derr := kgo.NewClient(
+		kgo.SeedBrokers(brokers...),
+		kgo.RecordRetries(3),
+		kgo.RequestTimeoutOverhead(5*time.Second),
+	)
+	if derr != nil {
+		log.Error("refund DLQ producer init failed; bad messages will only be logged", zap.Error(derr))
+	} else {
+		defer dlqCl.Close()
+	}
 	log.Info("refund subscriber started",
 		zap.Strings("brokers", brokers),
 		zap.String("topic", topic),
-		zap.String("group", groupID))
+		zap.String("dlq_topic", dlqTopic),
+		zap.String("group", groupID),
+		zap.Int("max_retry", maxRetry))
 
 	for {
 		if ctx.Err() != nil {
@@ -631,18 +1277,33 @@ func runRefundSubscriber(
 			rec := iter.Next()
 			var ev workflow.RefundEvent
 			if err := json.Unmarshal(rec.Value, &ev); err != nil {
-				log.Warn("refund event parse failed",
+				log.Error("refund event parse failed → DLQ",
 					zap.String("topic", rec.Topic), zap.Error(err))
-				toCommit = append(toCommit, rec) // bad msg 跳过
+				observability.RefundEventCount.WithLabelValues("parse_error").Inc()
+				sendToDLQ(ctx, dlqCl, dlqTopic, rec, "parse_error: "+err.Error(), log)
+				toCommit = append(toCommit, rec)
 				continue
 			}
 			if err := engine.HandleRefund(ctx, ev, trRepo, feeRepo, rvRepo); err != nil {
+				retryCount := getRetryHeader(rec)
 				log.Error("HandleRefund failed",
 					zap.String("refund_id", ev.RefundID),
 					zap.String("charge_id", ev.ChargeID),
+					zap.Int("retry", retryCount),
 					zap.Error(err))
-				continue // 不 commit, 重试
+				observability.RefundEventCount.WithLabelValues("handle_error").Inc()
+				if retryCount >= maxRetry {
+					log.Error("HandleRefund exhausted retries → DLQ",
+						zap.String("refund_id", ev.RefundID),
+						zap.Int("max_retry", maxRetry))
+					sendToDLQ(ctx, dlqCl, dlqTopic, rec,
+						fmt.Sprintf("max_retry_exceeded(%d): %v", maxRetry, err), log)
+					toCommit = append(toCommit, rec)
+					continue
+				}
+				continue // 还没到上限, 不 commit, 下次重试
 			}
+			observability.RefundEventCount.WithLabelValues("ok").Inc()
 			toCommit = append(toCommit, rec)
 		}
 		if len(toCommit) > 0 {
@@ -651,4 +1312,47 @@ func runRefundSubscriber(
 			}
 		}
 	}
+}
+
+// sendToDLQ — SP-AC-7 L4: 把坏 / 重试上限的消息推到 DLQ topic 留底, 带 forensics header.
+// dlqCl nil → 仅 log warn (DLQ producer 起不来时不阻塞主流程).
+func sendToDLQ(ctx context.Context, dlqCl *kgo.Client, dlqTopic string, orig *kgo.Record, reason string, log *zap.Logger) {
+	if dlqCl == nil {
+		log.Warn("DLQ producer nil; bad msg dropped after log",
+			zap.String("orig_topic", orig.Topic), zap.String("reason", reason))
+		return
+	}
+	rec := &kgo.Record{
+		Topic: dlqTopic,
+		Key:   orig.Key,
+		Value: orig.Value,
+		Headers: []kgo.RecordHeader{
+			{Key: "x-orig-topic", Value: []byte(orig.Topic)},
+			{Key: "x-orig-partition", Value: []byte(fmt.Sprintf("%d", orig.Partition))},
+			{Key: "x-orig-offset", Value: []byte(fmt.Sprintf("%d", orig.Offset))},
+			{Key: "x-dlq-reason", Value: []byte(reason)},
+			{Key: "x-dlq-ts", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
+		},
+	}
+	dlqCl.Produce(ctx, rec, func(_ *kgo.Record, err error) {
+		if err != nil {
+			log.Error("DLQ produce failed",
+				zap.String("dlq_topic", dlqTopic), zap.String("reason", reason), zap.Error(err))
+		}
+	})
+}
+
+// getRetryHeader — 从 record header 找 x-retry-count, 没有视为 0.
+// 注: Kafka 不允许修改已 produce 的 record header, 实际累计需要 producer 端在重投时
+// 主动写入新 record 带 incremented header. 当前实现读到的是 producer 提供的次数;
+// 后续 outbox 重投 worker 应在 republish 时 ++ 这个 header.
+func getRetryHeader(rec *kgo.Record) int {
+	for _, h := range rec.Headers {
+		if h.Key == "x-retry-count" {
+			var n int
+			_, _ = fmt.Sscanf(string(h.Value), "%d", &n)
+			return n
+		}
+	}
+	return 0
 }

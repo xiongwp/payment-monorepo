@@ -1,0 +1,147 @@
+# SP-AC-7 PH3-4: ArgoCD Application — split-payment GitOps 部署.
+#
+# 工作流:
+#   1. CI 跑 release pipeline (release.yml) 推镜像到 ghcr + 更新 GitOps repo 的 kustomization image tag.
+#   2. ArgoCD 监 GitOps repo main 分支, sync 到 K8s 集群.
+#   3. 失败 self-heal, 漂移 auto-prune.
+#
+# AppProject:
+#   - payment-platform: 限定 destination cluster + namespace + 允许 sync 的 source repo.
+#
+# 多环境:
+#   - dev:     auto-sync, replicas=1
+#   - staging: auto-sync, replicas=2
+#   - prod:    manual sync (PR + 审批), replicas=3+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: payment-platform
+  namespace: argocd
+  labels:
+    sp-ac: "7"
+    phase: "3"
+spec:
+  description: "Payment platform services (split-payment, accounting-system, card-center, ...)"
+  sourceRepos:
+    - 'https://github.com/xiongwp/payment-gitops.git'
+  destinations:
+    - namespace: 'payment'
+      server: 'https://kubernetes.default.svc'
+    - namespace: 'payment-staging'
+      server: 'https://kubernetes.default.svc'
+    - namespace: 'payment-dev'
+      server: 'https://kubernetes.default.svc'
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRole
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRoleBinding
+    - group: 'cert-manager.io'
+      kind: ClusterIssuer
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  roles:
+    - name: developer
+      description: "Developer can sync dev / staging, view prod"
+      policies:
+        - p, proj:payment-platform:developer, applications, sync, payment-platform/*-dev, allow
+        - p, proj:payment-platform:developer, applications, sync, payment-platform/*-staging, allow
+        - p, proj:payment-platform:developer, applications, get, payment-platform/*, allow
+      groups:
+        - "payment-developers"
+    - name: oncall
+      description: "Oncall can sync prod"
+      policies:
+        - p, proj:payment-platform:oncall, applications, *, payment-platform/*, allow
+      groups:
+        - "payment-oncall"
+---
+# split-payment dev — full auto, drift detection 启用.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: split-payment-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: payment-platform
+  source:
+    repoURL: https://github.com/xiongwp/payment-gitops.git
+    targetRevision: main
+    path: envs/dev/split-payment
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payment-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff: { duration: 5s, factor: 2, maxDuration: 3m }
+  revisionHistoryLimit: 10
+---
+# split-payment staging — auto-sync, 但要求 PR 改 GitOps repo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: split-payment-staging
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: payment-platform
+  source:
+    repoURL: https://github.com/xiongwp/payment-gitops.git
+    targetRevision: main
+    path: envs/staging/split-payment
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payment-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff: { duration: 5s, factor: 2, maxDuration: 3m }
+---
+# split-payment prod — manual sync only. release.yml 推 GitOps PR, oncall 审批 merge,
+# ArgoCD UI 点 Sync. 防误 rollout.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: split-payment-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: payment-platform
+  source:
+    repoURL: https://github.com/xiongwp/payment-gitops.git
+    targetRevision: main
+    path: envs/prod/split-payment
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payment
+  syncPolicy:
+    # 注意: prod 没有 automated 块, 必须 manual sync.
+    syncOptions:
+      - CreateNamespace=false
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 3
+      backoff: { duration: 10s, factor: 2, maxDuration: 5m }
+  revisionHistoryLimit: 20

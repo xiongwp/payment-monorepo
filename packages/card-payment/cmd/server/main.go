@@ -38,6 +38,7 @@ import (
 	"github.com/xiongwp/card-payment/internal/sharding"
 	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/shadow"
+	"github.com/xiongwp/payment-util/piiredact"
 	"github.com/xiongwp/payment-util/trace"
 )
 
@@ -522,6 +523,14 @@ func newGRPCServer(v *viper.Viper, p *processor.Processor, logger *zap.Logger) (
 		grpc.ChainUnaryInterceptor(
 			trace.UnaryServerInterceptor(logger),
 			shadow.UnaryServerInterceptor(),
+			// ROI-2d: PII-safe access log. card-payment 处理裸 PAN, LogPayload 永远 false;
+			// 只记 method+code+duration. PAN 在 processor 内 <1ms 内存停留, 永不入日志.
+			piiredact.LoggingInterceptor(logger, piiredact.LoggingOptions{
+				LogPayload: false,
+				SkipMethods: map[string]struct{}{
+					"/grpc.health.v1.Health/Check": {},
+				},
+			}),
 			server.UnaryClientCNInterceptor(allow),
 		),
 	}

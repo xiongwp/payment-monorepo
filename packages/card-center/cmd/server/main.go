@@ -38,6 +38,7 @@ import (
 	"github.com/xiongwp/card-center/internal/vault"
 	"github.com/xiongwp/payment-util/audit/kafkago"
 	"github.com/xiongwp/payment-util/configcenter"
+	"github.com/xiongwp/payment-util/obsbootstrap"
 	"github.com/xiongwp/payment-util/serviceregistry"
 	"github.com/xiongwp/payment-util/shadow"
 	"github.com/xiongwp/payment-util/trace"
@@ -548,6 +549,31 @@ func startHTTPS(lc fx.Lifecycle, v *viper.Viper, rest *httpsauth.RESTServer, log
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			return srv.Shutdown(ctx)
+		},
+	})
+
+	// SP-AC-7 SHARED: 通用可观测性 admin server (/healthz, /readyz, /metrics, /debug/pprof/*, /admin/log-level).
+	adminPort := v.GetString("admin_http.port")
+	if adminPort == "" {
+		adminPort = "9099"
+	}
+	logLevel := zap.NewAtomicLevelAt(zap.InfoLevel)
+	adminSrv := obsbootstrap.NewAdminServer(obsbootstrap.AdminConfig{
+		ServiceName: "card-center",
+		Port:        adminPort,
+		Logger:      logger,
+		LogLevel:    logLevel,
+	})
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			adminCtx, adminCancel := context.WithCancel(context.Background())
+			lc.Append(fx.Hook{OnStop: func(_ context.Context) error { adminCancel(); return nil }})
+			go func() {
+				if err := adminSrv.Run(adminCtx); err != nil {
+					logger.Error("admin http exited", zap.Error(err))
+				}
+			}()
+			return nil
 		},
 	})
 }

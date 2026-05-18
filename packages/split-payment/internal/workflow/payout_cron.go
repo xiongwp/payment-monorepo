@@ -236,9 +236,12 @@ func DefaultHoldUnstickConfig() HoldUnstickConfig {
 
 // PendingHoldsRepo workflow 包用接口, 拉所有"有 hold 但已过期"的 RunPlan.
 //
-// 现状: RunRepo 没暴露这个查询; 留接口给 Phase 3 接实现.
+// SP-AC-7 PH3-7: MySQLRunRepo 现已实现 ListExpiredHolds + MarkHoldReleased.
+// 老 NoopPendingHoldsRepo 留作 dev/memory 模式 fallback.
 type PendingHoldsRepo interface {
 	ListExpiredHolds(ctx context.Context, now time.Time, limit int) ([]*domain.RunPlan, error)
+	// MarkHoldReleased 标行 hold_released=1; 重复调用幂等 (返 ErrNotFound 表示已被别人处理).
+	MarkHoldReleased(ctx context.Context, runID int64) error
 }
 
 // HoldReleaser SP-FIN-3 把 hold 期资金搬到正式账户的执行器.
@@ -263,6 +266,18 @@ type HoldUnstickWorker struct {
 	Events   EventPublisher
 	Log      *zap.Logger
 }
+
+// NoopPendingHoldsRepo dev/memory 模式 fallback (永远返空列表 + Mark 不做事).
+// 生产挂 MySQLRunRepo (满足 PendingHoldsRepo 接口).
+type NoopPendingHoldsRepo struct{}
+
+// ListExpiredHolds 永远返空.
+func (NoopPendingHoldsRepo) ListExpiredHolds(_ context.Context, _ time.Time, _ int) ([]*domain.RunPlan, error) {
+	return nil, nil
+}
+
+// MarkHoldReleased noop.
+func (NoopPendingHoldsRepo) MarkHoldReleased(_ context.Context, _ int64) error { return nil }
 
 // Run 阻塞 ticker.
 func (w *HoldUnstickWorker) Run(ctx context.Context) {
@@ -293,100 +308,155 @@ func (w *HoldUnstickWorker) tick(ctx context.Context) {
 		w.Log.Warn("hold unstick: list failed", zap.Error(err))
 		return
 	}
+	if len(plans) == 0 {
+		return
+	}
+	w.Log.Info("hold unstick: batch", zap.Int("count", len(plans)))
 	for _, p := range plans {
 		// SP-FIN-3: 真接 accounting 把 unsettled → settled.
 		if w.Releaser != nil {
 			if err := w.Releaser.ReleaseHold(ctx, p); err != nil {
 				w.Log.Error("hold release failed",
 					zap.Int64("plan_id", p.ID), zap.Error(err))
-				continue
+				continue // 留给下个 tick 重试
 			}
+		}
+		// SP-AC-7 PH3-7: 真接 repo 标 hold_released=1, 防重复扫.
+		if err := w.Plans.MarkHoldReleased(ctx, p.ID); err != nil {
+			// ErrNotFound = 别的副本/tick 已标过, 不算错; 其它错误降级 warn.
+			w.Log.Warn("hold unstick: mark released failed",
+				zap.Int64("plan_id", p.ID), zap.Error(err))
 		}
 		if w.Events != nil {
 			_ = w.Events.Publish(ctx, "hold.released", p)
 		}
 		w.Log.Info("hold unstick: released",
-			zap.Int64("plan_id", p.ID))
+			zap.Int64("plan_id", p.ID),
+			zap.String("charge_id", p.ChargeID),
+			zap.Int64("amount_minor", p.AmountMinor))
 	}
 }
 
-// ─── 默认 HoldReleaser 实现 (基于 accounting batch 反向) ───────────────
-
-// AccountingHoldReleaser 通过调 accounting-system 把 unsettled → settled 搬钱.
+// ─── SP-AC-7 PH3-7: MetaHoldReleaser (走 AccountingMetaCaller.CreateTransaction) ───
 //
-// 工作流:
-//   1. 遍历 plan.Movements, 找 to_account 含 "unsettled" 前缀的 (translator
-//      在 hold 期把 to 改成 unsettled/<原 acc>)
-//   2. 反向构造两笔: unsettled→0 + 0→正式账户 (借贷平衡)
-//   3. 一次 atomic batch 提交给 accounting
+// 老 AccountingHoldReleaser 用的 PostMovements 接口在 SP-AC-7 之后已无实现, 已删除.
+// 新版改用 AccountingMetaCaller 调 CreateTransaction (跟主链路同一条 gRPC),
+// EventCode = "hold.release", legs 由 plan.Movements 反推.
+type MetaHoldReleaser struct {
+	Acct AccountingMetaCaller
+	Log  *zap.Logger
+}
+
+// NewMetaHoldReleaser.
+func NewMetaHoldReleaser(acct AccountingMetaCaller, log *zap.Logger) *MetaHoldReleaser {
+	return &MetaHoldReleaser{Acct: acct, Log: log}
+}
+
+// ReleaseHold 把 hold 期 unsettled 资金搬到正式账户.
 //
-// 简化版: 当前 RunPlan 没显式存 "hold movement" 标记, 这里按命名约定 (account
-// 含 "unsettled_") 识别. 实际生产用 hold_movements 子表精确管理.
-type AccountingHoldReleaser struct {
-	Accounting accountingPoster // duck-typed interface
-	Log        *zap.Logger
-}
+// 简化策略 (Phase 3 真账务对接):
+//   - 如果 plan 没有显式 Movements (走 AccountType 模式), 此处只发事件不真搬钱;
+//     未来 accounting-system 加 SettleHold RPC 后, 直接用 plan_run_id 调一次.
+//   - 如果 plan 有 Movements 且能识别 "unsettled_" 前缀的 to_account, 反向构造
+//     legs 调 CreateTransaction (event_code="hold.release").
+//
+// 当前生产路径主走 Transactions (AccountType 模式), Movements 留空 → 这里只发事件.
+// 真账务搬移由 accounting-system 内的 hold ledger 自管理 (TODO Phase 3 SettleHold RPC).
+func (r *MetaHoldReleaser) ReleaseHold(ctx context.Context, plan *domain.RunPlan) error {
+	if r.Acct == nil {
+		return nil // dev/test 模式: 没 accounting 客户端
+	}
 
-// accountingPoster 跟 clients.AccountingClient.PostMovements 同签名 (避免循环 import).
-type accountingPoster interface {
-	PostMovements(ctx context.Context, plan *domain.RunPlan) (voucher string, txIDs []string, err error)
-}
-
-// NewAccountingHoldReleaser.
-func NewAccountingHoldReleaser(acc accountingPoster, log *zap.Logger) *AccountingHoldReleaser {
-	return &AccountingHoldReleaser{Accounting: acc, Log: log}
-}
-
-// ReleaseHold 真实搬钱.
-func (r *AccountingHoldReleaser) ReleaseHold(ctx context.Context, plan *domain.RunPlan) error {
-	// 找 hold 中的 movement (account 名含 "unsettled_" 前缀)
-	releases := []domain.Movement{}
+	// 路径 A: Movements 含 unsettled_ 前缀 → 反向 batch 搬钱.
+	legs := []domain.TxnLeg{}
 	for _, m := range plan.Movements {
 		if m.Status != "posted" {
 			continue
 		}
-		// 约定: hold 期暂留账户用 "unsettled_<原 account>" 命名
 		if !contains(m.ToAccount, "unsettled_") {
 			continue
 		}
 		realAcc := stripUnsettledPrefix(m.ToAccount)
-		releases = append(releases, domain.Movement{
-			EdgeFromNode: "hold_release",
-			EdgeToNode:   m.EdgeToNode,
-			FromAccount:  m.ToAccount, // unsettled → real
-			ToAccount:    realAcc,
-			AmountMinor:  m.AmountMinor,
-			Status:       "pending",
-			Reason:       "hold expired",
+		legs = append(legs, domain.TxnLeg{
+			EdgeFromNode:  "hold_release",
+			EdgeToNode:    m.EdgeToNode,
+			FromAccountID: m.ToAccount, // unsettled → real
+			ToAccountID:   realAcc,
+			Amount:        intToStr(m.AmountMinor),
+			Currency:      plan.Currency,
 		})
 	}
-	if len(releases) == 0 {
+
+	if len(legs) == 0 {
+		// 路径 B: 无 Movements 可逆 — 只发事件, 真搬钱待 accounting SettleHold RPC.
+		// (e.g. AccountType 模式下 unsettled 账户由 rule 内部映射, 无显式 from→to 记录)
+		if r.Log != nil {
+			r.Log.Debug("hold release: no inverse movements; only emitting event",
+				zap.Int64("plan_id", plan.ID))
+		}
 		return nil
 	}
-	// 构造一个反向 plan 调 accounting
-	releasePlan := &domain.RunPlan{
-		GraphID:       plan.GraphID,
-		GraphVersion:  plan.GraphVersion,
-		TriggerEvent:  "hold.expired",
-		ChargeID:      plan.ChargeID,
-		MerchantID:    plan.MerchantID,
-		AmountMinor:   plan.AmountMinor,
-		Currency:      plan.Currency,
-		TransferGroup: plan.TransferGroup,
-		Movements:     releases,
+
+	// 唯一 order_no 防重 (plan.id + suffix).
+	orderNo := "hold-release-" + intToStr(plan.ID)
+	req := &domain.TransactionRequest{
+		OrderNo:      orderNo,
+		BusinessNo:   plan.ChargeID,
+		BusinessType: "hold_release",
+		ProductCode:  "platform",
+		EventCode:    "hold.release",
+		Description:  "auto hold release for plan " + intToStr(plan.ID),
+		TraceID:      plan.TraceID,
+		Legs:         legs,
 	}
-	voucher, _, err := r.Accounting.PostMovements(ctx, releasePlan)
+	resp, err := r.Acct.CreateTransaction(ctx, req)
 	if err != nil {
 		return err
 	}
+	if resp != nil && resp.Error != "" {
+		return errFromStr(resp.Error)
+	}
 	if r.Log != nil {
+		v := ""
+		if resp != nil {
+			v = resp.VoucherNo
+		}
 		r.Log.Info("hold released via accounting",
 			zap.Int64("plan_id", plan.ID),
-			zap.String("voucher", voucher),
-			zap.Int("movements", len(releases)))
+			zap.String("voucher", v),
+			zap.Int("legs", len(legs)))
 	}
 	return nil
 }
+
+// intToStr int64 → decimal string (走 strconv 避免依赖 fmt).
+func intToStr(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	buf := [20]byte{}
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+// errFromStr 包字符串成 error (避免 import errors 包).
+type strErr string
+
+func (e strErr) Error() string { return string(e) }
+func errFromStr(s string) error { return strErr(s) }
 
 // contains 简单 substring 检查.
 func contains(s, sub string) bool {

@@ -31,6 +31,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 // designerHTML — MF-2 frontend designer 直接 embed 进二进制.
@@ -105,6 +106,21 @@ type rpcGetGraphResponse struct {
 func (x *rpcGetGraphResponse) Reset()         { *x = rpcGetGraphResponse{} }
 func (x *rpcGetGraphResponse) String() string { return fmt.Sprintf("%+v", *x) }
 func (*rpcGetGraphResponse) ProtoMessage()    {}
+
+// DeleteGraph request/response — 跟 split-payment 的 hand-written proto 对齐.
+type rpcDeleteGraphRequest struct {
+	Key string `protobuf:"bytes,1,opt,name=key,proto3"`
+}
+
+func (x *rpcDeleteGraphRequest) Reset()         { *x = rpcDeleteGraphRequest{} }
+func (x *rpcDeleteGraphRequest) String() string { return fmt.Sprintf("%+v", *x) }
+func (*rpcDeleteGraphRequest) ProtoMessage()    {}
+
+type rpcDeleteGraphResponse struct{}
+
+func (x *rpcDeleteGraphResponse) Reset()         { *x = rpcDeleteGraphResponse{} }
+func (x *rpcDeleteGraphResponse) String() string { return fmt.Sprintf("%+v", *x) }
+func (*rpcDeleteGraphResponse) ProtoMessage()    {}
 
 type rpcSaveGraphRequest struct {
 	Graph *rpcGraph `protobuf:"bytes,1,opt,name=graph,proto3"`
@@ -211,15 +227,29 @@ func (h *MoneyflowHandler) getConn() (*grpc.ClientConn, error) {
 	if !strings.Contains(target, ":///") {
 		target = "passthrough:///" + target
 	}
-	conn, err := grpc.NewClient(
-		target,
+	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	}
+	// SP-AC-7 S1: 若 env SPLIT_PAYMENT_ADMIN_TOKEN 配了, BFF 调 split-payment 时每个 unary 调用
+	// 自动在 metadata 加 X-Admin-Token. dev 模式 (空 token) 仍然能拨, split-payment 那边 log warn 即可.
+	if token := envOr("SPLIT_PAYMENT_ADMIN_TOKEN", ""); token != "" {
+		dialOpts = append(dialOpts, grpc.WithUnaryInterceptor(adminTokenClientInterceptor(token)))
+	}
+	conn, err := grpc.NewClient(target, dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", target, err)
 	}
 	h.conn = conn
 	return conn, nil
+}
+
+// adminTokenClientInterceptor 把 x-admin-token 加进 outgoing context.
+func adminTokenClientInterceptor(token string) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any,
+		cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-admin-token", token)
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
 }
 
 // Proxy mux 注册: /api/moneyflow/* → 路由到 gRPC 方法.
@@ -237,6 +267,8 @@ func (h *MoneyflowHandler) Proxy(w http.ResponseWriter, r *http.Request) {
 		h.handleSaveGraph(w, r)
 	case strings.HasPrefix(path, "/graphs/") && r.Method == http.MethodGet:
 		h.handleGetGraph(w, r, strings.TrimPrefix(path, "/graphs/"))
+	case strings.HasPrefix(path, "/graphs/") && r.Method == http.MethodDelete:
+		h.handleDeleteGraph(w, r, strings.TrimPrefix(path, "/graphs/"))
 	case path == "/dry-run" && r.Method == http.MethodPost:
 		h.handleDryRun(w, r)
 	case path == "/trigger" && r.Method == http.MethodPost:
@@ -299,6 +331,28 @@ func (h *MoneyflowHandler) handleGetGraph(w http.ResponseWriter, r *http.Request
 		resp["spec"] = spec
 	}
 	writeJSON(w, map[string]any{"data": resp})
+}
+
+// handleDeleteGraph — DELETE /api/moneyflow/graphs/{key} → split-payment AdminService.DeleteGraph
+func (h *MoneyflowHandler) handleDeleteGraph(w http.ResponseWriter, r *http.Request, key string) {
+	if key == "" {
+		http.Error(w, "key required", http.StatusBadRequest)
+		return
+	}
+	conn, err := h.getConn()
+	if err != nil {
+		http.Error(w, "split-payment unreachable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	out := new(rpcDeleteGraphResponse)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := conn.Invoke(ctx, "/split_payment.v1.AdminService/DeleteGraph",
+		&rpcDeleteGraphRequest{Key: key}, out, grpc.StaticMethod()); err != nil {
+		http.Error(w, "DeleteGraph: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]any{"deleted": key})
 }
 
 // handleSaveGraph — designer Save 时 POST 整个 graph (含 spec). 这里把 spec 重新 marshal

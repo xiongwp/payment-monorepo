@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/xiongwp/payment-core/internal/metrics"
+	"github.com/xiongwp/payment-util/piiredact" // ROI-1: PII 脱敏
 	"github.com/xiongwp/payment-util/ratelimit"
 )
 
@@ -61,6 +62,13 @@ func LoggingInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
 	}
 }
 
+// renderProto 把 proto.Message 渲染为 JSON 字符串 (用于日志).
+//
+// ROI-1: 用 piiredact 做 Luhn 扫描 — 抓走任何 13-19 位 Luhn-valid 数字串 (card_number / pan
+// 等), 输出 BIN+last4 占位. 这是 payment-core 日志泄漏卡号的主要兜底.
+//
+// 注: 完整的字段名脱敏 (email/phone/token 等) 需要 unmarshal-then-redact-then-remarshal,
+// 当前为了简化只做 Luhn 扫描; 字段名脱敏走 piiredact.ZapField 在 ad-hoc 调用点接.
 func renderProto(v interface{}) string {
 	if v == nil {
 		return "null"
@@ -68,7 +76,7 @@ func renderProto(v interface{}) string {
 	if m, ok := v.(proto.Message); ok {
 		b, err := protojson.MarshalOptions{EmitUnpopulated: false}.Marshal(m)
 		if err == nil {
-			return string(b)
+			return piiredact.RedactString(string(b))
 		}
 	}
 	return "<non-proto>"

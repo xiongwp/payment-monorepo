@@ -99,6 +99,9 @@ type SagaInstance struct {
 	Steps         []SagaStep `json:"steps"`
 	StartedAt     time.Time  `json:"started_at"`
 	CompletedAt   time.Time  `json:"completed_at,omitempty"`
+	// ErrorMsg 末次失败原因 (R9 resume compensate / forward 失败时填). 仅给 UI / log 用,
+	// 不影响状态机. 空 = 历史无错误 / 已恢复.
+	ErrorMsg string `json:"error_msg,omitempty"`
 }
 
 // SagaStore 状态持久化.
@@ -303,10 +306,14 @@ func (c *SagaCoordinator) compensate(ctx context.Context, inst *SagaInstance, fr
 	return nil
 }
 
-// ResumeUnfinished 进程重启后扫一遍未完成的 saga, 从 CurrentStep 起重跑.
+// ResumeUnfinished 进程重启后扫一遍未完成的 saga, 续跑或续 compensate.
 //
-// 重跑要求 Step.Execute 必须幂等 (Transfer/AppFee/Payout 都有 idempotency_key,
-// 重复 Insert ON DUPLICATE KEY UPDATE 自动幂等).
+// SP-AC-7 R9: 之前只处理 forwarding (正向重跑), compensating 状态完全丢. 现在两条都接管:
+//   - forwarding   → 从 CurrentStep 重跑 Execute 链 (要求 Execute 幂等, transfer/payout 都有 idempotency_key)
+//   - compensating → 已 completed 的 step 逆序跑 Compensate (要求 Compensate 幂等)
+//   - completed / failed (terminal) → 跳过
+//
+// 重跑要求 Step.Execute 跟 Step.Compensate 都必须幂等; 没接 fn 工厂的 step 标记 failed 让人工介入.
 func (c *SagaCoordinator) ResumeUnfinished(ctx context.Context, limit int) (int, error) {
 	pending, err := c.Store.ListUnfinished(ctx, limit)
 	if err != nil {
@@ -314,24 +321,68 @@ func (c *SagaCoordinator) ResumeUnfinished(ctx context.Context, limit int) (int,
 	}
 	resumed := 0
 	for _, inst := range pending {
-		if inst.State != SagaStateForwarding {
+		switch inst.State {
+		case SagaStateForwarding:
+			// 重建 Execute/Compensate fns
+			c.rebuildStepFns(ctx, inst)
+			c.Logger.Info("resuming saga forward", "saga", inst.SagaID, "from_step", inst.CurrentStep)
+			if err := c.Start(ctx, inst); err != nil {
+				c.Logger.Warn("resume forward failed", "saga", inst.SagaID, "err", err)
+			}
+			resumed++
+		case SagaStateCompensating:
+			// 重建 Compensate fns 后续跑.
+			c.rebuildStepFns(ctx, inst)
+			c.Logger.Info("resuming saga compensate", "saga", inst.SagaID, "from_step", inst.CurrentStep)
+			if err := c.resumeCompensate(ctx, inst); err != nil {
+				c.Logger.Warn("resume compensate failed", "saga", inst.SagaID, "err", err)
+			}
+			resumed++
+		default:
+			// completed / failed / cancelled — 跳过.
 			continue
 		}
-		// 重建 Execute/Compensate fns
-		for i := range inst.Steps {
-			step := &inst.Steps[i]
-			if step.Execute == nil && c.Factory != nil {
-				step.Execute, _ = c.Factory.BuildExecute(ctx, step.Kind, step.Payload)
-			}
-			if step.Compensate == nil && c.Factory != nil {
-				step.Compensate, _ = c.Factory.BuildCompensate(ctx, step.Kind, step.Payload)
-			}
-		}
-		c.Logger.Info("resuming saga", "saga", inst.SagaID, "from_step", inst.CurrentStep)
-		if err := c.Start(ctx, inst); err != nil {
-			c.Logger.Warn("resume failed", "saga", inst.SagaID, "err", err)
-		}
-		resumed++
 	}
 	return resumed, nil
+}
+
+// rebuildStepFns 通过 Factory 把序列化后的 step 重建 Execute / Compensate 闭包.
+// Factory nil → 没法重建, step 等于 terminal failed (人工处理).
+func (c *SagaCoordinator) rebuildStepFns(ctx context.Context, inst *SagaInstance) {
+	if c.Factory == nil {
+		return
+	}
+	for i := range inst.Steps {
+		step := &inst.Steps[i]
+		if step.Execute == nil {
+			step.Execute, _ = c.Factory.BuildExecute(ctx, step.Kind, step.Payload)
+		}
+		if step.Compensate == nil {
+			step.Compensate, _ = c.Factory.BuildCompensate(ctx, step.Kind, step.Payload)
+		}
+	}
+}
+
+// resumeCompensate 续跑 compensate 链 (逆序已 completed 的 step).
+// 调用 c.compensate 复用 forward path 失败时的同一回滚函数;
+// 假设 compensate 之间幂等 (Reversal IdempotencyKey + ON DUPLICATE KEY 兜底).
+//
+// fromIdx 从 inst.CurrentStep 取 (forward 跑到这步失败 / 重启), -1 兜底从尾巴.
+func (c *SagaCoordinator) resumeCompensate(ctx context.Context, inst *SagaInstance) error {
+	fromIdx := inst.CurrentStep
+	if fromIdx < 0 || fromIdx >= len(inst.Steps) {
+		fromIdx = len(inst.Steps) - 1
+	}
+	if err := c.compensate(ctx, inst, fromIdx); err != nil {
+		inst.State = SagaStateFailed
+		inst.ErrorMsg = "resume compensate failed: " + err.Error()
+		_ = c.Store.Save(ctx, inst)
+		return err
+	}
+	// compensate 全成功 → 跟 forward path 失败的成功 compensate 一样, 标 CompletedAt.
+	// inst.State 已经在 c.compensate 里维护成 Compensating; 完成后改 Completed (跟终态约定).
+	inst.State = SagaStateCompleted
+	inst.CompletedAt = time.Now().UTC()
+	_ = c.Store.Save(ctx, inst)
+	return nil
 }

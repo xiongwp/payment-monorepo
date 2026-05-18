@@ -76,3 +76,68 @@ plan, _ := sp.Execute(ctx, splitpayment.ExecuteRequest{
 - `repo/`           — MySQL + in-memory
 - `clients/`        — accounting-system + audit-log 调用
 - `cmd/server/`     — HTTP/gRPC entrypoint
+
+## mTLS (SP-AC-7 PH3-2)
+
+split-payment 的 gRPC 服务端 + accounting client 都接 `payment-util/mtls`,
+通过环境变量打开双向认证.
+
+环境变量:
+
+```
+ENVIRONMENT=production       # prod/production 时强制 mTLS, cert 缺失 fail-fast
+MTLS_SERVER_CERT=/etc/certs/server.crt
+MTLS_SERVER_KEY=/etc/certs/server.key
+MTLS_CA_CERT=/etc/certs/ca.crt
+INSECURE_DIAL=1              # dev only — 跳过 mTLS 走明文 (prod 自动忽略)
+```
+
+行为:
+
+- Server: 配齐 → `RequireAndVerifyClientCert`, 拒绝无 client cert 的 dial;
+  未配 → log warn + 明文 (dev 模式).
+- Client: 配齐 → 同时校验 server cert + 出示 client cert; 未配 + 非 prod → 明文.
+- Prod 模式 (`ENVIRONMENT=prod` 或 `production`) 缺证书直接进程退出, 避免裸跑.
+
+K8s 接入:
+
+- `deploy/k8s/cert-manager-cert.yaml` — cert-manager `Certificate` 自动签发到
+  Secret `split-payment-mtls`, 90 天 lifetime / 30 天前自动 renew.
+- `deploy/k8s/deployment.yaml` — Pod 挂 Secret 为 volume `/etc/certs/{server.crt,server.key,ca.crt}`.
+- 同 PKI 给 accounting-system 签一张证书 (issuer 同 ClusterIssuer payment-internal-ca),
+  两边 trust 同一 CA 即可互通.
+
+证书 rotation 时:
+
+- cert-manager 自动重生 Secret; kubelet 通过 projected volume 在 60s 内热更新 Pod 文件.
+- split-payment 进程不需要重启 — Go 的 `tls.Config.GetCertificate` 默认 once-loaded;
+  当前实现也是一次性加载 (启动期 `tls.LoadX509KeyPair`), rotation 后下一次 dial / handshake
+  自然就用新证. 老连接复用旧证直到 keepalive 断开 + 重连.
+
+参考: `packages/payment-util/mtls/MTLS.md`.
+
+测试
+
+curl -sS -X POST http://localhost:19190/api/moneyflow/trigger \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "graph_key":"user-topup-multileg",
+    "event":{
+      "event":"channel.settled","charge_id":"topup_demo_100000100_007",
+      "amount_minor":10000,"currency":"PHP",
+      "attributes":{
+        "channel_receivable_account":"PLATFORM_RECEIVABLE_CHANNEL/100000100",
+        "channel_receivable_account_amount":"10000","channel_receivable_account_currency":"PHP",
+        "channel_suspense_account":"PLATFORM_CHANNEL_INBOUND_SUSPENSE/100000100",
+        "channel_suspense_account_amount":"10000","channel_suspense_account_currency":"PHP",
+        "user_id_account":"USER_BALANCE/100000100",
+        "user_id_account_amount":"9900","user_id_account_currency":"PHP",
+        "fee_clearing_account":"PLATFORM_FEE_CLEARING/100000100",
+        "fee_clearing_account_amount":"100","fee_clearing_account_currency":"PHP",
+        "channel_fee_account":"CHANNEL_FEE_PAYABLE/100000100",
+        "channel_fee_account_amount":"60","channel_fee_account_currency":"PHP",
+        "fee_account":"PLATFORM_FEE_REVENUE/100000100",
+        "fee_account_amount":"40","fee_account_currency":"PHP"
+      }
+    }
+  }' | jq '.data.vouchers'

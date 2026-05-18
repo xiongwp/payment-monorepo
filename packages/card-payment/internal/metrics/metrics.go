@@ -11,6 +11,7 @@
 package metrics
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/pprof"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // AuthorizeTotal Authorize 计数（按 network + result）。
@@ -170,9 +172,45 @@ type ReadinessProbe func() error
 //
 // probe nil → /readyz 仅看 drain 状态（向后兼容）。
 // probe 非空 → 失败时 503 + body 写错误原因（运维 tail 看）。
+//
+// ROI-2d: 向后兼容 — caller 走老 StartServer; 新 caller 用 StartServerWithLevel 拿 log-level.
 func StartServer(addr string, logger *zap.Logger, probe ...ReadinessProbe) {
+	StartServerWithLevel(addr, logger, nil, probe...)
+}
+
+// StartServerWithLevel 同 StartServer 但加 /admin/log-level (level=nil 时端点 readonly).
+//
+// ROI-2d: 与 split-payment / payment-core / payment-channel / api-gateway 一致.
+func StartServerWithLevel(addr string, logger *zap.Logger, level *zap.AtomicLevel, probe ...ReadinessProbe) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
+	// ROI-2d: dynamic log level.
+	if level != nil {
+		mux.HandleFunc("/admin/log-level", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"level": level.Level().String()})
+			case http.MethodPut, http.MethodPost:
+				var body struct{ Level string `json:"level"` }
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "bad json", http.StatusBadRequest)
+					return
+				}
+				var l zapcore.Level
+				if err := l.UnmarshalText([]byte(body.Level)); err != nil {
+					http.Error(w, "bad level", http.StatusBadRequest)
+					return
+				}
+				level.SetLevel(l)
+				logger.Info("log level changed", zap.String("level", body.Level))
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"level": l.String()})
+			default:
+				http.Error(w, "method", http.StatusMethodNotAllowed)
+			}
+		})
+	}
 
 	// pprof：性能调试 / 容量规划必备。生产 metrics 端口走内网，无外暴；
 	// CPU / heap / goroutine / mutex / block profile 全开。
