@@ -486,6 +486,7 @@ services:
       - ../../accounting-system:/sql/accounting-system:ro
       - ../../card-center:/sql/card-center:ro
       - ../../card-payment:/sql/card-payment:ro
+      - ../../split-payment:/sql/split-payment:ro
     entrypoint: ["/bin/bash", "/bootstrap.sh"]
 
   # ─── Go 应用层（按依赖顺序往后） ──────────────────────────────────────────
