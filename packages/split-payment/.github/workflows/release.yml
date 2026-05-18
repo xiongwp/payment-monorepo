@@ -1,0 +1,144 @@
+# SP-AC-7 PH3-4: split-payment release pipeline.
+#
+# 触发: 推 tag v*.*.* (SemVer) → build + push image + 更新 GitOps repo image tag.
+# ArgoCD 监 GitOps repo, image tag 变 → auto-sync 集群.
+name: split-payment release
+
+on:
+  push:
+    tags:
+      - 'split-payment/v*.*.*'   # e.g. split-payment/v1.0.3
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  GO_VERSION: '1.22'
+  WORKING_DIR: packages/split-payment
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/split-payment
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+      image: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: extract version
+        id: extract
+        run: |
+          # tag = split-payment/v1.0.3 → version = 1.0.3
+          VERSION="${GITHUB_REF_NAME#split-payment/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing split-payment v$VERSION"
+      - uses: actions/setup-go@v5
+        with: { go-version: '${{ env.GO_VERSION }}', cache: true }
+      - name: test (must pass before release)
+        working-directory: ${{ env.WORKING_DIR }}
+        run: go test ./... -race -count=1
+      - name: docker buildx setup
+        uses: docker/setup-buildx-action@v3
+      - name: login ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.extract.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.extract.outputs.version }}
+            type=sha,prefix=sha-
+            latest
+      - name: docker build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.WORKING_DIR }}
+          file: ${{ env.WORKING_DIR }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+      - name: cosign sign image
+        uses: sigstore/cosign-installer@v3
+      - name: sign image (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          for tag in $TAGS; do
+            cosign sign --yes "$tag"
+          done
+
+  update-gitops:
+    name: bump GitOps image tag
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout gitops repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/payment-gitops
+          token: ${{ secrets.GITOPS_PUSH_TOKEN }}
+          path: gitops
+      - name: bump split-payment image tag
+        env:
+          NEW_TAG: ${{ needs.build-push.outputs.version }}
+        run: |
+          cd gitops
+          # 用 yq 修改 envs/prod/split-payment/kustomization.yaml 的 images[0].newTag
+          yq -i ".images[0].newTag = \"$NEW_TAG\"" envs/prod/split-payment/kustomization.yaml
+          yq -i ".images[0].newTag = \"$NEW_TAG\"" envs/staging/split-payment/kustomization.yaml
+      - name: commit + push
+        env:
+          NEW_TAG: ${{ needs.build-push.outputs.version }}
+        run: |
+          cd gitops
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add envs/
+          git commit -m "chore(split-payment): bump image to v${NEW_TAG}"
+          git push
+      # ArgoCD 监 main 分支, 自动 sync 到集群. Done.
+
+  github-release:
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: changelog from git log
+        id: changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 --match='split-payment/v*' HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            LOG=$(git log --pretty=format:'- %s (%h)' -- packages/split-payment)
+          else
+            LOG=$(git log "$PREV_TAG..HEAD" --pretty=format:'- %s (%h)' -- packages/split-payment)
+          fi
+          {
+            echo "body<<EOF"
+            echo "## Changes"
+            echo "$LOG"
+            echo ""
+            echo "## Image"
+            echo "\`ghcr.io/${{ github.repository_owner }}/split-payment:${{ needs.build-push.outputs.version }}\`"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: split-payment v${{ needs.build-push.outputs.version }}
+          body: ${{ steps.changelog.outputs.body }}
+          draft: false
+          prerelease: false

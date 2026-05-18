@@ -171,6 +171,15 @@ func (e *Engine) Handle(ctx context.Context, ev BusinessEvent) error {
 		if !matchesTrigger(g, ev) {
 			continue
 		}
+		// SP-AC-7 PH3-8: 验证 ChargeStrategy. 未知值拒绝执行; 占位值 (direct/destination)
+		// log warn 但仍按 separate 路径走 (向后兼容).
+		if _, warn, csErr := domain.ValidateChargeStrategy(g.Spec.ChargeStrategy); csErr != nil {
+			e.Log.Error("graph charge_strategy invalid; skipping",
+				zap.String("graph_key", g.Key), zap.Error(csErr))
+			continue
+		} else if warn != "" {
+			e.Log.Warn(warn, zap.String("graph_key", g.Key))
+		}
 		if err := e.executeOne(ctx, g, ev); err != nil {
 			e.Log.Error("graph execution failed",
 				zap.String("graph_key", g.Key),

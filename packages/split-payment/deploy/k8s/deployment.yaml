@@ -15,6 +15,10 @@ metadata:
   labels:
     app: split-payment
     tier: payment-orchestration
+  annotations:
+    # SP-AC-7 PH3-3: Reloader 监 Secret / ConfigMap 变更 → 自动滚动重启.
+    # Vault 改秘钥 → ESO 同步 Secret → Reloader 触发滚动, 无需人工 kubectl rollout restart.
+    reloader.stakater.com/auto: "true"
 spec:
   replicas: 2
   revisionHistoryLimit: 5

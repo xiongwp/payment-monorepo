@@ -1,0 +1,166 @@
+# SP-AC-7 PH3-4: split-payment CI — test + lint + build.
+#
+# 在每个 push / PR 上跑:
+#   - go vet ./...
+#   - golangci-lint
+#   - go test ./... -race -coverprofile=cover.out
+#   - go build ./cmd/...   (确保 main 包能编)
+#   - docker build (验证 Dockerfile)
+#
+# release 走另一个 workflow (release.yml): tag v* → 推 GHCR / Argo CD sync.
+name: split-payment ci
+
+on:
+  push:
+    branches: [main, "claude/**", "feat/**", "fix/**"]
+    paths:
+      - 'packages/split-payment/**'
+      - 'packages/payment-util/**'   # replace directive 依赖, 改 util 也跑 split CI
+      - '.github/workflows/split-payment-*.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/split-payment/**'
+      - 'packages/payment-util/**'
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.22'
+  GOFLAGS: -mod=mod
+  WORKING_DIR: packages/split-payment
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: |
+            packages/split-payment/go.sum
+            packages/payment-util/go.sum
+      - name: go vet
+        working-directory: ${{ env.WORKING_DIR }}
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.59
+          working-directory: ${{ env.WORKING_DIR }}
+          args: --timeout=10m
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: testpass
+          MYSQL_DATABASE: split_payment_test
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -ptestpass"
+          --health-interval=10s --health-timeout=5s --health-retries=5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: packages/split-payment/go.sum
+      - name: wait mysql
+        run: |
+          for i in $(seq 1 30); do
+            mysqladmin ping -h 127.0.0.1 -uroot -ptestpass --silent && break
+            sleep 2
+          done
+      - name: unit tests
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          SPLIT_PAYMENT_TEST_DSN: "root:testpass@tcp(127.0.0.1:3306)/split_payment_test?parseTime=true"
+        run: go test ./... -race -count=1 -coverprofile=cover.out
+      - name: coverage report
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          go tool cover -func=cover.out | tail -1
+      - name: upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: ${{ env.WORKING_DIR }}/cover.out
+          retention-days: 7
+
+  build:
+    name: build binary + image
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push 到 ghcr
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '${{ env.GO_VERSION }}', cache: true }
+      - name: go build
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w -X main.version=${{ github.sha }}" \
+            -o bin/split-payment ./cmd/server
+      - name: docker buildx setup
+        uses: docker/setup-buildx-action@v3
+      - name: login ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/split-payment
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+      - name: docker build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.WORKING_DIR }}
+          file: ${{ env.WORKING_DIR }}/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  security-scan:
+    name: trivy scan
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: trivy image scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ needs.build.outputs.image }}
+          format: 'sarif'
+          output: 'trivy.sarif'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: upload sarif
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
