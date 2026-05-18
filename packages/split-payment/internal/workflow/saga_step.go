@@ -17,13 +17,14 @@ import (
 	"fmt"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/clients"
 	"reconcile-system/packages/split-payment/internal/domain"
 )
 
 // StepDeps 编排 saga step 时注入的依赖.
+//
+// SP-AC-7: 删除老 Accounting *clients.AccountingClient 字段 — saga step 当前实现
+// (saga_step.go:121-122) 只翻状态不真调 accounting, 故 deps.Accounting 实际未使用.
 type StepDeps struct {
-	Accounting  *clients.AccountingClient
 	TransferRepo TransferRepo
 	AppFeeRepo   AppFeeRepo
 	PayoutRepo   PayoutRepo

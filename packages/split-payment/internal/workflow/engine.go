@@ -11,10 +11,10 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/clients"
 	"reconcile-system/packages/split-payment/internal/domain"
 
 	"go.uber.org/zap"
@@ -31,11 +31,11 @@ import (
 // 所有 Stripe repo 字段可选 (nil = 老行为, 不持 typed 对象). 启动期若用 MySQL
 // 即应注入, 见 cmd/server/main.go.
 type Engine struct {
-	GraphRepo  GraphRepo
-	RunRepo    RunRepo
-	Accounting *clients.AccountingClient
-	Audit      AuditClient
-	Log        *zap.Logger
+	GraphRepo GraphRepo
+	RunRepo   RunRepo
+	// SP-AC-7: 删除老 *clients.AccountingClient stub 字段, 业务路径走 AccountingMeta (gRPC).
+	Audit AuditClient
+	Log   *zap.Logger
 
 	// SP-6 typed repo (可选). nil → 不落 Transfer/Fee/Payout 表, 跑老路径.
 	AccountRepo  AccountRepo
@@ -260,71 +260,12 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 		return e.runSaga(ctx, plan)
 	}
 
-	// SP-6: 先把 typed 对象插表 (status=created/pending), 这样即使 accounting 失败也有审计痕迹.
-	// graph_run_id 回填到每条 typed 对象, 让运营反查 "这个 Transfer 来自哪次 run".
-	e.persistTypedObjects(ctx, plan)
-
-	// 2) PostBatch (accounting AtomicBatchBooking)
-	plan.Status = "executing"
+	// SP-AC-7: 已删除老 fallback (clients.AccountingClient.PostMovements + typed-objects 链).
+	// 走到这意味着 AccountingMeta 和 Saga 都没 wire — 配置错, 不允许跑下去 (资金安全).
+	plan.Status = PlanStatusFailed
+	plan.ErrorMsg = "no execution backend wired (AccountingMeta and Saga both nil)"
 	_ = e.RunRepo.Update(ctx, plan)
-
-	voucher, txIDs, err := e.Accounting.PostMovements(ctx, plan)
-	if err != nil {
-		plan.Status = "failed"
-		plan.ErrorMsg = err.Error()
-		_ = e.RunRepo.Update(ctx, plan)
-		return err
-	}
-	plan.VoucherNo = voucher
-	// 把 tx_id 回填到对应 movement (按顺序对应)
-	txIdx := 0
-	for i := range plan.Movements {
-		if plan.Movements[i].Status != "pending" {
-			continue
-		}
-		if txIdx < len(txIDs) {
-			plan.Movements[i].TxID = txIDs[txIdx]
-		}
-		plan.Movements[i].Status = "posted"
-		txIdx++
-	}
-	plan.Status = "completed"
-	_ = e.RunRepo.Update(ctx, plan)
-
-	// SP-6: accounting 成功 → Transfer 状态 created → posted (附 PostedAt).
-	now := time.Now().UTC()
-	if e.TransferRepo != nil {
-		for _, t := range plan.Transfers {
-			if t.Status == domain.TransferStatusFailed {
-				continue // capability gate 已挡掉的
-			}
-			_ = e.TransferRepo.UpdateStatus(ctx, t.ID, domain.TransferStatusPosted, now)
-			e.publishEvent(ctx, "transfer.posted", t)
-		}
-	}
-	// AppFee posted → collected
-	for _, f := range plan.ApplicationFees {
-		e.publishEvent(ctx, "application_fee.collected", f)
-	}
-	// Payout 不在这里完成 (走 cron / 银行通道 worker), 这里只发 created 事件
-	for _, p := range plan.Payouts {
-		e.publishEvent(ctx, "payout.created", p)
-	}
-
-	// 3) Audit
-	if e.Audit != nil {
-		body, _ := json.Marshal(plan)
-		_ = e.Audit.Write(ctx, map[string]any{
-			"action":  "moneyflow.execute",
-			"event":   ev.Event,
-			"graph":   g.Key,
-			"plan_id": plan.ID,
-			"charge":  ev.ChargeID,
-			"voucher": voucher,
-			"detail":  string(body),
-		})
-	}
-	return nil
+	return errors.New("engine: no execution backend wired (need AccountingMeta or Saga)")
 }
 
 // runAccountingTransactions (SP-AC-3) 顺序调 accounting.CreateTransaction 提交每条 rule.
@@ -448,32 +389,14 @@ func (e *Engine) ExecuteApproved(ctx context.Context, plan *domain.RunPlan) erro
 	if e.Saga != nil && e.SagaDeps != nil {
 		return e.runSaga(ctx, plan)
 	}
-
-	// 老路径: 直接 accounting batch
-	plan.Status = PlanStatusExecuting
-	_ = e.RunRepo.Update(ctx, plan)
-	voucher, txIDs, err := e.Accounting.PostMovements(ctx, plan)
-	if err != nil {
-		plan.Status = PlanStatusFailed
-		plan.ErrorMsg = "approved exec failed: " + err.Error()
-		_ = e.RunRepo.Update(ctx, plan)
-		return err
+	if e.AccountingMeta != nil && len(plan.Transactions) > 0 {
+		return e.runAccountingTransactions(ctx, plan)
 	}
-	plan.VoucherNo = voucher
-	txIdx := 0
-	for i := range plan.Movements {
-		if plan.Movements[i].Status != "pending" {
-			continue
-		}
-		if txIdx < len(txIDs) {
-			plan.Movements[i].TxID = txIDs[txIdx]
-		}
-		plan.Movements[i].Status = "posted"
-		txIdx++
-	}
-	plan.Status = PlanStatusCompleted
+	// SP-AC-7: 已删除老 *clients.AccountingClient 直调路径.
+	plan.Status = PlanStatusFailed
+	plan.ErrorMsg = "ExecuteApproved: no execution backend wired"
 	_ = e.RunRepo.Update(ctx, plan)
-	return nil
+	return errors.New("ExecuteApproved: no execution backend wired (need AccountingMeta or Saga)")
 }
 
 // runSaga (SP-3A) 走持久化 saga 路径.

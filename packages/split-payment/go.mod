@@ -4,7 +4,9 @@ go 1.25.0
 
 require (
 	github.com/go-sql-driver/mysql v1.8.1 // MF-1: MySQL driver
+	github.com/prometheus/client_golang v1.20.5 // SP-AC-7 P9: metrics
 	github.com/twmb/franz-go v1.18.0 // SP-8/11: Kafka client (events + refund subscriber)
+	github.com/xiongwp/payment-util v0.0.1 // SP-AC-7 L2+X2: hardened gRPC dial
 	go.uber.org/zap v1.27.0
 	google.golang.org/grpc v1.80.0
 )
@@ -29,3 +31,6 @@ require (
 
 // 监本仓库
 replace github.com/xiongwp/accounting-system => ../accounting-system
+
+// SP-AC-7 L2+X2: 接 payment-util 拿 hardened gRPC dial (round_robin + retry + keepalive).
+replace github.com/xiongwp/payment-util => ../payment-util

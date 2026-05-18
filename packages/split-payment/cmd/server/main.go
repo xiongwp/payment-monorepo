@@ -37,11 +37,13 @@ import (
 	"reconcile-system/packages/split-payment/internal/clients"
 	"reconcile-system/packages/split-payment/internal/domain"
 	"reconcile-system/packages/split-payment/internal/grpcsvc"
+	"reconcile-system/packages/split-payment/internal/observability"
 	"reconcile-system/packages/split-payment/internal/repo"
 	"reconcile-system/packages/split-payment/internal/workflow"
 
 	_ "github.com/go-sql-driver/mysql" // MF-1: mysql driver
 	"github.com/twmb/franz-go/pkg/kgo" // SP-11 refund kafka subscriber
+	"github.com/xiongwp/payment-util/serviceregistry" // SP-AC-7 L2+X2: hardened gRPC dial
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -56,11 +58,17 @@ func main() {
 	accAddr := envOr("ACCOUNTING_GRPC_ADDR", "accounting-system:9091")
 
 	// 1. accounting client (gRPC).
-	// passthrough:/// 让 grpc-go 跳过自己的 DNS resolver, 直接 net.Dial 由系统层解析.
-	// 之前 dns:/// 在 Docker / host-gateway 环境下经常返 "no children to pick from".
-	// 单节点不需要 round_robin (passthrough 不支持 LB config), 多副本要再换回 dns + 真实多 endpoint.
-	conn, err := grpc.NewClient(
-		"passthrough:///"+accAddr,
+	//
+	// SP-AC-7 L2+X2: 之前裸 grpc.NewClient + passthrough + insecure → 无 retry / 无 keepalive /
+	// 无 LB; 改用 payment-util/serviceregistry.DialWithFallback 拿一组 hardenedOptions:
+	//   - round_robin LB (多副本 accounting-service 真均摊)
+	//   - 幂等 RPC 自动重试瞬态 UNAVAILABLE / DEADLINE_EXCEEDED
+	//   - HTTP/2 keepalive 10s+3s 探活, 副本被 kill 后 ~13s 内 client 端 detect
+	//
+	// REGISTRY_ENDPOINTS (etcd) 配了就走真服务发现; 没配则降级直连 fallback addr (dev 模式).
+	registryEndpoints := splitCSV(envOr("REGISTRY_ENDPOINTS", ""))
+	conn, err := serviceregistry.DialWithFallback(
+		registryEndpoints, "accounting-service", accAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
@@ -68,9 +76,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	// SP-AC-7: legacy AccountingClient 是 stub (返 ErrAccountingNotWired), 业务调用走
-	// 同包内 AccountingGRPCClient → 新 TransactionService.
-	accClient := clients.NewAccountingClient(conn)
+	// SP-AC-7: legacy AccountingClient stub 已删除, 业务调用一律走 AccountingGRPCClient → 新 TransactionService.
 
 	// 2. repos — MF-1: 优先 MySQL (SPLIT_PAYMENT_DSN 配了就走), fallback memory.
 	//
@@ -188,9 +194,9 @@ func main() {
 
 	// 4. workflow engine — SP-6 + SP-3A
 	engine := &workflow.Engine{
-		GraphRepo:    graphRepo,
-		RunRepo:      runRepo,
-		Accounting:   accClient,
+		GraphRepo: graphRepo,
+		RunRepo:   runRepo,
+		// SP-AC-7: 老 Accounting *clients.AccountingClient 字段删除, 业务路径走 AccountingMeta.
 		Audit:        logAudit{log: log},
 		Log:          log,
 		AccountRepo:  engAccRepo,
@@ -209,7 +215,7 @@ func main() {
 	// 默认 dev 走老路径方便调试,生产强烈建议开 saga (失败可恢复 + 自动 compensate).
 	if envOr("SPLIT_PAYMENT_SAGA", "") == "1" && engTrRepo != nil {
 		sagaDeps := workflow.StepDeps{
-			Accounting:      accClient,
+			// SP-AC-7: Accounting 字段删除 (saga step 当前实现只翻状态)
 			TransferRepo:    engTrRepo,
 			AppFeeRepo:      engFeeRepo,
 			PayoutRepo:      engPoRepo,
@@ -341,6 +347,29 @@ func main() {
 		grpcAcct = grpcsvcAcctAdapter{inner: engine.AccountingMeta}
 	}
 	go runAdminGRPCServer(ctx, log, sgGraphs, grpcAcct)
+
+	// SP-AC-7 L1+P9: split-payment admin HTTP — /healthz + /readiness + /metrics.
+	// 跟 gRPC :9098 错开 (默认 :9099), env SPLIT_ADMIN_HTTP_PORT 可覆盖.
+	adminSrv := observability.NewAdminServer(envOr("SPLIT_ADMIN_HTTP_PORT", "9099"), log)
+	// readiness 探针: MySQL ping (DSN 配了才探).
+	if db != nil {
+		adminSrv.AddReadyCheck("mysql", func(c context.Context) error {
+			return db.PingContext(c)
+		})
+	}
+	// readiness 探针: accounting gRPC channel 是否就绪 (state != IDLE/CONNECTING/SHUTDOWN).
+	adminSrv.AddReadyCheck("accounting_grpc", func(c context.Context) error {
+		state := conn.GetState().String()
+		if state == "SHUTDOWN" {
+			return fmt.Errorf("accounting gRPC channel state=%s", state)
+		}
+		return nil
+	})
+	go func() {
+		if err := adminSrv.Run(ctx); err != nil {
+			log.Error("admin http server exited", zap.Error(err))
+		}
+	}()
 
 	// SP-FIN-2: PayoutDispatchWorker — pending → in_transit 状态机.
 	// 调 clearing-settlement 服务 (env CLEARING_HTTP_URL 配了走真实, 否则 Noop).
@@ -502,12 +531,39 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 	} else {
 		log.Warn("split-payment: ACCOUNTING_HTTP_URL empty, saga + retry features disabled")
 	}
-	srv := grpc.NewServer()
+	// SP-AC-7 S1+S2: token auth interceptor.
+	//   - env SPLIT_PAYMENT_ADMIN_TOKEN 配了 → 所有 gRPC 调用必须带 metadata X-Admin-Token 等值
+	//   - 空 → DEV 模式 ⚠ log warn 提醒生产应该配
+	authToken := envOr("SPLIT_PAYMENT_ADMIN_TOKEN", "")
+	var opts []grpc.ServerOption
+	if authToken != "" {
+		opts = append(opts, grpc.UnaryInterceptor(adminTokenInterceptor(authToken)))
+		log.Info("split-payment gRPC: admin token auth enabled")
+	} else {
+		log.Warn("split-payment gRPC: AUTH DISABLED — set SPLIT_PAYMENT_ADMIN_TOKEN env var in production")
+	}
+	srv := grpc.NewServer(opts...)
 	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, log))
 	log.Info("split-payment gRPC AdminService listening", zap.String("port", port))
 	go func() { <-ctx.Done(); srv.GracefulStop() }()
 	if err := srv.Serve(lis); err != nil {
 		log.Error("split gRPC serve", zap.Error(err))
+	}
+}
+
+// adminTokenInterceptor 校验 metadata `x-admin-token` 是否匹配预期 token.
+// 不匹配 → grpc.Unauthenticated. metadata header 名小写: gRPC 规范要求.
+func adminTokenInterceptor(expectedToken string) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok {
+			return nil, status.Error(codes.Unauthenticated, "missing metadata")
+		}
+		tokens := md.Get("x-admin-token")
+		if len(tokens) == 0 || tokens[0] != expectedToken {
+			return nil, status.Error(codes.Unauthenticated, "invalid or missing X-Admin-Token")
+		}
+		return handler(ctx, req)
 	}
 }
 

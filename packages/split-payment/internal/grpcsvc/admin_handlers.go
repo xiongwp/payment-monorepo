@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"reconcile-system/packages/split-payment/internal/domain"
+	"reconcile-system/packages/split-payment/internal/observability"
 	"reconcile-system/packages/split-payment/internal/workflow"
 
 	"go.uber.org/zap"
@@ -127,10 +129,21 @@ func (s *Server) GetGraph(ctx context.Context, req *GetGraphRequest) (*GetGraphR
 //
 // RuleSync == nil 时退化为旧行为 (跳过同步, 仅保存 graph), 便于 dev 单仓启动.
 func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGraphResponse, error) {
+	start := time.Now()
+	outcome := "success"
+	defer func() {
+		key := ""
+		if req != nil && req.Graph != nil {
+			key = req.Graph.Key
+		}
+		observability.SaveGraphDuration.WithLabelValues(key, outcome).Observe(time.Since(start).Seconds())
+	}()
 	if req.Graph == nil {
+		outcome = "invalid"
 		return nil, errors.New("graph required")
 	}
 	if req.Graph.Key == "" {
+		outcome = "invalid"
 		return nil, errors.New("graph.key required")
 	}
 	g := &domain.Graph{
@@ -152,6 +165,7 @@ func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGra
 		rules := deriveRulesFromGraph(g)
 		if len(rules) > 0 {
 			if err := s.RuleSync.UpsertRules(ctx, rules); err != nil {
+				outcome = "rule_sync_failed"
 				if s.Log != nil {
 					s.Log.Error("SaveGraph: accounting rule sync failed; aborting graph save",
 						zap.String("graph_key", g.Key), zap.Int("rule_count", len(rules)), zap.Error(err))
@@ -163,6 +177,7 @@ func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGra
 
 	// Saga step 2: 本地持久化 graph
 	if _, err := s.Graphs.Save(ctx, g); err != nil {
+		outcome = "local_save_failed"
 		// 注: 此处 graph save 失败, accounting 的 rule 已经 upsert. rule 是幂等的
 		// 元数据, 残留不会造成数据不一致 (没有对应 graph 触发就用不到), 下次 SaveGraph
 		// 重试会覆盖. 不做补偿 cancel.
@@ -248,7 +263,17 @@ func (s *Server) DryRun(_ context.Context, req *DryRunRequest) (*DryRunResponse,
 // 任一笔失败 → 该笔标错 → 后续不再继续 (避免半截分账); 已成功的 voucher 仍返供审计.
 // 重复触发同 (charge_id, event_code) — accounting 内部按 OrderNo 幂等去重, 不会重复落账.
 func (s *Server) TriggerEvent(ctx context.Context, req *TriggerEventRequest) (*TriggerEventResponse, error) {
+	start := time.Now()
+	graphKey := ""
+	if req != nil {
+		graphKey = req.GraphKey
+	}
+	outcome := "success"
+	defer func() {
+		observability.TriggerDuration.WithLabelValues(graphKey, outcome).Observe(time.Since(start).Seconds())
+	}()
 	if req.GraphKey == "" {
+		outcome = "invalid"
 		return &TriggerEventResponse{Error: "graph_key required"}, nil
 	}
 	if s.Accounting == nil {
@@ -331,9 +356,19 @@ func (s *Server) TriggerEvent(ctx context.Context, req *TriggerEventRequest) (*T
 		if acctResp.Status != 2 /*Success*/ {
 			failedTx = append(failedTx, tx.OrderNo)
 		}
+		// 每条 voucher 落 metric (按 event_code 区分,方便定位是哪个 phase 的问题).
+		observability.VoucherStatusCount.WithLabelValues(
+			tx.EventCode,
+			observability.VoucherStatusLabel(int8(v.Status)),
+		).Inc()
 		resp.Vouchers = append(resp.Vouchers, v)
 	}
 	if len(failedTx) > 0 {
+		if len(failedTx) == len(plan.Transactions) {
+			outcome = "failed"
+		} else {
+			outcome = "partial"
+		}
 		resp.Error = fmt.Sprintf("%d/%d tx unsuccessful (retry same business_no to resume): %v",
 			len(failedTx), len(plan.Transactions), failedTx)
 	}
