@@ -40,15 +40,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"             // MF-1: mysql driver
 	kitexserver "github.com/cloudwego/kitex/server" // KX-11: Kitex server
 	"github.com/twmb/franz-go/pkg/kgo"              // SP-11 refund kafka subscriber
-	"github.com/xiongwp/payment-util/mtls"          // mTLS scaffolding (client buildClientCreds 仍用)
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 
 	adminservice "reconcile-system/packages/split-payment/kitex_gen/split_payment/v1/adminservice"
 )
@@ -651,7 +644,6 @@ func runAdminGRPCServer(ctx context.Context, cfg *config.Config, log *zap.Logger
 	}
 	// mTLS 已不需要 (内部 mesh 明文). Kitex MW 链 (Recover / AccessLog / Metrics / Auth)
 	// 待 kitexutil port 完成后 server.WithMiddleware(...) 接.
-	_ = adminTokenInterceptor // 防 import 未用; AuthMW 接好后 kill
 	// SP-AC-7 S6 + PROD3: 资金审计 — Zap (本地 stdout) + Kafka 独立 topic (隔离权限/留存).
 	// Kafka 不可达 → ChainAuditSink 会自动跳过, 退化为仅 zap.
 	auditSinks := []grpcsvc.AuditSink{&grpcsvc.ZapAuditSink{Log: log.Named("audit")}}
@@ -686,21 +678,8 @@ func runAdminGRPCServer(ctx context.Context, cfg *config.Config, log *zap.Logger
 	}
 }
 
-// adminTokenInterceptor 校验 metadata `x-admin-token` 是否匹配预期 token.
-// 不匹配 → grpc.Unauthenticated. metadata header 名小写: gRPC 规范要求.
-func adminTokenInterceptor(expectedToken string) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		md, ok := metadata.FromIncomingContext(ctx)
-		if !ok {
-			return nil, status.Error(codes.Unauthenticated, "missing metadata")
-		}
-		tokens := md.Get("x-admin-token")
-		if len(tokens) == 0 || tokens[0] != expectedToken {
-			return nil, status.Error(codes.Unauthenticated, "invalid or missing X-Admin-Token")
-		}
-		return handler(ctx, req)
-	}
-}
+// adminTokenInterceptor 已删 — Kitex 切换后用 server.WithMiddleware + metainfo.GetValue.
+// 待 kitexutil.AuthMW 接通后再加.
 
 // reconcileGraphRules 启动期 self-heal: 扫所有 status=active 的 graph,
 // 把 DeriveRulesFromGraph 派生的 rule 调一次 UpsertRules.
@@ -1077,56 +1056,8 @@ func (a accountingGRPCAdapter) CreateTransaction(ctx context.Context, req *domai
 	}, nil
 }
 
-// ─── SP-AC-7 PH3-2: mTLS 工具 ─────────────────────────────────────────
-//
-// buildClientCreds  — 用于 dial accounting-system gRPC (client 侧 mTLS).
-// buildServerCreds  — 用于 grpc.NewServer (server 侧 mTLS, 强校验 client cert).
-//
-// 行为:
-//   - mtls.LoadFromEnv() 失败 (e.g. ENVIRONMENT=prod 且 cert 不全) → fail-fast.
-//   - InsecureDev (INSECURE_DIAL=1, 非 prod) 或证书路径全为空 → 退化 insecure (dev 模式).
-//   - 否则加载 cert/key/CA 构造 mTLS credentials.
-//
-// 环境变量:
-//   MTLS_SERVER_CERT  /etc/certs/server.crt
-//   MTLS_SERVER_KEY   /etc/certs/server.key
-//   MTLS_CA_CERT      /etc/certs/ca.crt
-//   ENVIRONMENT       prod|production → 强制 mTLS
-//   INSECURE_DIAL     1 → 允许 dev 模式跳过 mTLS
-
-func buildClientCreds(log *zap.Logger) (grpc.DialOption, error) {
-	cfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		return nil, fmt.Errorf("mtls.LoadFromEnv (client): %w", err)
-	}
-	if cfg.InsecureDev || (cfg.ServerCertPath == "" && cfg.ServerKeyPath == "" && cfg.CACertPath == "") {
-		log.Warn("accounting client dial: INSECURE (no mTLS) — set MTLS_* env vars in production")
-		return grpc.WithTransportCredentials(insecure.NewCredentials()), nil
-	}
-	creds, err := cfg.ClientCredentials()
-	if err != nil {
-		return nil, fmt.Errorf("mtls.ClientCredentials: %w", err)
-	}
-	log.Info("accounting client dial: mTLS enabled",
-		zap.String("cert", cfg.ServerCertPath), zap.String("ca", cfg.CACertPath))
-	return grpc.WithTransportCredentials(creds), nil
-}
-
-func buildServerCreds(log *zap.Logger) (credentials.TransportCredentials, error) {
-	cfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		return nil, fmt.Errorf("mtls.LoadFromEnv (server): %w", err)
-	}
-	if cfg.InsecureDev || (cfg.ServerCertPath == "" && cfg.ServerKeyPath == "" && cfg.CACertPath == "") {
-		_ = log
-		return nil, nil // dev mode — caller log warn 后退化明文
-	}
-	creds, err := cfg.ServerCredentials()
-	if err != nil {
-		return nil, fmt.Errorf("mtls.ServerCredentials: %w", err)
-	}
-	return creds, nil
-}
+// mTLS dead — 内部 mesh + Kitex 切换后客户端不再需要 dial credentials.
+// 老 buildClientCreds / buildServerCreds 已删.
 
 // zapSagaLogger 适配 zap 到 workflow.Logger 接口 (kv 风格).
 type zapSagaLogger struct{ log *zap.Logger }

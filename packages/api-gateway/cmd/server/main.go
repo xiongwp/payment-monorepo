@@ -162,7 +162,6 @@ func loadConfig() (*viper.Viper, error) {
 		"cards.enabled",
 		"cards.user_card_service_endpoint",
 		"cards.payment_service_endpoint",
-		"cards.mtls.enabled",
 		// 浏览器端 SDK / form JS 直发 card-center 的公网 URL（PAN 单跳）
 		"cards.card_center_url",
 	} {
@@ -221,9 +220,6 @@ func assertProdSafety(v *viper.Viper) error {
 		}
 		if strings.TrimSpace(v.GetString("cards.payment_service_endpoint")) == "" {
 			return fmt.Errorf("PROD-SAFETY: cards.enabled=true requires cards.payment_service_endpoint")
-		}
-		if !v.GetBool("cards.mtls.enabled") {
-			return fmt.Errorf("PROD-SAFETY: cards.enabled=true requires cards.mtls.enabled (UserCardService / PaymentService 都走 mTLS)")
 		}
 	}
 	return nil
@@ -310,112 +306,11 @@ func newCardHandler(uw *userweb.Handler, v *viper.Viper, logger *zap.Logger) *us
 	return ch
 }
 
-// UserMerchantConn / OrderCoreConn distinct types so fx can inject them by type.
-// 仍是 *grpc.ClientConn wrapper — downstream userweb.Handler / cardweb.CardHandler
-// 还在用 ClientConn 构造 gRPC client. 真要切 Kitex 需要先改这两个 handler 的
-// client 类型 (UserServiceClient → userservice.Client 等), 然后此处 dial 才能切.
-// 没有这两个 wrapper，两个 newXxxConn 都返 *grpc.ClientConn，fx 会报 ambiguous。
-type UserMerchantConn struct{ *grpc.ClientConn }
-type OrderCoreConn struct{ *grpc.ClientConn }
-
-// newUserMerchantConn 拨号 user-merchant-core gRPC。endpoint 与 registry.endpoints
-// 都空 → nil（启动不阻塞，但 /signup /login 会 503）。
-//
-// registry 非空 → etcd resolver（联栈多 pod 必走，因为容器去掉 container_name 后
-// "user-merchant-core" 跨 compose 项目 DNS 不可解析）；空 → 直连 endpoint。
-// 两条路都自动 round_robin LB 在多副本间均摊。
-//
-// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
-// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
-func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (UserMerchantConn, error) {
-	endpoint := v.GetString("user_merchant.endpoint")
-	registry := v.GetStringSlice("registry.endpoints")
-	if endpoint == "" && len(registry) == 0 {
+// newUserwebHandler 构造 userweb.Handler — 直接走 Kitex userservice client
+// (etcd resolver / endpoint 由 kitex client 自己解决, 这里不再 dial *grpc.ClientConn).
+func newUserwebHandler(v *viper.Viper, logger *zap.Logger) (*userweb.Handler, error) {
+	if v.GetString("user_merchant.endpoint") == "" && len(v.GetStringSlice("registry.endpoints")) == 0 {
 		logger.Warn("user_merchant.endpoint and registry.endpoints both unset; signup/login pages will fail")
-		return UserMerchantConn{}, nil
-	}
-
-	// Load mTLS config; fail-fast in production if certs missing
-	mtlsCfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		return UserMerchantConn{}, err
-	}
-
-	var creds grpc.DialOption
-	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
-		// Dev/test mode: no mTLS certs configured
-		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else {
-		// mTLS mode: load credentials
-		tlsCreds, cerr := mtlsCfg.ClientCredentials()
-		if cerr != nil {
-			return UserMerchantConn{}, fmt.Errorf("failed to load mTLS credentials for user-merchant-core: %w", cerr)
-		}
-		creds = grpc.WithTransportCredentials(tlsCreds)
-	}
-
-	conn, err := serviceregistry.DialWithFallback(registry, "user-merchant-core", endpoint,
-		creds,
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
-		}),
-	)
-	if err != nil {
-		return UserMerchantConn{}, err
-	}
-	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
-	logger.Info("user-merchant-core dialed",
-		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
-	return UserMerchantConn{ClientConn: conn}, nil
-}
-
-// newOrderCoreConn 拨号 order-core gRPC（用于卡支付 PI Create+Confirm）。空 → 跳过。
-//
-// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
-// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
-func newOrderCoreConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (OrderCoreConn, error) {
-	endpoint := v.GetString("order_core.endpoint")
-	registry := v.GetStringSlice("registry.endpoints")
-	if endpoint == "" && len(registry) == 0 {
-		logger.Info("order_core.endpoint not set; card 支付提交会走 stub")
-		return OrderCoreConn{}, nil
-	}
-
-	// Load mTLS config; fail-fast in production if certs missing
-	mtlsCfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		return OrderCoreConn{}, err
-	}
-
-	var creds grpc.DialOption
-	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
-		// Dev/test mode: no mTLS certs configured
-		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else {
-		// mTLS mode: load credentials
-		tlsCreds, cerr := mtlsCfg.ClientCredentials()
-		if cerr != nil {
-			return OrderCoreConn{}, fmt.Errorf("failed to load mTLS credentials for order-core: %w", cerr)
-		}
-		creds = grpc.WithTransportCredentials(tlsCreds)
-	}
-
-	conn, err := serviceregistry.DialWithFallback(registry, "order-core", endpoint,
-		creds,
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
-		}),
-	)
-	if err != nil {
-		return OrderCoreConn{}, err
-	}
-	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
-	logger.Info("order-core dialed", zap.String("endpoint", endpoint))
-	return OrderCoreConn{ClientConn: conn}, nil
-}
-
-func newUserwebHandler(uc UserMerchantConn, v *viper.Viper, logger *zap.Logger) (*userweb.Handler, error) {
-	if uc.ClientConn == nil {
 		return nil, nil
 	}
 	h, err := userweb.NewHandler(kitexutil.MustKitexClient(userservice.NewClient("user-merchant-core")), logger)
