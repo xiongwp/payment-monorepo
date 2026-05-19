@@ -1,23 +1,37 @@
-// Package cardcenterclient — 临时 STUB.
+// Package cardcenterclient — Kitex client to card-center.CreatePaymentToken.
 //
-// 原版通过 Kitex 调 card-center.CreatePaymentToken. cross-service kitex_gen
-// 还没在 docker build 流程里 wire 进去, 暂改 stub: 永远返 ErrNotWired,
-// 调用方走降级路径 (业务上 card 支付暂不可用).
+// order-core 在 PaymentIntent.Confirm 时, 卡支付路径会先调 card-center.
+// CreatePaymentToken 把 stored_token 兑换成单笔 payment_token (绑定 pi_id),
+// 然后把 payment_token 转给 card-payment 真扣款.
 package cardcenterclient
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
+
+	"github.com/cloudwego/kitex/client"
+	cardcenterv1 "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1"
+	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenter"
 )
 
-type Client struct{ timeout time.Duration }
+// ErrNotConfigured Endpoint 为空时构造返此 sentinel.
+var ErrNotConfigured = errors.New("cardcenterclient: endpoint required")
 
+// Config 拨号配置.
 type Config struct {
 	Endpoint   string
 	RPCTimeout time.Duration
 }
 
+// Client wraps cardcenterservice.Client.
+type Client struct {
+	cli     cardcenterservice.Client
+	timeout time.Duration
+}
+
+// CreatePaymentTokenRequest 业务侧入参 (本仓 domain layer 形态, 不直接是 proto).
 type CreatePaymentTokenRequest struct {
 	StoredToken string
 	UserID      int64
@@ -28,6 +42,7 @@ type CreatePaymentTokenRequest struct {
 	TraceID     string
 }
 
+// CreatePaymentTokenResponse 业务侧响应.
 type CreatePaymentTokenResponse struct {
 	PaymentToken string
 	ExpiresAt    time.Time
@@ -35,19 +50,53 @@ type CreatePaymentTokenResponse struct {
 	Network      string
 }
 
-// ErrNotWired stub 模式返此 sentinel, caller 走降级.
-var ErrNotWired = errors.New("cardcenterclient STUB: card-center kitex_gen not wired in build")
-
+// New 构造 Kitex client.
 func New(cfg Config) (*Client, error) {
+	if cfg.Endpoint == "" {
+		return nil, ErrNotConfigured
+	}
 	t := cfg.RPCTimeout
 	if t <= 0 {
 		t = 5 * time.Second
 	}
-	return &Client{timeout: t}, nil
+	cli, err := cardcenterservice.NewClient("card-center",
+		client.WithHostPorts(cfg.Endpoint),
+		client.WithRPCTimeout(t),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dial card-center: %w", err)
+	}
+	return &Client{cli: cli, timeout: t}, nil
 }
 
+// Close — Kitex 自带 connection pool, no-op.
 func (c *Client) Close() error { return nil }
 
-func (c *Client) CreatePaymentToken(_ context.Context, _ *CreatePaymentTokenRequest) (*CreatePaymentTokenResponse, error) {
-	return nil, ErrNotWired
+// CreatePaymentToken 拨号 card-center.CreatePaymentToken; 返回业务侧 response 结构.
+func (c *Client) CreatePaymentToken(ctx context.Context, in *CreatePaymentTokenRequest) (*CreatePaymentTokenResponse, error) {
+	if in == nil || in.StoredToken == "" {
+		return nil, errors.New("stored_token required")
+	}
+	ttlSec := int32(in.TTL / time.Second)
+	if ttlSec <= 0 || ttlSec > 1800 {
+		ttlSec = 1800
+	}
+	resp, err := c.cli.CreatePaymentToken(ctx, &cardcenterv1.CreatePaymentTokenRequest{
+		StoredToken: in.StoredToken,
+		UserId:      fmt.Sprintf("%d", in.UserID),
+		PiId:        in.PIID,
+		Amount:      in.Amount,
+		Currency:    in.Currency,
+		TtlSeconds:  ttlSec,
+		TraceId:     in.TraceID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &CreatePaymentTokenResponse{
+		PaymentToken: resp.GetPaymentToken(),
+		ExpiresAt:    time.Unix(resp.GetExpiresAt(), 0),
+		MaskedPAN:    resp.GetMaskedPan(),
+		Network:      resp.GetNetwork(),
+	}, nil
 }

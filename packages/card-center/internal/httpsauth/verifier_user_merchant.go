@@ -1,55 +1,91 @@
-// verifier_user_merchant.go — 临时 STUB.
+// verifier_user_merchant.go: 唯一生产 Verifier 实现 — Kitex 直连 user-merchant-core.IntrospectToken。
 //
-// 原版通过 Kitex 调 user-merchant-core.IntrospectToken 校验 JWT.
-// cross-service kitex_gen (user-merchant-core) 还没接进 card-center 的 docker
-// build 流程 (additional_contexts), 暂改 stub:
+// 在 card-center HTTPS 入口的 3 道防线里，本组件**实现防线 2**（用户登录态校验）：
 //
-//   - 构造时不持有真 user-merchant Kitex client
-//   - Verify 永远返 (0, false, ErrInvalidJWT) — fail-closed, 拒绝所有请求
+//	防线 1 (middleware.extractJWT): 浏览器必须带合法 Authorization 或 Cookie
+//	防线 2 (本文件 Verifier.Verify): jwt 必须能在 user-merchant-core 通过 IntrospectToken
+//	                                  → 同时拿到权威 user_id
+//	防线 3 (handler RejectClaimedUserID): user_id 只从 jwt，body 不许带
 //
-// 部署时必须把 card-center HTTPS 入口的 jwt 校验关掉 (走纯 mTLS 内部访问), 或
-// 等接通 user-merchant-core kitex_gen 后改回真实调用.
+// 调用路径：
+//
+//	浏览器 cookie/Bearer jwt → card-center HTTPS → user-merchant-core
+//	   IntrospectToken (Kitex, internal listener) → 返 user_id
 package httpsauth
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
+
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
+	userservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
 )
 
-// cacheEntry 短期缓存 jwt → user_id 校验结果. stub 阶段不实际使用.
+// cacheEntry 短期缓存 jwt → user_id 校验结果
 type cacheEntry struct {
 	userID    int64
 	valid     bool
 	expiresAt time.Time
 }
 
-// UserMerchantVerifier STUB — 不持有 Kitex client.
+// UserMerchantVerifier 通过 Kitex 调 user-merchant-core.UserService.IntrospectToken。
+//
+// 60s 短期缓存避免每个 HTTPS 请求都打 RPC（每秒可能数百绑卡 / 列卡请求）。
+// 登出后最多 60s 仍能用旧 jwt — 业务可接受；不可接受时把 cacheTTL 调到 0 即可。
 type UserMerchantVerifier struct {
+	uc       userservice.Client
 	timeout  time.Duration
 	cacheTTL time.Duration
-	cache    sync.Map
+	cache    sync.Map // map[sha256(jwt)]cacheEntry
 	logger   *zap.Logger
 }
 
-// NewUserMerchantVerifier 构造 stub. uc 参数仍接受 (兼容 caller 签名), 但是 ignore.
-func NewUserMerchantVerifier(_ any, logger *zap.Logger) *UserMerchantVerifier {
+// NewUserMerchantVerifier 构造. uc 是已建好的 Kitex client.
+func NewUserMerchantVerifier(uc userservice.Client, logger *zap.Logger) *UserMerchantVerifier {
 	return &UserMerchantVerifier{
+		uc:       uc,
 		timeout:  3 * time.Second,
 		cacheTTL: 60 * time.Second,
 		logger:   logger,
 	}
 }
 
-// Verify STUB: 永远返 ErrInvalidJWT (fail-closed).
-func (v *UserMerchantVerifier) Verify(_ context.Context, jwt string) (int64, bool, error) {
+// Verify 校验 jwt 合法性，返回 user_id。
+func (v *UserMerchantVerifier) Verify(parent context.Context, jwt string) (int64, bool, error) {
 	if jwt == "" {
 		return 0, false, ErrInvalidJWT
 	}
-	if v.logger != nil {
-		v.logger.Warn("UserMerchantVerifier STUB — user-merchant-core kitex_gen not wired in build, rejecting all JWTs")
+	key := sha256Hex(jwt)
+	now := time.Now()
+	if c, ok := v.cache.Load(key); ok {
+		ce := c.(cacheEntry)
+		if now.Before(ce.expiresAt) {
+			return ce.userID, ce.valid, nil
+		}
+		v.cache.Delete(key)
 	}
-	return 0, false, ErrInvalidJWT
+
+	ctx, cancel := context.WithTimeout(parent, v.timeout)
+	defer cancel()
+	resp, err := v.uc.IntrospectToken(ctx, &usermerchantv1.IntrospectTokenRequest{Jwt: jwt})
+	if err != nil {
+		if v.logger != nil {
+			v.logger.Debug("IntrospectToken rpc error", zap.Error(err))
+		}
+		return 0, false, fmt.Errorf("user-merchant-core IntrospectToken: %w", err)
+	}
+	if !resp.GetValid() {
+		return 0, false, ErrInvalidJWT
+	}
+	uid, err := parseInt64(resp.GetUserId())
+	if err != nil {
+		return 0, false, fmt.Errorf("bad user_id from user-merchant-core: %w", err)
+	}
+	// 仅缓存成功结果（避免短时间错误 → 缓存投毒）
+	v.cache.Store(key, cacheEntry{userID: uid, valid: true, expiresAt: now.Add(v.cacheTTL)})
+	return uid, true, nil
 }

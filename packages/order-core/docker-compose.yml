@@ -58,6 +58,9 @@ services:
         payment-channel:     ../payment-channel
         payment-core:        ../payment-core
         accounting-grpc-api: ../accounting-grpc-api
+        accounting-system:   ../accounting-system
+        card-center:         ../card-center
+        user-merchant-core:  ../user-merchant-core
       secrets:
         - GITHUB_TOKEN
     image: order-core:latest

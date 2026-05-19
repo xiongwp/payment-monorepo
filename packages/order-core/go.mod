@@ -10,11 +10,14 @@ go 1.25.0
 // payment-util：trace 包从本仓 internal/trace 抽走后用此 replace 拉本地副本。
 replace (
 	github.com/xiongwp/accounting-grpc-api => ../accounting-grpc-api
+	github.com/xiongwp/accounting-system => ../accounting-system
+	github.com/xiongwp/card-center => ../card-center
 	github.com/xiongwp/kms-manage => ../kms-manage
 	github.com/xiongwp/payment-channel => ../payment-channel
 	github.com/xiongwp/payment-core => ../payment-core
 	github.com/xiongwp/payment-util => ../payment-util
 	github.com/xiongwp/risk-manage => ../risk-manage
+	github.com/xiongwp/user-merchant-core => ../user-merchant-core
 )
 
 require (
@@ -23,9 +26,12 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/viper v1.19.0
 	github.com/xiongwp/accounting-grpc-api v0.0.0-00010101000000-000000000000
+	github.com/xiongwp/accounting-system v0.0.0-00010101000000-000000000000
+	github.com/xiongwp/card-center v0.0.0-00010101000000-000000000000
 	github.com/xiongwp/payment-channel v0.0.1
 	github.com/xiongwp/payment-core v0.0.1
 	github.com/xiongwp/payment-util v0.0.1
+	github.com/xiongwp/user-merchant-core v0.0.0-00010101000000-000000000000
 	go.etcd.io/etcd/client/v3 v3.5.21
 	go.uber.org/fx v1.20.1
 	go.uber.org/zap v1.27.1

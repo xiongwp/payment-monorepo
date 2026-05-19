@@ -18,11 +18,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudwego/kitex/client"
 	kitexserver "github.com/cloudwego/kitex/server"
 	"github.com/spf13/viper"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenter"
+	userservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
 
 	"github.com/xiongwp/card-center/internal/audit"
 	"github.com/xiongwp/card-center/internal/httpsauth"
@@ -369,19 +371,39 @@ func startGRPC(lc fx.Lifecycle, srv kitexserver.Server, _ *server.Server, v *vip
 	return nil
 }
 
-// ─── HTTPS REST + 登录态校验 (临时 STUB, 等 user-merchant kitex_gen 接通) ───
+// ─── HTTPS REST + 登录态校验 (Kitex 直连 user-merchant-core) ───────────────
 
-// newHTTPSVerifier 装配 Verifier — 临时 STUB.
-// 原版通过 Kitex 调 user-merchant-core.IntrospectToken. cross-service kitex_gen
-// 还没接进 docker build 流程, 暂返 STUB UserMerchantVerifier (Verify 永远 fail-closed).
-// 接通 sibling sourcing 后改回 kitexutil.MustKitexClient(userservice.NewClient(...))
-// + 把 newUserMerchantConn 拨号 provider 加回来.
+// newHTTPSVerifier 装配 Verifier — 用 Kitex client 拨号 user-merchant-core 的
+// internal listener (UserService.IntrospectToken). https.enabled=false 时返 nil,
+// REST 入口不启动.
 func newHTTPSVerifier(v *viper.Viper, logger *zap.Logger) httpsauth.Verifier {
 	if !v.GetBool("https.enabled") {
 		return nil
 	}
-	logger.Warn("newHTTPSVerifier STUB — user-merchant-core kitex_gen not wired in build, all JWTs rejected (fail-closed)")
-	return httpsauth.NewUserMerchantVerifier(nil, logger)
+	endpoint := v.GetString("auth.user_merchant.endpoint")
+	if endpoint == "" {
+		endpoint = v.GetString("auth.user_merchant_endpoint")
+	}
+	if endpoint == "" {
+		logger.Warn("https.enabled=true but auth.user_merchant.endpoint empty; disabling verifier")
+		return nil
+	}
+	timeout := v.GetDuration("auth.user_merchant.rpc_timeout")
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	uc, err := userservice.NewClient("user-merchant-core",
+		client.WithHostPorts(endpoint),
+		client.WithRPCTimeout(timeout),
+	)
+	if err != nil {
+		logger.Warn("user-merchant-core Kitex client init failed; HTTPS verifier disabled",
+			zap.String("endpoint", endpoint), zap.Error(err))
+		return nil
+	}
+	logger.Info("user-merchant-core verifier wired",
+		zap.String("endpoint", endpoint), zap.Duration("timeout", timeout))
+	return httpsauth.NewUserMerchantVerifier(uc, logger)
 }
 
 // newRESTServer 装配 HTTPS REST handler。

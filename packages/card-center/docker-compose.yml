@@ -55,7 +55,9 @@ services:
       context: .
       dockerfile: Dockerfile
       additional_contexts:
-        payment-util: ../payment-util
+        payment-util:            ../payment-util
+        user-merchant-core-src:  ../user-merchant-core
+        kms-manage-src:          ../kms-manage
       secrets:
         - GITHUB_TOKEN
     image: card-center:latest
