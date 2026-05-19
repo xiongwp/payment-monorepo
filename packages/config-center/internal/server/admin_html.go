@@ -35,14 +35,14 @@ import (
 	"github.com/xiongwp/config-center/internal/service"
 )
 
-// IntrospectTokenResponse 占位类型 — user-merchant-core 的 kitex_gen 尚未生成,
-// 此处先用 hand-rolled minimal struct 让 config-center 编译通过.
-// 接通 Kitex 后改 import 真正的 kitex_gen 包.
+// IntrospectTokenResponse 占位类型 — 等 user-merchant-core kitex_gen 接通后, 改成
+// 真正的 import "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1".
+// 字段名跟 .proto 保持一致 (UserId / Permissions / ExpiresMs).
 type IntrospectTokenResponse struct {
-	Valid     bool
-	ActorID   string
-	ExpiresMs int64
-	Roles     []string
+	Valid       bool
+	UserId      string
+	ExpiresMs   int64
+	Permissions []string
 }
 
 // IntrospectTokenRequest 同上占位.
@@ -272,16 +272,10 @@ func (h *AdminHandler) adminActorMiddleware(next http.HandlerFunc) http.HandlerF
 			return
 		}
 
-		// 调 user-merchant-core IntrospectToken
+		// 调 user-merchant-core IntrospectToken (目前 stub, 永远返 valid=false → 401)
 		resp, err := h.introspect.introspect(r.Context(), token)
 		if err != nil {
 			h.logger.Warn("admin: introspect failed", zap.Error(err))
-			// gRPC 不可达 → 503
-			if status.Code(err) == codes.Unavailable {
-				http.Error(w, "Service Unavailable: user-merchant-core unreachable", http.StatusServiceUnavailable)
-				return
-			}
-			// 其他错误（如网络）→ 503
 			http.Error(w, "Service Unavailable: introspection failed", http.StatusServiceUnavailable)
 			return
 		}
