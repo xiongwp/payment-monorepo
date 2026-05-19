@@ -66,6 +66,17 @@ func (r *MemoryGraphRepo) GetByKey(_ context.Context, key string) (*domain.Graph
 	return g, nil
 }
 
+// Delete soft-delete: status → "archived". key 不存在静默成功 (idempotent).
+func (r *MemoryGraphRepo) Delete(_ context.Context, key string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if g, ok := r.byKey[key]; ok {
+		g.Status = "archived"
+		g.UpdatedAt = time.Now().UTC()
+	}
+	return nil
+}
+
 // FindByTrigger 找所有 active 且 triggers 含此 event 的 graph。
 func (r *MemoryGraphRepo) FindByTrigger(_ context.Context, event string) ([]*domain.Graph, error) {
 	r.mu.RLock()

@@ -24,6 +24,9 @@ type GraphRepo interface {
 	Save(ctx context.Context, g *domain.Graph) (int64, error)
 	GetByKey(ctx context.Context, key string) (*domain.Graph, error)
 	List(ctx context.Context, status string) ([]*domain.Graph, error)
+	// Delete soft-delete: 把 graph 状态置为 "archived" (不物理删, 保留 run_plan
+	// 历史关联). 如果 key 不存在返 nil (idempotent).
+	Delete(ctx context.Context, key string) error
 }
 
 // AccountingMetaCaller — TriggerEvent 用来调 accounting.CreateTransaction 真落账.
@@ -207,6 +210,27 @@ func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGra
 		return nil, err
 	}
 	return &SaveGraphResponse{Key: g.Key, Version: g.Version}, nil
+}
+
+// DeleteGraph soft-delete: 把 graph 状态置 archived, 不物理删 (保留 run_plan
+// 历史关联). key 不存在 → 仍返 Ok=true (idempotent).
+//
+// 注意: 这里只删 graph 自己. accounting 侧的 transaction_rule 不自动清, 因为
+// rule 可能被其它 graph 共享; 真要清理走 admin /admin/transaction-rules DELETE.
+func (s *Server) DeleteGraph(ctx context.Context, req *DeleteGraphRequest) (*DeleteGraphResponse, error) {
+	if req == nil || req.Key == "" {
+		return nil, errors.New("key required")
+	}
+	if err := s.Graphs.Delete(ctx, req.Key); err != nil {
+		if s.Log != nil {
+			s.Log.Warn("DeleteGraph failed", zap.String("key", req.Key), zap.Error(err))
+		}
+		return &DeleteGraphResponse{Ok: false}, err
+	}
+	if s.Log != nil {
+		s.Log.Info("DeleteGraph: archived", zap.String("key", req.Key))
+	}
+	return &DeleteGraphResponse{Ok: true}, nil
 }
 
 // DeriveRulesFromGraph 公开包装, 启动期 reconcileGraphRules 用.

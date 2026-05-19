@@ -194,6 +194,17 @@ func (r *MySQLGraphRepo) FindByTrigger(ctx context.Context, event string) ([]*do
 	return collectGraphs(rows)
 }
 
+// Delete soft-delete: 把 graph 状态置为 "archived". 物理删会破坏历史 run_plan
+// 关联, 因此只做软删. key 不存在 → 返 nil (idempotent), 与 grpcsvc 注释对齐.
+func (r *MySQLGraphRepo) Delete(ctx context.Context, key string) error {
+	_, err := r.db.ExecContext(ctx,
+		"UPDATE moneyflow_graphs SET status='archived', updated_at=NOW() WHERE `key`=?", key)
+	if err != nil {
+		return fmt.Errorf("delete (archive) graph %q: %w", key, err)
+	}
+	return nil
+}
+
 // List 按状态列. status="" 或 "all" 返全部.
 func (r *MySQLGraphRepo) List(ctx context.Context, status string) ([]*domain.Graph, error) {
 	var rows *sql.Rows

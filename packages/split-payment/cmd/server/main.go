@@ -297,17 +297,15 @@ func wireAll(
 			zap.Bool("fail_safe_reject", riskCfg.FailSafeReject))
 	}
 
-	// SP-AC-7: accounting gRPC TransactionService 客户端 (multi-leg + 元数据).
-	// 复用已有的 accounting-system gRPC conn (跟 AccountingClient 同一条连接).
-	// HTTP 不再用于业务调用 — 只剩 ops/admin UI.
-	if conn != nil {
-		// accountingGRPCCli 由 fx Provider 注入 (newAccountingGRPCClientFx), Kitex client.
-		if accountingGRPCCli != nil {
-			engine.AccountingMeta = accountingGRPCAdapter{cli: accountingGRPCCli}
-		}
-		log.Info("accounting meta client: gRPC (TransactionService)")
+	// SP-AC-7: accounting Kitex TransactionService 客户端 (multi-leg + 元数据).
+	// 切 Kitex 后不再有 grpc.ClientConn 一类概念, 直接看 accountingGRPCCli 是否
+	// 已经被 fx Provider 装配出来 (newAccountingGRPCClientFx). 名字保留 "GRPC"
+	// 是历史包袱, 内部是 Kitex transactionservice.Client.
+	if accountingGRPCCli != nil {
+		engine.AccountingMeta = accountingGRPCAdapter{cli: accountingGRPCCli}
+		log.Info("accounting meta client: Kitex TransactionService")
 	} else {
-		log.Info("accounting meta client: disabled (accounting gRPC conn nil)")
+		log.Info("accounting meta client: disabled (no endpoint configured)")
 	}
 
 	// SP-3C + SP-FIN-1: FX client (fx.http_url 配了走真实, 否则 static 占位).
