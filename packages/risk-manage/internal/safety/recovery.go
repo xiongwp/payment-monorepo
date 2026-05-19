@@ -9,7 +9,6 @@
 package safety
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"runtime/debug"
