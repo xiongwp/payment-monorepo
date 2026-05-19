@@ -9,6 +9,8 @@ go 1.25.0
 // payment-util 提供 trace 共享包，本仓 internal/trace 是一个转发壳。
 replace (
 	github.com/xiongwp/accounting-grpc-api => ../accounting-grpc-api
+	github.com/xiongwp/accounting-system => ../accounting-system
+	github.com/xiongwp/card-center => ../card-center
 	github.com/xiongwp/kms-manage => ../kms-manage
 	github.com/xiongwp/payment-util => ../payment-util
 	github.com/xiongwp/risk-manage => ../risk-manage
@@ -23,6 +25,8 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/viper v1.19.0
 	github.com/xiongwp/accounting-grpc-api v0.0.0-00010101000000-000000000000
+	github.com/xiongwp/accounting-system v0.0.0-00010101000000-000000000000
+	github.com/xiongwp/card-center v0.0.0-00010101000000-000000000000
 	github.com/xiongwp/kms-manage v0.0.0-00010101000000-000000000000
 	github.com/xiongwp/payment-util v0.0.1
 	github.com/xiongwp/risk-manage v0.0.0-00010101000000-000000000000

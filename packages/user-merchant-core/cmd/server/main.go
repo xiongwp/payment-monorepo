@@ -13,6 +13,12 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
+	accv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
+	riskv1 "github.com/xiongwp/risk-manage/kitex_gen/risk/v1"
+	riskservice "github.com/xiongwp/risk-manage/kitex_gen/risk/v1/riskservice"
+	"github.com/xiongwp/payment-util/kitexutil"
+
 	"github.com/xiongwp/user-merchant-core/internal/authpkg"
 	"github.com/xiongwp/user-merchant-core/internal/cache"
 	"github.com/xiongwp/user-merchant-core/internal/healthz"
@@ -323,22 +329,23 @@ func repoUserCard(mgr *repo.Manager, router *sharding.Router) repo.UserCardRepos
 // 只是 card-center 那边不知道 token 已撤销）。
 func newCardCenterClient(v *viper.Viper, logger *zap.Logger) *cardcenterclient.Client {
 	endpoint := v.GetString("card_center.endpoint")
-	if endpoint == "" {
+	registry := v.GetStringSlice("registry.endpoints")
+	if endpoint == "" && len(registry) == 0 {
 		logger.Info("card_center.endpoint not set; UserCardService DeleteCard 不会通知 card-center revoke (dev OK)")
 		return nil
 	}
-	// cardcenterclient 当前是 STUB (cross-service kitex_gen 未接通): Config 只剩
-	// Endpoint + RPCTimeout. mTLS 字段被旧 grpc 客户端用, stub 不需要 —
-	// 接通真 Kitex 后这些字段在 transport 层走 client opts 而非 Config struct.
 	cli, err := cardcenterclient.New(cardcenterclient.Config{
-		Endpoint:   endpoint,
-		RPCTimeout: v.GetDuration("card_center.rpc_timeout"),
+		Endpoint:          endpoint,
+		RegistryEndpoints: registry,
+		BearerToken:       v.GetString("card_center.bearer_token"),
+		RPCTimeout:        v.GetDuration("card_center.rpc_timeout"),
 	})
 	if err != nil {
 		logger.Warn("card-center client init failed; degrading to nil", zap.Error(err))
 		return nil
 	}
-	logger.Info("card-center client connected", zap.String("endpoint", endpoint))
+	logger.Info("card-center client connected",
+		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
 	return cli
 }
 
@@ -637,13 +644,45 @@ func newMailer(logger *zap.Logger) service.Mailer {
 	return &service.LogMailer{Logger: logger}
 }
 
-// newRiskClient — 临时 STUB.
-// 原版通过 Kitex 调 risk-manage. cross-service kitex_gen 还没在 docker build
-// 流程里 wire 进去, 暂返 NoopRiskClient (Screen 全 ALLOW, Report no-op).
-// 等 sibling sourcing 接通后, 改回 kitexutil.MustKitexClient(riskservice.NewClient(...)).
-func newRiskClient(_ fx.Lifecycle, _ *viper.Viper, logger *zap.Logger) service.RiskClient {
-	logger.Warn("newRiskClient STUB — risk-manage kitex_gen not wired in build, returning NoopRiskClient (fail-open)")
-	return service.NoopRiskClient{}
+// newRiskClient 构造 risk-manage Kitex client.
+// endpoint / registry 都空 → NoopRiskClient (Screen 全 ALLOW, Report no-op).
+// registry 非空走 etcd resolver; 否则用 endpoint 直连.
+func newRiskClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.RiskClient {
+	endpoint := v.GetString("risk.endpoint")
+	registry := v.GetStringSlice("registry.endpoints")
+	if endpoint == "" && len(registry) == 0 {
+		logger.Info("risk.endpoint and registry.endpoints both unset; using NoopRiskClient (all-allow, no graph writes)")
+		return service.NoopRiskClient{}
+	}
+	api := kitexutil.MustKitexClient(riskservice.NewClient("risk-manage"))
+	logger.Info("risk client constructed (Kitex)",
+		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
+	return &grpcRiskAdapter{api: api, timeout: v.GetDuration("risk.rpc_timeout")}
+}
+
+// grpcRiskAdapter 把 Kitex riskservice.Client 适配到 service.RiskClient 接口.
+type grpcRiskAdapter struct {
+	api     riskservice.Client
+	timeout time.Duration
+}
+
+func (a *grpcRiskAdapter) Screen(ctx context.Context, req *riskv1.ScreenRequest) (*riskv1.ScreenResponse, error) {
+	if a.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, a.timeout)
+		defer cancel()
+	}
+	return a.api.Screen(ctx, req)
+}
+
+func (a *grpcRiskAdapter) Report(ctx context.Context, req *riskv1.ReportRequest) error {
+	if a.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, a.timeout)
+		defer cancel()
+	}
+	_, err := a.api.Report(ctx, req)
+	return err
 }
 
 func svcUser(
@@ -695,17 +734,34 @@ func (promIntrospectCacheHook) Lookup(hit bool) {
 	metrics.IntrospectCacheLookupTotal.WithLabelValues(result).Inc()
 }
 
-// newAccountingClient 拨号 accounting-system gRPC；endpoint 与 registry 都空 → Noop。
-// registry 非空走 etcd resolver（联栈多 pod 必走，因为 "accounting-service" 跨
-// compose 项目 DNS 不可解析）；否则走 endpoint 直连。两条路都自动 round_robin LB。
-//
-// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
-// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
-// newAccountingClient — 临时 STUB.
-// 原版通过 Kitex 调 accounting-system. cross-service kitex_gen 还没在 docker build
-// 流程里 wire 进去, 暂返 NoopAccountingClient (无余额账户操作).
-// 等 sibling sourcing 接通后, 改回 kitexutil.MustKitexClient(accountingservice.NewClient(...)).
-func newAccountingClient(_ fx.Lifecycle, _ *viper.Viper, logger *zap.Logger) service.AccountingClient {
-	logger.Warn("newAccountingClient STUB — accounting-system kitex_gen not wired in build, returning NoopAccountingClient")
-	return service.NoopAccountingClient{}
+// newAccountingClient 构造 accounting-system Kitex client.
+// endpoint / registry 都空 → NoopAccountingClient (Register 流程拿不到 account_no,
+// 绑定步骤被 service 层 skip, 首次支付兜底重试).
+// registry 非空走 etcd resolver; 否则用 endpoint 直连.
+func newAccountingClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.AccountingClient {
+	endpoint := v.GetString("accounting.endpoint")
+	registry := v.GetStringSlice("registry.endpoints")
+	if endpoint == "" && len(registry) == 0 {
+		logger.Info("accounting.endpoint and registry.endpoints both unset; using NoopAccountingClient (no account binding on Register)")
+		return service.NoopAccountingClient{}
+	}
+	api := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system"))
+	logger.Info("accounting client constructed (Kitex)",
+		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
+	return &grpcAccountingAdapter{api: api, timeout: v.GetDuration("accounting.rpc_timeout")}
+}
+
+// grpcAccountingAdapter 适配 Kitex accountingservice.Client 到 service.AccountingClient.
+type grpcAccountingAdapter struct {
+	api     accountingservice.Client
+	timeout time.Duration
+}
+
+func (a *grpcAccountingAdapter) CreateAccount(ctx context.Context, req *accv1.CreateAccountRequest) (*accv1.CreateAccountResponse, error) {
+	if a.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, a.timeout)
+		defer cancel()
+	}
+	return a.api.CreateAccount(ctx, req)
 }

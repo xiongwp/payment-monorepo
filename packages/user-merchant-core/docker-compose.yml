@@ -136,6 +136,8 @@ services:
         kms-manage:          ../kms-manage
         risk-manage:         ../risk-manage
         accounting-grpc-api: ../accounting-grpc-api
+        accounting-system:   ../accounting-system
+        card-center:         ../card-center
       secrets:
         - GITHUB_TOKEN
     image: user-merchant-core:latest

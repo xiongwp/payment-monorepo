@@ -29,6 +29,8 @@ import (
 	"sync"
 	"time"
 
+	accv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	riskv1 "github.com/xiongwp/risk-manage/kitex_gen/risk/v1"
 	"go.uber.org/zap"
 
 	"github.com/xiongwp/user-merchant-core/internal/authpkg"
@@ -146,7 +148,7 @@ func (s *UserService) Register(ctx context.Context, in *RegisterInput) (*Registe
 	// welcome_bonus_immediate_withdraw 等规则在 register 路径上能直接拿到上下文。
 	// recent_login_failures 是按 IP 维度（userID 还没生成），抓"扫号 → 注册"型 bot。
 	failsByIP, _ := s.repo.CountRecentFailedLogins(ctx, 0, in.IPAddress, time.Now().Add(-5*time.Minute))
-	rr, err := s.risk.Screen(ctx, &ScreenRequest{
+	rr, err := s.risk.Screen(ctx, &riskv1.ScreenRequest{
 		EventType:       "register",
 		MerchantId:      "platform",
 		IpAddress:       in.IPAddress,
@@ -166,10 +168,10 @@ func (s *UserService) Register(ctx context.Context, in *RegisterInput) (*Registe
 	})
 	if err != nil {
 		s.logger.Warn("risk screen register failed (fail-open)", zap.Error(err))
-		rr = &ScreenResponse{Decision: Decision_ALLOW}
+		rr = &riskv1.ScreenResponse{Decision: riskv1.Decision_ALLOW}
 	}
 	// DENY 直接拒（含 reason 内部细节落 log，给前端只返通用文案）。
-	if rr.Decision == Decision_DENY {
+	if rr.Decision == riskv1.Decision_DENY {
 		s.logger.Warn("register blocked by risk",
 			zap.String("decision_id", rr.DecisionId),
 			zap.String("reason", rr.Reason),
@@ -180,7 +182,7 @@ func (s *UserService) Register(ctx context.Context, in *RegisterInput) (*Registe
 	// REVIEW → step-up：发邮件 OTP，前端拿到 challenge 跳验证页，验证通过
 	// 后才真正建用户（VerifyRegisterOTP）。降低误伤：合法用户 30s 完成 OTP
 	// 即可继续，不像之前 hard-DENY 直接被锁出。
-	if rr.Decision == Decision_REVIEW {
+	if rr.Decision == riskv1.Decision_REVIEW {
 		if in.Email == "" {
 			// 没邮箱不能发 OTP → 退回 DENY
 			s.logger.Warn("register review without email; degrade to DENY",
@@ -263,7 +265,7 @@ func (s *UserService) completeRegister(ctx context.Context, in *RegisterInput, s
 	s.openUserBalanceAccount(ctx, user.ID, currency)
 
 	// risk.Report 写图边
-	_ = s.risk.Report(ctx, &ReportRequest{
+	_ = s.risk.Report(ctx, &riskv1.ReportRequest{
 		EventType:  "register",
 		MerchantId: "platform",
 		CustomerId: fmt.Sprintf("%d", user.ID),
@@ -321,7 +323,7 @@ func (s *UserService) Login(ctx context.Context, in *LoginInput) (*LoginResult, 
 			IP: in.IPAddress, UserAgent: in.UserAgent, AuthType: domain.AuthTypePassword,
 			Status: 0, Reason: "user_not_found",
 		})
-		_ = s.risk.Report(ctx, &ReportRequest{
+		_ = s.risk.Report(ctx, &riskv1.ReportRequest{
 			EventType: "login.failed", MerchantId: "platform",
 			IpAddress: in.IPAddress, DeviceId: in.DeviceID,
 		})
@@ -359,7 +361,7 @@ func (s *UserService) Login(ctx context.Context, in *LoginInput) (*LoginResult, 
 			UserID: ptrInt64(user.ID), IP: in.IPAddress, UserAgent: in.UserAgent,
 			AuthType: domain.AuthTypePassword, Status: 0, Reason: "wrong_password",
 		})
-		_ = s.risk.Report(ctx, &ReportRequest{
+		_ = s.risk.Report(ctx, &riskv1.ReportRequest{
 			EventType: "login.failed", MerchantId: "platform",
 			CustomerId: fmt.Sprintf("%d", user.ID),
 			IpAddress:  in.IPAddress, DeviceId: in.DeviceID,
@@ -388,7 +390,7 @@ func (s *UserService) Login(ctx context.Context, in *LoginInput) (*LoginResult, 
 	if minSincePwd < 0 {
 		minSincePwd = 0
 	}
-	rr, err := s.risk.Screen(ctx, &ScreenRequest{
+	rr, err := s.risk.Screen(ctx, &riskv1.ScreenRequest{
 		EventType:       "login",
 		MerchantId:      "platform",
 		CustomerId:      fmt.Sprintf("%d", user.ID),
@@ -407,9 +409,9 @@ func (s *UserService) Login(ctx context.Context, in *LoginInput) (*LoginResult, 
 	})
 	if err != nil {
 		s.logger.Warn("risk screen login failed (fail-open)", zap.Error(err))
-		rr = &ScreenResponse{Decision: Decision_ALLOW}
+		rr = &riskv1.ScreenResponse{Decision: riskv1.Decision_ALLOW}
 	}
-	if rr.Decision == Decision_DENY {
+	if rr.Decision == riskv1.Decision_DENY {
 		s.logger.Warn("login blocked by risk",
 			zap.String("decision_id", rr.DecisionId),
 			zap.String("reason", rr.Reason),
@@ -417,7 +419,7 @@ func (s *UserService) Login(ctx context.Context, in *LoginInput) (*LoginResult, 
 			zap.String("device", in.DeviceID))
 		return nil, fmt.Errorf("%w: 无法登录，请稍后再试", domain.ErrValidation)
 	}
-	needsOTP := user.TOTPEnabled || rr.Decision == Decision_REVIEW
+	needsOTP := user.TOTPEnabled || rr.Decision == riskv1.Decision_REVIEW
 
 	if needsOTP {
 		challenge, _ := authpkg.RandomBase32Token()
@@ -502,7 +504,7 @@ func (s *UserService) VerifyOTP(ctx context.Context, challenge, code string) (*L
 
 func (s *UserService) completeLogin(ctx context.Context, user *domain.User, ip, ua, dev string) (*LoginResult, error) {
 	_ = s.repo.UpdateLastLogin(ctx, user.ID, time.Now())
-	_ = s.risk.Report(ctx, &ReportRequest{
+	_ = s.risk.Report(ctx, &riskv1.ReportRequest{
 		EventType: "login", MerchantId: "platform",
 		CustomerId: fmt.Sprintf("%d", user.ID),
 		IpAddress:  ip, DeviceId: dev,
@@ -695,7 +697,7 @@ func (s *UserService) ChangePassword(ctx context.Context, userID int64, oldPassw
 	go func() {
 		rctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		_ = s.risk.Report(rctx, &ReportRequest{
+		_ = s.risk.Report(rctx, &riskv1.ReportRequest{
 			EventType:  "password_change",
 			MerchantId: "platform",
 			CustomerId: fmt.Sprintf("%d", user.ID),
@@ -888,13 +890,13 @@ func (s *UserService) openUserBalanceAccount(ctx context.Context, userID int64, 
 	if exists, _ := s.repo.GetUserAccount(ctx, userID, cur); exists != nil {
 		return
 	}
-	resp, err := s.accounting.CreateAccount(ctx, &CreateAccountRequest{
+	resp, err := s.accounting.CreateAccount(ctx, &accv1.CreateAccountRequest{
 		UserId:              userID,
-		AccountType:         AccountType_ACCOUNT_TYPE_USER,
-		Category:            AccountCategory_ACCOUNT_CATEGORY_LIABILITY, // 用户余额是平台对用户的负债
+		AccountType:         accv1.AccountType_ACCOUNT_TYPE_USER,
+		Category:            accv1.AccountCategory_ACCOUNT_CATEGORY_LIABILITY, // 用户余额是平台对用户的负债
 		Currency:            cur,
 		Description:         fmt.Sprintf("user %d default %s balance", userID, cur),
-		AccountBusinessType: AccountBusinessType_ACCOUNT_BUSINESS_TYPE_USER_BALANCE,
+		AccountBusinessType: accv1.AccountBusinessType_ACCOUNT_BUSINESS_TYPE_USER_BALANCE,
 	})
 	if err != nil {
 		s.logger.Warn("accounting.CreateAccount failed; skip bind (will retry on first payment)",

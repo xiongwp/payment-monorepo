@@ -19,6 +19,10 @@ FROM alpine:3.19 AS risk-manage
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 FROM alpine:3.19 AS accounting-grpc-api
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS accounting-system
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS card-center
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS build
 RUN apk add --no-cache git ca-certificates
@@ -31,11 +35,15 @@ ARG PAYMENT_UTIL_REF=main
 ARG KMS_MANAGE_REF=main
 ARG RISK_MANAGE_REF=main
 ARG ACCOUNTING_GRPC_API_REF=main
+ARG ACCOUNTING_SYSTEM_REF=main
+ARG CARD_CENTER_REF=main
 
 COPY --from=payment-util         / /tmp/payment-util-staged/
 COPY --from=kms-manage           / /tmp/kms-manage-staged/
 COPY --from=risk-manage          / /tmp/risk-manage-staged/
 COPY --from=accounting-grpc-api  / /tmp/accounting-grpc-api-staged/
+COPY --from=accounting-system    / /tmp/accounting-system-staged/
+COPY --from=card-center          / /tmp/card-center-staged/
 
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
@@ -64,7 +72,9 @@ RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     promote payment-util         "$PAYMENT_UTIL_REF"; \
     promote kms-manage           "$KMS_MANAGE_REF"; \
     promote risk-manage          "$RISK_MANAGE_REF"; \
-    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"
+    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"; \
+    promote accounting-system    "$ACCOUNTING_SYSTEM_REF"; \
+    promote card-center          "$CARD_CENTER_REF"
 
 # 这个仓自己的代码
 COPY . /src/user-merchant-core
