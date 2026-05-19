@@ -29,21 +29,36 @@ import (
 	"github.com/cloudwego/kitex/transport"
 )
 
-// defaultPorts 各服务在 docker-compose 内部网络的 gRPC 端口默认值.
-// 新增服务时加一行即可.
-var defaultPorts = map[string]string{
-	"accounting-system":  "50051",
-	"user-merchant-core": "9191",
-	"order-core":         "9091",
-	"payment-core":       "9091",
-	"payment-channel":    "9091",
-	"card-payment":       "9091",
-	"card-center":        "9443",
-	"kms-manage":         "9290",
-	"risk-manage":        "9090",
-	"split-payment":      "9098",
-	"config-center":      "9092",
-	"id-generator":       "9093",
+// defaultHosts 各服务在 docker-compose 内部网络的 (DNS hostname, gRPC port).
+//
+// 注意: 包名 != docker DNS hostname. 历史包袱:
+//   - accounting-system 包内 docker-compose 把 service 命名为 "accounting-service"
+//   - kms-manage 包内 docker-compose 把 service 命名为 "kms"
+//   - id-generator 包内 docker-compose 把 service 命名为 "id-service"
+//
+// kitexutil.DefaultClientOptions(svcName) 用包名当 key, 解析后用真实 docker DNS
+// 名拨号. 这样调用方 (split-payment / order-core / accounting-admin-web ...) 用
+// 包名是 source-of-truth.
+//
+// 新增服务: 加一行 (包名 → {dockerDNS, grpcPort}).
+type hostPort struct {
+	host string
+	port string
+}
+
+var defaultHosts = map[string]hostPort{
+	"accounting-system":  {"accounting-service", "50051"}, // docker DNS != pkg name
+	"user-merchant-core": {"user-merchant-core", "9191"},
+	"order-core":         {"order-core", "9091"},
+	"payment-core":       {"payment-core", "9091"},
+	"payment-channel":    {"payment-channel", "9091"},
+	"card-payment":       {"card-payment", "9091"},
+	"card-center":        {"card-center", "9443"},
+	"kms-manage":         {"kms", "9290"},               // docker DNS != pkg name
+	"risk-manage":        {"risk-manage", "9090"},
+	"split-payment":      {"split-payment", "9098"},
+	"config-center":      {"config-center", "9092"},
+	"id-generator":       {"id-service", "9093"},        // docker DNS != pkg name
 }
 
 // DefaultHostPorts 给 Kitex client 装上一个 host:port 解析:
@@ -64,14 +79,17 @@ func DefaultHostPorts(svcName string) client.Option {
 // resolveHostPort 把 svcName → host:port 字符串. DefaultHostPorts /
 // DefaultClientOptions 共用.
 func resolveHostPort(svcName string) string {
+	// env 显式覆盖最优先 (ops 排错时按 svc 改一个 env 就行)
 	if envKey := envVarFor(svcName); envKey != "" {
 		if v := strings.TrimSpace(os.Getenv(envKey)); v != "" {
 			return v
 		}
 	}
-	if port, ok := defaultPorts[svcName]; ok {
-		return svcName + ":" + port
+	// 内置表用真实 docker DNS hostname, 不是包名
+	if hp, ok := defaultHosts[svcName]; ok {
+		return hp.host + ":" + hp.port
 	}
+	// 未注册的服务 fallback 到 svcName:80 (大概率跑不通, 但至少不会 panic)
 	return svcName + ":80"
 }
 
