@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cloudwego/kitex/client"
 	paymentcorev1 "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1"
 	paymentcoreservice "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
 
