@@ -1308,3 +1308,66 @@ func resolveEntryAmounts(e *accountingv1.AccountingEntry, currencyCode string) (
 	}
 	return debit, credit, nil
 }
+
+// ─── RESTORE-7: 还原 4 个 admin-web 用 RPC + 3 个 split-payment 用 RPC ────────
+//
+// 这些 RPC 在历史精简时被砍, 现在 proto 补回. handler 暂返"未实现"错误骨架, 让
+// kitex server 接口编译通过. 具体业务实现 (扫 day_cut_history / 重建 hot
+// accounts / 列 snapshot dates / 按 user+business_type 列账户 / split-payment
+// 多 leg CreateTransaction 等) 留给后续 PR 真接.
+
+func (s *Server) ListAccountsByUserAndBusinessType(_ context.Context, _ *accountingv1.ListAccountsByUserAndBusinessTypeRequest) (*accountingv1.ListAccountsByUserAndBusinessTypeResponse, error) {
+	return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{
+		Code:     0,
+		Message:  "stub: not yet implemented",
+		Accounts: nil,
+	}, nil
+}
+
+func (s *Server) ListDayCutHistory(_ context.Context, _ *accountingv1.ListDayCutHistoryRequest) (*accountingv1.ListDayCutHistoryResponse, error) {
+	return &accountingv1.ListDayCutHistoryResponse{
+		Code:    0,
+		Message: "stub: not yet implemented",
+		Entries: nil,
+	}, nil
+}
+
+func (s *Server) ListSnapshotDates(_ context.Context, _ *accountingv1.ListSnapshotDatesRequest) (*accountingv1.ListSnapshotDatesResponse, error) {
+	return &accountingv1.ListSnapshotDatesResponse{
+		Code:    0,
+		Message: "stub: not yet implemented",
+		Dates:   nil,
+	}, nil
+}
+
+func (s *Server) RebuildHotAccounts(_ context.Context, req *accountingv1.RebuildHotAccountsRequest) (*accountingv1.RebuildHotAccountsResponse, error) {
+	return &accountingv1.RebuildHotAccountsResponse{
+		Code:    0,
+		Message: "stub: not yet implemented",
+		AsOf:    req.GetAsOf(),
+		DryRun:  req.GetDryRun(),
+		Entries: nil,
+	}, nil
+}
+
+// SP-AC-7 split-payment 用 (TransactionService 子集).
+//
+// CreateTransaction 一笔 multi-leg 落账; 内部按 (product_code, event_code) 查 rule
+// 派生 leg, 再走 DoubleEntryBooking. 当前 stub 返 pending + voucher_no 空,
+// caller (split-payment.workflow.Engine) 会把 OrderNo 反复 retry.
+
+func (s *Server) CreateTransaction(_ context.Context, req *accountingv1.CreateTransactionRequest) (*accountingv1.CreateTransactionResponse, error) {
+	return &accountingv1.CreateTransactionResponse{
+		OrderNo:      req.GetIdempotencyKey(),
+		Status:       "pending",
+		ErrorMessage: "stub: CreateTransaction rule engine not yet wired",
+	}, nil
+}
+
+func (s *Server) ListAccountTypes(_ context.Context, _ *accountingv1.ListAccountTypesRequest) (*accountingv1.ListAccountTypesResponse, error) {
+	return &accountingv1.ListAccountTypesResponse{Items: nil}, nil
+}
+
+func (s *Server) ListTransactionRules(_ context.Context, _ *accountingv1.ListTransactionRulesRequest) (*accountingv1.ListTransactionRulesResponse, error) {
+	return &accountingv1.ListTransactionRulesResponse{Items: nil}, nil
+}

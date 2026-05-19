@@ -506,6 +506,11 @@ service AccountingService {
   // ── 查询操作 ────────────────────────────────────────────────────────────────
   rpc GetTransaction    (GetTransactionRequest)    returns (GetTransactionResponse);
   rpc GetBalanceSnapshot(GetBalanceSnapshotRequest) returns (GetBalanceSnapshotResponse);
+  // ── admin-web 用 4 个 (历史曾被砍, 现在还原) ──────────────────────────────
+  rpc ListAccountsByUserAndBusinessType (ListAccountsByUserAndBusinessTypeRequest) returns (ListAccountsByUserAndBusinessTypeResponse);
+  rpc ListDayCutHistory                 (ListDayCutHistoryRequest)                 returns (ListDayCutHistoryResponse);
+  rpc ListSnapshotDates                 (ListSnapshotDatesRequest)                 returns (ListSnapshotDatesResponse);
+  rpc RebuildHotAccounts                (RebuildHotAccountsRequest)                returns (RebuildHotAccountsResponse);
 
   // ── 管理操作 ────────────────────────────────────────────────────────────────
   rpc TriggerDayCut  (TriggerDayCutRequest)  returns (TriggerDayCutResponse);
@@ -705,4 +710,130 @@ service TransactionService {
   rpc HybridDoubleEntryBooking (HybridDoubleEntryBookingRequest) returns (HybridDoubleEntryBookingResponse);
   rpc AtomicBatchBooking       (AtomicBatchBookingRequest)       returns (AtomicBatchBookingResponse);
   rpc GetTransaction           (GetTransactionRequest)           returns (GetTransactionResponse);
+  // SP-AC-7 split-payment 用; rule-driven 多 leg 落账, request_id 兼任幂等.
+  rpc CreateTransaction        (CreateTransactionRequest)        returns (CreateTransactionResponse);
+  rpc ListAccountTypes         (ListAccountTypesRequest)         returns (ListAccountTypesResponse);
+  rpc ListTransactionRules     (ListTransactionRulesRequest)     returns (ListTransactionRulesResponse);
+}
+
+// ─── SP-AC-7 split-payment 用的 message ────────────────────────────────────
+
+message CreateTransactionRequest {
+  string business_no      = 1;   // 业务侧唯一标识 (e.g. charge_id)
+  string product_code     = 2;   // scenario, e.g. "user_topup"
+  string event_code       = 3;   // 触发事件, e.g. "charge.succeeded"
+  string idempotency_key  = 4;   // 通常 = business_no
+  string remark           = 5;
+}
+
+message CreateTransactionResponse {
+  string order_no        = 1;
+  string status          = 2;    // posted / pending / failed
+  string voucher_no      = 3;
+  string error_message   = 4;
+}
+
+message AccountTypeItem {
+  string code        = 1;
+  string name        = 2;
+  string description = 3;
+}
+
+message ListAccountTypesRequest {}
+
+message ListAccountTypesResponse {
+  repeated AccountTypeItem items = 1;
+}
+
+message TransactionRuleItem {
+  int64  id                 = 1;
+  string product_code       = 2;
+  string event_code         = 3;
+  string debit_subject_id   = 4;
+  string credit_subject_id  = 5;
+  string from_direction     = 6;
+  string to_direction       = 7;
+  string description        = 8;
+}
+
+message ListTransactionRulesRequest {
+  string product_filter = 1;  // 空 = 全部
+}
+
+message ListTransactionRulesResponse {
+  repeated TransactionRuleItem items = 1;
+}
+
+// ─── admin-web 用的 4 个 RPC (历史曾被砍, 现在还原到 AccountingService) ──────
+
+message ListAccountsByUserAndBusinessTypeRequest {
+  int64               user_id               = 1;
+  AccountBusinessType account_business_type = 2;
+  string              currency              = 3;
+}
+
+message ListAccountsByUserAndBusinessTypeResponse {
+  int32             code     = 1;
+  string            message  = 2;
+  repeated Account  accounts = 3;
+}
+
+message DayCutHistoryEntry {
+  string cut_date     = 1;
+  int32  run_id       = 2;
+  string currency     = 3;
+  int32  total_shards = 4;
+  int32  pending      = 5;
+  int32  processing   = 6;
+  int32  completed    = 7;
+  int32  failed       = 8;
+}
+
+message ListDayCutHistoryRequest {
+  string from_date = 1;
+  string to_date   = 2;
+  int32  limit     = 3;
+}
+
+message ListDayCutHistoryResponse {
+  int32                       code    = 1;
+  string                      message = 2;
+  repeated DayCutHistoryEntry entries = 3;
+}
+
+message ListSnapshotDatesRequest {}
+
+message ListSnapshotDatesResponse {
+  int32           code    = 1;
+  string          message = 2;
+  repeated string dates   = 3;
+}
+
+message RebuildHotAccountsRequest {
+  string          as_of       = 1;   // YYYY-MM-DD; 空 = today
+  repeated string account_nos = 2;   // 空 = 全部
+  bool            dry_run     = 3;
+}
+
+message RebuildHotAccountEntry {
+  string account_no      = 1;
+  string balance_before  = 2;
+  string balance_after   = 3;
+  string source          = 4;   // journal / snapshot / live
+  string journal_cutoff  = 5;
+  bool   skipped         = 6;
+  string reason          = 7;
+}
+
+message RebuildHotAccountsResponse {
+  int32                            code     = 1;
+  string                           message  = 2;
+  string                           as_of    = 3;
+  bool                             dry_run  = 4;
+  int32                            total    = 5;
+  int32                            updated  = 6;
+  int32                            skipped  = 7;
+  int32                            failed   = 8;
+  string                           duration = 9;
+  repeated RebuildHotAccountEntry  entries  = 10;
 }

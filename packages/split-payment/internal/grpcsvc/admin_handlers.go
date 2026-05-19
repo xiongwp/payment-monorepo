@@ -94,7 +94,7 @@ func (s *Server) ListGraphs(ctx context.Context, _ *ListGraphsRequest) (*ListGra
 	for _, g := range list {
 		items = append(items, &GraphSummary{
 			Key: g.Key, Name: g.Name, Version: g.Version, Status: g.Status,
-			OwnerType: g.OwnerType, OwnerID: g.OwnerID,
+			OwnerType: g.OwnerType, OwnerId: g.OwnerId,
 		})
 	}
 	return &ListGraphsResponse{Items: items}, nil
@@ -118,7 +118,7 @@ func (s *Server) GetGraph(ctx context.Context, req *GetGraphRequest) (*GetGraphR
 	}
 	return &GetGraphResponse{Graph: &Graph{
 		Key: g.Key, Name: g.Name, Version: g.Version, Status: g.Status,
-		OwnerType: g.OwnerType, OwnerID: g.OwnerID,
+		OwnerType: g.OwnerType, OwnerId: g.OwnerId,
 		SpecJson: specBytes,
 	}}, nil
 }
@@ -157,7 +157,7 @@ func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGra
 		Version:   firstNonEmpty(req.Graph.Version, "1.0.0"),
 		Status:    firstNonEmpty(req.Graph.Status, "draft"),
 		OwnerType: req.Graph.OwnerType,
-		OwnerID:   req.Graph.OwnerID,
+		OwnerId:   req.Graph.OwnerId,
 	}
 	if len(req.Graph.SpecJson) > 0 {
 		if err := json.Unmarshal(req.Graph.SpecJson, &g.Spec); err != nil {
