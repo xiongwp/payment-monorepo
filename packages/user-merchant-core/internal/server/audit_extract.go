@@ -5,8 +5,6 @@ import (
 	"reflect"
 
 	"google.golang.org/grpc/metadata"
-
-	"github.com/xiongwp/user-merchant-core/pkg/grpcutil"
 )
 
 // actorFromAuth 拦截器用：解析当前调用方的 actor 标识。
@@ -28,9 +26,9 @@ func actorFromAuth(ctx context.Context) string {
 			return vals[0]
 		}
 	}
-	if c := grpcutil.CallerFromContext(ctx); c != "" {
-		return c
-	}
+	// 老 grpcutil.CallerFromContext (gRPC AuthInterceptor 注入) 已删 —
+	// Kitex 切换后 AuthMW 待 port; 此处先返 anonymous, 等 kitexutil.AuthMW
+	// 接通后再加 metainfo 路径.
 	return "anonymous"
 }
 

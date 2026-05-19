@@ -8,8 +8,9 @@ import (
 	"github.com/xiongwp/user-merchant-core/internal/repo"
 )
 
-// AuditServer 把 admin_audit_log 的只读查询暴露成 gRPC。
-// 不带 Write：写入由 grpcutil.AuditInterceptor 在每条 mutation 之后自动完成。
+// AuditServer 把 admin_audit_log 的只读查询暴露成 Kitex AuditService.
+// 写入由 service 层在 mutation 路径完成 (auditstore.AuditStore).
+// 老的 grpcutil.AuditInterceptor 已删.
 type AuditServer struct {
 	repo repo.AuditRepository
 }

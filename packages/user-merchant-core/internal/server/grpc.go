@@ -22,13 +22,15 @@ import (
 	usercardservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/usercardservice"
 	userservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
 
+	"github.com/xiongwp/user-merchant-core/internal/auditstore"
 	"github.com/xiongwp/user-merchant-core/internal/cache"
 	"github.com/xiongwp/user-merchant-core/internal/repo"
 	"github.com/xiongwp/user-merchant-core/internal/service"
-	"github.com/xiongwp/user-merchant-core/pkg/grpcutil"
 )
 
-// Server 汇聚 merchant + merchant secret + user gRPC 适配层。
+// Server 汇聚 merchant + merchant secret + user 6 个 Kitex service 适配层.
+// 老 gRPC interceptor 配置 (PerKey/Timeouts/RateLimit/AuthTokens 等) 已删 —
+// Kitex 切换后中间件通过 server.WithMiddleware 接入, 不再走 server 结构体字段.
 type Server struct {
 	merchantSvc        service.MerchantService
 	merchantSecretSvc  service.MerchantSecretService
@@ -37,42 +39,26 @@ type Server struct {
 	auditRepo          repo.AuditRepository
 	merchantCache      *cache.MerchantCache
 	merchantDefaultRPS float64
-	authTokens         map[string]string
-	rateLimit          float64
-	rateBurst          int
-	perKey             grpcutil.PerKeyLimitOptions
-	timeouts           grpcutil.TimeoutConfig
-	idempotencyStore   grpcutil.IdempotencyStore
+	idempotencyStore   auditstore.IdempotencyStore // 业务路径 (Service 层) 自取做幂等; 不再做 interceptor 兜底
 	mutationMethods    map[string]struct{}
-	auditStore         grpcutil.AuditStore
+	auditStore         auditstore.AuditStore
 	logger             *zap.Logger
 }
 
 // Deps gRPC server 的依赖
 type Deps struct {
-	MerchantSvc       service.MerchantService
-	MerchantSecretSvc service.MerchantSecretService
-	UserSvc           *service.UserService
-	UserCardSvc       *service.UserCardService
-	AuditRepo         repo.AuditRepository
-	// MerchantCache 用来在限流 resolver 里快速查商户配置；nil 时自动退化
-	// 到全局 DefaultRPS。
-	MerchantCache    *cache.MerchantCache
+	MerchantSvc        service.MerchantService
+	MerchantSecretSvc  service.MerchantSecretService
+	UserSvc            *service.UserService
+	UserCardSvc        *service.UserCardService
+	AuditRepo          repo.AuditRepository
+	MerchantCache      *cache.MerchantCache
 	MerchantDefaultRPS float64
-	// 可选：interceptor 配置
-	AuthTokens   map[string]string // 非空开启 bearer 鉴权
-	RateLimitRPS float64           // 全局限流 0 关闭
-	RateBurst    int
-	// Per-key 限流：按 metadata header 分桶，防某商户滥用影响他人。
-	PerKey       grpcutil.PerKeyLimitOptions
-	// 每 RPC 默认 context timeout；0 关闭
-	Timeouts     grpcutil.TimeoutConfig
-	// Idempotency：Stripe 风格 Idempotency-Key header；仅对 MutationMethods 启用。
-	IdempotencyStore   grpcutil.IdempotencyStore
-	MutationMethods    map[string]struct{}
-	// Audit：每个 mutation 写 append-only 链式日志。
-	AuditStore grpcutil.AuditStore
-	Logger     *zap.Logger
+	// Idempotency / Audit: 业务路径自取.
+	IdempotencyStore auditstore.IdempotencyStore
+	MutationMethods  map[string]struct{}
+	AuditStore       auditstore.AuditStore
+	Logger           *zap.Logger
 }
 
 // NewServer 构造
@@ -88,11 +74,6 @@ func NewServer(d Deps) *Server {
 		auditRepo:          d.AuditRepo,
 		merchantCache:      d.MerchantCache,
 		merchantDefaultRPS: d.MerchantDefaultRPS,
-		authTokens:         d.AuthTokens,
-		rateLimit:          d.RateLimitRPS,
-		rateBurst:          d.RateBurst,
-		perKey:             d.PerKey,
-		timeouts:           d.Timeouts,
 		idempotencyStore:   d.IdempotencyStore,
 		mutationMethods:    d.MutationMethods,
 		auditStore:         d.AuditStore,

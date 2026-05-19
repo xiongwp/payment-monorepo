@@ -356,11 +356,11 @@ func svcUserCard(
 	return service.NewUserCardService(r, cc, logger)
 }
 
-func newIdempotencyStore(r repo.IdempotencyRepository) grpcutil.IdempotencyStore {
+func newIdempotencyStore(r repo.IdempotencyRepository) auditstore.IdempotencyStore {
 	return server.NewIdempotencyStore(r)
 }
 
-func newAuditStore(r repo.AuditRepository) grpcutil.AuditStore {
+func newAuditStore(r repo.AuditRepository) auditstore.AuditStore {
 	return server.NewAuditStore(r)
 }
 

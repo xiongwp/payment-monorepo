@@ -5,15 +5,15 @@ import (
 
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 	"github.com/xiongwp/user-merchant-core/internal/repo"
-	"github.com/xiongwp/user-merchant-core/pkg/grpcutil"
+	"github.com/xiongwp/user-merchant-core/internal/auditstore"
 )
 
-// auditStoreAdapter 把 repo.AuditRepository 包成 pkg/grpcutil.AuditStore；
+// auditStoreAdapter 把 repo.AuditRepository 包成 pkg/auditstore.AuditStore；
 // pkg 层不依赖 internal/domain，所以字段一个个搬。
 type auditStoreAdapter struct{ r repo.AuditRepository }
 
 // NewAuditStore 构造 adapter
-func NewAuditStore(r repo.AuditRepository) grpcutil.AuditStore {
+func NewAuditStore(r repo.AuditRepository) auditstore.AuditStore {
 	return &auditStoreAdapter{r: r}
 }
 
@@ -21,7 +21,7 @@ func (a *auditStoreAdapter) LastHash(ctx context.Context, actor string) (string,
 	return a.r.LastHash(ctx, actor)
 }
 
-func (a *auditStoreAdapter) Insert(ctx context.Context, e *grpcutil.AuditEntry) error {
+func (a *auditStoreAdapter) Insert(ctx context.Context, e *auditstore.AuditEntry) error {
 	return a.r.Insert(ctx, &domain.AdminAuditLog{
 		Actor:       e.Actor,
 		ActorIP:     e.ActorIP,
@@ -41,16 +41,16 @@ func (a *auditStoreAdapter) Insert(ctx context.Context, e *grpcutil.AuditEntry) 
 type idempotencyStoreAdapter struct{ r repo.IdempotencyRepository }
 
 // NewIdempotencyStore 构造
-func NewIdempotencyStore(r repo.IdempotencyRepository) grpcutil.IdempotencyStore {
+func NewIdempotencyStore(r repo.IdempotencyRepository) auditstore.IdempotencyStore {
 	return &idempotencyStoreAdapter{r: r}
 }
 
-func (a *idempotencyStoreAdapter) Get(ctx context.Context, key, method string) (*grpcutil.IdempotencyRecord, bool, error) {
+func (a *idempotencyStoreAdapter) Get(ctx context.Context, key, method string) (*auditstore.IdempotencyRecord, bool, error) {
 	rec, ok, err := a.r.Get(ctx, key, method)
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	return &grpcutil.IdempotencyRecord{
+	return &auditstore.IdempotencyRecord{
 		Key:          rec.Key,
 		Method:       rec.Method,
 		RequestHash:  rec.RequestHash,
@@ -61,7 +61,7 @@ func (a *idempotencyStoreAdapter) Get(ctx context.Context, key, method string) (
 	}, true, nil
 }
 
-func (a *idempotencyStoreAdapter) TryInsert(ctx context.Context, rec *grpcutil.IdempotencyRecord) error {
+func (a *idempotencyStoreAdapter) TryInsert(ctx context.Context, rec *auditstore.IdempotencyRecord) error {
 	err := a.r.TryInsert(ctx, &domain.IdempotencyRecord{
 		Key:          rec.Key,
 		Method:       rec.Method,
@@ -72,7 +72,7 @@ func (a *idempotencyStoreAdapter) TryInsert(ctx context.Context, rec *grpcutil.I
 		Expires:      rec.Expires,
 	})
 	if err == repo.ErrIdempotencyExists {
-		return grpcutil.ErrIdempotencyExists
+		return auditstore.ErrIdempotencyExists
 	}
 	return err
 }
