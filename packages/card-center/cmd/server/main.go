@@ -36,6 +36,7 @@ import (
 	"github.com/xiongwp/card-center/internal/vault"
 	"github.com/xiongwp/payment-util/audit/kafkago"
 	"github.com/xiongwp/payment-util/configcenter"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"github.com/xiongwp/payment-util/obsbootstrap"
 )
 
