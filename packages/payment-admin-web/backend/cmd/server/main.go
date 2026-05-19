@@ -251,11 +251,7 @@ func main() {
 		MaxHeaderBytes:    1 << 14, // 16 KB — admin doesn't need more
 	}
 	log.Printf("payment-admin-web backend listening on %s", addr)
-	log.Printf("  order-core         → %s", orderAddr)
-	log.Printf("  payment-core       → %s", paymentCoreAddr)
-	log.Printf("  kms-manage         → %s", kmsAddr)
-	log.Printf("  risk-manage        → %s", riskAddr)
-	log.Printf("  user-merchant-core → %s", userMerchantAddr)
+	log.Printf("  upstream Kitex services resolved via etcd registry / Kitex client builtins")
 
 	// wave M: graceful shutdown. SIGINT/SIGTERM initiates a 15s drain; in-flight
 	// requests finish or get canceled by context. Prevents K8s rollouts from

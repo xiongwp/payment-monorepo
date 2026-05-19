@@ -8,6 +8,7 @@ import (
 	"github.com/gorilla/mux"
 
 	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
+	merchantsecretservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )

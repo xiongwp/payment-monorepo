@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/mux"
 
 	orderv1 "github.com/xiongwp/order-core/kitex_gen/order/v1"
+	webhookdeliveryservice "github.com/xiongwp/order-core/kitex_gen/order/v1/webhookdeliveryservice"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )
