@@ -12,7 +12,7 @@ syntax = "proto3";
 
 package configcenter.v1;
 
-option go_package = "github.com/xiongwp/config-center/api/proto/configcenter/v1;configcenterv1";
+option go_package = "github.com/xiongwp/config-center/kitex_gen/configcenter/v1;configcenterv1";
 
 import "google/protobuf/timestamp.proto";
 

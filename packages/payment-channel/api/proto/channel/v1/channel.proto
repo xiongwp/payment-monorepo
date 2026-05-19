@@ -5,7 +5,7 @@
 syntax = "proto3";
 
 package channel.v1;
-option go_package = "github.com/xiongwp/payment-channel/api/proto/channel/v1;channelv1";
+option go_package = "github.com/xiongwp/payment-channel/kitex_gen/channel/v1;channelv1";
 
 service AcquirerService {
   rpc Charge(ChargeRequest) returns (ChargeResponse);

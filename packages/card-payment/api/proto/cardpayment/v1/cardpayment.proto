@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package cardpayment.v1;
 
-option go_package = "github.com/xiongwp/card-payment/api/proto/cardpayment/v1;cardpaymentv1";
+option go_package = "github.com/xiongwp/card-payment/kitex_gen/cardpayment/v1;cardpaymentv1";
 
 // CardPayment 卡支付处理服务，**唯一**会拿到 PAN 的服务。
 //

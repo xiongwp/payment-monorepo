@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package order.v1;
 
-option go_package = "github.com/xiongwp/order-core/api/proto/order/v1;orderv1";
+option go_package = "github.com/xiongwp/order-core/kitex_gen/order/v1;orderv1";
 
 message GLAccount {
   string id             = 1;
