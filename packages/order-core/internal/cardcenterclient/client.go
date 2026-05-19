@@ -15,6 +15,7 @@ import (
 	"github.com/cloudwego/kitex/transport"
 	cardcenterv1 "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1"
 	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenter"
+	"github.com/xiongwp/payment-util/kitexutil"
 )
 
 // ErrNotConfigured Endpoint 为空时构造返此 sentinel.
@@ -51,19 +52,22 @@ type CreatePaymentTokenResponse struct {
 	Network      string
 }
 
-// New 构造 Kitex client.
+// New 构造 Kitex client. cfg.Endpoint 为空 → 走 etcd discovery.
 func New(cfg Config) (*Client, error) {
-	if cfg.Endpoint == "" {
-		return nil, ErrNotConfigured
-	}
 	t := cfg.RPCTimeout
 	if t <= 0 {
 		t = 5 * time.Second
 	}
-	cli, err := cardcenterservice.NewClient("card-center",
-		client.WithHostPorts(cfg.Endpoint),
-		client.WithTransportProtocol(transport.GRPC),		client.WithRPCTimeout(t),
+	// ETCD-5: kitexutil.DefaultClientOptions 自动按 REGISTRY_ENDPOINTS 切 etcd / 静态.
+	opts := kitexutil.DefaultClientOptions("card-center")
+	opts = append(opts,
+		client.WithTransportProtocol(transport.GRPC),
+		client.WithRPCTimeout(t),
 	)
+	if cfg.Endpoint != "" {
+		opts = append(opts, client.WithHostPorts(cfg.Endpoint))
+	}
+	cli, err := cardcenterservice.NewClient("card-center", opts...)
 	if err != nil {
 		return nil, fmt.Errorf("dial card-center: %w", err)
 	}

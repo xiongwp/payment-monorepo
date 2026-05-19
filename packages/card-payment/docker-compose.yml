@@ -81,6 +81,9 @@ services:
       CARDPAYMENT_TLS_CERT: "/etc/tls/server.crt"
       CARDPAYMENT_TLS_KEY:  "/etc/tls/server.key"
       CARDPAYMENT_TLS_CLIENT_CA: "/etc/tls/client-ca.crt"
+      # etcd 服务发现 + 自注册 (kitexutil 读 REGISTRY_ENDPOINTS).
+      REGISTRY_ENDPOINTS: "etcd:2379"
+      ADVERTISE_HOST: "card-payment"
       CARDPAYMENT_CARD_CENTER_ENDPOINT: "card-center:9443"
       CARDPAYMENT_CARD_CENTER_CLIENT_CERT: "/etc/tls/server.crt"
       CARDPAYMENT_CARD_CENTER_CLIENT_KEY:  "/etc/tls/server.key"

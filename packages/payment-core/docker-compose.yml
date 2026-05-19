@@ -35,7 +35,10 @@ services:
     environment:
       PAYCORE_LOG_DEV: "false"
       # ── 服务发现 + 下游 endpoint（payment-stack network 内 DNS 直连）──
+      # kitexutil 读 REGISTRY_ENDPOINTS, viper 兼容读 PAYCORE_*.
       PAYCORE_REGISTRY_ENDPOINTS: "etcd:2379"
+      REGISTRY_ENDPOINTS: "etcd:2379"
+      ADVERTISE_HOST: "payment-core"
       PAYCORE_CHANNEL_ENDPOINT: "payment-channel:9092"
       PAYCORE_RISK_ENDPOINT: "risk-manage:9590"
       PAYCORE_KMS_ENDPOINT: "kms-manage:9390"

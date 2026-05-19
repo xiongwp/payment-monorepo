@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"time"
 
 	"gorm.io/driver/mysql"
@@ -167,13 +168,20 @@ func newIDServiceImpl(sf *generator.Snowflake, main *segment.MainBuffer, sh *seg
 // 注: 老 shadow.UnaryServerInterceptor 是 gRPC interceptor, 切 Kitex 时需要重写一份
 // shadow.KitexMW (从 metainfo 取 shadow 标志位写 ctx). 当前留 TODO.
 func newKitexServer(impl idgenpb.IDServiceServer, log *zap.Logger) server.Server {
-	addr, _ := net.ResolveTCPAddr("tcp", ":9090")
-	srv := idgenservice.NewServer(impl,
+	const port = 9090
+	addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "id-service"
+	}
+	srvOpts := []server.Option{
 		server.WithServiceAddr(addr),
 		server.WithSuite(rpcInfoSuite{}),
-		// kitexutil 共享 MW (3 条标准链):
-		// TODO: shadow MW (替换老 shadow.UnaryServerInterceptor) — 等 Kitex shadow port 完成
-	)
+	}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("id-generator", fmt.Sprintf("%s:%d", advHost, port))...)
+	// kitexutil 共享 MW (3 条标准链):
+	// TODO: shadow MW (替换老 shadow.UnaryServerInterceptor) — 等 Kitex shadow port 完成
+	srv := idgenservice.NewServer(impl, srvOpts...)
 	_ = log
 	return srv
 }

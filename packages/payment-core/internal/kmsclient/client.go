@@ -51,17 +51,19 @@ func Dial(registry []string, endpoint, bearerToken string, rpcTimeout time.Durat
 	if rpcTimeout <= 0 {
 		rpcTimeout = 3 * time.Second
 	}
-	opts := []client.Option{
-		client.WithRPCTimeout(rpcTimeout),
-		client.WithHostPorts(endpoint),
-		client.WithTransportProtocol(transport.GRPC),		// TODO: shadow + trace MW (port 老 grpc shadow.UnaryClientInterceptor / trace.UnaryClientInterceptor)
-	}
-	if len(registry) > 0 {
-		// TODO: opts = append(opts, client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, "")))
-		_ = registry
-	}
-
 	const serviceName = "kms-manage"
+	// ETCD-5: 默认走 kitexutil.DefaultClientOptions (REGISTRY_ENDPOINTS 非空 → etcd
+	// discovery, 否则静态 docker DNS). 显式 endpoint 仍可覆盖.
+	opts := kitexutil.DefaultClientOptions(serviceName)
+	opts = append(opts,
+		client.WithRPCTimeout(rpcTimeout),
+		client.WithTransportProtocol(transport.GRPC),
+	)
+	if endpoint != "" {
+		opts = append(opts, client.WithHostPorts(endpoint))
+	}
+	_ = registry // legacy param; 由 REGISTRY_ENDPOINTS env 替代
+
 	api, err := kmsservice.NewClient(serviceName, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kmsclient kitex dial: %w", err)

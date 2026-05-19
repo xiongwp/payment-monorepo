@@ -14,6 +14,7 @@ import (
 
 	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/transport"
+	"github.com/xiongwp/payment-util/kitexutil"
 
 	channelv1 "github.com/xiongwp/payment-channel/kitex_gen/channel/v1"
 	acquirerservice "github.com/xiongwp/payment-channel/kitex_gen/channel/v1/acquirerservice"
@@ -63,19 +64,21 @@ func Dial(registry []string, endpoint string, rpcTimeout time.Duration) (Client,
 		rpcTimeout = 10 * time.Second
 	}
 	endpoint = normalizeGRPCTarget(endpoint)
-	if endpoint == "" && len(registry) == 0 {
-		return nil, fmt.Errorf("channelclient.Dial: endpoint and registry both empty")
-	}
 	const serviceName = "payment-channel"
 
-	opts := []client.Option{
+	// ETCD-5: 默认走 kitexutil.DefaultClientOptions (REGISTRY_ENDPOINTS 非空 → etcd
+	// discovery, 否则静态 docker DNS). 显式 endpoint 仍可覆盖.
+	opts := kitexutil.DefaultClientOptions(serviceName)
+	opts = append(opts,
 		client.WithRPCTimeout(rpcTimeout),
-		client.WithHostPorts(endpoint),
-		client.WithTransportProtocol(transport.GRPC),		// TODO: 接 etcd resolver — client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, ""))
+		client.WithTransportProtocol(transport.GRPC),
 		// TODO: per-method retry policy — Charge/Capture/Void/Refund 仅 UNAVAILABLE; Query +DEADLINE_EXCEEDED
 		// TODO: shadow + trace MW (port 老 grpc interceptor)
+	)
+	if endpoint != "" {
+		opts = append(opts, client.WithHostPorts(endpoint))
 	}
-	_ = registry
+	_ = registry // legacy param; 由 REGISTRY_ENDPOINTS env 替代
 
 	api, err := acquirerservice.NewClient(serviceName, opts...)
 	if err != nil {

@@ -7,12 +7,12 @@ package cardcenterclient
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/transport"
+	"github.com/xiongwp/payment-util/kitexutil"
 
 	cardcenterv1 "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1"
 	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenter"
@@ -39,19 +39,20 @@ type Config struct {
 // 优先 RegistryEndpoints → etcd 服务发现; 空时退回 cfg.Endpoint 静态 DNS.
 // 至少给一个非空.
 func New(cfg Config) (*Client, error) {
-	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
-		return nil, errors.New("cardcenterclient: endpoint or registry_endpoints required")
-	}
 	t := cfg.RPCTimeout
 	if t <= 0 {
 		t = 5 * time.Second
 	}
-	opts := []client.Option{
+	// ETCD-5: kitexutil.DefaultClientOptions 自动按 REGISTRY_ENDPOINTS 切 etcd / 静态.
+	opts := kitexutil.DefaultClientOptions("card-center")
+	opts = append(opts,
 		client.WithRPCTimeout(t),
-		client.WithHostPorts(cfg.Endpoint),
-		client.WithTransportProtocol(transport.GRPC),	}
-	// TODO: 接 etcd 后 opts = append(opts, client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, "")))
-	_ = cfg.RegistryEndpoints
+		client.WithTransportProtocol(transport.GRPC),
+	)
+	if cfg.Endpoint != "" {
+		opts = append(opts, client.WithHostPorts(cfg.Endpoint))
+	}
+	_ = cfg.RegistryEndpoints // legacy field; 由 REGISTRY_ENDPOINTS env 替代
 
 	api, err := cardcenterservice.NewClient("card-center", opts...)
 	if err != nil {

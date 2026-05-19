@@ -12,6 +12,7 @@ import (
 
 	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/transport"
+	"github.com/xiongwp/payment-util/kitexutil"
 
 	riskv1 "github.com/xiongwp/risk-manage/kitex_gen/risk/v1"
 	riskservice "github.com/xiongwp/risk-manage/kitex_gen/risk/v1/riskservice"
@@ -109,17 +110,18 @@ func Dial(registry []string, endpoint string, rpcTimeout time.Duration) (Client,
 			break
 		}
 	}
-	if endpoint == "" && len(registry) == 0 {
-		return nil, fmt.Errorf("riskclient.Dial: endpoint and registry both empty")
-	}
 	const serviceName = "risk-manage"
-	// 内部 service mesh 不走 mTLS (按用户决策); 边缘网关单向 TLS 在 ingress 层做.
-	opts := []client.Option{
+	// ETCD-5: 默认走 kitexutil.DefaultClientOptions (REGISTRY_ENDPOINTS 非空 → etcd
+	// discovery, 否则静态 docker DNS). 显式 endpoint 仍可覆盖.
+	opts := kitexutil.DefaultClientOptions(serviceName)
+	opts = append(opts,
 		client.WithRPCTimeout(rpcTimeout),
-		client.WithHostPorts(endpoint),
-		client.WithTransportProtocol(transport.GRPC),		// TODO: shadow / trace MW (port 老 grpc shadow.UnaryClientInterceptor + trace.UnaryClientInterceptor)
+		client.WithTransportProtocol(transport.GRPC),
+	)
+	if endpoint != "" {
+		opts = append(opts, client.WithHostPorts(endpoint))
 	}
-	_ = registry // TODO: etcd resolver (kitexutil.NewEtcdResolver)
+	_ = registry // legacy param; 由 REGISTRY_ENDPOINTS env 替代
 
 	api, err := riskservice.NewClient(serviceName, opts...)
 	if err != nil {

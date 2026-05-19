@@ -83,8 +83,10 @@ services:
       ORDERCORE_ACCOUNTING_ADMIN_HTTP_ADDR: "http://accounting-system:8888"
       # payment-core 渠道转发（同 compose network）
       ORDERCORE_PAYMENT_CORE_ENDPOINT: "payment-core:9090"
-      # etcd 服务发现 + 自注册
+      # etcd 服务发现 + 自注册 (kitexutil 读 REGISTRY_ENDPOINTS, viper 兼容读 ORDERCORE_*).
       ORDERCORE_REGISTRY_ENDPOINTS: "etcd:2379"
+      REGISTRY_ENDPOINTS: "etcd:2379"
+      ADVERTISE_HOST: "order-core"
       # config-center: refund max / webhook retries / outbox interval / charge expire
       ORDERCORE_CONFIGCENTER_ENDPOINT: "http://config-center:9691"
       ORDERCORE_CONFIGCENTER_NAMESPACE: "order-core"

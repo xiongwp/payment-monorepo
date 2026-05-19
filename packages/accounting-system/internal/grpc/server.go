@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,11 +18,20 @@ import (
 	"github.com/xiongwp/accounting-system/internal/service"
 	"github.com/shopspring/decimal"
 	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 )
+
+// envOrDefault — 单行 env getter, 默认值兜底 (本文件多处使用, 保持代码一致).
+func envOrDefault(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
+}
 
 // Server Kitex 服务实现 (同时暴露 4 个 service: AccountingService /
 // AccountingAdminService / FreezeService / TransactionService).
@@ -168,7 +178,16 @@ func (s *Server) ListenAndServe(ctx context.Context, port int, loadShed LoadShed
 	//
 	// TODO: kitexutil MW (Recover/Trace/Shadow/Timeout/Auth/LoadShed/Logging 7 条)
 	// 等 kitexutil port 完成后接 server.WithMiddleware(...).
-	srv := kitexserver.NewServer(kitexserver.WithServiceAddr(addr))
+	//
+	// etcd 服务注册: REGISTRY_ENDPOINTS env 非空 → 自动注册到 etcd 为
+	// "accounting-service" (docker DNS 名). 上游 caller (split-payment /
+	// accounting-admin-web / order-core 等) 用 kitexutil.DefaultClientOptions(
+	// "accounting-service") 解析时能立刻找到. ADVERTISE_HOST env 控制广播 host;
+	// dev 留空走 container hostname, prod 设 POD_IP.
+	serverOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	advertise := fmt.Sprintf("%s:%d", envOrDefault("ADVERTISE_HOST", "accounting-service"), port)
+	serverOpts = append(serverOpts, kitexutil.DefaultServerOptions("accounting-service", advertise)...)
+	srv := kitexserver.NewServer(serverOpts...)
 	accountingservice.RegisterService(srv, s)
 	// TODO: accountingadminservice/freezeservice/transactionservice register 暂禁
 	// — 它们的 RPC method set 跟 *Server 现状对不上 (proto 漂移). 待逐一对齐再开.

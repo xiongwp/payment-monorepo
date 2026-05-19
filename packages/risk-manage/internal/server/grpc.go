@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -71,13 +72,17 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	// TODO: shadow MW (从 metainfo 取 x-shadow 翻 ctx) — 等 kitexutil.ShadowMW port 完成
 	// TODO: putil.KitexMW (trace) — 等 payment-util/trace 提 KitexMW
 	// TODO: authInterceptor port → kitexutil.MultiAuthMW(tokens, apiKeys)
-	srv := riskservice.NewServer(s,
-		kitexserver.WithServiceAddr(addr),
-		// TODO 接 kitexutil MW 三件套 + shadow / trace / auth port 完成后取消注释:
-		// kitexserver.WithMiddleware(kitexutil.RecoverMW(s.logger)),
-		// kitexserver.WithMiddleware(kitexutil.LogMW(s.logger)),
-		// kitexserver.WithMiddleware(kitexutil.MetricsMW()),
-	)
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "risk-manage"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("risk-manage", fmt.Sprintf("%s:%d", advHost, port))...)
+	// TODO 接 kitexutil MW 三件套 + shadow / trace / auth port 完成后取消注释:
+	// srvOpts = append(srvOpts, kitexserver.WithMiddleware(kitexutil.RecoverMW(s.logger)))
+	// srvOpts = append(srvOpts, kitexserver.WithMiddleware(kitexutil.LogMW(s.logger)))
+	// srvOpts = append(srvOpts, kitexserver.WithMiddleware(kitexutil.MetricsMW()))
+	srv := riskservice.NewServer(s, srvOpts...)
 	// gRPC 占位 _ = ... 已删 (Kitex 不再需要 grpc.ServerOption / keepalive / metadata).
 	_ = kitexutil.LogMW // 留 (Kitex MW 接通后用)
 	s.logger.Info("risk-manage Kitex listening", zap.Int("port", port))

@@ -22,6 +22,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/pkg/discovery"
@@ -58,7 +59,7 @@ var defaultHosts = map[string]hostPort{
 	"risk-manage":        {"risk-manage", "9090"},
 	"split-payment":      {"split-payment", "9098"},
 	"config-center":      {"config-center", "9092"},
-	"id-generator":       {"id-service", "9093"},        // docker DNS != pkg name
+	"id-generator":       {"id-service", "9090"},        // docker DNS != pkg name
 }
 
 // DefaultHostPorts 给 Kitex client 装上一个 host:port 解析:
@@ -102,25 +103,45 @@ func envVarFor(svcName string) string {
 	return strings.ToUpper(r.Replace(svcName)) + "_GRPC_ADDR"
 }
 
-// DefaultClientOptions 返回 Kitex client 推荐的拨号 Options 组合:
+// DefaultClientOptions 返回 Kitex client 推荐的拨号 Options 组合.
 //
-//  1. WithResolver(tcpStaticResolver) — 把 host:port 包成显式 network="tcp"
-//     的 discovery.Instance, 绕过 Kitex 默认 WithHostPorts 在 v0.16.x 下
-//     生成的 instance.Network()=="" 缺陷 (会被 netpoll 解读成 unix socket,
-//     报 "dial unix accounting-system:50051: no such file or directory").
-//  2. WithTransportProtocol(transport.GRPC) — 强制 gRPC over HTTP/2 over TCP.
+// 拨号方式按 REGISTRY_ENDPOINTS env 自动切换:
+//   - REGISTRY_ENDPOINTS 非空 → etcd discovery (EtcdResolver). 服务名当 etcd key,
+//     server 端 EtcdRegistry 注册时用同名. 实例摘除 / 加入实时感知.
+//   - REGISTRY_ENDPOINTS 空    → fallback 静态 host:port (tcpStaticResolver).
+//     仅 dev / 单机调试使用; prod 必须配 REGISTRY_ENDPOINTS.
+//
+// 同时强制 transport.GRPC (HTTP/2 over TCP), 避免 Kitex netpoll 在某些 host
+// 字符串下把网络栈降级成 unix socket.
 //
 // 用法 (variadic spread):
 //
-//	cli, _ := accountingservice.NewClient("accounting-system",
-//	    kitexutil.DefaultClientOptions("accounting-system")...,
+//	cli, _ := accountingservice.NewClient("accounting-service",
+//	    kitexutil.DefaultClientOptions("accounting-service")...,
 //	)
+//
+// 注意: svcName 必须跟 server 端 EtcdRegistry 注册时用的同名 (即 docker DNS 名
+// 或 prod 注册的 service-name, 不一定是 Go 包名).
 func DefaultClientOptions(svcName string) []client.Option {
-	addr := resolveHostPort(svcName)
-	return []client.Option{
-		client.WithResolver(newTCPStaticResolver(addr)),
+	opts := []client.Option{
 		client.WithTransportProtocol(transport.GRPC),
 	}
+	if eps := RegistryEndpointsFromEnv(); len(eps) > 0 {
+		// 走 etcd 服务发现. 如果 etcd 拨号失败这里 panic, 让 ops 立刻发现
+		// "REGISTRY_ENDPOINTS 配错了" 而不是 dial 业务服务时报奇怪错.
+		cli, err := NewEtcdClient(eps, 5*time.Second)
+		if err != nil {
+			// log + fallback 静态; 启动期 etcd 不可达不应该把进程顶死
+			// (后续 etcd 起来时 Kitex 内部不会自动重试 — 这是 v0.16.x 限制).
+			opts = append(opts, client.WithResolver(newTCPStaticResolver(resolveHostPort(svcName))))
+			return opts
+		}
+		opts = append(opts, client.WithResolver(NewEtcdResolver(cli, "")))
+		return opts
+	}
+	// REGISTRY_ENDPOINTS 没配 — 走静态 host:port, 仅 dev.
+	opts = append(opts, client.WithResolver(newTCPStaticResolver(resolveHostPort(svcName))))
+	return opts
 }
 
 // tcpStaticResolver 静态 resolver, 每次 Resolve 都返同一个 instance, 强制

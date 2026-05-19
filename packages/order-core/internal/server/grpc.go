@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 
 	kitexserver "github.com/cloudwego/kitex/server"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -133,7 +135,15 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	if err != nil {
 		return fmt.Errorf("resolve addr :%d: %w", port, err)
 	}
-	gs := kitexserver.NewServer(kitexserver.WithServiceAddr(addr))
+	// etcd 自注册 — REGISTRY_ENDPOINTS env 非空时生效, 注册到 "order-core" 名下;
+	// ADVERTISE_HOST env 覆盖广播 host (prod 用 POD_IP).
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "order-core"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("order-core", fmt.Sprintf("%s:%d", advHost, port))...)
+	gs := kitexserver.NewServer(srvOpts...)
 
 	// 主链路 4 个 service — 一定注册
 	paymentintentservice.RegisterService(gs, s)

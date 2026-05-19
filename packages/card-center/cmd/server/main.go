@@ -335,11 +335,16 @@ func newGRPCServer(v *viper.Viper, svc *service.Service, logger *zap.Logger) (ki
 	_ = server.NewClientCNAllowList(allowMap)
 	_ = logger
 
-	addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", v.GetInt("server.grpc_port")))
+	port := v.GetInt("server.grpc_port")
+	addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 	bs := server.NewServer(svc, logger)
-	srv := cardcenterservice.NewServer(bs,
-		kitexserver.WithServiceAddr(addr),
-	)
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "card-center"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("card-center", fmt.Sprintf("%s:%d", advHost, port))...)
+	srv := cardcenterservice.NewServer(bs, srvOpts...)
 	return srv, bs, nil
 }
 

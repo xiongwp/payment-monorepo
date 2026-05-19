@@ -87,6 +87,9 @@ services:
       CARDCENTER_TLS_KEY:  "/etc/tls/server.key"
       CARDCENTER_TLS_CLIENT_CA: "/etc/tls/client-ca.crt"
       CARDCENTER_KMS_ENDPOINT: "kms-card:9290"
+      # etcd 服务发现 + 自注册 (kitexutil 读 REGISTRY_ENDPOINTS).
+      REGISTRY_ENDPOINTS: "etcd:2379"
+      ADVERTISE_HOST: "card-center"
       CARDCENTER_AUDIT_KAFKA_BROKERS: "audit-kafka:9093"
       # config-center: per-user tokenize 限流 / HTTPS CORS / session TTL / Luhn 严格 mode
       CARDCENTER_CONFIGCENTER_ENDPOINT: "http://config-center:9691"

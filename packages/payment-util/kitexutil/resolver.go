@@ -1,7 +1,12 @@
 // resolver.go — Kitex client 服务发现 (etcd 后端).
 //
-// 跟 serviceregistry.RegisterResolver (gRPC resolver) 等价的 Kitex 版.
-// Kitex discovery.Resolver 接口 + discovery.Instance, 真接 Kitex 0.10 API.
+// 跟 payment-util/serviceregistry.Registrar (旧 gRPC 注册器) 用同一份 etcd 数据:
+//
+//	etcd key 格式: <service>/<addr>    (例: accounting-service/10.0.0.5:50051)
+//	etcd value:    "addr=10.0.0.5:50051" 或 etcd endpoints.Endpoint JSON
+//
+// 这样 Kitex 时代和 gRPC 时代的注册数据互通, 切换可以渐进 (一边的 server 先切, 另一边
+// 的 client 仍能发现; 反之亦然).
 
 package kitexutil
 
@@ -18,13 +23,11 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-// EtcdResolver 把 etcd 里的服务实例列表暴露给 Kitex client.
-//
-// 跟 serviceregistry 一致的 key 前缀 (默认 "/recon/services"), 跟现有 gRPC 注册数据
-// 完全兼容 — 同一份 etcd registry 数据 Kitex client 和老 grpc client 都能读.
+// EtcdResolver 把 etcd 里的服务实例列表暴露给 Kitex client. 数据格式跟
+// serviceregistry.Registrar 完全一致 (`<svcname>/<addr>` 平铺 key), 老 gRPC 注册的
+// 数据 Kitex client 直接复用.
 type EtcdResolver struct {
-	cli    *clientv3.Client
-	prefix string
+	cli *clientv3.Client
 
 	mu    sync.RWMutex
 	cache map[string][]discovery.Instance // service → instances
@@ -32,16 +35,13 @@ type EtcdResolver struct {
 
 // NewEtcdResolver 用现有 etcd client 构造 resolver.
 //
-// prefix 留空走 "/recon/services" — 跟 serviceregistry/registrar.go 同款约定,
-// 老 gRPC 注册的服务 Kitex client 直接复用同一份注册数据.
+// 第二个参数 prefix 保留向后兼容签名, 当前实现不使用 — etcd 数据格式跟 etcd 官方
+// endpoints.Manager 对齐 (flat <svcname>/<addr> key, 无业务前缀).
 func NewEtcdResolver(cli *clientv3.Client, prefix string) *EtcdResolver {
-	if prefix == "" {
-		prefix = "/recon/services"
-	}
+	_ = prefix // 保留参数兼容 caller, 当前不使用
 	return &EtcdResolver{
-		cli:    cli,
-		prefix: strings.TrimRight(prefix, "/"),
-		cache:  map[string][]discovery.Instance{},
+		cli:   cli,
+		cache: map[string][]discovery.Instance{},
 	}
 }
 
@@ -59,36 +59,42 @@ type rpcInfoLike interface {
 // Resolve 拉某 service 的所有实例.
 //
 // 行为:
-//   - etcd 不可达 → 返 error, Kitex 走 retry / fallback 路径
-//   - 空列表 → 返 ErrNoEndpoints, 调用方 (kitexutil dial helper) 应降级 fallback addr
-//   - 实例 value 格式: "addr=host:port,weight=10,zone=us-east-1" (兼容 serviceregistry)
+//   - etcd 不可达 → 返 error, Kitex 走 retry 路径
+//   - 空列表 → 返 ErrNoEndpoints, Kitex 短路, caller log 后报错
+//   - etcd key 格式: <service>/<addr>  (例: "accounting-service/10.0.0.5:50051")
+//   - value 兼容 etcd 官方 endpoints.Endpoint JSON 和 "addr=host:port,weight=10"
+//     纯文本两种格式; 任一可解出 addr 就行.
+//
+// 重要: 这里的 "<service>" 名字必须跟 server 端 EtcdRegistrar 注册时用的同一份.
+// docker DNS 名 vs 包名 不一致的, 以 EtcdRegistrar 写进 etcd 那个为准.
 func (r *EtcdResolver) Resolve(ctx context.Context, desc string) (discovery.Result, error) {
 	if r.cli == nil {
 		return discovery.Result{}, errors.New("kitexutil: etcd client nil")
 	}
-	key := r.prefix + "/" + desc + "/"
+	prefix := strings.TrimRight(desc, "/") + "/"
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	resp, err := r.cli.Get(ctx, key, clientv3.WithPrefix())
+	resp, err := r.cli.Get(ctx, prefix, clientv3.WithPrefix())
 	if err != nil {
-		return discovery.Result{}, fmt.Errorf("etcd Get %s: %w", key, err)
+		return discovery.Result{}, fmt.Errorf("etcd Get %s: %w", prefix, err)
 	}
 	if len(resp.Kvs) == 0 {
 		return discovery.Result{CacheKey: desc, Cacheable: true}, ErrNoEndpoints
 	}
 	out := make([]discovery.Instance, 0, len(resp.Kvs))
 	for _, kv := range resp.Kvs {
-		addr := strings.TrimPrefix(string(kv.Key), key)
+		addr := strings.TrimPrefix(string(kv.Key), prefix)
 		if addr == "" {
 			continue
 		}
 		tags := parseTags(string(kv.Value))
-		weight := 10
-		if w, ok := tags["weight"]; ok {
-			// 兼容 "weight=20" 格式 (parseTags 已经把 key=val 拆出)
-			_ = w
+		// 注册器写入的 value 是 etcd endpoints.Endpoint JSON, 形如
+		// {"Addr":"10.0.0.5:50051","Metadata":null}. 用 Addr 字段覆盖 key
+		// 里取的 addr (二者应该一致, 防 key/value 漂移以 value 为准).
+		if a, ok := tags["Addr"]; ok && a != "" {
+			addr = strings.Trim(a, "\"")
 		}
-		out = append(out, discovery.NewInstance("tcp", addr, weight, tags))
+		out = append(out, discovery.NewInstance("tcp", addr, 10, tags))
 	}
 	if len(out) == 0 {
 		return discovery.Result{CacheKey: desc, Cacheable: true}, ErrNoEndpoints

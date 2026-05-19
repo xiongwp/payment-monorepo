@@ -35,17 +35,26 @@ services:
         payment-util: ../payment-util
       secrets:
         - GITHUB_TOKEN
+    container_name: id-service
     environment:
-      ETCD_ENDPOINT: accounting-etcd:2379
+      # 老 grpc 时代用的 ETCD_ENDPOINT (single, legacy 命名), 保留兼容.
+      ETCD_ENDPOINT: etcd:2379
+      # kitexutil EtcdRegistrar 读 REGISTRY_ENDPOINTS; ADVERTISE_HOST = container DNS.
+      REGISTRY_ENDPOINTS: "etcd:2379"
+      ADVERTISE_HOST: "id-service"
     depends_on:
       - mysql
     ports:
       - "9090:9090"
     networks:
       - accounting-network
+      - payment-stack
 
 networks:
   accounting-network:
+    external: true
+  payment-stack:
+    name: ${SHARED_DB_NETWORK:-payment-stack}
     external: true
 
 volumes:

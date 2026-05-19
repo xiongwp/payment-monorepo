@@ -54,7 +54,11 @@ done
 # 顺序定义；每条 = stack 目录 + 阻塞等待 healthcheck 端口（空 = 不等）
 # **config-center 必须排第一**：业务服务启动期会同步连它拉 snapshot
 STACKS=(
+  # Layer 1: 基础设施 — etcd 必须最先起, 业务服务启动期会自注册到 etcd, caller 也从这读实例
+  "etcd|"
+  # Layer 2: 配置中心 — 业务服务启动同步拉 snapshot, 在业务服务之前
   "config-center|http://localhost:9691/healthz"
+  # Layer 3: leaf 服务 (依赖少)
   "id-generator|"
   "kms-manage|"
   "user-merchant-core|"
@@ -67,6 +71,7 @@ STACKS=(
   "card-center|"
   "card-payment|"
   "reconplatform|"
+  # Layer 4: 边缘 (gateway / admin web)
   "api-gateway|"
 )
 

@@ -40,6 +40,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"             // MF-1: mysql driver
 	kitexserver "github.com/cloudwego/kitex/server" // KX-11: Kitex server
 	"github.com/twmb/franz-go/pkg/kgo"              // SP-11 refund kafka subscriber
+	"github.com/xiongwp/payment-util/kitexutil"     // ETCD-4 self-register
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
@@ -667,7 +668,13 @@ func runAdminGRPCServer(ctx context.Context, cfg *config.Config, log *zap.Logger
 	// Kitex server — adminservice.NewServer 把 grpcsvc.Server (实现 grpcsvc.AdminServiceServer
 	// interface) 注册到 Kitex. 老 grpc.NewServer + RegisterAdminServiceServer 替换为单行.
 	impl := grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, auditSink, log)
-	srv := adminservice.NewServer(impl, kitexserver.WithServiceAddr(addr))
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "split-payment"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("split-payment", fmt.Sprintf("%s:%d", advHost, port))...)
+	srv := adminservice.NewServer(impl, srvOpts...)
 
 	log.Info("split-payment Kitex AdminService listening", zap.Int("port", port))
 	go func() { <-ctx.Done(); _ = srv.Stop() }()

@@ -7,9 +7,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"time"
 
 	kitexserver "github.com/cloudwego/kitex/server"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"go.uber.org/zap"
 	paymentcorev1 "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1"
 	paymentcoreservice "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
@@ -65,9 +67,13 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	}
 	// TODO 接 kitexutil MW (Recover / Trace / Shadow / Logging / Metrics / RateLimit / Auth)
 	// — 等 kitexutil port 完成后接 server.WithMiddleware(...).
-	srv := paymentcoreservice.NewServer(s,
-		kitexserver.WithServiceAddr(addr),
-	)
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "payment-core"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("payment-core", fmt.Sprintf("%s:%d", advHost, port))...)
+	srv := paymentcoreservice.NewServer(s, srvOpts...)
 	s.logger.Info("payment-core Kitex listening", zap.Int("port", port))
 
 	// P1-16 graceful shutdown timeout 兜底: K8s preStop 默认 30s 内必须 drain 完毕,

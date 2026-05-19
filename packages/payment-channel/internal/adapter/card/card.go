@@ -15,6 +15,7 @@ import (
 
 	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/transport"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"go.uber.org/zap"
 
 	cardpaymentv1 "github.com/xiongwp/card-payment/kitex_gen/cardpayment/v1"
@@ -36,18 +37,21 @@ type Adapter struct {
 	timeout time.Duration
 }
 
-// New 构造真 Kitex adapter. Endpoint 为空时返错 (caller 决定是否降级).
+// New 构造真 Kitex adapter. Endpoint 为空时走 etcd discovery (REGISTRY_ENDPOINTS).
 func New(cfg Config, logger *zap.Logger) (*Adapter, error) {
-	if cfg.CardPaymentEndpoint == "" {
-		return nil, errors.New("card adapter: CardPaymentEndpoint required")
-	}
 	if cfg.RPCTimeout == 0 {
 		cfg.RPCTimeout = 30 * time.Second
 	}
-	cli, err := cardpaymentservice.NewClient("card-payment",
-		client.WithHostPorts(cfg.CardPaymentEndpoint),
-		client.WithTransportProtocol(transport.GRPC),		client.WithRPCTimeout(cfg.RPCTimeout),
+	// ETCD-5: kitexutil.DefaultClientOptions 自动按 REGISTRY_ENDPOINTS 切 etcd / 静态.
+	opts := kitexutil.DefaultClientOptions("card-payment")
+	opts = append(opts,
+		client.WithTransportProtocol(transport.GRPC),
+		client.WithRPCTimeout(cfg.RPCTimeout),
 	)
+	if cfg.CardPaymentEndpoint != "" {
+		opts = append(opts, client.WithHostPorts(cfg.CardPaymentEndpoint))
+	}
+	cli, err := cardpaymentservice.NewClient("card-payment", opts...)
 	if err != nil {
 		return nil, fmt.Errorf("dial card-payment: %w", err)
 	}

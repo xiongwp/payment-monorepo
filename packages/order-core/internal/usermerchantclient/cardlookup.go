@@ -13,6 +13,7 @@ import (
 
 	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/transport"
+	"github.com/xiongwp/payment-util/kitexutil"
 	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
 	usercardinternalservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/usercardinternalservice"
 )
@@ -42,19 +43,22 @@ type kitexLookup struct {
 	timeout time.Duration
 }
 
-// New 构造真 Kitex client. Endpoint 为空时直接报错 (上游 dev 模式应该传 NewStub).
+// New 构造真 Kitex client. Endpoint 为空时走 etcd discovery (REGISTRY_ENDPOINTS).
 func New(cfg Config) (CardLookup, error) {
-	if cfg.Endpoint == "" {
-		return nil, ErrNotConfigured
-	}
 	t := cfg.RPCTimeout
 	if t <= 0 {
 		t = 3 * time.Second
 	}
-	cli, err := usercardinternalservice.NewClient("user-merchant-core",
-		client.WithHostPorts(cfg.Endpoint),
-		client.WithTransportProtocol(transport.GRPC),		client.WithRPCTimeout(t),
+	// ETCD-5: kitexutil.DefaultClientOptions 自动按 REGISTRY_ENDPOINTS 切 etcd / 静态.
+	opts := kitexutil.DefaultClientOptions("user-merchant-core")
+	opts = append(opts,
+		client.WithTransportProtocol(transport.GRPC),
+		client.WithRPCTimeout(t),
 	)
+	if cfg.Endpoint != "" {
+		opts = append(opts, client.WithHostPorts(cfg.Endpoint))
+	}
+	cli, err := usercardinternalservice.NewClient("user-merchant-core", opts...)
 	if err != nil {
 		return nil, fmt.Errorf("dial user-merchant-core internal: %w", err)
 	}

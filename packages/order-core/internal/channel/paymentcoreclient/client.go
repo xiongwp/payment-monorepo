@@ -13,6 +13,7 @@ import (
 
 	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/transport"
+	"github.com/xiongwp/payment-util/kitexutil"
 
 	paymentcorev1 "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1"
 	paymentcoreservice "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
@@ -34,14 +35,18 @@ func Dial(name string, registry []string, endpoint string, rpcTimeout time.Durat
 		rpcTimeout = 10 * time.Second
 	}
 	const serviceName = "payment-core"
-	opts := []client.Option{
+	// ETCD-5: kitexutil.DefaultClientOptions 自动按 REGISTRY_ENDPOINTS 切 etcd / 静态.
+	opts := kitexutil.DefaultClientOptions(serviceName)
+	opts = append(opts,
 		client.WithRPCTimeout(rpcTimeout),
-		client.WithHostPorts(endpoint),
-		client.WithTransportProtocol(transport.GRPC),		// TODO: 接 etcd resolver — client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, ""))
+		client.WithTransportProtocol(transport.GRPC),
 		// TODO: per-method retry policy — UNAVAILABLE 最多 3 次
 		// TODO: shadow + trace MW (port 老 grpc interceptor)
+	)
+	if endpoint != "" {
+		opts = append(opts, client.WithHostPorts(endpoint))
 	}
-	_ = registry
+	_ = registry // legacy param; 由 REGISTRY_ENDPOINTS env 替代
 
 	api, err := paymentcoreservice.NewClient(serviceName, opts...)
 	if err != nil {

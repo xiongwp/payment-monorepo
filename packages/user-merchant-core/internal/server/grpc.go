@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 
 	kitexserver "github.com/cloudwego/kitex/server"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"go.uber.org/zap"
 	auditservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/auditservice"
 	merchantsecretservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
@@ -92,7 +94,14 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	if err != nil {
 		return fmt.Errorf("resolve :%d: %w", port, err)
 	}
-	gs := kitexserver.NewServer(kitexserver.WithServiceAddr(addr))
+	// etcd 自注册 — REGISTRY_ENDPOINTS env 非空时生效, 注册到 "user-merchant-core" 名下.
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "user-merchant-core"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("user-merchant-core", fmt.Sprintf("%s:%d", advHost, port))...)
+	gs := kitexserver.NewServer(srvOpts...)
 
 	if s.merchantSvc != nil {
 		merchantservice.RegisterService(gs, NewMerchantServer(s.merchantSvc))

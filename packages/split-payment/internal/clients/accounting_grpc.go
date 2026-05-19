@@ -17,6 +17,7 @@ import (
 
 	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/transport"
+	"github.com/xiongwp/payment-util/kitexutil"
 
 	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 	transactionservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/transactionservice"
@@ -57,16 +58,25 @@ type AccountingGRPCClient struct {
 //
 // 老签名 NewAccountingGRPCClient(cc grpc.ClientConnInterface) 已废. 新签名直接
 // 拿 endpoint, Kitex 自带 connection pool + LB + keepalive.
+//
+// ETCD-5: 优先走 kitexutil.DefaultClientOptions ("accounting-service" 是 etcd
+// 注册名, 同 accounting-system docker DNS). REGISTRY_ENDPOINTS 没配时回退到
+// 静态 endpoint (老 dev / CLI 兼容); endpoint 字段允许空, 让 kitexutil 走 etcd.
 func NewAccountingGRPCClient(endpoint string) (*AccountingGRPCClient, error) {
-	cli, err := transactionservice.NewClient("accounting-system",
-		client.WithHostPorts(endpoint),
+	opts := kitexutil.DefaultClientOptions("accounting-service")
+	if endpoint != "" {
+		// 显式指定的 endpoint 优先级最高 (CLI / 测试场景).
+		opts = append(opts, client.WithHostPorts(endpoint))
+	}
+	opts = append(opts,
 		// 强制 gRPC over HTTP/2 over TCP, 避开 Kitex netpoll 把 host:port 当 unix
 		// socket 路径解读的 "dial unix ...: no such file or directory" 陷阱.
 		client.WithTransportProtocol(transport.GRPC),
 		client.WithRPCTimeout(3*time.Second),
 	)
+	cli, err := transactionservice.NewClient("accounting-service", opts...)
 	if err != nil {
-		return nil, fmt.Errorf("kitex dial accounting-system: %w", err)
+		return nil, fmt.Errorf("kitex dial accounting-service: %w", err)
 	}
 	return &AccountingGRPCClient{
 		cli:        cli,

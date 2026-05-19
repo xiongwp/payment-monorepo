@@ -285,14 +285,17 @@ func newServer(svc *service.KMSService, v *viper.Viper, cli *configcenter.Client
 	// Kitex middleware 链 — 待 kitexutil.MultiAuthMW 接通后, 把 tokens map[string]string
 	// 传进去做轮询验. 目前 AuthMW 还是 stub, 不读 tokens 内容.
 	_ = tokens
-	srv := kmsservice.NewServer(
-		&kitexImpl{inner: innerSrv},
-		server.WithServiceAddr(addr),
-		// 接 kitexutil MW; 等 Kitex middleware 形态对齐后 server.WithMiddleware(...) 直接装.
-		// TODO: kitexutil.RateLimitMW(rps, burst) — 跟老 RateLimitInterceptor 等价
-		// TODO: kitexutil.SANAllowMW(allowed) — 跟老 ClientIdentityInterceptor 等价
-		// 当前 stub 占位, 等 Kitex impl 验证后接上.
-	)
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "kms"
+	}
+	srvOpts := []server.Option{server.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("kms-manage", fmt.Sprintf("%s:%d", advHost, port))...)
+	// 接 kitexutil MW; 等 Kitex middleware 形态对齐后 server.WithMiddleware(...) 直接装.
+	// TODO: kitexutil.RateLimitMW(rps, burst) — 跟老 RateLimitInterceptor 等价
+	// TODO: kitexutil.SANAllowMW(allowed) — 跟老 ClientIdentityInterceptor 等价
+	// 当前 stub 占位, 等 Kitex impl 验证后接上.
+	srv := kmsservice.NewServer(&kitexImpl{inner: innerSrv}, srvOpts...)
 
 	// rate_limit 热更 — 现阶段 kitexutil.RateLimitMW 没接, 仅 log.
 	// 真实接好后改成 mw.SetLimit(r, b) 替换占位.

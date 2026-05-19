@@ -18,6 +18,7 @@ import (
 
 	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/transport"
+	"github.com/xiongwp/payment-util/kitexutil"
 
 	splitv1 "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1"
 	adminservice "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1/adminservice"
@@ -36,14 +37,17 @@ func NewMoneyflowHandler() *MoneyflowHandler { return &MoneyflowHandler{} }
 
 func (h *MoneyflowHandler) ensure() error {
 	h.once.Do(func() {
-		addr := os.Getenv("SPLIT_PAYMENT_GRPC_ADDR")
-		if addr == "" {
-			addr = "split-payment:9098"
+		// ETCD-5: 优先走 kitexutil.DefaultClientOptions ("split-payment" 注册名).
+		// REGISTRY_ENDPOINTS 没配时回退到 SPLIT_PAYMENT_GRPC_ADDR 静态拨号.
+		opts := kitexutil.DefaultClientOptions("split-payment")
+		if addr := os.Getenv("SPLIT_PAYMENT_GRPC_ADDR"); addr != "" {
+			opts = append(opts, client.WithHostPorts(addr))
 		}
-		cli, err := adminservice.NewClient("split-payment",
-			client.WithHostPorts(addr),
-			client.WithTransportProtocol(transport.GRPC),			client.WithRPCTimeout(15*time.Second),
+		opts = append(opts,
+			client.WithTransportProtocol(transport.GRPC),
+			client.WithRPCTimeout(15*time.Second),
 		)
+		cli, err := adminservice.NewClient("split-payment", opts...)
 		if err != nil {
 			h.dialEr = err
 			return

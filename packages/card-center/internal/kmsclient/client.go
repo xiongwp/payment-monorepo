@@ -6,7 +6,6 @@ package kmsclient
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -45,17 +44,12 @@ type Config struct {
 //
 // 至少给一个非空, 否则起不来.
 func New(cfg Config) (*Client, error) {
-	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
-		return nil, errors.New("kmsclient: endpoint or registry_endpoints required")
+	// ETCD-5: kitexutil.DefaultClientOptions 自动按 REGISTRY_ENDPOINTS 切 etcd / 静态.
+	opts := kitexutil.DefaultClientOptions("kms-manage")
+	if cfg.Endpoint != "" {
+		opts = append(opts, client.WithHostPorts(cfg.Endpoint))
 	}
-	opts := []client.Option{
-		client.WithHostPorts(cfg.Endpoint),
-	}
-	// 服务发现 — etcd 优先, fallback 直连. 接真实 etcd cli 后注入 kitexutil.NewEtcdResolver.
-	if len(cfg.RegistryEndpoints) > 0 {
-		// TODO: resolver, _ := buildEtcdResolver(cfg.RegistryEndpoints); opts = append(opts, client.WithResolver(resolver))
-		_ = cfg.RegistryEndpoints
-	}
+	_ = cfg.RegistryEndpoints // legacy field; 由 REGISTRY_ENDPOINTS env 替代
 
 	api, err := kmsservice.NewClient("kms-manage", opts...)
 	if err != nil {

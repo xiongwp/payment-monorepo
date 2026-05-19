@@ -8,9 +8,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"time"
 
 	kitexserver "github.com/cloudwego/kitex/server"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 	channelv1 "github.com/xiongwp/payment-channel/kitex_gen/channel/v1"
@@ -94,9 +96,13 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	if err != nil {
 		return err
 	}
-	srv := acquirerservice.NewServer(s,
-		kitexserver.WithServiceAddr(addr),
-	)
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "payment-channel"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("payment-channel", fmt.Sprintf("%s:%d", advHost, port))...)
+	srv := acquirerservice.NewServer(s, srvOpts...)
 	s.logger.Info("payment-channel Kitex listening", zap.Int("port", port))
 	go func() {
 		<-ctx.Done()

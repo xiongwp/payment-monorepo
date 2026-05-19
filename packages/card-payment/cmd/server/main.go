@@ -19,6 +19,7 @@ import (
 
 	kitexserver "github.com/cloudwego/kitex/server"
 	"github.com/spf13/viper"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
@@ -526,9 +527,13 @@ func newGRPCServer(v *viper.Viper, p *processor.Processor, logger *zap.Logger) (
 	addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 
 	bs := server.NewServer(p, logger)
-	srv := cardpaymentservice.NewServer(bs,
-		kitexserver.WithServiceAddr(addr),
-	)
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "card-payment"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("card-payment", fmt.Sprintf("%s:%d", advHost, port))...)
+	srv := cardpaymentservice.NewServer(bs, srvOpts...)
 	return srv, nil
 }
 
