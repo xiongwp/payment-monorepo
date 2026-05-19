@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 
-	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 )
 

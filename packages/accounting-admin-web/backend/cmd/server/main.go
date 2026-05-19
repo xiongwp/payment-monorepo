@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 	accountingadminservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
 	"github.com/xiongwp/accounting-admin-web/backend/internal/handler"
