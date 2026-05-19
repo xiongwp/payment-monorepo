@@ -14,8 +14,8 @@ import (
 
 	"github.com/cloudwego/kitex/client"
 
-	channelv1 "reconcile-system/packages/payment-channel/kitex_gen/channel/v1"
-	acquirerservice "reconcile-system/packages/payment-channel/kitex_gen/channel/v1/acquirerservice"
+	channelv1 "github.com/xiongwp/payment-channel/kitex_gen/channel/v1"
+	acquirerservice "github.com/xiongwp/payment-channel/kitex_gen/channel/v1/acquirerservice"
 )
 
 // normalizeGRPCTarget strips leading "grpc://" / "http://" if someone pasted

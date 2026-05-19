@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 )
 
 // TransactionHandler handles account transaction query endpoints.

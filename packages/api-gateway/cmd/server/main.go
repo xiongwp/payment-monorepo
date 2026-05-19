@@ -20,7 +20,7 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
-	"reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
+	"github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
 
 	"github.com/xiongwp/api-gateway/internal/metrics"
 	"github.com/xiongwp/api-gateway/internal/server"

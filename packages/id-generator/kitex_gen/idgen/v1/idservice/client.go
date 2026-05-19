@@ -6,13 +6,13 @@ import (
 	"context"
 	client "github.com/cloudwego/kitex/client"
 	callopt "github.com/cloudwego/kitex/client/callopt"
-	proto "github.com/xiongwp/id-generator/kitex_gen/id-generator/internal/proto"
+	v1 "github.com/xiongwp/id-generator/kitex_gen/idgen/v1"
 )
 
 // Client is designed to provide IDL-compatible methods with call-option parameter for kitex framework.
 type Client interface {
-	GetID(ctx context.Context, Req *proto.IDRequest, callOptions ...callopt.Option) (r *proto.IDResponse, err error)
-	GetIDs(ctx context.Context, Req *proto.BatchRequest, callOptions ...callopt.Option) (r *proto.BatchResponse, err error)
+	GetID(ctx context.Context, Req *v1.IDRequest, callOptions ...callopt.Option) (r *v1.IDResponse, err error)
+	GetIDs(ctx context.Context, Req *v1.BatchRequest, callOptions ...callopt.Option) (r *v1.BatchResponse, err error)
 }
 
 // NewClient creates a client for the service defined in IDL.
@@ -44,12 +44,12 @@ type kIDServiceClient struct {
 	*kClient
 }
 
-func (p *kIDServiceClient) GetID(ctx context.Context, Req *proto.IDRequest, callOptions ...callopt.Option) (r *proto.IDResponse, err error) {
+func (p *kIDServiceClient) GetID(ctx context.Context, Req *v1.IDRequest, callOptions ...callopt.Option) (r *v1.IDResponse, err error) {
 	ctx = client.NewCtxWithCallOptions(ctx, callOptions)
 	return p.kClient.GetID(ctx, Req)
 }
 
-func (p *kIDServiceClient) GetIDs(ctx context.Context, Req *proto.BatchRequest, callOptions ...callopt.Option) (r *proto.BatchResponse, err error) {
+func (p *kIDServiceClient) GetIDs(ctx context.Context, Req *v1.BatchRequest, callOptions ...callopt.Option) (r *v1.BatchResponse, err error) {
 	ctx = client.NewCtxWithCallOptions(ctx, callOptions)
 	return p.kClient.GetIDs(ctx, Req)
 }

@@ -22,9 +22,9 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
 
-	cardcenterservice "reconcile-system/packages/card-center/kitex_gen/cardcenter/v1/cardcenterservice"
+	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenterservice"
 
 	"github.com/xiongwp/card-center/internal/audit"
 	"github.com/xiongwp/card-center/internal/httpsauth"

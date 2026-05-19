@@ -13,27 +13,27 @@ package clients
 
 import (
 	// order-core (8 services in kitex_gen/order/v1/)
-	auditservice "reconcile-system/packages/order-core/kitex_gen/order/v1/auditservice"
-	chargeservice "reconcile-system/packages/order-core/kitex_gen/order/v1/chargeservice"
-	disputeservice "reconcile-system/packages/order-core/kitex_gen/order/v1/disputeservice"
-	ledgerservice "reconcile-system/packages/order-core/kitex_gen/order/v1/ledgerservice"
-	paymentintentservice "reconcile-system/packages/order-core/kitex_gen/order/v1/paymentintentservice"
-	refundservice "reconcile-system/packages/order-core/kitex_gen/order/v1/refundservice"
-	webhookdeliveryservice "reconcile-system/packages/order-core/kitex_gen/order/v1/webhookdeliveryservice"
-	webhookservice "reconcile-system/packages/order-core/kitex_gen/order/v1/webhookservice"
+	auditservice "github.com/xiongwp/order-core/kitex_gen/order/v1/auditservice"
+	chargeservice "github.com/xiongwp/order-core/kitex_gen/order/v1/chargeservice"
+	disputeservice "github.com/xiongwp/order-core/kitex_gen/order/v1/disputeservice"
+	ledgerservice "github.com/xiongwp/order-core/kitex_gen/order/v1/ledgerservice"
+	paymentintentservice "github.com/xiongwp/order-core/kitex_gen/order/v1/paymentintentservice"
+	refundservice "github.com/xiongwp/order-core/kitex_gen/order/v1/refundservice"
+	webhookdeliveryservice "github.com/xiongwp/order-core/kitex_gen/order/v1/webhookdeliveryservice"
+	webhookservice "github.com/xiongwp/order-core/kitex_gen/order/v1/webhookservice"
 
 	// user-merchant-core (5 callable services, UserCardInternal 内部专用不暴露给 admin BFF)
-	umAuditservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/auditservice"
-	merchantsecretservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
-	merchantservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/merchantservice"
-	usercardservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/usercardservice"
-	userservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
+	umAuditservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/auditservice"
+	merchantsecretservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
+	merchantservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/merchantservice"
+	usercardservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/usercardservice"
+	userservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
 
 	// Other Kitex services (1 service each)
-	kmsservice "reconcile-system/packages/kms-manage/kitex_gen/kms/v1/kmsservice"
-	paymentcoreservice "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
-	riskservice "reconcile-system/packages/risk-manage/kitex_gen/risk/v1/riskservice"
-	splitadminservice "reconcile-system/packages/split-payment/kitex_gen/split_payment/v1/adminservice"
+	kmsservice "github.com/xiongwp/kms-manage/kitex_gen/kms/v1/kmsservice"
+	paymentcoreservice "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
+	riskservice "github.com/xiongwp/risk-manage/kitex_gen/risk/v1/riskservice"
+	splitadminservice "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1/adminservice"
 )
 
 // Deps 是传给 handler 的一包 Kitex RPC 客户端, 生产时全部已 dial 好.

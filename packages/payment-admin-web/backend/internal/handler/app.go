@@ -19,7 +19,7 @@ import (
 
 	"github.com/gorilla/mux"
 
-	orderv1 "reconcile-system/packages/order-core/kitex_gen/order/v1"
+	orderv1 "github.com/xiongwp/order-core/kitex_gen/order/v1"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )

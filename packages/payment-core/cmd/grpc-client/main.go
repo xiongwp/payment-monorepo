@@ -15,8 +15,8 @@ import (
 	"github.com/cloudwego/kitex/client"
 	"github.com/xiongwp/payment-util/kitexutil"
 
-	paymentcorev1 "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1"
-	paymentcoreservice "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
+	paymentcorev1 "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1"
+	paymentcoreservice "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
 )
 
 func main() {

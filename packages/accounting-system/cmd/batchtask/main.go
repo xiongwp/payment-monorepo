@@ -31,8 +31,8 @@ import (
 
 	kitexclient "github.com/cloudwego/kitex/client"
 
-	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
-	accountingadminservice "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingadminservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
 	"github.com/spf13/viper"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"os"

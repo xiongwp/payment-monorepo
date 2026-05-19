@@ -22,8 +22,8 @@ import (
 	"github.com/cloudwego/kitex/client"
 	"go.uber.org/zap"
 
-	cardpaymentv1 "reconcile-system/packages/card-payment/kitex_gen/cardpayment/v1"
-	cardpaymentservice "reconcile-system/packages/card-payment/kitex_gen/cardpayment/v1/cardpaymentservice"
+	cardpaymentv1 "github.com/xiongwp/card-payment/kitex_gen/cardpayment/v1"
+	cardpaymentservice "github.com/xiongwp/card-payment/kitex_gen/cardpayment/v1/cardpaymentservice"
 
 	"github.com/xiongwp/payment-channel/internal/channel"
 )

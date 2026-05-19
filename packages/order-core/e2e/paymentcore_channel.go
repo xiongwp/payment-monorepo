@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strconv"
 	"time"
-	paymentcorev1 "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1"
+	paymentcorev1 "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1"
 
 	"github.com/xiongwp/order-core/internal/channel"
 )

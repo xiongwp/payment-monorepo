@@ -12,8 +12,8 @@ import (
 	"github.com/cloudwego/kitex/pkg/rpcinfo"
 	"github.com/cloudwego/kitex/pkg/transmeta"
 
-	pb "reconcile-system/packages/id-generator/kitex_gen/idgen/v1"
-	"reconcile-system/packages/id-generator/kitex_gen/idgen/v1/idservice"
+	pb "github.com/xiongwp/id-generator/kitex_gen/idgen/v1"
+	"github.com/xiongwp/id-generator/kitex_gen/idgen/v1/idservice"
 )
 
 var (

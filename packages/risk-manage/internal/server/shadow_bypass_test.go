@@ -8,7 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
-	riskv1 "reconcile-system/packages/risk-manage/kitex_gen/risk/v1"
+	riskv1 "github.com/xiongwp/risk-manage/kitex_gen/risk/v1"
 	"github.com/xiongwp/payment-util/shadow"
 )
 

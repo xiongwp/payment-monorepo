@@ -10,12 +10,12 @@ import (
 
 	kitexserver "github.com/cloudwego/kitex/server"
 	"go.uber.org/zap"
-	auditservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/auditservice"
-	merchantsecretservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
-	merchantservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/merchantservice"
-	usercardinternalservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/usercardinternalservice"
-	usercardservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/usercardservice"
-	userservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
+	auditservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/auditservice"
+	merchantsecretservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
+	merchantservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/merchantservice"
+	usercardinternalservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/usercardinternalservice"
+	usercardservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/usercardservice"
+	userservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
 
 	"github.com/xiongwp/user-merchant-core/internal/auditstore"
 	"github.com/xiongwp/user-merchant-core/internal/cache"

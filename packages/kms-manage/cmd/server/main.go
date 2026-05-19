@@ -23,8 +23,8 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
-	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
-	kmsservice "reconcile-system/packages/kms-manage/kitex_gen/kms/v1/kmsservice"
+	kmsv1 "github.com/xiongwp/kms-manage/kitex_gen/kms/v1"
+	kmsservice "github.com/xiongwp/kms-manage/kitex_gen/kms/v1/kmsservice"
 
 	"github.com/xiongwp/kms-manage/internal/keystore"
 	"github.com/xiongwp/kms-manage/internal/metrics"

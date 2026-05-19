@@ -11,7 +11,7 @@ import (
 
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
-	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
+	kmsv1 "github.com/xiongwp/kms-manage/kitex_gen/kms/v1"
 	"github.com/xiongwp/kms-manage/internal/service"
 )
 

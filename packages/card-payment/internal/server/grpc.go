@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
-	cardpaymentv1 "reconcile-system/packages/card-payment/kitex_gen/cardpayment/v1"
+	cardpaymentv1 "github.com/xiongwp/card-payment/kitex_gen/cardpayment/v1"
 
 	"github.com/xiongwp/card-payment/internal/processor"
 )

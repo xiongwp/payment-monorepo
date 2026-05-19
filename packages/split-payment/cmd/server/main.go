@@ -43,7 +43,7 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
-	adminservice "reconcile-system/packages/split-payment/kitex_gen/split_payment/v1/adminservice"
+	adminservice "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1/adminservice"
 )
 
 // main fx.New(Module).Run() — Module 见 providers.go.

@@ -25,8 +25,8 @@ import (
 
 	"github.com/xiongwp/payment-util/kitexutil"
 
-	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
-	"reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/accountingservice"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	"github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 
 	"github.com/xiongwp/order-core/internal/domain"
 	_ "github.com/xiongwp/order-core/internal/shadow"

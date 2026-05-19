@@ -27,7 +27,7 @@ import (
 
 	"go.uber.org/zap"
 
-	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
 )
 
 // cacheEntry 短期缓存 jwt → user_id 校验结果

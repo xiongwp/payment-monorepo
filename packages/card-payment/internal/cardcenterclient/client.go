@@ -13,8 +13,8 @@ import (
 
 	"github.com/cloudwego/kitex/client"
 
-	cardcenterv1 "reconcile-system/packages/card-center/kitex_gen/cardcenter/v1"
-	cardcenterservice "reconcile-system/packages/card-center/kitex_gen/cardcenter/v1/cardcenterservice"
+	cardcenterv1 "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1"
+	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenterservice"
 
 	"github.com/xiongwp/card-payment/internal/processor"
 )

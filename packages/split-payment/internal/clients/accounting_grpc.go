@@ -15,8 +15,8 @@ import (
 
 	"github.com/cloudwego/kitex/client"
 
-	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
-	transactionservice "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/transactionservice"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	transactionservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/transactionservice"
 
 	"reconcile-system/packages/split-payment/internal/domain"
 )

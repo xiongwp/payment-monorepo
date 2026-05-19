@@ -22,7 +22,7 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
-	cardpaymentservice "reconcile-system/packages/card-payment/kitex_gen/cardpayment/v1/cardpaymentservice"
+	cardpaymentservice "github.com/xiongwp/card-payment/kitex_gen/cardpayment/v1/cardpaymentservice"
 
 	"github.com/xiongwp/card-payment/internal/adapter/amex"
 	"github.com/xiongwp/card-payment/internal/adapter/jcb"

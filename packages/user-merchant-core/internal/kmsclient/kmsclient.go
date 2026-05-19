@@ -12,8 +12,8 @@ import (
 	"github.com/cloudwego/kitex/client"
 	"github.com/xiongwp/payment-util/kitexutil"
 
-	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
-	kmsservice "reconcile-system/packages/kms-manage/kitex_gen/kms/v1/kmsservice"
+	kmsv1 "github.com/xiongwp/kms-manage/kitex_gen/kms/v1"
+	kmsservice "github.com/xiongwp/kms-manage/kitex_gen/kms/v1/kmsservice"
 
 	"github.com/xiongwp/user-merchant-core/internal/metrics"
 )

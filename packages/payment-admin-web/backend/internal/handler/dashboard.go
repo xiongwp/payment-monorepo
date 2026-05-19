@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"time"
 
-	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
-	orderv1 "reconcile-system/packages/order-core/kitex_gen/order/v1"
-	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
+	kmsv1 "github.com/xiongwp/kms-manage/kitex_gen/kms/v1"
+	orderv1 "github.com/xiongwp/order-core/kitex_gen/order/v1"
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )

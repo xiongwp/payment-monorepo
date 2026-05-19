@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 )
 
 // SnapshotHandler handles balance snapshot endpoints.

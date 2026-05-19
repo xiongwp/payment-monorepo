@@ -15,14 +15,14 @@ import (
 	"github.com/accounting-system/internal/repository"
 	"github.com/accounting-system/internal/service"
 	"github.com/shopspring/decimal"
-	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	accountingservice "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/accountingservice"
-	accountingadminservice "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
-	freezeservice "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/freezeservice"
-	transactionservice "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/transactionservice"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
+	accountingadminservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
+	freezeservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/freezeservice"
+	transactionservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/transactionservice"
 )
 
 // Server Kitex 服务实现 (同时暴露 4 个 service: AccountingService /

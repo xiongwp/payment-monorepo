@@ -18,8 +18,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	riskv1 "reconcile-system/packages/risk-manage/kitex_gen/risk/v1"
-	riskservice "reconcile-system/packages/risk-manage/kitex_gen/risk/v1/riskservice"
+	riskv1 "github.com/xiongwp/risk-manage/kitex_gen/risk/v1"
+	riskservice "github.com/xiongwp/risk-manage/kitex_gen/risk/v1/riskservice"
 
 	"github.com/xiongwp/risk-manage/internal/auth"
 	"github.com/xiongwp/risk-manage/internal/engine"

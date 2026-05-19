@@ -1,4 +1,4 @@
-module github.com/accounting-system
+module github.com/xiongwp/accounting-system
 
 go 1.25.0
 

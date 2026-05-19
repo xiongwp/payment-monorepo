@@ -13,8 +13,8 @@ import (
 	kitexserver "github.com/cloudwego/kitex/server"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
-	channelv1 "reconcile-system/packages/payment-channel/kitex_gen/channel/v1"
-	acquirerservice "reconcile-system/packages/payment-channel/kitex_gen/channel/v1/acquirerservice"
+	channelv1 "github.com/xiongwp/payment-channel/kitex_gen/channel/v1"
+	acquirerservice "github.com/xiongwp/payment-channel/kitex_gen/channel/v1/acquirerservice"
 
 	"github.com/xiongwp/payment-channel/internal/channel"
 	"github.com/xiongwp/payment-channel/internal/service"

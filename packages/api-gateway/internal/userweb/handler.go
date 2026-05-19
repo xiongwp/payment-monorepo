@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
 	"go.uber.org/zap"
 )
 

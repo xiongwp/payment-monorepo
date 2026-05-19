@@ -9,7 +9,8 @@ import (
 	kitex "github.com/cloudwego/kitex/pkg/serviceinfo"
 	streaming "github.com/cloudwego/kitex/pkg/streaming"
 	proto "github.com/cloudwego/prutal"
-	proto "github.com/xiongwp/id-generator/kitex_gen/id-generator/internal/proto"
+	idgenv1 "github.com/xiongwp/id-generator/kitex_gen/idgen/v1"
+	v1 "github.com/xiongwp/id-generator/kitex_gen/idgen/v1"
 )
 
 var errInvalidMessageType = errors.New("invalid message type for service method handler")
@@ -67,7 +68,7 @@ func NewServiceInfoForStreamClient() *kitex.ServiceInfo {
 
 func newServiceInfo(hasStreaming bool, keepStreamingMethods bool, keepNonStreamingMethods bool) *kitex.ServiceInfo {
 	serviceName := "IDService"
-	handlerType := (*proto.IDService)(nil)
+	handlerType := (*idgenv1.IDService)(nil)
 	methods := map[string]kitex.MethodInfo{}
 	for name, m := range serviceMethods {
 		if m.IsStreaming() && !keepStreamingMethods {
@@ -99,17 +100,17 @@ func getIDHandler(ctx context.Context, handler interface{}, arg, result interfac
 	switch s := arg.(type) {
 	case *streaming.Args:
 		st := s.Stream
-		req := new(proto.IDRequest)
+		req := new(v1.IDRequest)
 		if err := st.RecvMsg(req); err != nil {
 			return err
 		}
-		resp, err := handler.(proto.IDService).GetID(ctx, req)
+		resp, err := handler.(idgenv1.IDService).GetID(ctx, req)
 		if err != nil {
 			return err
 		}
 		return st.SendMsg(resp)
 	case *GetIDArgs:
-		success, err := handler.(proto.IDService).GetID(ctx, s.Req)
+		success, err := handler.(idgenv1.IDService).GetID(ctx, s.Req)
 		if err != nil {
 			return err
 		}
@@ -129,7 +130,7 @@ func newGetIDResult() interface{} {
 }
 
 type GetIDArgs struct {
-	Req *proto.IDRequest
+	Req *v1.IDRequest
 }
 
 func (p *GetIDArgs) Marshal(out []byte) ([]byte, error) {
@@ -140,7 +141,7 @@ func (p *GetIDArgs) Marshal(out []byte) ([]byte, error) {
 }
 
 func (p *GetIDArgs) Unmarshal(in []byte) error {
-	msg := new(proto.IDRequest)
+	msg := new(v1.IDRequest)
 	if err := proto.Unmarshal(in, msg); err != nil {
 		return err
 	}
@@ -148,9 +149,9 @@ func (p *GetIDArgs) Unmarshal(in []byte) error {
 	return nil
 }
 
-var GetIDArgs_Req_DEFAULT *proto.IDRequest
+var GetIDArgs_Req_DEFAULT *v1.IDRequest
 
-func (p *GetIDArgs) GetReq() *proto.IDRequest {
+func (p *GetIDArgs) GetReq() *v1.IDRequest {
 	if !p.IsSetReq() {
 		return GetIDArgs_Req_DEFAULT
 	}
@@ -166,10 +167,10 @@ func (p *GetIDArgs) GetFirstArgument() interface{} {
 }
 
 type GetIDResult struct {
-	Success *proto.IDResponse
+	Success *v1.IDResponse
 }
 
-var GetIDResult_Success_DEFAULT *proto.IDResponse
+var GetIDResult_Success_DEFAULT *v1.IDResponse
 
 func (p *GetIDResult) Marshal(out []byte) ([]byte, error) {
 	if !p.IsSetSuccess() {
@@ -179,7 +180,7 @@ func (p *GetIDResult) Marshal(out []byte) ([]byte, error) {
 }
 
 func (p *GetIDResult) Unmarshal(in []byte) error {
-	msg := new(proto.IDResponse)
+	msg := new(v1.IDResponse)
 	if err := proto.Unmarshal(in, msg); err != nil {
 		return err
 	}
@@ -187,7 +188,7 @@ func (p *GetIDResult) Unmarshal(in []byte) error {
 	return nil
 }
 
-func (p *GetIDResult) GetSuccess() *proto.IDResponse {
+func (p *GetIDResult) GetSuccess() *v1.IDResponse {
 	if !p.IsSetSuccess() {
 		return GetIDResult_Success_DEFAULT
 	}
@@ -195,7 +196,7 @@ func (p *GetIDResult) GetSuccess() *proto.IDResponse {
 }
 
 func (p *GetIDResult) SetSuccess(x interface{}) {
-	p.Success = x.(*proto.IDResponse)
+	p.Success = x.(*v1.IDResponse)
 }
 
 func (p *GetIDResult) IsSetSuccess() bool {
@@ -210,17 +211,17 @@ func getIDsHandler(ctx context.Context, handler interface{}, arg, result interfa
 	switch s := arg.(type) {
 	case *streaming.Args:
 		st := s.Stream
-		req := new(proto.BatchRequest)
+		req := new(v1.BatchRequest)
 		if err := st.RecvMsg(req); err != nil {
 			return err
 		}
-		resp, err := handler.(proto.IDService).GetIDs(ctx, req)
+		resp, err := handler.(idgenv1.IDService).GetIDs(ctx, req)
 		if err != nil {
 			return err
 		}
 		return st.SendMsg(resp)
 	case *GetIDsArgs:
-		success, err := handler.(proto.IDService).GetIDs(ctx, s.Req)
+		success, err := handler.(idgenv1.IDService).GetIDs(ctx, s.Req)
 		if err != nil {
 			return err
 		}
@@ -240,7 +241,7 @@ func newGetIDsResult() interface{} {
 }
 
 type GetIDsArgs struct {
-	Req *proto.BatchRequest
+	Req *v1.BatchRequest
 }
 
 func (p *GetIDsArgs) Marshal(out []byte) ([]byte, error) {
@@ -251,7 +252,7 @@ func (p *GetIDsArgs) Marshal(out []byte) ([]byte, error) {
 }
 
 func (p *GetIDsArgs) Unmarshal(in []byte) error {
-	msg := new(proto.BatchRequest)
+	msg := new(v1.BatchRequest)
 	if err := proto.Unmarshal(in, msg); err != nil {
 		return err
 	}
@@ -259,9 +260,9 @@ func (p *GetIDsArgs) Unmarshal(in []byte) error {
 	return nil
 }
 
-var GetIDsArgs_Req_DEFAULT *proto.BatchRequest
+var GetIDsArgs_Req_DEFAULT *v1.BatchRequest
 
-func (p *GetIDsArgs) GetReq() *proto.BatchRequest {
+func (p *GetIDsArgs) GetReq() *v1.BatchRequest {
 	if !p.IsSetReq() {
 		return GetIDsArgs_Req_DEFAULT
 	}
@@ -277,10 +278,10 @@ func (p *GetIDsArgs) GetFirstArgument() interface{} {
 }
 
 type GetIDsResult struct {
-	Success *proto.BatchResponse
+	Success *v1.BatchResponse
 }
 
-var GetIDsResult_Success_DEFAULT *proto.BatchResponse
+var GetIDsResult_Success_DEFAULT *v1.BatchResponse
 
 func (p *GetIDsResult) Marshal(out []byte) ([]byte, error) {
 	if !p.IsSetSuccess() {
@@ -290,7 +291,7 @@ func (p *GetIDsResult) Marshal(out []byte) ([]byte, error) {
 }
 
 func (p *GetIDsResult) Unmarshal(in []byte) error {
-	msg := new(proto.BatchResponse)
+	msg := new(v1.BatchResponse)
 	if err := proto.Unmarshal(in, msg); err != nil {
 		return err
 	}
@@ -298,7 +299,7 @@ func (p *GetIDsResult) Unmarshal(in []byte) error {
 	return nil
 }
 
-func (p *GetIDsResult) GetSuccess() *proto.BatchResponse {
+func (p *GetIDsResult) GetSuccess() *v1.BatchResponse {
 	if !p.IsSetSuccess() {
 		return GetIDsResult_Success_DEFAULT
 	}
@@ -306,7 +307,7 @@ func (p *GetIDsResult) GetSuccess() *proto.BatchResponse {
 }
 
 func (p *GetIDsResult) SetSuccess(x interface{}) {
-	p.Success = x.(*proto.BatchResponse)
+	p.Success = x.(*v1.BatchResponse)
 }
 
 func (p *GetIDsResult) IsSetSuccess() bool {
@@ -327,7 +328,7 @@ func newServiceClient(c client.Client) *kClient {
 	}
 }
 
-func (p *kClient) GetID(ctx context.Context, Req *proto.IDRequest) (r *proto.IDResponse, err error) {
+func (p *kClient) GetID(ctx context.Context, Req *v1.IDRequest) (r *v1.IDResponse, err error) {
 	var _args GetIDArgs
 	_args.Req = Req
 	var _result GetIDResult
@@ -337,7 +338,7 @@ func (p *kClient) GetID(ctx context.Context, Req *proto.IDRequest) (r *proto.IDR
 	return _result.GetSuccess(), nil
 }
 
-func (p *kClient) GetIDs(ctx context.Context, Req *proto.BatchRequest) (r *proto.BatchResponse, err error) {
+func (p *kClient) GetIDs(ctx context.Context, Req *v1.BatchRequest) (r *v1.BatchResponse, err error) {
 	var _args GetIDsArgs
 	_args.Req = Req
 	var _result GetIDsResult

@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	channelv1 "reconcile-system/packages/payment-channel/kitex_gen/channel/v1"
+	channelv1 "github.com/xiongwp/payment-channel/kitex_gen/channel/v1"
 	"github.com/xiongwp/payment-core/internal/channel"
 	"github.com/xiongwp/payment-core/internal/channelclient"
 	"github.com/xiongwp/payment-core/internal/channelops"

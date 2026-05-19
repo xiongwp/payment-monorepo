@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	cardcenterv1 "reconcile-system/packages/card-center/kitex_gen/cardcenter/v1"
+	cardcenterv1 "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1"
 
 	"github.com/xiongwp/card-center/internal/repo"
 	"github.com/xiongwp/card-center/internal/service"
