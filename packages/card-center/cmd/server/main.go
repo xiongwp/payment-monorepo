@@ -22,9 +22,7 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
-
-	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenterservice"
+	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenter"
 
 	"github.com/xiongwp/card-center/internal/audit"
 	"github.com/xiongwp/card-center/internal/httpsauth"
@@ -37,9 +35,6 @@ import (
 	"github.com/xiongwp/payment-util/audit/kafkago"
 	"github.com/xiongwp/payment-util/configcenter"
 	"github.com/xiongwp/payment-util/obsbootstrap"
-	"github.com/xiongwp/payment-util/serviceregistry"
-	"github.com/xiongwp/payment-util/shadow"
-	"github.com/xiongwp/payment-util/trace"
 )
 
 func main() {
@@ -61,7 +56,6 @@ func main() {
 			newService,
 			newGRPCServer,
 			// HTTPS REST 入口（前端 SDK 直连用）+ 用户登录态校验
-			newUserMerchantConn,
 			newHTTPSVerifier,
 			newRESTServer,
 		),
@@ -223,15 +217,15 @@ func newKMSClient(v *viper.Viper) (vault.KMS, error) {
 		// 兜底：yaml 写成 list 的情况
 		registry = v.GetStringSlice("kms.registry_endpoints")
 	}
+	// kmsclient 当前是 STUB (kms-manage cross-service kitex_gen 未接通):
+	// Config 只剩 Endpoint / RegistryEndpoints / BearerToken / RPCTimeout.
+	// mTLS 字段 (ClientCert/ClientKey/ServerCA/Insecure) Kitex 切换后由 transport
+	// 层 client opts 接管, 不再在 Config struct 上.
 	cfg := kmsclient.Config{
 		Endpoint:          v.GetString("kms.endpoint"),
 		RegistryEndpoints: registry,
 		BearerToken:       v.GetString("kms.bearer_token"),
 		RPCTimeout:        v.GetDuration("kms.rpc_timeout"),
-		ClientCert:        v.GetString("kms.client_cert"),
-		ClientKey:         v.GetString("kms.client_key"),
-		ServerCA:          v.GetString("kms.server_ca"),
-		Insecure:          v.GetBool("kms.insecure"),
 	}
 	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
 		return nil, errors.New("kms.endpoint or kms.registry_endpoints required")
@@ -331,18 +325,12 @@ func newService(v *vault.Vault, sr repo.StoredCardRepo, pr repo.PaymentTokenRepo
 // dev 路径：tls.cert/key 都没配时，**自动降级到明文 listener** 让 card-center 能起来。
 // 适合本机 / docker-compose 调试。assertProdSafety 在 env=prod 下会拦截这种降级。
 func newGRPCServer(v *viper.Viper, svc *service.Service, logger *zap.Logger) (kitexserver.Server, *server.Server, error) {
+	// 历史: 这里构造 grpc.ServerOption + UnaryClientCNInterceptor(allow). Kitex
+	// 切换后没用了, allow 留作配置数据 (NewClientCNAllowList 仍可用), 等 Kitex
+	// kitexutil.MTLSClientCNMW 实现后重新接入.
 	allowMap := v.GetStringMapStringSlice("auth.client_cn")
-	allow := server.NewClientCNAllowList(allowMap)
-
-	opts := []grpc.ServerOption{
-		// TODO: kitexutil MW 三件套 (Trace / Shadow / ClientCN) — 等 kitexutil port 完成后接.
-		// 当前 gRPC interceptor 等价 MW 都标 TODO 待实现:
-		//   - trace.UnaryServerInterceptor(logger) → kitexutil.TraceMW(logger)
-		//   - shadow.UnaryServerInterceptor() → kitexutil.ShadowMW()
-		//   - server.UnaryClientCNInterceptor(allow) → kitexutil.MTLSClientCNMW(allow)  [mTLS 已不需要, 可删]
-	}
-	// mTLS 已不需要 (内部 service mesh 明文跑), tls.cert/key 配置废弃.
-	_ = opts
+	_ = server.NewClientCNAllowList(allowMap)
+	_ = logger
 
 	addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", v.GetInt("server.grpc_port")))
 	bs := server.NewServer(svc, logger)
@@ -381,71 +369,19 @@ func startGRPC(lc fx.Lifecycle, srv kitexserver.Server, _ *server.Server, v *vip
 	return nil
 }
 
-// ─── HTTPS REST + 登录态校验 (mTLS gRPC 直连 user-merchant-core) ────────────
+// ─── HTTPS REST + 登录态校验 (临时 STUB, 等 user-merchant kitex_gen 接通) ───
 
-// newUserMerchantConn 建 mTLS gRPC 连接到 user-merchant-core。
-//
-// 当 https.enabled=false 时返 (nil, nil) — fx 接受 nil provide，下游 newRESTServer
-// 也会因为 verifier 为 nil 而跳过 HTTPS 启动。这样开发模式不需要任何 mTLS 配置就能跑。
-func newUserMerchantConn(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) (*grpc.ClientConn, error) {
+// newHTTPSVerifier 装配 Verifier — 临时 STUB.
+// 原版通过 Kitex 调 user-merchant-core.IntrospectToken. cross-service kitex_gen
+// 还没接进 docker build 流程, 暂返 STUB UserMerchantVerifier (Verify 永远 fail-closed).
+// 接通 sibling sourcing 后改回 kitexutil.MustKitexClient(userservice.NewClient(...))
+// + 把 newUserMerchantConn 拨号 provider 加回来.
+func newHTTPSVerifier(v *viper.Viper, logger *zap.Logger) httpsauth.Verifier {
 	if !v.GetBool("https.enabled") {
-		logger.Info("https.enabled=false; skipping user-merchant-core dial")
-		return nil, nil
-	}
-	endpoint := v.GetString("auth.user_merchant.endpoint")
-	registry := splitCSV(v.GetString("auth.user_merchant.registry_endpoints"))
-	if len(registry) == 0 {
-		registry = v.GetStringSlice("auth.user_merchant.registry_endpoints")
-	}
-	// 跟全局 registry.endpoints 共用同一套 etcd cluster：上面单独配置是为了
-	// 个别服务（card-center 隔离 DC 内）允许跨 DC 走专用 registry，配置兼容。
-	if len(registry) == 0 {
-		registry = v.GetStringSlice("registry.endpoints")
-		if len(registry) == 0 {
-			registry = splitCSV(v.GetString("registry.endpoints"))
-		}
-	}
-	if endpoint == "" && len(registry) == 0 {
-		return nil, errors.New("https.enabled=true but auth.user_merchant.endpoint / registry_endpoints both empty")
-	}
-	// dev：auth.user_merchant.insecure=true → 明文 gRPC，跳过 mTLS。
-	insecureMode := v.GetBool("auth.user_merchant.insecure")
-	var dialOpts []grpc.DialOption
-	if insecureMode {
-		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecuregrpc.NewCredentials()))
-		logger.Info("card-center → user-merchant-core: INSECURE mode (dev)")
-	} else {
-		tlsCfg, err := buildClientMTLS(
-			v.GetString("auth.user_merchant.client_cert"),
-			v.GetString("auth.user_merchant.client_key"),
-			v.GetString("auth.user_merchant.server_ca"),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("user-merchant client tls: %w", err)
-		}
-		dialOpts = append(dialOpts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
-	}
-	// DialWithFallback：registry 非空时走 etcd:///user-merchant-core（拿真实存活
-	// 副本，绕开 docker DNS alias 错绑），空时退回静态 endpoint DNS 直连。
-	// 两条路径都自动获得 round_robin LB + 10s/3s keepalive + 配套 server 端
-	// HardenedServerOptions 的 EnforcementPolicy。
-	conn, err := serviceregistry.DialWithFallback(registry, "user-merchant-core", endpoint, dialOpts...)
-	if err != nil {
-		return nil, err
-	}
-	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
-	logger.Info("card-center → user-merchant-core dialed (for HTTPS auth)",
-		zap.String("endpoint", endpoint))
-	return conn, nil
-}
-
-// newHTTPSVerifier 装配 Verifier。当前唯一实现：UserMerchantVerifier。
-func newHTTPSVerifier(v *viper.Viper, conn *grpc.ClientConn, logger *zap.Logger) httpsauth.Verifier {
-	if !v.GetBool("https.enabled") || conn == nil {
 		return nil
 	}
-	uc := kitexutil.MustKitexClient(userservice.NewClient("user-merchant-core"))
-	return httpsauth.NewUserMerchantVerifier(uc, logger)
+	logger.Warn("newHTTPSVerifier STUB — user-merchant-core kitex_gen not wired in build, all JWTs rejected (fail-closed)")
+	return httpsauth.NewUserMerchantVerifier(nil, logger)
 }
 
 // newRESTServer 装配 HTTPS REST handler。
@@ -583,30 +519,6 @@ func corsMiddleware(next http.Handler, allowedOrigin string, logger *zap.Logger)
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-// buildClientMTLS 共用：mTLS client 的 tls.Config（cert + server CA 校验）
-func buildClientMTLS(certPath, keyPath, serverCA string) (*tls.Config, error) {
-	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
-	if certPath != "" && keyPath != "" {
-		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-		if err != nil {
-			return nil, fmt.Errorf("client keypair: %w", err)
-		}
-		cfg.Certificates = []tls.Certificate{cert}
-	}
-	if serverCA != "" {
-		pool := x509.NewCertPool()
-		ca, err := os.ReadFile(serverCA)
-		if err != nil {
-			return nil, fmt.Errorf("server_ca: %w", err)
-		}
-		if !pool.AppendCertsFromPEM(ca) {
-			return nil, fmt.Errorf("server_ca PEM parse failed")
-		}
-		cfg.RootCAs = pool
-	}
-	return cfg, nil
 }
 
 func buildTLSConfig(v *viper.Viper) (*tls.Config, error) {

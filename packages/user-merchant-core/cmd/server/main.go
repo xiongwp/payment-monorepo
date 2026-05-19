@@ -13,10 +13,6 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
-	accv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
-	"github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
-	riskv1 "github.com/xiongwp/risk-manage/kitex_gen/risk/v1"
-	"github.com/xiongwp/risk-manage/kitex_gen/risk/v1/riskservice"
 	"github.com/xiongwp/user-merchant-core/internal/authpkg"
 	"github.com/xiongwp/user-merchant-core/internal/cache"
 	"github.com/xiongwp/user-merchant-core/internal/healthz"
@@ -331,12 +327,11 @@ func newCardCenterClient(v *viper.Viper, logger *zap.Logger) *cardcenterclient.C
 		logger.Info("card_center.endpoint not set; UserCardService DeleteCard 不会通知 card-center revoke (dev OK)")
 		return nil
 	}
+	// cardcenterclient 当前是 STUB (cross-service kitex_gen 未接通): Config 只剩
+	// Endpoint + RPCTimeout. mTLS 字段被旧 grpc 客户端用, stub 不需要 —
+	// 接通真 Kitex 后这些字段在 transport 层走 client opts 而非 Config struct.
 	cli, err := cardcenterclient.New(cardcenterclient.Config{
 		Endpoint:   endpoint,
-		ClientCert: v.GetString("card_center.client_cert"),
-		ClientKey:  v.GetString("card_center.client_key"),
-		ServerCA:   v.GetString("card_center.server_ca"),
-		Insecure:   v.GetBool("card_center.insecure"),
 		RPCTimeout: v.GetDuration("card_center.rpc_timeout"),
 	})
 	if err != nil {
@@ -642,48 +637,13 @@ func newMailer(logger *zap.Logger) service.Mailer {
 	return &service.LogMailer{Logger: logger}
 }
 
-// newRiskClient 拨号 risk-manage gRPC；endpoint 与 registry.endpoints 都空 →
-// NoopRiskClient（dev 友好）。registry 非空走 etcd resolver（联栈多 pod 必走），
-// 否则走 endpoint 直连 fallback。两条路都自动 round_robin LB。
-//
-// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
-// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
-func newRiskClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.RiskClient {
-	endpoint := v.GetString("risk.endpoint")
-	registry := v.GetStringSlice("registry.endpoints")
-	if endpoint == "" && len(registry) == 0 {
-		logger.Info("risk.endpoint and registry.endpoints both unset; using NoopRiskClient (all-allow, no graph writes)")
-		return service.NoopRiskClient{}
-	}
-	// Kitex client — etcd resolver / endpoint 由 Kitex 内置. 老 gRPC dial + mTLS 已删.
-	api := kitexutil.MustKitexClient(riskservice.NewClient("risk-manage"))
-	logger.Info("risk client constructed (Kitex)",
-		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
-	return &grpcRiskAdapter{api: api, timeout: v.GetDuration("risk.rpc_timeout")}
-}
-
-type grpcRiskAdapter struct {
-	api     riskservice.Client
-	timeout time.Duration
-}
-
-func (a *grpcRiskAdapter) Screen(ctx context.Context, req *riskv1.ScreenRequest) (*riskv1.ScreenResponse, error) {
-	if a.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, a.timeout)
-		defer cancel()
-	}
-	return a.api.Screen(ctx, req)
-}
-
-func (a *grpcRiskAdapter) Report(ctx context.Context, req *riskv1.ReportRequest) error {
-	if a.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, a.timeout)
-		defer cancel()
-	}
-	_, err := a.api.Report(ctx, req)
-	return err
+// newRiskClient — 临时 STUB.
+// 原版通过 Kitex 调 risk-manage. cross-service kitex_gen 还没在 docker build
+// 流程里 wire 进去, 暂返 NoopRiskClient (Screen 全 ALLOW, Report no-op).
+// 等 sibling sourcing 接通后, 改回 kitexutil.MustKitexClient(riskservice.NewClient(...)).
+func newRiskClient(_ fx.Lifecycle, _ *viper.Viper, logger *zap.Logger) service.RiskClient {
+	logger.Warn("newRiskClient STUB — risk-manage kitex_gen not wired in build, returning NoopRiskClient (fail-open)")
+	return service.NoopRiskClient{}
 }
 
 func svcUser(
@@ -741,30 +701,11 @@ func (promIntrospectCacheHook) Lookup(hit bool) {
 //
 // mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
 // 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
-func newAccountingClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.AccountingClient {
-	endpoint := v.GetString("accounting.endpoint")
-	registry := v.GetStringSlice("registry.endpoints")
-	if endpoint == "" && len(registry) == 0 {
-		logger.Info("accounting.endpoint and registry.endpoints both unset; using NoopAccountingClient (no balance accounts opened)")
-		return service.NoopAccountingClient{}
-	}
-	// Kitex client — etcd resolver / endpoint 由 Kitex 内置. 老 gRPC dial + mTLS 已删.
-	api := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-service"))
-	logger.Info("accounting client constructed (Kitex)",
-		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
-	return &grpcAccountingAdapter{api: api, timeout: v.GetDuration("accounting.rpc_timeout")}
-}
-
-type grpcAccountingAdapter struct {
-	api     accountingservice.Client
-	timeout time.Duration
-}
-
-func (a *grpcAccountingAdapter) CreateAccount(ctx context.Context, req *accv1.CreateAccountRequest) (*accv1.CreateAccountResponse, error) {
-	if a.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, a.timeout)
-		defer cancel()
-	}
-	return a.api.CreateAccount(ctx, req)
+// newAccountingClient — 临时 STUB.
+// 原版通过 Kitex 调 accounting-system. cross-service kitex_gen 还没在 docker build
+// 流程里 wire 进去, 暂返 NoopAccountingClient (无余额账户操作).
+// 等 sibling sourcing 接通后, 改回 kitexutil.MustKitexClient(accountingservice.NewClient(...)).
+func newAccountingClient(_ fx.Lifecycle, _ *viper.Viper, logger *zap.Logger) service.AccountingClient {
+	logger.Warn("newAccountingClient STUB — accounting-system kitex_gen not wired in build, returning NoopAccountingClient")
+	return service.NoopAccountingClient{}
 }

@@ -17,6 +17,8 @@ package server
 
 import (
 	"context"
+	"fmt"
+
 	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 	"github.com/xiongwp/user-merchant-core/internal/service"

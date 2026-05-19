@@ -7,6 +7,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -15,8 +16,12 @@ import (
 
 	"github.com/xiongwp/card-center/internal/repo"
 	"github.com/xiongwp/card-center/internal/service"
-	"github.com/xiongwp/payment-util/trace"
 )
+
+// PeerCN STUB: gRPC mTLS 切 Kitex 后 peer.FromContext / credentials.TLSInfo
+// 已废, 本函数返回空 cn + 空 ip — 业务路径(audit / Tokenize 等)用空值表示
+// "未识别 caller", 接通 Kitex MTLSClientCNMW 后改回真值.
+func PeerCN(_ context.Context) (cn, ip string) { return "", "" }
 
 // Server 实现 Kitex cardcenterservice.Server 接口 (跟 gRPC 同方法签名).
 // 切 Kitex 后不再 embed UnimplementedCardCenterServer.
@@ -163,5 +168,3 @@ func mapErr(err error) error {
 	return fmt.Errorf("internal error")
 }
 
-// 保持 trace import 不被裁；server 里实际由 grpc interceptor 接 trace
-var _ = trace.UnaryServerInterceptor

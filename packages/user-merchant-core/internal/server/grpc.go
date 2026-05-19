@@ -5,8 +5,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
-	"time"
 
 	kitexserver "github.com/cloudwego/kitex/server"
 	"go.uber.org/zap"

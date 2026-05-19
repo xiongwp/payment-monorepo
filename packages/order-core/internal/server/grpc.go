@@ -157,9 +157,6 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	}
 
 	// 健康检查 / reflection 由 Kitex 框架自带, 不再手动注册.
-	_ = health.NewServer
-	_ = grpc_health_v1.HealthCheckResponse_SERVING
-	_ = reflection.Register
 
 	s.kitexSrv = gs
 	if s.done == nil {

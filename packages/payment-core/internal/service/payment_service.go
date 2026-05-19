@@ -72,11 +72,15 @@ func isUnknownResultErr(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true
 	}
-	if st, ok := status.FromError(err); ok {
-		switch st.Code() {
-		case codes.DeadlineExceeded, codes.Unavailable, codes.Canceled:
-			return true
-		}
+	// Kitex 切换后 status.FromError / codes.X 已删, 用 err string 关键字兜底
+	// 匹配 (timeout / unavailable / canceled / context deadline).
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "unavailable") ||
+		strings.Contains(msg, "canceled") {
+		return true
 	}
 	return false
 }

@@ -2,6 +2,8 @@ package server
 
 import (
 	"errors"
+	"fmt"
+
 	"github.com/xiongwp/order-core/internal/domain"
 )
 
