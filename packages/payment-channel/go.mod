@@ -4,13 +4,18 @@ go 1.25.0
 
 // trace 包从本仓 internal/trace 抽到 github.com/xiongwp/payment-util/trace。
 // 本地 + docker 构建走同级目录 replace；CI/发布时可改为具体 tag。
-replace github.com/xiongwp/payment-util => ../payment-util
+// card adapter 调 card-payment Kitex client → 接 card-payment sibling.
+replace (
+	github.com/xiongwp/card-payment => ../card-payment
+	github.com/xiongwp/payment-util => ../payment-util
+)
 
 require (
 	github.com/cloudwego/kitex v0.16.2
 	github.com/go-sql-driver/mysql v1.7.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/viper v1.19.0
+	github.com/xiongwp/card-payment v0.0.0-00010101000000-000000000000
 	github.com/xiongwp/payment-util v0.0.1
 	go.uber.org/fx v1.20.1
 	go.uber.org/zap v1.27.0
