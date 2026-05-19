@@ -5,6 +5,9 @@ go 1.25.0
 require (
 	github.com/gorilla/mux v1.8.1
 	github.com/xiongwp/accounting-grpc-api v0.1.0
+	// accounting-system 源仓 kitex_gen 直引用 (handler / cmd 大量 import).
+	// 通过 docker-compose additional_contexts + replace 接进来.
+	github.com/xiongwp/accounting-system v0.0.1
 	// 给 accounting-system gRPC 拨号用的 etcd resolver 包。
 	// 联栈多 pod 部署后 "accounting-service" 跨 compose 项目无法 DNS 解析，
 	// 必须走 etcd 拿副本列表。
@@ -35,3 +38,6 @@ replace github.com/xiongwp/accounting-grpc-api => ../../accounting-grpc-api
 // payment-util 在仓 root 同级；backend 在 accounting-admin-web/backend/ 下，
 // 所以相对路径要走两级 ../../。
 replace github.com/xiongwp/payment-util => ../../payment-util
+
+// accounting-system 同模式: docker build 走 additional_contexts; 本地 dev 走 sibling.
+replace github.com/xiongwp/accounting-system => ../../accounting-system

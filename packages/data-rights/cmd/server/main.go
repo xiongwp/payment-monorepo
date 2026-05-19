@@ -121,7 +121,7 @@ func startHTTPServer(lc fx.Lifecycle, srv *http.Server, log *zap.Logger) {
 	})
 }
 
-func startOverdueScanner(lc fx.Lifecycle, s store.Store, log *zap.Logger) {
+func startOverdueScanner(lc fx.Lifecycle, s *store.MemStore, log *zap.Logger) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cronSec, _ := strconv.Atoi(os.Getenv("DR_OVERDUE_CRON_SEC"))
 	if cronSec <= 0 {
@@ -138,7 +138,7 @@ func startOverdueScanner(lc fx.Lifecycle, s store.Store, log *zap.Logger) {
 	})
 }
 
-func scanOverdue(ctx context.Context, s store.Store, interval time.Duration, log *zap.Logger) {
+func scanOverdue(ctx context.Context, s *store.MemStore, interval time.Duration, log *zap.Logger) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
