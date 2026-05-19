@@ -332,6 +332,9 @@ func newCardHandler(uw *userweb.Handler, umc UserMerchantConn, oc OrderCoreConn,
 }
 
 // UserMerchantConn / OrderCoreConn distinct types so fx can inject them by type.
+// 仍是 *grpc.ClientConn wrapper — downstream userweb.Handler / cardweb.CardHandler
+// 还在用 ClientConn 构造 gRPC client. 真要切 Kitex 需要先改这两个 handler 的
+// client 类型 (UserServiceClient → userservice.Client 等), 然后此处 dial 才能切.
 // 没有这两个 wrapper，两个 newXxxConn 都返 *grpc.ClientConn，fx 会报 ambiguous。
 type UserMerchantConn struct{ *grpc.ClientConn }
 type OrderCoreConn struct{ *grpc.ClientConn }

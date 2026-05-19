@@ -1,8 +1,23 @@
-// middleware.go — Kitex 服务端 / 客户端共用 middleware.
+// middleware.go — Kitex 服务端 / 客户端共用 middleware. 真接 Kitex endpoint.Endpoint
+// + metainfo + Prometheus, 跟现有 grpcsvc / obsbootstrap interceptor 等价.
 //
-// Kitex 用 endpoint.Endpoint 链, 跟 grpc UnaryInterceptor 类似但签名不同.
-// 这里抽象成 Middleware = func(next Endpoint) Endpoint, 业务代码用
-// kitexutil.AuthMW("token") 注入到 server / client 即可.
+// 跟老 grpc UnaryInterceptor 对应关系:
+//
+//	grpc.ChainUnaryInterceptor(...)  → server.WithMiddleware(kitexutil.Chain(...))
+//	grpc.WithChainUnaryInterceptor() → client.WithMiddleware(kitexutil.Chain(...))
+//
+// 业务代码 server/client 构造时:
+//
+//	srv := <svc>service.NewServer(impl,
+//	    server.WithMiddleware(kitexutil.AuthMW(token)),
+//	    server.WithMiddleware(kitexutil.LogMW(log)),
+//	    server.WithMiddleware(kitexutil.MetricsMW()),
+//	    server.WithMiddleware(kitexutil.RecoverMW(log)),
+//	)
+//	cli, _ := <svc>service.NewClient("dest",
+//	    client.WithHostPorts(addr),
+//	    client.WithMiddleware(kitexutil.ShadowMW()),
+//	)
 
 package kitexutil
 
@@ -11,95 +26,126 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/gopkg/cloud/metainfo"
+	"github.com/cloudwego/kitex/pkg/endpoint"
+	"github.com/cloudwego/kitex/pkg/rpcinfo"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/zap"
 )
 
-// Endpoint Kitex endpoint 抽象 (避免直接依赖 Kitex package 让 payment-util 不强绑版本).
-// req / resp 实际是 *kitex.Args / *kitex.Result, 真实包装由 server.NewServer / client.NewClient 完成.
-type Endpoint func(ctx context.Context, req, resp interface{}) error
+// Endpoint Kitex Unary endpoint (业务 handler 的统一签名).
+// 别名导出, 业务代码不需要直接 import kitex/pkg/endpoint.
+type Endpoint = endpoint.Endpoint
 
-// Middleware Endpoint 装饰器链.
-type Middleware func(next Endpoint) Endpoint
+// Middleware Endpoint 装饰器链 — 跟 Kitex endpoint.Middleware 同名同款.
+type Middleware = endpoint.Middleware
 
-// Chain 把多个 Middleware 按调用顺序串成单条链.
+// Chain 把多个 Middleware 按调用顺序串成单条链 (跟 grpc.ChainUnaryInterceptor 等价).
 func Chain(mws ...Middleware) Middleware {
-	return func(next Endpoint) Endpoint {
-		for i := len(mws) - 1; i >= 0; i-- {
-			next = mws[i](next)
-		}
-		return next
-	}
+	return endpoint.Chain(mws...)
 }
 
 // ─── Auth MW ───────────────────────────────────────────────────────────────
 
-// AuthMW 校验 metadata "x-admin-token" — 跟 split-payment adminTokenInterceptor 等价.
+const (
+	// HeaderAdminToken Kitex TTHeader 里的 admin token 字段名 (lowercase, 跟 gRPC 规范一致).
+	HeaderAdminToken = "x-admin-token"
+	// HeaderShadow 影子流量标识 — payment-core/channel/risk/kms 看到 shadow=1 不真落账.
+	HeaderShadow = "x-shadow"
+	// HeaderTraceID 全链路 trace id, 跟 OTel W3C traceparent 平行.
+	HeaderTraceID = "x-trace-id"
+)
+
+// AuthMW 校验 metainfo "x-admin-token" — 跟 split-payment adminTokenInterceptor 等价.
 //
 // expectedToken 空时退化为 no-op (DEV 模式, 调用方自己 log warn 提醒).
-//
-// Kitex 在 server.NewServer 里通过 server.WithMiddleware(kitexutil.AuthMW(...)) 注册.
-// req 里取 token 的方式跟 grpc.metadata 不同, 实际从 ctx 拿 (kitex 把 TTHeader 注入 ctx).
+// 通过 server.WithMiddleware(AuthMW(token)) 装到 Kitex server.
 func AuthMW(expectedToken string) Middleware {
 	if expectedToken == "" {
-		return identity
+		return passthrough
 	}
 	return func(next Endpoint) Endpoint {
 		return func(ctx context.Context, req, resp interface{}) error {
-			tok := tokenFromCtx(ctx)
+			tok, _ := metainfo.GetValue(ctx, HeaderAdminToken)
 			if tok != expectedToken {
-				return fmt.Errorf("kitexutil: invalid or missing X-Admin-Token")
+				return fmt.Errorf("kitexutil: invalid or missing %s", HeaderAdminToken)
 			}
 			return next(ctx, req, resp)
 		}
 	}
 }
 
-// tokenFromCtx 从 Kitex ctx 提取 "x-admin-token" header.
+// WithAdminToken client side — 把 token 注入 ctx, 自动随 TTHeader 上传到 server.
 //
-// 占位实现 — 实际接 Kitex 时通过 metainfo.GetValue(ctx, "x-admin-token") 拿;
-// 当前 payment-util 不直接 import kitex/metainfo, 业务代码生成 stub 时 cast 即可.
-func tokenFromCtx(ctx context.Context) string {
-	if v := ctx.Value(ctxKeyAdminToken); v != nil {
-		if s, ok := v.(string); ok {
-			return s
-		}
+// Kitex metainfo.WithPersistentValue 一次写入, 后续整个 RPC 链路 (含跨服务调用) 自动透传.
+func WithAdminToken(ctx context.Context, token string) context.Context {
+	if token == "" {
+		return ctx
 	}
-	return ""
+	return metainfo.WithPersistentValue(ctx, HeaderAdminToken, token)
 }
 
-type ctxKey string
+// WithShadow 把 shadow=1 注入 ctx — 透传到下游服务, 后者短路返 mock 不真发外部渠道.
+func WithShadow(ctx context.Context) context.Context {
+	return metainfo.WithPersistentValue(ctx, HeaderShadow, "1")
+}
 
-const ctxKeyAdminToken ctxKey = "x-admin-token"
+// IsShadow 判断当前 ctx 是不是 shadow 流量 (server side handler 内调用).
+func IsShadow(ctx context.Context) bool {
+	v, ok := metainfo.GetValue(ctx, HeaderShadow)
+	return ok && v == "1"
+}
 
-// WithAdminToken 把 token 注入 ctx — Kitex client side 调用前用, 自动随 TTHeader 上传.
-func WithAdminToken(ctx context.Context, token string) context.Context {
-	return context.WithValue(ctx, ctxKeyAdminToken, token)
+// ShadowMW server side — 把 metainfo x-shadow 翻进 ctx 留给 handler IsShadow 决策.
+//
+// Kitex 的 metainfo 已经把 TTHeader 自动放进 ctx, 所以 ShadowMW 实际不用做转换;
+// 留这个 MW 是为了 metric 记录 + 跟老 shadow.UnaryServerInterceptor 形态对齐.
+func ShadowMW() Middleware {
+	return func(next Endpoint) Endpoint {
+		return func(ctx context.Context, req, resp interface{}) error {
+			if IsShadow(ctx) {
+				shadowRPCCount.Inc()
+			}
+			return next(ctx, req, resp)
+		}
+	}
 }
 
 // ─── Log MW ────────────────────────────────────────────────────────────────
 
 // LogMW access log — RPC 入口/出口 + duration + error.
 //
-// 跟 grpcsvc.AccessLogInterceptor 一致, 日志字段:
-//
-//	method=<rpc_name> caller=<peer> dur_ms=<ms> err=<error>
+// 跟 grpcsvc.AccessLogInterceptor 等价, 字段: method / caller / dur_ms / err.
+// 从 rpcinfo.GetRPCInfo(ctx) 拿 method / from-service / to-service.
 func LogMW(log *zap.Logger) Middleware {
 	return func(next Endpoint) Endpoint {
 		return func(ctx context.Context, req, resp interface{}) error {
 			start := time.Now()
 			err := next(ctx, req, resp)
 			elapsed := time.Since(start)
+
+			ri := rpcinfo.GetRPCInfo(ctx)
+			fields := []zap.Field{zap.Duration("dur", elapsed)}
+			if ri != nil {
+				if m := ri.To(); m != nil {
+					fields = append(fields,
+						zap.String("svc", m.ServiceName()),
+						zap.String("method", m.Method()))
+				}
+				if f := ri.From(); f != nil {
+					fields = append(fields, zap.String("caller", f.ServiceName()))
+				}
+			}
 			if err != nil {
-				log.Warn("kitex rpc error",
-					zap.Duration("dur", elapsed),
-					zap.Error(err))
+				log.Warn("kitex rpc error", append(fields, zap.Error(err))...)
 			} else {
-				log.Debug("kitex rpc ok",
-					zap.Duration("dur", elapsed))
+				log.Debug("kitex rpc ok", fields...)
 			}
 			return err
 		}
@@ -108,25 +154,45 @@ func LogMW(log *zap.Logger) Middleware {
 
 // ─── Metrics MW ────────────────────────────────────────────────────────────
 
-// MetricsMW RPC count + p50/p95 latency 推 Prometheus.
-//
-// 跟 grpcsvc.MetricsInterceptor 一致, 标签 (method, code). 当前 stub 实现, 真实接 Kitex
-// 时换成 obsbootstrap 暴露的 prometheus.HistogramVec.
+var (
+	rpcDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "kitex_rpc_duration_seconds",
+		Help:    "Kitex RPC duration histogram (跟 grpcsvc.MetricsInterceptor 同口径)",
+		Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+	}, []string{"service", "method", "status"})
+
+	rpcCount = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "kitex_rpc_total",
+		Help: "Kitex RPC counter (status=ok / err)",
+	}, []string{"service", "method", "status"})
+
+	shadowRPCCount = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "kitex_shadow_rpc_total",
+		Help: "Kitex shadow=1 RPC counter",
+	})
+)
+
+// MetricsMW per-RPC 计数 + p50/p95 直方图. 跟 grpcsvc.MetricsInterceptor 形态对齐.
 func MetricsMW() Middleware {
-	var (
-		mu    sync.Mutex
-		count int64
-		total time.Duration
-	)
 	return func(next Endpoint) Endpoint {
 		return func(ctx context.Context, req, resp interface{}) error {
 			start := time.Now()
 			err := next(ctx, req, resp)
-			elapsed := time.Since(start)
-			mu.Lock()
-			count++
-			total += elapsed
-			mu.Unlock()
+			elapsed := time.Since(start).Seconds()
+
+			var svc, method string
+			if ri := rpcinfo.GetRPCInfo(ctx); ri != nil {
+				if m := ri.To(); m != nil {
+					svc = m.ServiceName()
+					method = m.Method()
+				}
+			}
+			status := "ok"
+			if err != nil {
+				status = "err"
+			}
+			rpcDuration.WithLabelValues(svc, method, status).Observe(elapsed)
+			rpcCount.WithLabelValues(svc, method, status).Inc()
 			return err
 		}
 	}
@@ -136,14 +202,23 @@ func MetricsMW() Middleware {
 
 // RecoverMW panic recover → error.
 //
-// 跟 grpcsvc.PanicRecoverInterceptor 一致 — handler panic 时不挂进程, 转成 error
-// 返给上游, 同时 zap.Error log + 栈.
+// 跟 grpcsvc.PanicRecoverInterceptor 等价 — handler panic 时不挂进程, 转 error
+// 返回上游, 同时 zap.Error + 栈.
 func RecoverMW(log *zap.Logger) Middleware {
 	return func(next Endpoint) Endpoint {
 		return func(ctx context.Context, req, resp interface{}) (err error) {
 			defer func() {
 				if r := recover(); r != nil {
+					var svc, method string
+					if ri := rpcinfo.GetRPCInfo(ctx); ri != nil {
+						if m := ri.To(); m != nil {
+							svc = m.ServiceName()
+							method = m.Method()
+						}
+					}
 					log.Error("kitex rpc panic",
+						zap.String("svc", svc),
+						zap.String("method", method),
 						zap.Any("panic", r),
 						zap.ByteString("stack", debug.Stack()))
 					err = fmt.Errorf("kitex: handler panic: %v", r)
@@ -156,18 +231,14 @@ func RecoverMW(log *zap.Logger) Middleware {
 
 // ─── CircuitBreaker MW ─────────────────────────────────────────────────────
 
-// CircuitBreakerMW per-RPC circuit breaker — 跟 observability.CircuitBreaker 等价.
-//
-// failureThreshold 连续失败 N 次 → open; openDuration 后半开试探一次; successThreshold
-// 连续成功 N 次 → close 恢复.
-//
-// 当前 stub 实现, 真实接 Kitex 时可换成 circuitbreaker.CBSuite (Kitex 官方包).
+// CircuitBreakerConfig per-RPC 熔断参数. 跟 observability.CircuitBreaker 等价.
 type CircuitBreakerConfig struct {
-	FailureThreshold int
-	SuccessThreshold int
-	OpenDuration     time.Duration
+	FailureThreshold int           // 连续失败 N 次 → open. 默认 5.
+	SuccessThreshold int           // half-open 后连续成功 N 次 → close. 默认 2.
+	OpenDuration     time.Duration // open 状态持续时间, 之后转 half-open. 默认 30s.
 }
 
+// CircuitBreakerMW per-target 熔断. cfg 字段 0 走默认值.
 func CircuitBreakerMW(cfg CircuitBreakerConfig, log *zap.Logger) Middleware {
 	if cfg.FailureThreshold <= 0 {
 		cfg.FailureThreshold = 5
@@ -179,7 +250,7 @@ func CircuitBreakerMW(cfg CircuitBreakerConfig, log *zap.Logger) Middleware {
 		cfg.OpenDuration = 30 * time.Second
 	}
 	var (
-		state         int32 // 0 closed, 1 open, 2 half-open
+		state         int32 // 0=closed, 1=open, 2=half-open
 		consecutiveOK int32
 		consecutiveKO int32
 		openedAt      int64 // unix nanos
@@ -189,11 +260,10 @@ func CircuitBreakerMW(cfg CircuitBreakerConfig, log *zap.Logger) Middleware {
 			st := atomic.LoadInt32(&state)
 			now := time.Now().UnixNano()
 			if st == 1 {
-				// open 状态 — 等开窗
 				if time.Duration(now-atomic.LoadInt64(&openedAt)) < cfg.OpenDuration {
 					return errors.New("kitexutil: circuit breaker OPEN")
 				}
-				atomic.StoreInt32(&state, 2) // half-open 试探
+				atomic.CompareAndSwapInt32(&state, 1, 2) // → half-open 试探
 				log.Info("kitex circuit breaker half-open")
 			}
 			err := next(ctx, req, resp)
@@ -222,9 +292,71 @@ func CircuitBreakerMW(cfg CircuitBreakerConfig, log *zap.Logger) Middleware {
 	}
 }
 
-// identity no-op middleware (auth disabled / metrics disabled 时占位).
-func identity(next Endpoint) Endpoint {
+// ─── RateLimit MW ──────────────────────────────────────────────────────────
+
+// RateLimitMW 简单 token bucket 限流, server side 用.
+//
+// rps <= 0 → no-op. 跟 grpcsvc.RateLimitInterceptor 等价 (但更简单, 没接 per-merchant
+// resolver — kms-manage / payment-channel 各自的 per-merchant 限流后续单独 port).
+func RateLimitMW(rps float64, burst int) Middleware {
+	if rps <= 0 {
+		return passthrough
+	}
+	if burst <= 0 {
+		burst = int(rps)
+		if burst < 1 {
+			burst = 1
+		}
+	}
+	var (
+		mu        sync.Mutex
+		tokens    = float64(burst)
+		lastFill  = time.Now()
+		burstCap  = float64(burst)
+		rateLimit = rps
+	)
+	return func(next Endpoint) Endpoint {
+		return func(ctx context.Context, req, resp interface{}) error {
+			mu.Lock()
+			now := time.Now()
+			elapsed := now.Sub(lastFill).Seconds()
+			tokens = tokens + elapsed*rateLimit
+			if tokens > burstCap {
+				tokens = burstCap
+			}
+			lastFill = now
+			if tokens < 1 {
+				mu.Unlock()
+				return errors.New("kitexutil: rate limit exceeded")
+			}
+			tokens--
+			mu.Unlock()
+			return next(ctx, req, resp)
+		}
+	}
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+// passthrough no-op middleware (Auth / RateLimit 等条件 disabled 时占位).
+func passthrough(next Endpoint) Endpoint {
 	return func(ctx context.Context, req, resp interface{}) error {
 		return next(ctx, req, resp)
 	}
+}
+
+// TraceIDFromCtx 从 ctx 取 trace id (TTHeader 透传过来的). 找不到返空.
+func TraceIDFromCtx(ctx context.Context) string {
+	v, _ := metainfo.GetValue(ctx, HeaderTraceID)
+	return v
+}
+
+// WithTraceID client side — 把 trace id 注入 ctx, 自动随 TTHeader 上传.
+// gen 留空时自动生成一个 (timestamp + 6 hex).
+func WithTraceID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		id = fmt.Sprintf("%d-%06x", time.Now().UnixNano(), time.Now().Nanosecond()&0xffffff)
+	}
+	id = strings.TrimSpace(id)
+	return metainfo.WithPersistentValue(ctx, HeaderTraceID, id)
 }

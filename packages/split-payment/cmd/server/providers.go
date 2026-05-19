@@ -24,12 +24,9 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 
 	"reconcile-system/packages/split-payment/internal/clients"
 	"reconcile-system/packages/split-payment/internal/config"
-
-	"github.com/xiongwp/payment-util/serviceregistry"
 )
 
 // Module — split-payment fx 装配根. 当前 stage 1+2, 后续逐步扩.
@@ -47,7 +44,6 @@ var Module = fx.Options(
 		newLogLevelFx,
 		newLoggerFx,
 		newDBFx,
-		newAccountingConnFx,
 		newAccountingGRPCClientFx,
 	),
 	fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
@@ -150,59 +146,25 @@ func newDBFx(cfg *config.Config, log *zap.Logger, lc fx.Lifecycle) (*sql.DB, err
 	return db, nil
 }
 
-// newAccountingConnFx dial accounting-system gRPC (mTLS or insecure dev).
+// newAccountingGRPCClientFx Kitex client → accounting-system TransactionService.
 //
-// SP-AC-7 L2+X2: 走 serviceregistry.DialWithFallback 拿一组 hardenedOptions:
-//   - round_robin LB (多副本 accounting-service 真均摊)
-//   - 幂等 RPC 自动重试瞬态 UNAVAILABLE / DEADLINE_EXCEEDED
-//   - HTTP/2 keepalive 10s+3s 探活
+// 切 Kitex 后 Kitex 自管 connection pool + LB + keepalive, 不再需要 *grpc.ClientConn
+// Provider. 老 newAccountingConnFx + buildClientCreds 全部移除 (mTLS 不要 — 内部 mesh).
 //
-// registry.endpoints (etcd) 配了走真服务发现; 没配则降级直连 fallback addr (dev).
-//
-// lifecycle OnStop 注册 conn.Close() — 退出时优雅断流, 避免上游 ELB 半开连接.
-func newAccountingConnFx(cfg *config.Config, log *zap.Logger, lc fx.Lifecycle) (*grpc.ClientConn, error) {
-	clientCreds, err := buildClientCreds(log)
+// registry.endpoints (etcd) 配了的话, 未来切 kitexutil.NewEtcdResolver 做服务发现;
+// 当前直接 client.WithHostPorts(fallback) 一条路径.
+func newAccountingGRPCClientFx(cfg *config.Config, log *zap.Logger) (*clients.AccountingGRPCClient, error) {
+	cli, err := clients.NewAccountingGRPCClient(cfg.Accounting.GRPCAddr)
 	if err != nil {
-		log.Error("build mTLS client credentials failed", zap.Error(err))
-		return nil, fmt.Errorf("buildClientCreds: %w", err)
-	}
-	conn, err := serviceregistry.DialWithFallback(
-		cfg.Registry.Endpoints,
-		"accounting-service",
-		cfg.Accounting.GRPCAddr,
-		clientCreds,
-	)
-	if err != nil {
-		log.Error("dial accounting gRPC failed",
-			zap.String("fallback_addr", cfg.Accounting.GRPCAddr),
+		log.Error("kitex dial accounting failed",
+			zap.String("addr", cfg.Accounting.GRPCAddr),
 			zap.Strings("registry_endpoints", cfg.Registry.Endpoints),
 			zap.Error(err))
-		return nil, fmt.Errorf("dial accounting: %w", err)
+		return nil, fmt.Errorf("dial accounting (kitex): %w", err)
 	}
-	log.Info("accounting gRPC connection established",
-		zap.String("fallback_addr", cfg.Accounting.GRPCAddr),
+	log.Info("accounting Kitex client ready",
+		zap.String("addr", cfg.Accounting.GRPCAddr),
 		zap.Int("registry_endpoint_count", len(cfg.Registry.Endpoints)))
-
-	lc.Append(fx.Hook{
-		OnStop: func(_ context.Context) error {
-			if err := conn.Close(); err != nil {
-				log.Warn("accounting gRPC conn close error", zap.Error(err))
-				return err
-			}
-			return nil
-		},
-	})
-	return conn, nil
-}
-
-// newAccountingGRPCClientFx 把 accounting *grpc.ClientConn 包装成业务 client.
-//
-// 业务路径 (engine.AccountingMeta + grpcsvc.AccountingMetaCaller) 通过 accountingGRPCAdapter
-// 把 *clients.AccountingGRPCClient 适配到 workflow.AccountingMetaCaller — 现已在
-// main.go 用过程式方式构造, 后续 stage 3 把 engine 装进 Module 时这层 Provider 自然就被注入.
-func newAccountingGRPCClientFx(conn *grpc.ClientConn) *clients.AccountingGRPCClient {
-	if conn == nil {
-		return nil
-	}
-	return clients.NewAccountingGRPCClient(conn)
+	// Kitex client 自带 connection pool, 无需 lifecycle close hook.
+	return cli, nil
 }

@@ -6,6 +6,7 @@ go 1.21
 // 不依赖 accounting-system，供 server/client 各方引入
 
 require (
+	github.com/cloudwego/kitex v0.10.0
 	google.golang.org/grpc v1.64.0
 	google.golang.org/protobuf v1.34.1
 	go.uber.org/fx v1.20.1

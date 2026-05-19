@@ -72,8 +72,7 @@ func wireAll(
 	log *zap.Logger,
 	logLevel zap.AtomicLevel,
 	db *sql.DB,
-	conn *grpc.ClientConn,
-	_ *clients.AccountingGRPCClient, // 直接走 conn 构造, 这里仅占位让 fx 把依赖排好序
+	accountingGRPCCli *clients.AccountingGRPCClient,
 ) error {
 	// SP-AC-7 P10: OTel trace context propagation (W3C traceparent). 当前用 noop tracer.
 	shutdownTracer := observability.InitTracer("split-payment")
@@ -309,8 +308,10 @@ func wireAll(
 	// 复用已有的 accounting-system gRPC conn (跟 AccountingClient 同一条连接).
 	// HTTP 不再用于业务调用 — 只剩 ops/admin UI.
 	if conn != nil {
-		accountingGRPCCli := clients.NewAccountingGRPCClient(conn)
-		engine.AccountingMeta = accountingGRPCAdapter{cli: accountingGRPCCli}
+		// accountingGRPCCli 由 fx Provider 注入 (newAccountingGRPCClientFx), Kitex client.
+		if accountingGRPCCli != nil {
+			engine.AccountingMeta = accountingGRPCAdapter{cli: accountingGRPCCli}
+		}
 		log.Info("accounting meta client: gRPC (TransactionService)")
 	} else {
 		log.Info("accounting meta client: disabled (accounting gRPC conn nil)")
@@ -370,11 +371,11 @@ func wireAll(
 			return db.PingContext(c)
 		})
 	}
-	// readiness 探针: accounting gRPC channel 是否就绪 (state != IDLE/CONNECTING/SHUTDOWN).
+	// readiness 探针: accounting Kitex client 不暴露 channel state, 简化为 nil-check.
+	// 真要做 health check 走 accountingGRPCCli 的 ListAccountTypes 一次 ping.
 	adminSrv.AddReadyCheck("accounting_grpc", func(c context.Context) error {
-		state := conn.GetState().String()
-		if state == "SHUTDOWN" {
-			return fmt.Errorf("accounting gRPC channel state=%s", state)
+		if accountingGRPCCli == nil {
+			return fmt.Errorf("accounting client nil")
 		}
 		return nil
 	})

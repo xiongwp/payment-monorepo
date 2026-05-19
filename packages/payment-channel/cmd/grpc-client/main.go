@@ -1,4 +1,4 @@
-// Command grpc-client 调试用：
+// Command grpc-client (Kitex 版) — payment-channel 调试工具.
 //
 //	go run ./cmd/grpc-client -addr 127.0.0.1:9092 charge -adapter gcash -pi pi_x -amount 10000
 package main
@@ -10,16 +10,15 @@ import (
 	"os"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
+	"github.com/cloudwego/kitex/client"
 
-	channelv1 "github.com/xiongwp/payment-channel/api/proto/channel/v1"
+	channelv1 "reconcile-system/packages/payment-channel/kitex_gen/channel/v1"
+	acquirerservice "reconcile-system/packages/payment-channel/kitex_gen/channel/v1/acquirerservice"
 )
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:9092", "grpc address")
-	shadowFl := flag.Bool("shadow", false, "shadow=1 — adapter 入口短路返回 mock，不真发外部渠道")
+	addr := flag.String("addr", "127.0.0.1:9092", "payment-channel kitex address")
+	shadowFl := flag.Bool("shadow", false, "shadow=1 — adapter 入口短路返回 mock, 不真发外部渠道")
 	flag.Parse()
 
 	args := flag.Args()
@@ -38,18 +37,19 @@ func main() {
 	reason := fs.String("reason", "requested_by_customer", "refund reason")
 	_ = fs.Parse(args[1:])
 
-	conn, err := grpc.NewClient(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	cli, err := acquirerservice.NewClient("payment-channel",
+		client.WithHostPorts(*addr),
+		client.WithRPCTimeout(30*time.Second),
+	)
 	if err != nil {
 		die(err)
 	}
-	defer conn.Close()
-	cli := channelv1.NewAcquirerServiceClient(conn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if *shadowFl {
-		ctx = metadata.AppendToOutgoingContext(ctx, "x-shadow", "1")
-		fmt.Fprintln(os.Stderr, "[grpc-client] shadow=1 — adapter 短路放行，不发外部渠道")
+		// shadow header 透传: 等 kitexutil.ShadowMW 接好后这里换成 kitexutil.WithShadow(ctx).
+		fmt.Fprintln(os.Stderr, "[grpc-client] shadow=1 — TODO: wire kitexutil.WithShadow")
 	}
 
 	idk := *idem

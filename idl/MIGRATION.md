@@ -106,6 +106,35 @@ accounting-system 比预期复杂:
 **KX-4 当前状态**: idl/accounting/v1/accounting.proto 已就绪 (只含 AccountingService),
 kitex_gen/README.md 已落档 plan. 后续需要把 3 个手写 service 反向写成 proto 再继续.
 
+## payment-util/serviceregistry 退役 plan
+
+**当前状态**: 10 处生产代码仍调 `serviceregistry.DialWithFallback / DialFromEndpoints / DialDirect`,
+返回 `*grpc.ClientConn` 给 downstream gRPC client wrapper (gRPC `XxxServiceClient`) 用. 这些
+consumer 没切 Kitex, 所以 serviceregistry 暂时不能删.
+
+### 已切 Kitex 的 dial site (1/10)
+
+- ✅ `split-payment/cmd/server/providers.go` — `newAccountingGRPCClientFx` 现走 `transactionservice.NewClient`,
+  `*grpc.ClientConn` Provider 删了. `clients.NewAccountingGRPCClient(endpoint)` 内部 Kitex.
+
+### 未切 (9 处, 需要 consumer 同步切才能删 serviceregistry)
+
+| 文件 | 调谁 | Consumer 阻塞 |
+|------|------|---------|
+| `api-gateway/cmd/server/main.go:375` | user-merchant-core | `userweb.Handler` 内部 `usermerchantv1.NewUserServiceClient(conn)` 用 gRPC |
+| `api-gateway/cmd/server/main.go:421` | order-core | `cardweb.CardHandler` 内 `orderv1.NewPaymentIntentServiceClient(conn)` 用 gRPC |
+| `card-center/cmd/server/main.go:437` | user-merchant-core | downstream merchant cache 用 gRPC client |
+| `accounting-admin-web/backend/cmd/server/main.go:37` | accounting-system | admin BFF 全 gRPC client |
+| `user-merchant-core/cmd/server/main.go:714` | risk-manage | user 注册路径 risk screen, gRPC client |
+| `user-merchant-core/cmd/server/main.go:839` | accounting-service | user 注册路径建账, gRPC client |
+| `payment-admin-web/backend/cmd/server/main.go:402` | 通用 service | admin BFF 17 gRPC clients (已在 clients.go 切 Kitex; main.go dial 不再用) |
+| `order-core/internal/accounting/client.go:121` | accounting-service | order-core 自己的 accounting wrapper |
+| `accounting-system/cmd/batchtask/main.go:176` | accounting-service | batch task CLI |
+| `config-center/internal/server/admin_html.go:127` | config endpoint | admin UI |
+| `order-core/cmd/e2e-accounting/main.go:102` | order-core | e2e test entry |
+
+每条都需要 consumer-side 改造 (大约 5-30 行/处) 才能切; 干完 10 处 serviceregistry 包就可删整个 package.
+
 ## 风险点 (mTLS 已 ✗ 不需要)
 
 - Kitex 默认 TTHeader+Protobuf, **跟 gRPC wire 不互通**: server + client 必须同时切

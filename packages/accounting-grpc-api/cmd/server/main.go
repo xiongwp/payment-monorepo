@@ -1,6 +1,6 @@
-// Package main is the REST-to-gRPC gateway for the accounting system admin API.
+// Package main REST-to-Kitex gateway for the accounting system admin API.
 // uber/fx 装配, 跟 order-core / accounting-system 同款风格.
-// HTTP :9090, 转发到 accounting-system gRPC :50051 (AccountingAdminService).
+// HTTP :9090, 转发到 accounting-system Kitex :50051 (AccountingAdminService).
 package main
 
 import (
@@ -13,19 +13,19 @@ import (
 	"strings"
 	"time"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	"github.com/cloudwego/kitex/client"
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+
+	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
+	accountingadminservice "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
 )
 
 func main() {
 	fx.New(
 		fx.Provide(
 			newLogger,
-			newGRPCConn,
 			newAdminClient,
 			newGateway,
 			newHTTPServer,
@@ -46,26 +46,25 @@ func newLogger(lc fx.Lifecycle) (*zap.Logger, error) {
 	return logger, nil
 }
 
-func newGRPCConn(lc fx.Lifecycle, log *zap.Logger) (*grpc.ClientConn, error) {
+// newAdminClient Kitex client 到 accounting-system AccountingAdminService.
+// Kitex 自带 connection pool + keepalive, 不再需要单独 *grpc.ClientConn provider.
+func newAdminClient(log *zap.Logger) (accountingadminservice.Client, error) {
 	grpcAddr := envOr("ACCOUNTING_GRPC_ADDR", "localhost:50051")
-	conn, err := grpc.NewClient(grpcAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	cli, err := accountingadminservice.NewClient("accounting-system",
+		client.WithHostPorts(grpcAddr),
+		client.WithRPCTimeout(15*time.Second),
+		// TODO: client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, "")) — 接 etcd
 	)
 	if err != nil {
-		log.Error("dial accounting-system gRPC failed",
+		log.Error("kitex dial accounting-system failed",
 			zap.String("addr", grpcAddr), zap.Error(err))
-		return nil, fmt.Errorf("grpc.NewClient %s: %w", grpcAddr, err)
+		return nil, fmt.Errorf("accountingadminservice.NewClient %s: %w", grpcAddr, err)
 	}
-	log.Info("accounting-system gRPC client ready", zap.String("addr", grpcAddr))
-	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
-	return conn, nil
+	log.Info("accounting-system Kitex client ready", zap.String("addr", grpcAddr))
+	return cli, nil
 }
 
-func newAdminClient(conn *grpc.ClientConn) accountingv1.AccountingAdminServiceClient {
-	return accountingv1.NewAccountingAdminServiceClient(conn)
-}
-
-func newGateway(adminClient accountingv1.AccountingAdminServiceClient) *gateway {
+func newGateway(adminClient accountingadminservice.Client) *gateway {
 	return &gateway{admin: adminClient}
 }
 
@@ -111,7 +110,7 @@ func startHTTPServer(lc fx.Lifecycle, srv *http.Server, log *zap.Logger) {
 }
 
 type gateway struct {
-	admin accountingv1.AccountingAdminServiceClient
+	admin accountingadminservice.Client
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
