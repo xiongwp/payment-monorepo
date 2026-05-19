@@ -1,4 +1,4 @@
-module reconcile-system/packages/split-payment
+module github.com/xiongwp/split-payment
 
 go 1.25.0
 

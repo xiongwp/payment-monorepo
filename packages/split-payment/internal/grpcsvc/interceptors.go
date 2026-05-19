@@ -14,7 +14,7 @@ import (
 	"runtime/debug"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/observability"
+	"github.com/xiongwp/split-payment/internal/observability"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"

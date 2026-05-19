@@ -25,8 +25,8 @@ import (
 	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 
-	"reconcile-system/packages/split-payment/internal/clients"
-	"reconcile-system/packages/split-payment/internal/config"
+	"github.com/xiongwp/split-payment/internal/clients"
+	"github.com/xiongwp/split-payment/internal/config"
 )
 
 // Module — split-payment fx 装配根. 当前 stage 1+2, 后续逐步扩.

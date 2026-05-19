@@ -29,23 +29,21 @@ import (
 	"strings"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/clients"
-	"reconcile-system/packages/split-payment/internal/config"
-	"reconcile-system/packages/split-payment/internal/domain"
-	"reconcile-system/packages/split-payment/internal/grpcsvc"
-	"reconcile-system/packages/split-payment/internal/observability"
-	"reconcile-system/packages/split-payment/internal/repo"
-	"reconcile-system/packages/split-payment/internal/workflow"
+	"github.com/xiongwp/split-payment/internal/clients"
+	"github.com/xiongwp/split-payment/internal/config"
+	"github.com/xiongwp/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/grpcsvc"
+	"github.com/xiongwp/split-payment/internal/observability"
+	"github.com/xiongwp/split-payment/internal/repo"
+	"github.com/xiongwp/split-payment/internal/workflow"
 
 	_ "github.com/go-sql-driver/mysql"             // MF-1: mysql driver
-	// kitexserver "github.com/cloudwego/kitex/server" // KX-11: Kitex server — 等 adminservice 生成后恢复
+	kitexserver "github.com/cloudwego/kitex/server" // KX-11: Kitex server
 	"github.com/twmb/franz-go/pkg/kgo"              // SP-11 refund kafka subscriber
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
-	// adminservice kitex_gen 未生成 (无 proto), 整个 AdminService gRPC 暂时 stub.
-	// 等补完 proto + 跑 kitex 生成后改回:
-	// adminservice "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1/adminservice"
+	adminservice "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1/adminservice"
 )
 
 // main fx.New(Module).Run() — Module 见 providers.go.
@@ -668,15 +666,16 @@ func runAdminGRPCServer(ctx context.Context, cfg *config.Config, log *zap.Logger
 	}
 	auditSink := &grpcsvc.ChainAuditSink{Sinks: auditSinks}
 
-	// Kitex AdminService 暂时 stub: split-payment 还没生成 kitex_gen (无 proto IDL),
-	// adminservice.NewServer 调用注释掉, 服务端只跑 HTTP 路径不暴露 gRPC.
-	// 等补完 proto + 跑 kitex 生成后, 把上面 adminservice import 解除注释 + 恢复:
-	//   impl := grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, auditSink, log)
-	//   srv := adminservice.NewServer(impl, kitexserver.WithServiceAddr(addr))
-	_ = grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, auditSink, log)
-	_ = addr
-	log.Warn("split-payment Kitex AdminService DISABLED — kitex_gen not generated (no proto IDL)")
-	<-ctx.Done()
+	// Kitex server — adminservice.NewServer 把 grpcsvc.Server (实现 grpcsvc.AdminServiceServer
+	// interface) 注册到 Kitex. 老 grpc.NewServer + RegisterAdminServiceServer 替换为单行.
+	impl := grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, auditSink, log)
+	srv := adminservice.NewServer(impl, kitexserver.WithServiceAddr(addr))
+
+	log.Info("split-payment Kitex AdminService listening", zap.Int("port", port))
+	go func() { <-ctx.Done(); _ = srv.Stop() }()
+	if err := srv.Run(); err != nil {
+		log.Error("split kitex serve", zap.Error(err))
+	}
 }
 
 // adminTokenInterceptor 已删 — Kitex 切换后用 server.WithMiddleware + metainfo.GetValue.

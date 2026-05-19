@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/domain"
 )
 
 // StepDeps 编排 saga step 时注入的依赖.

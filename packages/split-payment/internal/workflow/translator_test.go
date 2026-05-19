@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"reconcile-system/packages/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/domain"
 )
 
 func mkAccountingGraph(nodes []domain.Node, edges []domain.Edge) *domain.Graph {

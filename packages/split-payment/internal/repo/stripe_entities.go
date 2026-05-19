@@ -34,7 +34,7 @@ import (
 	"fmt"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/domain"
 )
 
 // EnsureStripeSchema — 启动期自建 SP-4 五张表.

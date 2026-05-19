@@ -18,7 +18,7 @@ import (
 	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 	transactionservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/transactionservice"
 
-	"reconcile-system/packages/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/domain"
 )
 
 // AccountingGRPCClient — Kitex client → accounting-system TransactionService.
