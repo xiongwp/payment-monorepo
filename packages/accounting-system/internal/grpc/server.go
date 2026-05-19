@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	kitexserver "github.com/cloudwego/kitex/server"
@@ -1309,65 +1310,401 @@ func resolveEntryAmounts(e *accountingv1.AccountingEntry, currencyCode string) (
 	return debit, credit, nil
 }
 
-// ─── RESTORE-7: 还原 4 个 admin-web 用 RPC + 3 个 split-payment 用 RPC ────────
+// ─── RESTORE-7 / TECH-DEBT-1/3/4: admin-web + split-payment 用 RPC ──────────
 //
-// 这些 RPC 在历史精简时被砍, 现在 proto 补回. handler 暂返"未实现"错误骨架, 让
-// kitex server 接口编译通过. 具体业务实现 (扫 day_cut_history / 重建 hot
-// accounts / 列 snapshot dates / 按 user+business_type 列账户 / split-payment
-// 多 leg CreateTransaction 等) 留给后续 PR 真接.
+// 历史精简后这批 RPC 一度只剩 stub 骨架; 现已全部接到真 service/repo:
+//   - TECH-DEBT-1: ListAccountsByUserAndBusinessType / ListDayCutHistory /
+//     ListSnapshotDates / ListAccountTypes / ListTransactionRules.
+//   - TECH-DEBT-3: CreateTransaction multi-leg (Legs[] 已加进 wire proto,
+//     server 端展开 借/贷 entries 走 DoubleEntryBooking).
+//   - TECH-DEBT-4: RebuildHotAccounts 透传到 accountingSvc.RebuildHotAccounts
+//     (跨分片重算 + 写 Redis).
 
-func (s *Server) ListAccountsByUserAndBusinessType(_ context.Context, _ *accountingv1.ListAccountsByUserAndBusinessTypeRequest) (*accountingv1.ListAccountsByUserAndBusinessTypeResponse, error) {
+// ListAccountsByUserAndBusinessType 按 (userID, businessType, currency) 列账户.
+// currency 空表示返回该 (user, businessType) 下所有币种. 上层 admin-web 用此 RPC
+// 在 user_topup 场景查"这个 user 当前已经开了哪些 business_type 账户" (designer
+// picker / 账户列表页).
+func (s *Server) ListAccountsByUserAndBusinessType(ctx context.Context, req *accountingv1.ListAccountsByUserAndBusinessTypeRequest) (*accountingv1.ListAccountsByUserAndBusinessTypeResponse, error) {
+	if req == nil || req.GetUserId() <= 0 {
+		return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{
+			Code:    1,
+			Message: "user_id required",
+		}, nil
+	}
+	accs, err := s.accountingSvc.ListAccountsByUserAndBusinessType(ctx,
+		req.GetUserId(),
+		convertAccountBusinessType(req.GetAccountBusinessType()),
+		req.GetCurrency(),
+	)
+	if err != nil {
+		s.logger.Warn("ListAccountsByUserAndBusinessType failed",
+			zap.Int64("user_id", req.GetUserId()),
+			zap.String("currency", req.GetCurrency()),
+			zap.Error(err))
+		return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{
+			Code:    1,
+			Message: err.Error(),
+		}, nil
+	}
+	out := make([]*accountingv1.Account, 0, len(accs))
+	for _, a := range accs {
+		out = append(out, toProtoAccount(a))
+	}
 	return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{
 		Code:     0,
-		Message:  "stub: not yet implemented",
-		Accounts: nil,
+		Message:  "ok",
+		Accounts: out,
 	}, nil
 }
 
-func (s *Server) ListDayCutHistory(_ context.Context, _ *accountingv1.ListDayCutHistoryRequest) (*accountingv1.ListDayCutHistoryResponse, error) {
+// ListDayCutHistory 跨 100 个分片聚合 day_cut_control, 按 (cut_date, run_id,
+// currency) 折叠为一行. 上层 admin-web "日切历史"页面用. from_date/to_date 在
+// service 层之外补充过滤 (字符串日期 "YYYY-MM-DD" 字典序即时间序). limit<=0
+// 表示不限.
+func (s *Server) ListDayCutHistory(ctx context.Context, req *accountingv1.ListDayCutHistoryRequest) (*accountingv1.ListDayCutHistoryResponse, error) {
+	entries, err := s.dayCutSvc.ListDayCutHistory(ctx)
+	if err != nil {
+		s.logger.Warn("ListDayCutHistory failed", zap.Error(err))
+		return &accountingv1.ListDayCutHistoryResponse{Code: 1, Message: err.Error()}, nil
+	}
+	fromDate := req.GetFromDate()
+	toDate := req.GetToDate()
+	limit := int(req.GetLimit())
+	out := make([]*accountingv1.DayCutHistoryEntry, 0, len(entries))
+	for _, e := range entries {
+		if fromDate != "" && e.CutDate < fromDate {
+			continue
+		}
+		if toDate != "" && e.CutDate > toDate {
+			continue
+		}
+		out = append(out, &accountingv1.DayCutHistoryEntry{
+			CutDate:     e.CutDate,
+			RunId:       int32(e.RunID),
+			Currency:    e.Currency,
+			TotalShards: int32(e.TotalShards),
+			Pending:     int32(e.Pending),
+			Processing:  int32(e.Processing),
+			Completed:   int32(e.Completed),
+			Failed:      int32(e.Failed),
+		})
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
 	return &accountingv1.ListDayCutHistoryResponse{
 		Code:    0,
-		Message: "stub: not yet implemented",
-		Entries: nil,
+		Message: "ok",
+		Entries: out,
 	}, nil
 }
 
-func (s *Server) ListSnapshotDates(_ context.Context, _ *accountingv1.ListSnapshotDatesRequest) (*accountingv1.ListSnapshotDatesResponse, error) {
+// ListSnapshotDates 列出已有 balance snapshot 的所有日期 (DESC), 用于 admin-web
+// "试算平衡"页面的日期下拉. trialBalanceSvc 已封好跨分片 distinct 聚合.
+func (s *Server) ListSnapshotDates(ctx context.Context, _ *accountingv1.ListSnapshotDatesRequest) (*accountingv1.ListSnapshotDatesResponse, error) {
+	dates, err := s.trialBalanceSvc.ListSnapshotDates(ctx)
+	if err != nil {
+		s.logger.Warn("ListSnapshotDates failed", zap.Error(err))
+		return &accountingv1.ListSnapshotDatesResponse{Code: 1, Message: err.Error()}, nil
+	}
 	return &accountingv1.ListSnapshotDatesResponse{
 		Code:    0,
-		Message: "stub: not yet implemented",
-		Dates:   nil,
+		Message: "ok",
+		Dates:   dates,
 	}, nil
 }
 
-func (s *Server) RebuildHotAccounts(_ context.Context, req *accountingv1.RebuildHotAccountsRequest) (*accountingv1.RebuildHotAccountsResponse, error) {
-	return &accountingv1.RebuildHotAccountsResponse{
-		Code:    0,
-		Message: "stub: not yet implemented",
-		AsOf:    req.GetAsOf(),
-		DryRun:  req.GetDryRun(),
-		Entries: nil,
-	}, nil
+// ListAccountTypes 返回 account_type_info 全表 (条目少, 不走缓存). skeleton proto
+// 只暴露 code/name/description, 不带 is_platform/owner_type/balance_direction;
+// 真要这些字段就走 adminhttp /admin/account-types (admin-web 的 BFF 用).
+func (s *Server) ListAccountTypes(ctx context.Context, _ *accountingv1.ListAccountTypesRequest) (*accountingv1.ListAccountTypesResponse, error) {
+	rows, err := s.ruleRepo.ListAccountTypes(ctx)
+	if err != nil {
+		s.logger.Warn("ListAccountTypes failed", zap.Error(err))
+		return &accountingv1.ListAccountTypesResponse{}, err
+	}
+	items := make([]*accountingv1.AccountTypeItem, 0, len(rows))
+	for _, r := range rows {
+		desc := r.Description
+		if desc == "" {
+			desc = r.AccountTypeDesc
+		}
+		items = append(items, &accountingv1.AccountTypeItem{
+			Code:        r.AccountType,
+			Name:        r.AccountTypeName,
+			Description: desc,
+		})
+	}
+	return &accountingv1.ListAccountTypesResponse{Items: items}, nil
 }
 
-// SP-AC-7 split-payment 用 (TransactionService 子集).
+// ListTransactionRules 按 product_code 拉规则; 空 = 全部. split-payment 在每次
+// SaveGraph + Engine 加载时缓存 5min, 这条 RPC 是热路径.
+func (s *Server) ListTransactionRules(ctx context.Context, req *accountingv1.ListTransactionRulesRequest) (*accountingv1.ListTransactionRulesResponse, error) {
+	rules, err := s.ruleRepo.ListRulesByProduct(ctx, req.GetProductFilter())
+	if err != nil {
+		s.logger.Warn("ListTransactionRules failed",
+			zap.String("product", req.GetProductFilter()),
+			zap.Error(err))
+		return &accountingv1.ListTransactionRulesResponse{}, err
+	}
+	items := make([]*accountingv1.TransactionRuleItem, 0, len(rules))
+	for _, r := range rules {
+		items = append(items, &accountingv1.TransactionRuleItem{
+			Id:              r.ID,
+			ProductCode:     r.ProductCode,
+			EventCode:       r.EventCode,
+			DebitSubjectId:  r.DebitSubjectID,
+			CreditSubjectId: r.CreditSubjectID,
+			FromDirection:   r.FromDirection,
+			ToDirection:     r.ToDirection,
+			// model.TransactionRule 没 Description 列, 留空 (Extra JSON 里有 desc 时另说).
+		})
+	}
+	return &accountingv1.ListTransactionRulesResponse{Items: items}, nil
+}
+
+// ─── TECH-DEBT-3 / TECH-DEBT-4 已实装 (见各自 handler 注释) ───────────────────
+
+// RebuildHotAccounts (TECH-DEBT-4):
 //
-// CreateTransaction 一笔 multi-leg 落账; 内部按 (product_code, event_code) 查 rule
-// 派生 leg, 再走 DoubleEntryBooking. 当前 stub 返 pending + voucher_no 空,
-// caller (split-payment.workflow.Engine) 会把 OrderNo 反复 retry.
-
-func (s *Server) CreateTransaction(_ context.Context, req *accountingv1.CreateTransactionRequest) (*accountingv1.CreateTransactionResponse, error) {
-	return &accountingv1.CreateTransactionResponse{
-		OrderNo:      req.GetIdempotencyKey(),
-		Status:       "pending",
-		ErrorMessage: "stub: CreateTransaction rule engine not yet wired",
+// 透传到 accountingSvc.RebuildHotAccounts (跨分片重算 + 写 Redis). AsOf 支持
+// 三种格式: 空 = now, "5m"/"2h" 相对时长, "YYYY-MM-DD" 或 RFC3339 绝对时间.
+// 与 adminhttp /admin/redis/rebuild 是同一条 service 入口, 两路一致.
+func (s *Server) RebuildHotAccounts(ctx context.Context, req *accountingv1.RebuildHotAccountsRequest) (*accountingv1.RebuildHotAccountsResponse, error) {
+	opts := service.RebuildOptions{
+		AccountNos: req.GetAccountNos(),
+		DryRun:     req.GetDryRun(),
+	}
+	if asOf := strings.TrimSpace(req.GetAsOf()); asOf != "" {
+		switch {
+		case parseAsRelative(asOf, &opts.AsOf):
+			// duration
+		case parseAsDate(asOf, &opts.AsOf):
+			// YYYY-MM-DD
+		case parseAsRFC3339(asOf, &opts.AsOf):
+			// RFC3339
+		default:
+			return &accountingv1.RebuildHotAccountsResponse{
+				Code:    400,
+				Message: fmt.Sprintf("as_of 必须是 duration / YYYY-MM-DD / RFC3339; got %q", asOf),
+				AsOf:    asOf,
+				DryRun:  opts.DryRun,
+			}, nil
+		}
+	}
+	report, err := s.accountingSvc.RebuildHotAccounts(ctx, opts)
+	if err != nil {
+		s.logger.Warn("RebuildHotAccounts failed", zap.Error(err))
+		return &accountingv1.RebuildHotAccountsResponse{
+			Code:    500,
+			Message: err.Error(),
+			AsOf:    req.GetAsOf(),
+			DryRun:  req.GetDryRun(),
+		}, nil
+	}
+	entries := make([]*accountingv1.RebuildHotAccountEntry, 0, len(report.Entries))
+	for _, e := range report.Entries {
+		entries = append(entries, &accountingv1.RebuildHotAccountEntry{
+			AccountNo:     e.AccountNo,
+			BalanceBefore: e.BalanceBefore,
+			BalanceAfter:  e.BalanceAfter,
+			Source:        e.Source,
+			JournalCutoff: e.JournalCutoff,
+			Skipped:       e.Skipped,
+			Reason:        e.Reason,
+		})
+	}
+	return &accountingv1.RebuildHotAccountsResponse{
+		Code:     0,
+		Message:  "ok",
+		AsOf:     report.AsOf.Format(time.RFC3339),
+		DryRun:   report.DryRun,
+		Total:    int32(report.Total),
+		Updated:  int32(report.Updated),
+		Skipped:  int32(report.Skipped),
+		Failed:   int32(report.Failed),
+		Duration: report.Duration,
+		Entries:  entries,
 	}, nil
 }
 
-func (s *Server) ListAccountTypes(_ context.Context, _ *accountingv1.ListAccountTypesRequest) (*accountingv1.ListAccountTypesResponse, error) {
-	return &accountingv1.ListAccountTypesResponse{Items: nil}, nil
+func parseAsRelative(s string, out *time.Time) bool {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return false
+	}
+	*out = time.Now().Add(-d)
+	return true
 }
 
-func (s *Server) ListTransactionRules(_ context.Context, _ *accountingv1.ListTransactionRulesRequest) (*accountingv1.ListTransactionRulesResponse, error) {
-	return &accountingv1.ListTransactionRulesResponse{Items: nil}, nil
+func parseAsDate(s string, out *time.Time) bool {
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return false
+	}
+	*out = t
+	return true
+}
+
+func parseAsRFC3339(s string, out *time.Time) bool {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return false
+	}
+	*out = t
+	return true
+}
+
+// CreateTransaction (TECH-DEBT-3 v1):
+//
+// 接收 split-payment translator 派生好的 Legs[], 直接落 multi-leg double-entry.
+// 每个 leg 展开为 2 行 AccountingEntry (from = 借方, to = 贷方), 全部 leg 必须
+// 同币种 (currency 取首 leg, 与剩余 leg 校验); idempotency_key 给 accounting
+// 侧幂等. legs 空 → 返 400 让 caller 升级 client.
+//
+// 与 Legs 路径正交的"按 (product_code, event_code) 查 rule 派生 entries" 的真
+// rule-engine, 留给后续 PR; 当前 caller (split-payment translator + order-core
+// mapper) 都已经在自己这一侧解析了 account_no, 上来就喂 Legs 即可.
+func (s *Server) CreateTransaction(ctx context.Context, req *accountingv1.CreateTransactionRequest) (*accountingv1.CreateTransactionResponse, error) {
+	if req == nil {
+		return &accountingv1.CreateTransactionResponse{
+			Status:       "failed",
+			ErrorMessage: "nil request",
+		}, nil
+	}
+	if req.GetIdempotencyKey() == "" {
+		return &accountingv1.CreateTransactionResponse{
+			OrderNo:      req.GetBusinessNo(),
+			Status:       "failed",
+			ErrorMessage: "idempotency_key required",
+		}, nil
+	}
+	legs := req.GetLegs()
+	if len(legs) == 0 {
+		return &accountingv1.CreateTransactionResponse{
+			OrderNo:      req.GetIdempotencyKey(),
+			Status:       "failed",
+			ErrorMessage: "legs empty: rule-engine derivation not implemented, caller must populate legs",
+		}, nil
+	}
+
+	// 校验同币种 + 累计 entries
+	currency := strings.TrimSpace(legs[0].GetCurrency())
+	if currency == "" {
+		return &accountingv1.CreateTransactionResponse{
+			OrderNo:      req.GetIdempotencyKey(),
+			Status:       "failed",
+			ErrorMessage: "leg[0].currency required",
+		}, nil
+	}
+	entries := make([]service.AccountingEntry, 0, len(legs)*2)
+	for i, leg := range legs {
+		legCur := strings.TrimSpace(leg.GetCurrency())
+		if legCur == "" {
+			legCur = currency
+		}
+		if legCur != currency {
+			return &accountingv1.CreateTransactionResponse{
+				OrderNo:      req.GetIdempotencyKey(),
+				Status:       "failed",
+				ErrorMessage: fmt.Sprintf("leg[%d] currency=%s mismatch first leg=%s", i, legCur, currency),
+			}, nil
+		}
+		if leg.GetAmountMinor() <= 0 {
+			return &accountingv1.CreateTransactionResponse{
+				OrderNo:      req.GetIdempotencyKey(),
+				Status:       "failed",
+				ErrorMessage: fmt.Sprintf("leg[%d] amount_minor must be > 0", i),
+			}, nil
+		}
+		if leg.GetFromAccountNo() == "" || leg.GetToAccountNo() == "" {
+			return &accountingv1.CreateTransactionResponse{
+				OrderNo:      req.GetIdempotencyKey(),
+				Status:       "failed",
+				ErrorMessage: fmt.Sprintf("leg[%d] from_account_no / to_account_no required", i),
+			}, nil
+		}
+		desc := leg.GetDescription()
+		if desc == "" {
+			desc = req.GetRemark()
+		}
+		amount := leg.GetAmountMinor()
+		// 借方 (from)
+		entries = append(entries, service.AccountingEntry{
+			AccountNo:    leg.GetFromAccountNo(),
+			DebitAmount:  amount,
+			CreditAmount: 0,
+			Description:  desc,
+		})
+		// 贷方 (to)
+		entries = append(entries, service.AccountingEntry{
+			AccountNo:    leg.GetToAccountNo(),
+			DebitAmount:  0,
+			CreditAmount: amount,
+			Description:  desc,
+		})
+	}
+
+	businessNo := req.GetBusinessNo()
+	if businessNo == "" {
+		businessNo = req.GetIdempotencyKey()
+	}
+	remark := req.GetRemark()
+	if remark == "" {
+		remark = fmt.Sprintf("%s/%s", req.GetProductCode(), req.GetEventCode())
+	}
+	voucherNo, _, err := s.accountingSvc.DoubleEntryBooking(ctx, &service.DoubleEntryBookingRequest{
+		RequestID:    req.GetIdempotencyKey(),
+		BusinessNo:   businessNo,
+		BusinessType: eventCodeToBusinessType(req.GetEventCode()),
+		Entries:      entries,
+		Currency:     currency,
+		Description:  remark,
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrRequestInProgress) {
+			return &accountingv1.CreateTransactionResponse{
+				OrderNo:      req.GetIdempotencyKey(),
+				Status:       "pending",
+				ErrorMessage: err.Error(),
+			}, nil
+		}
+		s.logger.Warn("CreateTransaction failed",
+			zap.String("business_no", businessNo),
+			zap.String("product", req.GetProductCode()),
+			zap.String("event", req.GetEventCode()),
+			zap.Int("legs", len(legs)),
+			zap.Error(err))
+		return &accountingv1.CreateTransactionResponse{
+			OrderNo:      req.GetIdempotencyKey(),
+			Status:       "failed",
+			ErrorMessage: err.Error(),
+		}, nil
+	}
+	return &accountingv1.CreateTransactionResponse{
+		OrderNo:   req.GetIdempotencyKey(),
+		Status:    "posted",
+		VoucherNo: voucherNo,
+	}, nil
+}
+
+// eventCodeToBusinessType 把 split-payment event_code 字符串 (e.g. "charge.
+// succeeded", "refund.succeeded", "transfer.posted") 映射到 accounting 内部
+// BusinessType 枚举. 未识别归 TRANSFER, 保守不阻断 (transaction_order 主键不靠它).
+func eventCodeToBusinessType(event string) model.BusinessType {
+	switch {
+	case strings.HasPrefix(event, "charge."), strings.HasPrefix(event, "payment."), strings.HasPrefix(event, "topup."):
+		return model.BusinessTypePayment
+	case strings.HasPrefix(event, "refund."), strings.HasPrefix(event, "reversal."):
+		return model.BusinessTypeRefund
+	case strings.HasPrefix(event, "withdraw."), strings.HasPrefix(event, "payout."):
+		return model.BusinessTypeWithdraw
+	case strings.HasPrefix(event, "deposit."):
+		return model.BusinessTypeDeposit
+	case strings.HasPrefix(event, "commission."), strings.HasPrefix(event, "fee."):
+		return model.BusinessTypeCommission
+	default:
+		return model.BusinessTypeTransfer
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 )
 
@@ -43,16 +44,50 @@ func (h *RedisRebuildHandler) Rebuild(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// RebuildHotAccounts RPC 在 proto 精简时砍掉, 临时降级为 dry_run 报告 0 行.
-	_ = req
+	// RebuildHotAccounts RPC: server 端 handler 当前仍是 stub (TECH-DEBT-4),
+	// 但 BFF 这边已经把 Kitex 通道接好, 等 server 真实现完工自动生效.
+	resp, err := h.client.RebuildHotAccounts(r.Context(), &accountingv1.RebuildHotAccountsRequest{
+		AsOf:       req.AsOf,
+		AccountNos: req.AccountNos,
+		DryRun:     req.DryRun,
+	})
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	if resp.Code != 0 {
+		writeError(w, int(resp.Code), resp.Message)
+		return
+	}
+	type entryJSON struct {
+		AccountNo     string `json:"account_no"`
+		BalanceBefore string `json:"balance_before"`
+		BalanceAfter  string `json:"balance_after"`
+		Source        string `json:"source"`
+		JournalCutoff string `json:"journal_cutoff,omitempty"`
+		Skipped       bool   `json:"skipped"`
+		Reason        string `json:"reason,omitempty"`
+	}
+	out := make([]entryJSON, 0, len(resp.Entries))
+	for _, e := range resp.Entries {
+		out = append(out, entryJSON{
+			AccountNo:     e.AccountNo,
+			BalanceBefore: e.BalanceBefore,
+			BalanceAfter:  e.BalanceAfter,
+			Source:        e.Source,
+			JournalCutoff: e.JournalCutoff,
+			Skipped:       e.Skipped,
+			Reason:        e.Reason,
+		})
+	}
 	writeJSON(w, map[string]interface{}{
-		"as_of":   req.AsOf,
-		"dry_run": req.DryRun,
-		"total":   0,
-		"updated": 0,
-		"skipped": 0,
-		"failed":  0,
-		"entries": []map[string]interface{}{},
-		"stub":    true,
+		"as_of":    resp.AsOf,
+		"dry_run":  resp.DryRun,
+		"total":    resp.Total,
+		"updated":  resp.Updated,
+		"skipped":  resp.Skipped,
+		"failed":   resp.Failed,
+		"duration": resp.Duration,
+		"entries":  out,
 	})
 }

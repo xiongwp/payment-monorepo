@@ -82,6 +82,10 @@ services:
       CFG_KAFKA_TOPIC: "config-center.events"
       # etcd 自注册（业务服务通过 etcd:///config-center 走 round_robin）
       CFG_REGISTRY_ENDPOINTS: ${ETCD_ENDPOINTS:-}
+      # Dev: 跳过 admin token 鉴权, 直接用 admin@localhost actor 进 /admin/ UI.
+      # 真接通 user-merchant-core IntrospectToken 后改成 0 (或删除整行).
+      CONFIG_CENTER_DEV_BYPASS: ${CONFIG_CENTER_DEV_BYPASS:-1}
+      CONFIG_CENTER_DEV_ACTOR: ${CONFIG_CENTER_DEV_ACTOR:-admin@localhost}
     volumes:
       - ./config:/app/config:ro
     healthcheck:

@@ -10,6 +10,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +22,19 @@ import (
 
 	"github.com/xiongwp/split-payment/internal/domain"
 )
+
+// parseAmountToMinor parses a leg amount string into minor units (int64).
+// domain.TxnLeg.Amount 已经是 minor (translator 保证), 这里只做 trim + parse.
+func parseAmountToMinor(s string) (int64, error) {
+	v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid amount %q: %w", s, err)
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("amount %q must be ≥ 0", s)
+	}
+	return v, nil
+}
 
 // AccountingGRPCClient — Kitex client → accounting-system TransactionService.
 //
@@ -83,14 +98,32 @@ func (c *AccountingGRPCClient) CreateTransaction(ctx context.Context, req *domai
 		defer cancel()
 	}
 
-	// TODO: kitex_gen/accounting/v1 当前 transaction.proto skeleton 字段不够完整,
-	// 等 .proto 补全 Legs[] / Description / MaxRetry 后这里展开复制.
+	// TECH-DEBT-3 已把 Legs[] 加进 wire proto, 这里把 translator 派生的 leg
+	// 复制到 wire 类型. accounting server 端按 leg 展开 2 行 AccountingEntry
+	// (借方 + 贷方) 一起原子落账.
+	wireLegs := make([]*accountingv1.TxnLeg, 0, len(req.Legs))
+	for _, leg := range req.Legs {
+		amt, perr := parseAmountToMinor(leg.Amount)
+		if perr != nil {
+			return nil, fmt.Errorf("leg %s→%s amount %q: %w", leg.EdgeFromNode, leg.EdgeToNode, leg.Amount, perr)
+		}
+		wireLegs = append(wireLegs, &accountingv1.TxnLeg{
+			FromAccountNo: leg.FromAccountID,
+			ToAccountNo:   leg.ToAccountID,
+			AmountMinor:   amt,
+			Currency:      leg.Currency,
+			EdgeFromNode:  leg.EdgeFromNode,
+			EdgeToNode:    leg.EdgeToNode,
+		})
+	}
 	wireReq := &accountingv1.CreateTransactionRequest{
 		BusinessNo:     req.OrderNo,
 		ProductCode:    req.ProductCode,
 		EventCode:      req.EventCode,
 		IdempotencyKey: req.OrderNo, // 业务 id 兼任幂等 key
 		Remark:         req.Description,
+		BusinessType:   req.BusinessType,
+		Legs:           wireLegs,
 	}
 	wireResp, err := c.cli.CreateTransaction(ctx, wireReq)
 	if err != nil {

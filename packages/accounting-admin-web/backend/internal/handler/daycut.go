@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
 	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
@@ -51,9 +52,55 @@ func (h *DayCutHandler) TriggerDayCut(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetDayCutHistory GET /v1/day-cut/history
-// ListDayCutHistory RPC 在 proto 精简时砍掉, 临时降级为空 entries 列表.
+// GetDayCutHistory GET /v1/day-cut/history?from=YYYY-MM-DD&to=YYYY-MM-DD&limit=N
+//
+// TECH-DEBT-1 已把 server 端 RPC 接到 dayCutSvc.ListDayCutHistory; 这里走 Kitex
+// 调真后端, 失败 → 5xx, 不再静默返空.
 func (h *DayCutHandler) GetDayCutHistory(w http.ResponseWriter, r *http.Request) {
-	_ = r
-	writeJSON(w, map[string]interface{}{"entries": []map[string]interface{}{}, "stub": true})
+	q := r.URL.Query()
+	from := q.Get("from")
+	to := q.Get("to")
+	limit := int32(0)
+	if s := q.Get("limit"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+			limit = int32(v)
+		}
+	}
+	resp, err := h.client.ListDayCutHistory(r.Context(), &accountingv1.ListDayCutHistoryRequest{
+		FromDate: from,
+		ToDate:   to,
+		Limit:    limit,
+	})
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	if resp.Code != 0 {
+		writeError(w, int(resp.Code), resp.Message)
+		return
+	}
+	type entryJSON struct {
+		CutDate     string `json:"cut_date"`
+		RunID       int32  `json:"run_id"`
+		Currency    string `json:"currency"`
+		TotalShards int32  `json:"total_shards"`
+		Pending     int32  `json:"pending"`
+		Processing  int32  `json:"processing"`
+		Completed   int32  `json:"completed"`
+		Failed      int32  `json:"failed"`
+	}
+	out := make([]entryJSON, 0, len(resp.Entries))
+	for _, e := range resp.Entries {
+		out = append(out, entryJSON{
+			CutDate:     e.CutDate,
+			RunID:       e.RunId,
+			Currency:    e.Currency,
+			TotalShards: e.TotalShards,
+			Pending:     e.Pending,
+			Processing:  e.Processing,
+			Completed:   e.Completed,
+			Failed:      e.Failed,
+		})
+	}
+	writeJSON(w, map[string]interface{}{"entries": out, "count": len(out)})
 }

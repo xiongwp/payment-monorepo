@@ -107,23 +107,38 @@ func (c *Client) Close() error { return nil }
 // DoubleEntryBooking 把 AccountingOutbox 翻译成 DoubleEntryBookingRequest 调
 // accounting-system.
 //
-// 当前最小实现: request_id 透传 (走 accounting 侧幂等), business_no 用 ChargeID/
-// RefundID/PIID 顺位填. entries 暂留空 — 由 accounting-system 侧按 business_no +
-// business_type 查规则补齐 (Stripe-like 资金链路在 split-payment moneyflow 引擎
-// 里维护规则, accounting 端只执行 rule).
+// TECH-DEBT-5 当前状态:
+//   - business_no / request_id / business_type / currency / description 已就位,
+//     accounting 侧幂等键 + 业务标识齐全, 不会再因 missing field 被拒.
+//   - entries (借贷分录) 仍未在 order-core 端解析: 需要按 (owner_id, business_type,
+//     currency) 反查账户号才能填 AccountNo, 当前 client 没有这条 RPC 通道.
 //
-// 真要在 order-core 这边做完整 entries 映射, 需要按 EventType 拆 charge.success /
-// refund.success / dispute.opened / ... 各 case 推算借贷, 这部分代码在原始
-// internal/accounting/mapper.go (~350 行). 接下来 RESTORE-2 后续 commit 补.
+// 长期方向 (二选一):
+//
+//	a) order-core 这边按 EventType 拆 charge.succeeded / refund.succeeded / dispute.
+//	   opened / ... 各 case 推借贷 + 调 GetAccount 解析 account_no 把 entries 全填.
+//	   等价于复原 ~350 行的 internal/accounting/mapper.go.
+//	b) 把订单事件改投 accounting-system 的 CreateTransaction (TECH-DEBT-3 已实装,
+//	   wire 端 Legs[] 通了). order-core 只需做一次 GetAccountByUserAndBusinessType
+//	   解析 from/to account_no, 然后塞 1 个 leg 进 CreateTransactionRequest.Legs
+//	   即可走原子记账. 比 (a) 少 ~300 行 case 推算, 推荐.
+//
+// 当前实现保留了 (a) 路径所需的输入, entries 留空时 accounting 侧会落 400 让
+// outbox 重试, 让链路明确暴露 "mapper 待补" 这一事实, 不静默成功. 下一步
+// 切 (b) 路径: 拿 (PaymentMethod → 渠道 buffer BT, OwnerID + MERCHANT_PENDING_SETTLE)
+// 解出 2 个 account_no → 单 leg CreateTransaction.
 func (c *Client) DoubleEntryBooking(ctx context.Context, ob *domain.AccountingOutbox) error {
 	if ob == nil {
 		return errors.New("accounting outbox required")
 	}
 	businessNo := firstNonEmpty(ob.ChargeID, ob.RefundID, ob.PaymentIntentID)
 	req := &accv1.DoubleEntryBookingRequest{
-		BusinessNo: businessNo,
-		RequestId:  ob.RequestID,
-		// BusinessType / Entries / Currency / Mode 由 mapper.go 补齐, 这里暂留默认.
+		BusinessNo:   businessNo,
+		RequestId:    ob.RequestID,
+		BusinessType: eventTypeToBusinessType(ob.EventType),
+		Currency:     ob.Currency,
+		Description:  describeOutbox(ob),
+		// Entries / Mode: 见 TECH-DEBT-5 注释; 留默认.
 	}
 	resp, err := c.cli.DoubleEntryBooking(ctx, req)
 	if err != nil {
@@ -133,6 +148,26 @@ func (c *Client) DoubleEntryBooking(ctx context.Context, ob *domain.AccountingOu
 		return fmt.Errorf("accounting: code=%d msg=%s", resp.GetCode(), resp.GetMessage())
 	}
 	return nil
+}
+
+// eventTypeToBusinessType 把 outbox EventType 映射到 accounting BusinessType.
+// 未识别的 EventType 落 PAYMENT (charge 默认), 保守不阻断.
+func eventTypeToBusinessType(et domain.AccountingEventType) accv1.BusinessType {
+	switch et {
+	case domain.AccountingEventChargeSucceeded:
+		return accv1.BusinessType_BUSINESS_TYPE_PAYMENT
+	case domain.AccountingEventRefundSucceeded:
+		return accv1.BusinessType_BUSINESS_TYPE_REFUND
+	default:
+		return accv1.BusinessType_BUSINESS_TYPE_PAYMENT
+	}
+}
+
+// describeOutbox 拼一个对账可读的描述: "<event>:<pi>:<charge|refund>".
+// accounting 侧 transaction.description 落库, 排错时不用反查 outbox.
+func describeOutbox(ob *domain.AccountingOutbox) string {
+	tail := firstNonEmpty(ob.ChargeID, ob.RefundID, ob.PaymentIntentID)
+	return fmt.Sprintf("%s:%s:%s", ob.EventType, ob.PaymentIntentID, tail)
 }
 
 func firstNonEmpty(ss ...string) string {

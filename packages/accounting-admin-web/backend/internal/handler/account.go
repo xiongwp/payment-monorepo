@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gorilla/mux"
 	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
@@ -154,11 +155,38 @@ func (h *AccountHandler) GetAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "account_no or (user_id + account_business_type) required")
 		return
 	}
-	// ListAccountsByUserAndBusinessType RPC 在 accounting.proto 精简时被砍掉,
-	// 当前未在 accountingv1 中提供. admin web 端临时降级为空列表 + 200 OK,
-	// 等 RPC 重新加回 proto + service handler 后改回真实调用.
-	_ = userIDStr
-	_ = businessTypeStr
-	_ = currencyFilter
-	writeJSON(w, map[string]interface{}{"accounts": []*accountJSON{}, "count": 0, "stub": true})
+	// ListAccountsByUserAndBusinessType RPC (TECH-DEBT-1 已接真 service):
+	// 按 (user_id, business_type [, currency]) 跨币种枚举该用户的账户.
+	// currencyFilter 为空 → 返回所有币种行; 非空 → 服务端过滤到单币种.
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil || userID <= 0 {
+		writeError(w, 400, "invalid user_id")
+		return
+	}
+	bt, err := strconv.Atoi(businessTypeStr)
+	if err != nil || bt < 0 {
+		writeError(w, 400, "invalid account_business_type")
+		return
+	}
+	resp, err := h.client.ListAccountsByUserAndBusinessType(r.Context(), &accountingv1.ListAccountsByUserAndBusinessTypeRequest{
+		UserId:              userID,
+		AccountBusinessType: accountingv1.AccountBusinessType(bt),
+		Currency:            currencyFilter,
+	})
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	if resp.Code != 0 {
+		writeError(w, int(resp.Code), resp.Message)
+		return
+	}
+	accs := make([]*accountJSON, 0, len(resp.Accounts))
+	for _, a := range resp.Accounts {
+		accs = append(accs, protoAccountToJSON(a))
+	}
+	writeJSON(w, map[string]interface{}{
+		"accounts": accs,
+		"count":    len(accs),
+	})
 }
