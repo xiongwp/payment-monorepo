@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package order.v1;
+
+option go_package = "reconcile-system/packages/order-core/kitex_gen/order/v1;orderv1";
+
+message AuditEntry {
+  int64  id            = 1;
+  string actor         = 2;
+  string actor_ip      = 3;
+  string action        = 4;
+  string target_type   = 5;
+  string target_id     = 6;
+  string http_method   = 7;
+  string http_path     = 8;
+  int32  http_status   = 9;
+  string request_body  = 10; // caller-redacted
+  string response_code = 11;
+  string response_msg  = 12;
+  int32  duration_ms   = 13;
+  int64  created_ms    = 14;
+}
+
+message WriteAuditRequest {
+  string actor         = 1;
+  string actor_ip      = 2;
+  string action        = 3;
+  string target_type   = 4;
+  string target_id     = 5;
+  string http_method   = 6;
+  string http_path     = 7;
+  int32  http_status   = 8;
+  string request_body  = 9;
+  string response_code = 10;
+  string response_msg  = 11;
+  int32  duration_ms   = 12;
+}
+
+message WriteAuditResponse {}
+
+message ListAuditRequest {
+  string actor       = 1;
+  string action      = 2; // "merchant.*" or "merchant.approve"
+  string target_type = 3;
+  string target_id   = 4;
+  int64  since_ms    = 5;
+  int64  until_ms    = 6;
+  int32  limit       = 7;
+  int32  offset      = 8;
+}
+
+message ListAuditResponse {
+  repeated AuditEntry items = 1;
+  int64               total = 2;
+}
+
+service AuditService {
+  rpc Write (WriteAuditRequest) returns (WriteAuditResponse);
+  rpc List  (ListAuditRequest)  returns (ListAuditResponse);
+}

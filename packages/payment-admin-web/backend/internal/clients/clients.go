@@ -6,11 +6,11 @@ package clients
 
 import (
 	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
-	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
 	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
 
 	// Kitex 已切的服务用 kitex_gen 路径:
 	kmsservice "reconcile-system/packages/kms-manage/kitex_gen/kms/v1/kmsservice"
+	paymentcoreservice "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
 	riskservice "reconcile-system/packages/risk-manage/kitex_gen/risk/v1/riskservice"
 )
 
@@ -30,7 +30,7 @@ type Deps struct {
 	Ledger            orderv1.LedgerServiceClient
 	Dispute           orderv1.DisputeServiceClient
 	MerchantSecret    usermerchantv1.MerchantSecretServiceClient
-	PCore             paymentcorev1.PaymentCoreServiceClient
+	PCore             paymentcoreservice.Client // Kitex
 
 	KMS  kmsservice.Client  // Kitex
 	Risk riskservice.Client // Kitex

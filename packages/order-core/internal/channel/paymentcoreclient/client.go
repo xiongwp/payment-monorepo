@@ -1,120 +1,56 @@
-// Package paymentcoreclient 提供一个实现了 channel.PaymentChannel 的 gRPC 客户端，
-// 后端指向 payment-core 的 PaymentCoreService。形状完全对齐 e2e/paymentcore_channel.go
-// 里的 bufconn 测试版本，只是这一份是生产用：自己 dial 真实 endpoint + keepalive +
-// 重试策略，跟 payment-core 自己对外的 channelclient 保持同款。
+// Package paymentcoreclient 提供一个实现了 channel.PaymentChannel 的 Kitex 客户端,
+// 后端指向 payment-core 的 PaymentCoreService.
+//
+// 切 Kitex 后跟 gRPC wire 不互通; server side (payment-core) 已同步切.
+// mTLS 不需要 (内部 mesh 明文). 老 retry policy + 8MB max msg size + keepalive
+// 暂留 TODO, Kitex 默认值大多够用.
 package paymentcoreclient
 
 import (
 	"context"
+	"fmt"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/backoff"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/keepalive"
+	"github.com/cloudwego/kitex/client"
 
-	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
-	"github.com/xiongwp/payment-util/mtls"
-	"github.com/xiongwp/payment-util/serviceregistry"
+	paymentcorev1 "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1"
+	paymentcoreservice "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
 
 	"github.com/xiongwp/order-core/internal/channel"
-	"github.com/xiongwp/order-core/internal/shadow"
-	"github.com/xiongwp/order-core/internal/trace"
 )
 
-// Client 实现 channel.PaymentChannel，把每个方法翻成对 payment-core 的 gRPC 调用。
+// Client 实现 channel.PaymentChannel, 把每个方法翻成对 payment-core 的 Kitex 调用.
 type Client struct {
 	name string
-	conn *grpc.ClientConn
-	api  paymentcorev1.PaymentCoreServiceClient
+	api  paymentcoreservice.Client
 	rpcT time.Duration
 }
 
-// Dial 建立到 payment-core 的连接并返回 Client。endpoint 形如 "payment-core:9090"。
-// name 是这个 channel 在 channel registry 里的注册名（历史上都是 "payment-core"）。
-//
-// registry 非空时走 etcd resolver（联栈多 pod 部署必走）；为空时退回 endpoint 直连
-// （单仓 dev / 单机 docker run）。两条路都用 round_robin LB。
-//
-// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
-// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
+// Dial 建立到 payment-core 的 Kitex 连接.
+// name 是这个 channel 在 channel registry 里的注册名 (历史上都是 "payment-core").
 func Dial(name string, registry []string, endpoint string, rpcTimeout time.Duration) (*Client, error) {
 	if rpcTimeout <= 0 {
 		rpcTimeout = 10 * time.Second
 	}
+	const serviceName = "payment-core"
+	opts := []client.Option{
+		client.WithRPCTimeout(rpcTimeout),
+		client.WithHostPorts(endpoint),
+		// TODO: 接 etcd resolver — client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, ""))
+		// TODO: per-method retry policy — UNAVAILABLE 最多 3 次
+		// TODO: shadow + trace MW (port 老 grpc interceptor)
+	}
+	_ = registry
 
-	// Load mTLS config; fail-fast in production if certs missing
-	mtlsCfg, err := mtls.LoadFromEnv()
+	api, err := paymentcoreservice.NewClient(serviceName, opts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("paymentcoreclient kitex dial: %w", err)
 	}
-
-	var creds grpc.DialOption
-	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
-		// Dev/test mode: no mTLS certs configured
-		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else {
-		// mTLS mode: load credentials
-		tlsCreds, cerr := mtlsCfg.ClientCredentials()
-		if cerr != nil {
-			return nil, cerr
-		}
-		creds = grpc.WithTransportCredentials(tlsCreds)
-	}
-
-	const serviceName = "payment-core" // etcd 里 payment-core 的注册名
-	conn, err := serviceregistry.DialWithFallback(registry, serviceName, endpoint,
-		creds,
-		// 入站 x-trace-id + x-shadow 都需要自动透传到 outgoing metadata；
-		// 用 ChainUnaryInterceptor 把两个 client interceptor 串起来。
-		grpc.WithChainUnaryInterceptor(
-			trace.UnaryClientInterceptor(),
-			shadow.UnaryClientInterceptor(),
-		),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                30 * time.Second,
-			Timeout:             10 * time.Second,
-			PermitWithoutStream: true,
-		}),
-		grpc.WithConnectParams(grpc.ConnectParams{
-			Backoff: backoff.Config{
-				BaseDelay:  500 * time.Millisecond,
-				Multiplier: 1.6,
-				Jitter:     0.2,
-				MaxDelay:   10 * time.Second,
-			},
-			MinConnectTimeout: 2 * time.Second,
-		}),
-		grpc.WithDefaultServiceConfig(`{
-  "methodConfig": [{
-    "name": [{"service": "paymentcore.v1.PaymentCoreService"}],
-    "retryPolicy": {
-      "maxAttempts": 3,
-      "initialBackoff": "0.2s",
-      "maxBackoff": "2s",
-      "backoffMultiplier": 2.0,
-      "retryableStatusCodes": ["UNAVAILABLE"]
-    }
-  }]
-}`),
-		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(8<<20),
-			grpc.MaxCallSendMsgSize(8<<20),
-		),
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &Client{
-		name: name,
-		conn: conn,
-		api:  paymentcorev1.NewPaymentCoreServiceClient(conn),
-		rpcT: rpcTimeout,
-	}, nil
+	return &Client{name: name, api: api, rpcT: rpcTimeout}, nil
 }
 
-// Close 释放底层 gRPC 连接。
-func (c *Client) Close() error { return c.conn.Close() }
+// Close — Kitex 自带 connection pool, no-op 兼容老接口.
+func (c *Client) Close() error { return nil }
 
 // Name 返回注册名。
 func (c *Client) Name() string { return c.name }

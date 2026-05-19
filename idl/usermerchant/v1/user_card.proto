@@ -1,0 +1,111 @@
+// 用户卡服务（UserCard）：绑卡 / 列卡 / 删卡 / 默认卡 / 内部 stored_token 查询。
+//
+// PCI 边界：
+//   - AddCard 是**唯一**接受 PAN 的 RPC；上层（api-gateway / SDK）调用后立刻把
+//     PAN 转给 user-merchant-core，user-merchant-core 内部立即 forward 给
+//     card-center.Tokenize 换 stored_token，PAN 在本服务进程驻留 < 1ms。
+//   - ListCards / GetCard 返回的字段已脱敏，只含 masked_pan / network / 有效期
+//     等元数据，不含 stored_token / PAN。
+//   - GetStoredTokenForPayment 是**内部 RPC**：listen 在内部端口（mTLS + clientCN
+//     白名单：order-core），公网入口（api-gateway）不可调。
+//
+// 部署：service user-merchant-core 同时 listen :8080（公网/UserService 等）和 :8090
+//      （内部/UserCardInternalService）。internal listener 仅由 order-core / 受信
+//      模块通过 mTLS 调，CN 白名单在 server interceptor 强校验。
+syntax = "proto3";
+
+package usermerchant.v1;
+
+option go_package = "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1;usermerchantv1";
+
+// ─── public-facing：api-gateway 走这条 ──────────────────────────────────────
+//
+// PCI 严格纪律：本服务**永远不接受 PAN**。前端流程是：
+//   1. 浏览器 fetch HTTPS POST 到 card-center.tokenize（PAN 在此跳）
+//   2. 浏览器拿到 stored_token + masked_pan + network 后，再 POST 到 api-gateway
+//   3. api-gateway 调本 service.AttachCard（**只有 stored_token**，没有 PAN）
+//   4. 本 service 把 stored_token + 元数据持久化到 user_card 表
+//
+// 这样 api-gateway / user-merchant-core 进程内永远不见 PAN，PCI scope = SAQ-A。
+service UserCardService {
+  rpc AttachCard    (AttachCardRequest)    returns (AttachCardResponse);
+  rpc ListCards     (ListCardsRequest)     returns (ListCardsResponse);
+  rpc DeleteCard    (DeleteCardRequest)    returns (DeleteCardResponse);
+  rpc SetDefaultCard(SetDefaultCardRequest) returns (SetDefaultCardResponse);
+}
+
+// ─── internal-only：order-core 走这条 ────────────────────────────────────────
+//
+// mTLS clientCN 白名单："order-core"。其它任何调用方一律拒绝。
+service UserCardInternalService {
+  // 给 order-core PI Confirm 路径用：凭 (user_id, user_card_id) 取 stored_token。
+  // stored_token 在 order-core 进程内驻留 < 100ms（用于调 card-center.CreatePaymentToken），
+  // 用完即丢，绝不外发 / 不存。
+  rpc GetStoredTokenForPayment(GetStoredTokenRequest) returns (GetStoredTokenResponse);
+}
+
+// ─── messages ────────────────────────────────────────────────────────────────
+
+// CardInfo 卡元数据（已脱敏，不含 stored_token / PAN）。
+message CardInfo {
+  int64  id          = 1;  // user_card_id
+  string masked_pan  = 2;  // 411111******1111
+  string network     = 3;  // VISA / MASTERCARD / JCB / AMEX / UNIONPAY
+  int32  exp_month   = 4;  // 1..12
+  int32  exp_year    = 5;  // 4-digit
+  string holder_name = 6;
+  bool   is_default  = 7;
+  string status      = 8;  // active / deleted / expired
+}
+
+// AttachCardRequest **永远不含 PAN/CVV**。
+//
+// 浏览器先 HTTPS 调 card-center.tokenize 拿 stored_token，再走 api-gateway 把
+// 这条记录持久化进 user_card 表。本 RPC 只接 stored_token 这种已经脱敏的 ref。
+message AttachCardRequest {
+  // user_id 必填；api-gateway 从 jwt 解析后塞进来，client 不可伪造。
+  int64  user_id      = 1;
+  // stored_token：card-center 颁发的长期 token（KMS-encrypted blob，tok_card_*）。
+  // 用户后续支付时 order-core 会拿 user_id + user_card_id 反查这个 token。
+  string stored_token = 2;
+  // masked_pan：BIN+last4，仅展示用，不能反推 PAN
+  string masked_pan   = 3;
+  string network      = 4;  // visa / mastercard / ...
+  int32  exp_month    = 5;
+  int32  exp_year     = 6;
+  string holder_name  = 7;
+  bool   set_default  = 8;
+  string trace_id     = 9;
+}
+message AttachCardResponse {
+  int64  user_card_id = 1;
+  string masked_pan   = 2;
+  string network      = 3;
+}
+
+message ListCardsRequest  { int64 user_id = 1; }
+message ListCardsResponse { repeated CardInfo cards = 1; }
+
+message DeleteCardRequest {
+  int64  user_id      = 1;
+  int64  user_card_id = 2;
+  string trace_id     = 3;
+}
+message DeleteCardResponse { bool ok = 1; }
+
+message SetDefaultCardRequest {
+  int64 user_id      = 1;
+  int64 user_card_id = 2;
+}
+message SetDefaultCardResponse { bool ok = 1; }
+
+message GetStoredTokenRequest {
+  int64 user_id      = 1;
+  int64 user_card_id = 2;
+}
+message GetStoredTokenResponse {
+  // stored_token：仅 order-core 拿到，立刻给 card-center.CreatePaymentToken。
+  string stored_token = 1;
+  string masked_pan   = 2;
+  string network      = 3;
+}

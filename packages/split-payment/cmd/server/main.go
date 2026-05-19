@@ -1,22 +1,19 @@
 // split-payment server — Money Flow Graph 编排服务入口 (SP-AC-7 pure gRPC).
 //
+// FX-4 stage-1 wrap: 顶层 fx.New(Module).Run(), 业务装配仍 inline 在 wireAll.
+// 后续 stage 把 Engine / Workers / gRPCServer 逐步抽 Provider 后 wireAll 会变薄.
+//
 // 起:
-//   ACCOUNTING_GRPC_ADDR=accounting-system:9091 \
-//   SPLIT_GRPC_PORT=9098 \
-//   go run ./cmd/server
+//
+//	./split-payment    (env / yaml 加载, fx 接管 lifecycle)
 //
 // 暴露:
-//   gRPC :9098  — split_payment.v1.AdminService (Graph CRUD / DryRun)
-//                  admin-web BFF 通过这个端口调
+//   - gRPC :9098 — split_payment.v1.AdminService (Graph CRUD / DryRun)
+//   - admin HTTP :9099 — /healthz + /metrics + pprof
 //
-// 后台:
-//   Kafka 订阅业务事件 → workflow.Engine.Handle → translator → accounting (gRPC)
-//   Payout cron / refund subscriber / saga recovery 等内部 worker
-//
-// SP-AC-7 改造: HTTP server 全部下线 (旧路径: adminhttp.Server + StripeAPIServer +
-// ReviewsServer + Stripe 兼容层). 业务调用一律走 gRPC, 通信对端 (admin-web / accounting-system)
-// 跟着切换. 外部 Stripe API 兼容如需保留, 后续在独立的 stripe-gateway 服务里做.
-
+// 后台 (fx.Lifecycle 管理 ctx + Stop):
+//   - Kafka 订阅业务事件 → workflow.Engine.Handle → translator → accounting (gRPC)
+//   - Payout cron / refund subscriber / saga recovery 等内部 worker
 package main
 
 import (
@@ -29,9 +26,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"reconcile-system/packages/split-payment/internal/clients"
@@ -42,74 +37,48 @@ import (
 	"reconcile-system/packages/split-payment/internal/repo"
 	"reconcile-system/packages/split-payment/internal/workflow"
 
-	_ "github.com/go-sql-driver/mysql" // MF-1: mysql driver
-	"github.com/twmb/franz-go/pkg/kgo" // SP-11 refund kafka subscriber
-	"github.com/xiongwp/payment-util/mtls" // SP-AC-7 PH3-2: mTLS scaffolding
-	"github.com/xiongwp/payment-util/serviceregistry" // SP-AC-7 L2+X2: hardened gRPC dial
+	_ "github.com/go-sql-driver/mysql"             // MF-1: mysql driver
+	"github.com/twmb/franz-go/pkg/kgo"             // SP-11 refund kafka subscriber
+	"github.com/xiongwp/payment-util/mtls"         // mTLS scaffolding (server side 仍用)
+	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"            // SP-AC-7 PH3-2: mTLS server creds 类型
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
+// main fx.New(Module).Run() — Module 见 providers.go.
+// wireAll 是 fx.Invoke 入口, 负责把 inject 的 cfg/log/db/conn/grpcCli 接到现有业务装配上.
 func main() {
-	// A 方案 (config 抽 yaml): 启动期一次性加载所有配置, 业务路径走 cfg.X.Y 不再散落 envOr.
-	// 优先级: ./config/config.yaml → $SPLIT_PAYMENT_CONFIG → env override (SPLIT_PAYMENT_* + 历史 env 名).
-	cfg, cfgErr := config.Load("")
-	if cfgErr != nil {
-		fmt.Fprintln(os.Stderr, "config.Load:", cfgErr)
-		os.Exit(1)
-	}
-	// SP-AC-7 O4: zap AtomicLevel — 让 /admin/log-level 能在线调级.
-	logLevel := parseLogLevel(cfg.Log.Level)
-	logCfg := zap.NewProductionConfig()
-	logCfg.Level = logLevel
-	log, _ := logCfg.Build()
-	defer log.Sync()
+	fx.New(
+		Module,
+		fx.Invoke(wireAll),
+	).Run()
+}
 
-	// SP-AC-7 P10: OTel trace context propagation (W3C traceparent). 当前用 noop tracer,
-	// 不外发, 仅保证 ctx 传递. 接 OTLP exporter 时改 observability.InitTracer 内部即可.
+// wireAll 装配业务逻辑 — 接收 fx Providers 给的依赖, 把原 main() body 搬进来 (内部
+// 仍是过程式; FX-3 stage 后续逐步抽 Provider 后这个函数会变薄).
+//
+// 跟 recon-admin "stage 1 wrap" 同款手法, 保留过程式细节, 顶层走 fx.New.
+func wireAll(
+	lc fx.Lifecycle,
+	cfg *config.Config,
+	log *zap.Logger,
+	logLevel zap.AtomicLevel,
+	db *sql.DB,
+	conn *grpc.ClientConn,
+	_ *clients.AccountingGRPCClient, // 直接走 conn 构造, 这里仅占位让 fx 把依赖排好序
+) error {
+	// SP-AC-7 P10: OTel trace context propagation (W3C traceparent). 当前用 noop tracer.
 	shutdownTracer := observability.InitTracer("split-payment")
-	defer shutdownTracer(context.Background())
 
-	// 主 ctx 早建 — 下面 schema migration / outbox worker / retry worker 都依赖它.
-	// SIGINT / SIGTERM 触发 → ctx.Done() → 所有 goroutine 优雅退.
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
+	// 主 ctx — fx.Lifecycle 管理: OnStop 时 cancel 让所有 goroutine 优雅退出.
+	ctx, cancel := context.WithCancel(context.Background())
 
-	// SP-AC-7: HTTP server 已废除, split-payment 现是纯 gRPC 内部服务.
-	// gRPC 端口由 cfg.Server.GRPCPort 控制 (默认 9098, yaml + env override).
 	accAddr := cfg.Accounting.GRPCAddr
-
-	// 1. accounting client (gRPC).
-	//
-	// SP-AC-7 L2+X2: 之前裸 grpc.NewClient + passthrough + insecure → 无 retry / 无 keepalive /
-	// 无 LB; 改用 payment-util/serviceregistry.DialWithFallback 拿一组 hardenedOptions:
-	//   - round_robin LB (多副本 accounting-service 真均摊)
-	//   - 幂等 RPC 自动重试瞬态 UNAVAILABLE / DEADLINE_EXCEEDED
-	//   - HTTP/2 keepalive 10s+3s 探活, 副本被 kill 后 ~13s 内 client 端 detect
-	//
-	// REGISTRY_ENDPOINTS (etcd) 配了就走真服务发现; 没配则降级直连 fallback addr (dev 模式).
-	registryEndpoints := cfg.Registry.Endpoints
-	// SP-AC-7 PH3-2: mTLS — MTLS_SERVER_CERT/KEY/CA 配齐就走 mTLS 双向认证;
-	// 没配或 INSECURE_DIAL=1 退化 insecure (dev); ENVIRONMENT=prod 没配证书会在 LoadFromEnv 阶段 fail-fast.
-	clientCreds, err := buildClientCreds(log)
-	if err != nil {
-		log.Fatal("build mTLS client credentials", zap.Error(err))
-	}
-	conn, err := serviceregistry.DialWithFallback(
-		registryEndpoints, "accounting-service", accAddr,
-		clientCreds,
-	)
-	if err != nil {
-		log.Fatal("dial accounting", zap.Error(err))
-	}
-	defer conn.Close()
-
-	// SP-AC-7: legacy AccountingClient stub 已删除, 业务调用一律走 AccountingGRPCClient → 新 TransactionService.
 
 	// 2. repos — MF-1: 优先 MySQL (SPLIT_PAYMENT_DSN 配了就走), fallback memory.
 	//
@@ -118,17 +87,15 @@ func main() {
 	//
 	// memory mode: 单进程,重启丢全部 graph (适合 dev / 单测).
 	// mysql  mode: 持久 + 多副本共享.
+	// db / pool 已由 newDBFx Provider open + size + ping; 这里只消费 db (nil = memory 模式).
 	var (
 		graphRepo workflow.GraphRepo
 		runRepo   workflow.RunRepo
-		// db: outer scope — 各种 worker (reversalApply / outbox / cron lease / hold worker)
-		// 都引用 db, 必须 hoist 出 if dsn 块 (避免之前的 :=  scope 化 bug).
-		db *sql.DB
 		// SP-6 typed repos 注到 engine 用 (nil = 跑老路径不持 typed 对象)
-		engAccRepo  workflow.AccountRepo
-		engTrRepo   workflow.TransferRepo
-		engFeeRepo  workflow.AppFeeRepo
-		engPoRepo   workflow.PayoutRepo
+		engAccRepo workflow.AccountRepo
+		engTrRepo  workflow.TransferRepo
+		engFeeRepo workflow.AppFeeRepo
+		engPoRepo  workflow.PayoutRepo
 		// SP-9 refund handler 用的扩展 repo
 		refundTrRepo  workflow.TransferReverseRepo
 		refundFeeRepo workflow.AppFeeRefundRepo
@@ -137,25 +104,7 @@ func main() {
 		cronAccRepo workflow.AccountListerRepo
 		cronPoRepo  workflow.PayoutInserterRepo
 	)
-	if dsn := cfg.Database.DSN; dsn != "" {
-		var err error
-		db, err = sql.Open("mysql", dsn)
-		if err != nil {
-			log.Fatal("open mysql", zap.Error(err))
-		}
-		// SP-AC-7 P4: pool size 调大并 yaml 化 — 之前 20/5 在多副本高 QPS 下偏小,
-		// MySQL idle 连接复用率不够, 高峰期会大量打开 + tear down.
-		maxOpen := cfg.Database.MaxOpenConns
-		maxIdle := cfg.Database.MaxIdleConns
-		db.SetMaxOpenConns(maxOpen)
-		db.SetMaxIdleConns(maxIdle)
-		db.SetConnMaxLifetime(cfg.Database.ConnMaxLifetime)
-		log.Info("split-payment DB pool sized",
-			zap.Int("max_open", maxOpen), zap.Int("max_idle", maxIdle),
-			zap.Duration("conn_max_lifetime", cfg.Database.ConnMaxLifetime))
-		if err := db.PingContext(context.Background()); err != nil {
-			log.Fatal("ping mysql", zap.Error(err))
-		}
+	if db != nil {
 		// Schema 由 packages/split-payment/database/metadb/init/*.sql 在 MySQL 容器
 		// 启动时自动灌入 (跟 card-center / order-core 一致); 应用层不再做 DDL.
 		graphRepo = repo.NewMySQLGraphRepo(db)
@@ -181,7 +130,7 @@ func main() {
 		// SP-10: payout cron 用
 		cronAccRepo = accRepo
 		cronPoRepo = poRepo
-		log.Info("repos: mysql + stripe entities ready", zap.String("dsn_host", maskDSN(dsn)))
+		log.Info("repos: mysql + stripe entities ready", zap.String("dsn_host", maskDSN(cfg.Database.DSN)))
 	} else {
 		mg := repo.NewMemoryGraphRepo()
 		mr := repo.NewMemoryRunRepo()
@@ -560,11 +509,19 @@ func main() {
 	//    engine.Handle(ctx, ev) 推进分账流。kafka 消费由 payment-util/kafkamq 提供。
 	//  - dev / demo: HTTP /api/moneyflow/trigger 手动触发,见 internal/handler/trigger.go。
 
-	<-ctx.Done()
-	log.Info("shutting down")
-	// gRPC server 在 runAdminGRPCServer goroutine 里监听 ctx.Done() 自己 GracefulStop,
-	// 这里只要等几百毫秒让正在跑的 RPC / Kafka subscriber 收尾即可.
-	time.Sleep(500 * time.Millisecond)
+	// fx.Lifecycle 收尾: SIGTERM 时 fx 触发 OnStop, cancel 让所有 goroutine ctx.Done().
+	// gRPC server / Kafka subscriber / cron worker 都靠 ctx 退. shutdownTracer 也走这条.
+	lc.Append(fx.Hook{
+		OnStop: func(_ context.Context) error {
+			log.Info("split-payment shutting down")
+			cancel()
+			// 给 in-flight RPC + Kafka commit 500ms 收尾
+			time.Sleep(500 * time.Millisecond)
+			shutdownTracer(context.Background())
+			return nil
+		},
+	})
+	return nil
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────

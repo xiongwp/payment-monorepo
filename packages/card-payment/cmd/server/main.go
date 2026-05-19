@@ -17,11 +17,14 @@ import (
 	"strings"
 	"time"
 
+	kitexserver "github.com/cloudwego/kitex/server"
 	"github.com/spf13/viper"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+
+	cardpaymentservice "reconcile-system/packages/card-payment/kitex_gen/cardpayment/v1/cardpaymentservice"
 
 	"github.com/xiongwp/card-payment/internal/adapter/amex"
 	"github.com/xiongwp/card-payment/internal/adapter/jcb"
@@ -517,64 +520,44 @@ func newProcessor(cc processor.CardCenter, networks map[string]processor.Network
 	return p
 }
 
-func newGRPCServer(v *viper.Viper, p *processor.Processor, logger *zap.Logger) (*grpc.Server, error) {
-	allow := server.NewClientCNAllowList(v.GetStringSlice("auth.client_cn.allowed"))
-	opts := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(
-			trace.UnaryServerInterceptor(logger),
-			shadow.UnaryServerInterceptor(),
-			// ROI-2d: PII-safe access log. card-payment 处理裸 PAN, LogPayload 永远 false;
-			// 只记 method+code+duration. PAN 在 processor 内 <1ms 内存停留, 永不入日志.
-			piiredact.LoggingInterceptor(logger, piiredact.LoggingOptions{
-				LogPayload: false,
-				SkipMethods: map[string]struct{}{
-					"/grpc.health.v1.Health/Check": {},
-				},
-			}),
-			server.UnaryClientCNInterceptor(allow),
-		),
-	}
-	// dev：tls 字段空 → 明文 listener。env=prod 已被 assertProdSafety 强制 cert/key。
-	certPath := v.GetString("tls.cert")
-	keyPath := v.GetString("tls.key")
-	if certPath != "" && keyPath != "" {
-		tlsCfg, err := buildTLSConfig(v)
-		if err != nil {
-			return nil, fmt.Errorf("tls: %w", err)
-		}
-		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsCfg)))
-		logger.Info("card-payment gRPC: mTLS enabled")
-	} else {
-		logger.Warn("card-payment gRPC: NO TLS (dev mode); env=prod will fail at assertProdSafety")
-	}
-	srv := grpc.NewServer(opts...)
-	bs := server.NewServer(p, logger)
-	bs.Register(srv)
-	return srv, nil
-}
+func newGRPCServer(v *viper.Viper, p *processor.Processor, logger *zap.Logger) (kitexserver.Server, error) {
+	// TODO: kitexutil MW 三件套 (Trace / Shadow / PIIRedact / ClientCN) — 等 kitexutil
+	// port 完成后接进 server.WithMiddleware(...). mTLS 已不需要 (内部 mesh).
+	_ = server.NewClientCNAllowList(v.GetStringSlice("auth.client_cn.allowed"))
 
-func startGRPC(lc fx.Lifecycle, srv *grpc.Server, v *viper.Viper, logger *zap.Logger) error {
 	port := v.GetInt("server.grpc_port")
 	if port == 0 {
 		port = 9443
 	}
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		return err
+	addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
+
+	bs := server.NewServer(p, logger)
+	srv := cardpaymentservice.NewServer(bs,
+		kitexserver.WithServiceAddr(addr),
+	)
+	return srv, nil
+}
+
+func startGRPC(lc fx.Lifecycle, srv kitexserver.Server, v *viper.Viper, logger *zap.Logger) error {
+	port := v.GetInt("server.grpc_port")
+	if port == 0 {
+		port = 9443
 	}
-	logger.Info("card-payment mTLS gRPC listening", zap.Int("port", port))
+	logger.Info("card-payment Kitex listening", zap.Int("port", port))
 	go func() {
-		if err := srv.Serve(lis); err != nil {
-			logger.Error("grpc serve", zap.Error(err))
+		if err := srv.Run(); err != nil {
+			logger.Error("kitex serve", zap.Error(err))
 		}
 	}()
 	lc.Append(fx.Hook{OnStop: func(ctx context.Context) error {
 		done := make(chan struct{})
-		go func() { srv.GracefulStop(); close(done) }()
+		go func() {
+			_ = srv.Stop()
+			close(done)
+		}()
 		select {
 		case <-done:
 		case <-time.After(15 * time.Second):
-			srv.Stop()
 		}
 		return nil
 	}})

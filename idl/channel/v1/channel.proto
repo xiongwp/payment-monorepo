@@ -1,0 +1,110 @@
+// payment-channel 暴露给 payment-core 的 gRPC 面。形状与 order-core 的
+// internal/channel.PaymentChannel 一致（就是 PaymentChannel 的 gRPC 表达）。
+// payment-core 只是在本接口外包一层「按 payment_method 选哪个 payment-channel
+// 实例」的路由。
+syntax = "proto3";
+
+package channel.v1;
+option go_package = "reconcile-system/packages/payment-channel/kitex_gen/channel/v1;channelv1";
+
+service AcquirerService {
+  rpc Charge(ChargeRequest) returns (ChargeResponse);
+  rpc Capture(CaptureRequest) returns (OpResponse);
+  rpc Void(VoidRequest) returns (OpResponse);
+  rpc Refund(RefundRequest) returns (OpResponse);
+  rpc Query(QueryRequest) returns (QueryResponse);
+}
+
+// 每个 PH adapter（gcash/maya/grabpay/coinsph/instapay/pesonet）由 server 层
+// 按 adapter 字段分发。
+message ChargeRequest {
+  string adapter          = 1;
+  string pi_id            = 2;
+  string idempotency_key  = 3;
+  int64  amount           = 4;
+  string currency         = 5;
+  Buyer  buyer            = 6;
+  string description      = 7;
+  string return_url       = 8;
+  string notify_url       = 9;
+  bool   capture_immediate = 10;
+  map<string, string> metadata = 11;
+}
+
+message Buyer {
+  string first_name = 1;
+  string last_name  = 2;
+  string email      = 3;
+  string phone      = 4;
+}
+
+message ChargeResponse {
+  string result           = 1; // succeeded / authorized / processing / requires_action / failed
+  string external_ref_no  = 2;
+  RequiredAction required_action = 3;
+  string failure_code     = 4;
+  string raw_failure_code = 5;
+  string failure_message  = 6;
+  map<string, string> raw = 7;
+}
+
+message RequiredAction {
+  string type         = 1; // three_d_secure / otp / pay_password / qr_code / app_redirect
+  int64  expires_at   = 2; // epoch seconds
+  string redirect_url = 3;
+  string scheme       = 4;
+  string return_url   = 5;
+  string qr_code_url  = 6;
+  string qr_image_b64 = 7;
+  int32  poll_ms      = 8;
+  string otp_masked   = 9;
+  string otp_channel  = 10;
+  int32  otp_length   = 11;
+  map<string, string> extra = 12;
+}
+
+message CaptureRequest {
+  string adapter         = 1;
+  string pi_id           = 2;
+  string external_ref_no = 3;
+  int64  amount          = 4;
+  string idempotency_key = 5;
+}
+
+message VoidRequest {
+  string adapter         = 1;
+  string pi_id           = 2;
+  string external_ref_no = 3;
+  string idempotency_key = 4;
+}
+
+message RefundRequest {
+  string adapter         = 1;
+  string pi_id           = 2;
+  string external_ref_no = 3;
+  int64  amount          = 4;
+  string reason          = 5;
+  string idempotency_key = 6;
+}
+
+message QueryRequest {
+  string adapter         = 1;
+  string pi_id           = 2;
+  string external_ref_no = 3;
+}
+
+message OpResponse {
+  string result           = 1;
+  string external_ref_no  = 2;
+  string failure_code     = 3;
+  string raw_failure_code = 4;
+  string failure_message  = 5;
+}
+
+message QueryResponse {
+  string result           = 1;
+  string external_ref_no  = 2;
+  int64  amount_captured  = 3;
+  int64  amount_refunded  = 4;
+  map<string, string> raw = 5;
+}

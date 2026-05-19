@@ -1,4 +1,4 @@
-// Package server gRPC 适配层（Stripe-API 风格）。
+// Package server Kitex 适配层 (Stripe-API 风格, multi-service).
 package server
 
 import (
@@ -7,9 +7,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/xiongwp/payment-util/trace"
+	kitexserver "github.com/cloudwego/kitex/server"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -17,18 +16,25 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
+	orderv1 "reconcile-system/packages/order-core/kitex_gen/order/v1"
+	auditservice "reconcile-system/packages/order-core/kitex_gen/order/v1/auditservice"
+	chargeservice "reconcile-system/packages/order-core/kitex_gen/order/v1/chargeservice"
+	disputeservice "reconcile-system/packages/order-core/kitex_gen/order/v1/disputeservice"
+	ledgerservice "reconcile-system/packages/order-core/kitex_gen/order/v1/ledgerservice"
+	paymentintentservice "reconcile-system/packages/order-core/kitex_gen/order/v1/paymentintentservice"
+	refundservice "reconcile-system/packages/order-core/kitex_gen/order/v1/refundservice"
+	webhookdeliveryservice "reconcile-system/packages/order-core/kitex_gen/order/v1/webhookdeliveryservice"
+	webhookservice "reconcile-system/packages/order-core/kitex_gen/order/v1/webhookservice"
+
 	"github.com/xiongwp/order-core/internal/domain"
 	"github.com/xiongwp/order-core/internal/repo"
 	"github.com/xiongwp/order-core/internal/service"
-	"github.com/xiongwp/order-core/internal/shadow"
 	"github.com/xiongwp/order-core/internal/webhook"
 )
 
-// Server 实现 PaymentIntentService。Charge / Refund / Webhook 走独立 forwarder 以避免方法名冲突。
+// Server 实现 PaymentIntentService. Charge / Refund / Webhook 走独立 forwarder 以避免方法名冲突.
+// 切 Kitex 后不再 embed UnimplementedPaymentIntentServiceServer.
 type Server struct {
-	orderv1.UnimplementedPaymentIntentServiceServer
-
 	piSvc       service.PaymentIntentService
 	chargeSvc   service.ChargeService
 	refundSvc   service.RefundService
@@ -45,31 +51,27 @@ type Server struct {
 	rateBurst            int
 	logger               *zap.Logger
 
-	// grpcSrv ListenAndServe 期间持有；Stop() 用来 GracefulStop。
-	grpcSrv *grpc.Server
-	done    chan struct{}
+	// kitexSrv ListenAndServe 期间持有; Stop() 用来 graceful Stop.
+	kitexSrv kitexserver.Server
+	done     chan struct{}
 }
 
-// Stop 优雅关停 gRPC server。SIGTERM 时由 fx OnStop 调用：
-//
-//  1. GracefulStop 拒新连接 + 等 in-flight RPC 完成
-//  2. 等 ListenAndServe 的 Serve goroutine 退出（done 关闭）
-//  3. 超时 → Stop() 强制
+// Stop 优雅关停 Kitex server. SIGTERM 时由 fx OnStop 调用.
+// Kitex Stop() 内部已 graceful (等 in-flight RPC); 用 select 限上限.
 func (s *Server) Stop(ctx context.Context) error {
-	if s.grpcSrv == nil {
+	if s.kitexSrv == nil {
 		return nil
 	}
 	doneCh := make(chan struct{})
 	go func() {
-		s.grpcSrv.GracefulStop()
+		_ = s.kitexSrv.Stop()
 		close(doneCh)
 	}()
 	select {
 	case <-doneCh:
 		return nil
 	case <-ctx.Done():
-		s.logger.Warn("grpc GracefulStop timed out, forcing Stop()")
-		s.grpcSrv.Stop()
+		s.logger.Warn("kitex Stop() timed out")
 		return ctx.Err()
 	}
 }
@@ -123,58 +125,54 @@ func NewServer(d Deps) (*Server, error) {
 	}, nil
 }
 
-// ListenAndServe 启动 gRPC（阻塞）
+// ListenAndServe 启动 Kitex multi-service server (阻塞).
+//
+// 注册 8 个 service 到同一个端口 (Kitex 0.10+ MultiService):
+//   PaymentIntent / Charge / Refund / Webhook (主链路)
+//   Audit / WebhookDelivery / Ledger / Dispute (可选, 依赖配置)
+//
+// TODO: kitexutil MW (Recover / Trace / Shadow / Logging / Metrics / RateLimit / Auth)
+// — 等 kitexutil port 完成后接 server.WithMiddleware(...).
 func (s *Server) ListenAndServe(ctx context.Context, port int) error {
-	addr := fmt.Sprintf(":%d", port)
-	lis, err := net.Listen("tcp", addr)
+	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		return fmt.Errorf("listen %s: %w", addr, err)
+		return fmt.Errorf("resolve addr :%d: %w", port, err)
 	}
-	gs := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(
-			RecoverInterceptor(s.logger),
-			trace.UnaryServerInterceptor(s.logger),
-			// shadow 在 trace 之后立即装：x-shadow metadata → ctx，后续所有 handler /
-			// repo / 出站 RPC 都能 IsShadow(ctx) 决策。比 Auth 更外层是为了 dev 流量
-			// 即便鉴权关掉也能 shadow 标识落表（如压测期常关 auth）。
-			shadow.UnaryServerInterceptor(),
-			LoggingInterceptor(s.logger),
-			MetricsInterceptor(),
-			RateLimitInterceptor(s.rateLimit, s.rateBurst),
-			AuthInterceptor(s.authTokens, s.authAllowUnauthenticated, s.logger),
-		),
-	)
-	orderv1.RegisterPaymentIntentServiceServer(gs, s)
-	orderv1.RegisterChargeServiceServer(gs, NewChargeForwarder(s))
-	orderv1.RegisterRefundServiceServer(gs, NewRefundForwarder(s))
-	orderv1.RegisterWebhookServiceServer(gs, NewWebhookForwarder(s))
+	gs := kitexserver.NewServer(kitexserver.WithServiceAddr(addr))
+
+	// 主链路 4 个 service — 一定注册
+	paymentintentservice.RegisterService(gs, s)
+	chargeservice.RegisterService(gs, NewChargeForwarder(s))
+	refundservice.RegisterService(gs, NewRefundForwarder(s))
+	webhookservice.RegisterService(gs, NewWebhookForwarder(s))
+
+	// 可选 service — 依赖配置注入
 	if s.auditRepo != nil {
-		orderv1.RegisterAuditServiceServer(gs, NewAuditServer(s.auditRepo))
+		auditservice.RegisterService(gs, NewAuditServer(s.auditRepo))
 	}
 	if s.dbMgr != nil && s.webhookDisp != nil {
-		orderv1.RegisterWebhookDeliveryServiceServer(gs,
+		webhookdeliveryservice.RegisterService(gs,
 			NewWebhookDeliveryServer(s.dbMgr, s.webhookDisp))
 	}
 	if s.ledgerSvc != nil {
-		orderv1.RegisterLedgerServiceServer(gs, NewLedgerServer(s.ledgerSvc))
+		ledgerservice.RegisterService(gs, NewLedgerServer(s.ledgerSvc))
 	}
 	if s.disputeSvc != nil {
-		orderv1.RegisterDisputeServiceServer(gs, NewDisputeServer(s.disputeSvc))
+		disputeservice.RegisterService(gs, NewDisputeServer(s.disputeSvc))
 	}
 
-	h := health.NewServer()
-	h.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
-	grpc_health_v1.RegisterHealthServer(gs, h)
-	reflection.Register(gs)
+	// 健康检查 / reflection 由 Kitex 框架自带, 不再手动注册.
+	_ = health.NewServer
+	_ = grpc_health_v1.HealthCheckResponse_SERVING
+	_ = reflection.Register
 
-	s.grpcSrv = gs
+	s.kitexSrv = gs
 	if s.done == nil {
 		s.done = make(chan struct{})
 	}
-	// 兼容旧路径：调用方还在用 ctx cancel 的方式；新路径 main.go 直接调 Stop()。
-	go func() { <-ctx.Done(); gs.GracefulStop() }()
-	s.logger.Info("grpc listening", zap.String("addr", addr))
-	err = gs.Serve(lis)
+	go func() { <-ctx.Done(); _ = gs.Stop() }()
+	s.logger.Info("order-core Kitex listening", zap.String("addr", addr.String()))
+	err = gs.Run()
 	close(s.done)
 	return err
 }

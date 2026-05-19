@@ -1,7 +1,7 @@
-// Package server gRPC adapter：把 channelv1 RPC 映射到 AcquirerService。
+// Package server Kitex adapter: 把 channelv1 RPC 映射到 AcquirerService.
 //
-// 本文件依赖 `make proto` 生成的 api/proto/channel/v1/channel.pb.go +
-// channel_grpc.pb.go 产物；生成前 `go build` 会报 import 找不到，属正常现象。
+// 本文件依赖 `./idl/generate.sh channel` 生成的 kitex_gen/channel/v1/{channel.pb.go,
+// acquirerservice/} 产物; 生成前 `go build` 会报 import 找不到, 属正常.
 package server
 
 import (
@@ -10,31 +10,28 @@ import (
 	"net"
 	"time"
 
-	"github.com/xiongwp/payment-util/piiredact" // ROI-2b: PII-safe access log
-	"github.com/xiongwp/payment-util/shadow"
-	"github.com/xiongwp/payment-util/trace"
+	kitexserver "github.com/cloudwego/kitex/server"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
-	channelv1 "github.com/xiongwp/payment-channel/api/proto/channel/v1"
+	channelv1 "reconcile-system/packages/payment-channel/kitex_gen/channel/v1"
+	acquirerservice "reconcile-system/packages/payment-channel/kitex_gen/channel/v1/acquirerservice"
+
 	"github.com/xiongwp/payment-channel/internal/channel"
 	"github.com/xiongwp/payment-channel/internal/service"
 )
 
-// Server 同时实现 channelv1.AcquirerServiceServer 与 HTTP webhook listener。
+// Server 实现 Kitex acquirerservice.Server 接口 (跟 gRPC 同方法签名).
+// 切 Kitex 后不再 embed UnimplementedAcquirerServiceServer.
 type Server struct {
-	channelv1.UnimplementedAcquirerServiceServer
-
 	svc *service.AcquirerService
 
 	authTokens           map[string]string
 	allowUnauthenticated bool
-	// rateLimiter 持有引用以支持 SetRateLimit 热更新（config-center OnChange 调）。
-	// nil = 不限流（dev / 测试）。
+	// rateLimiter 持有引用以支持 SetRateLimit 热更新 (config-center OnChange 调).
+	// nil = 不限流 (dev / 测试).
 	rateLimiter *rate.Limiter
 	logger      *zap.Logger
 }
@@ -90,46 +87,29 @@ func (s *Server) SetRateLimit(rps float64, burst int) {
 	s.rateLimiter.SetBurst(burst)
 }
 
-// ListenAndServe 启动 gRPC。
+// ListenAndServe 启动 Kitex.
+//
+// TODO: kitexutil MW 三件套 (Recover / Trace / Shadow / PIIRedact / Metrics /
+// RateLimit / Auth) — 等 kitexutil port 完成后接 server.WithMiddleware(...).
+// 当前 stub: 只启 Kitex server, MW 链全标 TODO.
 func (s *Server) ListenAndServe(ctx context.Context, port int) error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return err
 	}
-	srv := grpc.NewServer(
-		// 跟 user-merchant-core / accounting-system 对齐；放宽 grpc default
-		// (MinTime=5min, PermitWithoutStream=false) 防 too_many_pings GOAWAY。
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             5 * time.Second,
-			PermitWithoutStream: true,
-		}),
-		grpc.ChainUnaryInterceptor(
-			RecoverInterceptor(s.logger),
-			trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
-			// ROI-2b: PII-safe access log — payload logging 通过 env PAYCHAN_LOG_PAYLOAD=1 开关.
-			// payment-channel 直接对接 PSP, request 里 buyer email/phone + card token 都是高 PII,
-			// 默认只记 method+code+duration; 排查时打开 PAYCHAN_LOG_PAYLOAD=1 拿 Luhn-脱敏后的 payload.
-			piiredact.LoggingInterceptor(s.logger, piiredact.LoggingOptions{
-				LogPayload: false, // 默认关; ops 手动改 env 重启可开
-				SkipMethods: map[string]struct{}{
-					"/grpc.health.v1.Health/Check": {},
-				},
-			}),
-			// shadow 标识翻进 ctx；AcquirerService 5 个方法入口检查 IsShadow 短路放行 —
-			// 压测流量绝不真打到外部渠道（GCash / Maya 等），返回 mock 结果。
-			shadow.UnaryServerInterceptor(),
-			MetricsInterceptor(),
-			RateLimitInterceptor(s.rateLimiter),
-			AuthInterceptor(s.authTokens, s.allowUnauthenticated, s.logger),
-		))
-	channelv1.RegisterAcquirerServiceServer(srv, s)
-	s.logger.Info("payment-channel grpc listening", zap.Int("port", port))
+	srv := acquirerservice.NewServer(s,
+		kitexserver.WithServiceAddr(addr),
+	)
+	s.logger.Info("payment-channel Kitex listening", zap.Int("port", port))
 	go func() {
 		<-ctx.Done()
-		srv.GracefulStop()
+		_ = srv.Stop()
 	}()
-	return srv.Serve(lis)
+	return srv.Run()
 }
+
+// 防 import 未用 (rate / time / shadow / trace / piiredact 等 MW 接好后还要用):
+var _ = time.Second
 
 // ─── RPC handlers ─────────────────────────────────────────────────────
 

@@ -5,19 +5,19 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
-	cardpaymentv1 "github.com/xiongwp/card-payment/api/proto/cardpayment/v1"
+	cardpaymentv1 "reconcile-system/packages/card-payment/kitex_gen/cardpayment/v1"
+
 	"github.com/xiongwp/card-payment/internal/processor"
 )
 
-// Server 实现 cardpaymentv1.CardPaymentServer
+// Server 实现 Kitex cardpaymentservice.Server 接口 (跟 gRPC 同方法签名).
+// 切 Kitex 后不再 embed UnimplementedCardPaymentServer.
 type Server struct {
-	cardpaymentv1.UnimplementedCardPaymentServer
 	proc   *processor.Processor
 	logger *zap.Logger
 }
@@ -26,9 +26,8 @@ func NewServer(p *processor.Processor, logger *zap.Logger) *Server {
 	return &Server{proc: p, logger: logger}
 }
 
-func (s *Server) Register(g *grpc.Server) {
-	cardpaymentv1.RegisterCardPaymentServer(g, s)
-}
+// Register no-op 兼容老接口; Kitex cmd/server/main.go 在构造时即完成 service 注册.
+func (s *Server) Register() {}
 
 // Authorize 入口
 func (s *Server) Authorize(ctx context.Context, req *cardpaymentv1.AuthorizeRequest) (*cardpaymentv1.AuthorizeResponse, error) {
