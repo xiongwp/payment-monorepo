@@ -10,23 +10,33 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
 	paymentcorev1 "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1"
+	paymentcoreservice "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
 
 	"github.com/xiongwp/order-core/internal/channel"
+	"github.com/xiongwp/payment-util/kitexutil"
 )
 
-// PaymentCoreGRPCChannel 实现 order-core 的 channel.PaymentChannel，
-// 把调用翻译成 paymentcorev1 gRPC 请求发给 payment-core。
+// PaymentCoreGRPCChannel 实现 order-core 的 channel.PaymentChannel,
+// 把调用翻译成 paymentcorev1 Kitex 请求发给 payment-core.
+//
+// 文件名仍叫 *_grpc.go 是历史包袱; 内部已切 Kitex.
 type PaymentCoreGRPCChannel struct {
 	name string
 	cli  paymentcoreservice.Client
 }
 
-// NewPaymentCoreGRPCChannel 从一个已建好的 grpc.ClientConn 构造。
-func NewPaymentCoreGRPCChannel(name string, conn *grpc.ClientConn) *PaymentCoreGRPCChannel {
+// NewPaymentCoreGRPCChannel 用 payment-core 端点构造 (空 = 走 kitexutil helper 兜底
+// payment-core:9091, 或 PAYMENT_CORE_GRPC_ADDR env 覆盖).
+func NewPaymentCoreGRPCChannel(name, endpoint string) *PaymentCoreGRPCChannel {
+	opt := kitexutil.DefaultHostPorts("payment-core")
+	if endpoint != "" {
+		opt = client.WithHostPorts(endpoint)
+	}
 	return &PaymentCoreGRPCChannel{
 		name: name,
-		cli:  kitexutil.MustKitexClient(paymentcoreservice.NewClient("payment-core")),
+		cli:  kitexutil.MustKitexClient(paymentcoreservice.NewClient("payment-core", opt)),
 	}
 }
 
