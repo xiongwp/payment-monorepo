@@ -24,9 +24,6 @@ import (
 	"fmt"
 	"net/http"
 	"time"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/connectivity"
 )
 
 // Probe 单个依赖检查。Name 在 readiness JSON 输出 + Prometheus label 里用。
@@ -136,27 +133,5 @@ func DBProbe(name string, db *sql.DB) Probe {
 	}}
 }
 
-// GRPCProbe 检查 gRPC ClientConn 状态。Ready / Idle 视为 OK；
-// Connecting / TransientFailure / Shutdown 视为失败。
-//
-// 这是**纯连接状态**检查，不发实际 RPC：cheap、不依赖上游业务可用性。
-// 上游业务是否真的健康是上游自己 readiness 的职责。
-func GRPCProbe(name string, conn *grpc.ClientConn) Probe {
-	return ProbeFunc{N: name, F: func(_ context.Context) error {
-		st := conn.GetState()
-		switch st {
-		case connectivity.Ready, connectivity.Idle:
-			return nil
-		default:
-			return errStateNotReady{state: st}
-		}
-	}}
-}
-
-type errStateNotReady struct {
-	state connectivity.State
-}
-
-func (e errStateNotReady) Error() string {
-	return "grpc client state: " + e.state.String()
-}
+// GRPCProbe 已删 — Kitex 切换后客户端无 *grpc.ClientConn, healthx 只保留 DBProbe.
+// 业务侧健康检查走 Kitex 内置 health channel + service 自身 readyz endpoint.
