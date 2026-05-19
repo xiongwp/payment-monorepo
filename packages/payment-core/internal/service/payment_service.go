@@ -37,20 +37,9 @@ import (
 // 普通商户调用方拿不到这套 metadata（gateway 层会清洗自定义 header），
 // 故能拿到 probe 权限的只可能是受信内部组件。
 func callerIsProbeAuthorized(ctx context.Context) bool {
-	md, ok := stubMD{}, false
-	if !ok {
-		return false
-	}
-	if v := strings.ToLower(strings.Join(md.Get("x-source"), ",")); v != "" {
-		if strings.Contains(v, "qa") || strings.Contains(v, "admin") {
-			return true
-		}
-	}
-	if v := strings.ToLower(strings.Join(md.Get("x-role"), ",")); v != "" {
-		if strings.Contains(v, "admin") || strings.Contains(v, "qa") {
-			return true
-		}
-	}
+	// Kitex metainfo MW 接通前临时返 false (= 任何 caller 都拿不到 probe 权限).
+	// 真接通后这里读 metainfo.GetValue(ctx, "x-source") / "x-role" 即可恢复原语义.
+	_ = ctx
 	return false
 }
 
