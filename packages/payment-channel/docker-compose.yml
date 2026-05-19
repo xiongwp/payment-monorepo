@@ -45,6 +45,7 @@ services:
         payment-util: ../payment-util
         kms-manage:   ../kms-manage
         risk-manage:  ../risk-manage
+        card-payment: ../card-payment
       secrets:
         - GITHUB_TOKEN
     image: payment-channel-mockserver:latest
