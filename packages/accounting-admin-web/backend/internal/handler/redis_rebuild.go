@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 )
 
 // RedisRebuildHandler 调 accounting-system gRPC 触发热账户重建。

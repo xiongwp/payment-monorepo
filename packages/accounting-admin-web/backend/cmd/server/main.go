@@ -10,8 +10,10 @@ import (
 
 	"github.com/gorilla/mux"
 	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
+	accountingadminservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
 	"github.com/xiongwp/accounting-admin-web/backend/internal/handler"
-	"github.com/xiongwp/payment-util/serviceregistry"
+	"github.com/xiongwp/payment-util/kitexutil"
 )
 
 func main() {
@@ -32,13 +34,11 @@ func main() {
 			}
 		}
 	}
-	conn, err := serviceregistry.DialWithFallback(registry, "accounting-service", grpcAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		log.Fatalf("failed to connect to gRPC server (registry=%v fallback=%s): %v", registry, grpcAddr, err)
-	}
-	defer conn.Close()
+	// Kitex 切换后 transport / resolver 都由 kitexutil 内部接管, 不再走 grpc.Dial.
+	// grpcAddr / registry 仍是有效配置入口 (kitexutil 内部会 LookupEnv); 这里保留
+	// 仅用于日志.
+	_ = grpcAddr
+	_ = registry
 
 	client := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system"))
 	adminClient := kitexutil.MustKitexClient(accountingadminservice.NewClient("accounting-system"))
