@@ -37,8 +37,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/accounting-system/internal/domain/model"
-	"github.com/accounting-system/internal/service"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

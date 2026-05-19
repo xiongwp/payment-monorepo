@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/accounting-system/internal/domain/model"
-	"github.com/accounting-system/internal/infrastructure/database"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/database"
 )
 
 // HotAccountRepository 热点账户配置仓储（存于 account_meta）

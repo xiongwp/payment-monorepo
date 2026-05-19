@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
 )
 
 func TestCompensatePayload_RoundTrip(t *testing.T) {

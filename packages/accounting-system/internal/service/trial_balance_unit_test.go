@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/accounting-system/internal/domain/model"
-	"github.com/accounting-system/internal/infrastructure/sharding"
-	"github.com/accounting-system/internal/repository"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/sharding"
+	"github.com/xiongwp/accounting-system/internal/repository"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"

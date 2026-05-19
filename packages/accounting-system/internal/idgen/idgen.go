@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/accounting-system/internal/infrastructure/database"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/database"
 	"go.uber.org/zap"
 )
 

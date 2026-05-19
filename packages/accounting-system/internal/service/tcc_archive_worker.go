@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/accounting-system/internal/infrastructure/sharding"
-	"github.com/accounting-system/internal/metrics"
-	"github.com/accounting-system/internal/repository"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/sharding"
+	"github.com/xiongwp/accounting-system/internal/metrics"
+	"github.com/xiongwp/accounting-system/internal/repository"
 	"go.uber.org/zap"
 )
 

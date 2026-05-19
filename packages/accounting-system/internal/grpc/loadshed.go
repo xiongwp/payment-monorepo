@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/accounting-system/internal/metrics"
+	"github.com/xiongwp/accounting-system/internal/metrics"
 	"go.uber.org/zap"
 )
 

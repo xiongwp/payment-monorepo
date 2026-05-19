@@ -28,8 +28,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/accounting-system/internal/infrastructure/database"
-	"github.com/accounting-system/internal/infrastructure/sharding"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/database"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/sharding"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/zap"

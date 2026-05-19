@@ -23,9 +23,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/accounting-system/internal/domain/model"
-	"github.com/accounting-system/internal/metrics"
-	"github.com/accounting-system/internal/repository"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/metrics"
+	"github.com/xiongwp/accounting-system/internal/repository"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 )

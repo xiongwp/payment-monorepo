@@ -9,7 +9,7 @@ package grpc
 import (
 	"context"
 
-	"github.com/accounting-system/internal/service"
+	"github.com/xiongwp/accounting-system/internal/service"
 
 	"go.uber.org/zap"
 )

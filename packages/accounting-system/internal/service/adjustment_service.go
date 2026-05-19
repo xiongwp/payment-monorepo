@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	commonutil "github.com/accounting-system/internal/common"
-	"github.com/accounting-system/internal/domain/model"
-	"github.com/accounting-system/internal/repository"
+	commonutil "github.com/xiongwp/accounting-system/internal/common"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/repository"
 	"go.uber.org/zap"
 )
 

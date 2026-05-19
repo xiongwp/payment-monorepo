@@ -1,6 +1,6 @@
 package commonutil
 
-import "github.com/accounting-system/internal/domain/model"
+import "github.com/xiongwp/accounting-system/internal/domain/model"
 
 func IsAccountCanNegative(accountType model.AccountType) bool {
 	switch accountType {
