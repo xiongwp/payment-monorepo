@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"strings"
+	"fmt"
 
 	"go.uber.org/zap"
 	cardpaymentv1 "github.com/xiongwp/card-payment/kitex_gen/cardpayment/v1"
@@ -62,7 +62,7 @@ func (s *Server) Authorize(ctx context.Context, req *cardpaymentv1.AuthorizeRequ
 	}, nil
 }
 
-// Capture / Refund / Void / Query 暂用 Unimplemented；processor 后续扩展。
+// Capture / Refund / Void / Query 暂用 Unimplemented;processor 后续扩展。
 func (s *Server) Capture(ctx context.Context, req *cardpaymentv1.CaptureRequest) (*cardpaymentv1.CaptureResponse, error) {
 	return nil, fmt.Errorf("capture not implemented yet")
 }
@@ -76,7 +76,11 @@ func (s *Server) Query(ctx context.Context, req *cardpaymentv1.QueryRequest) (*c
 	return nil, fmt.Errorf("query not implemented yet")
 }
 
-// ─── Client CN allowlist interceptor ──────────────────────────────────────
+// ─── Client CN allowlist (data-only stub) ──────────────────────────────────
+//
+// 历史: 这里曾持有 PeerCN + UnaryClientCNInterceptor (gRPC mTLS). Kitex 切换 +
+// mTLS 废弃后, interceptor 0 caller, 已删. 仅保留 ClientCNAllowList 数据结构
+// + NewClientCNAllowList ctor — 等 kitexutil.MTLSClientCNMW 实现后接回.
 
 type ClientCNAllowList map[string]struct{}
 
@@ -86,40 +90,4 @@ func NewClientCNAllowList(cns []string) ClientCNAllowList {
 		out[cn] = struct{}{}
 	}
 	return out
-}
-
-// PeerCN 取 mTLS client CN
-func PeerCN(ctx context.Context) (string, string) {
-	p, ok := peer.FromContext(ctx)
-	if !ok {
-		return "", ""
-	}
-	ip := p.Addr.String()
-	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
-	if !ok {
-		return "", ip
-	}
-	if len(tlsInfo.State.PeerCertificates) == 0 {
-		return "", ip
-	}
-	return tlsInfo.State.PeerCertificates[0].Subject.CommonName, ip
-}
-
-// UnaryClientCNInterceptor 拒绝不在白名单的客户端
-func UnaryClientCNInterceptor(allow ClientCNAllowList) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		// health check / reflection 跳过
-		if strings.HasPrefix(info.FullMethod, "/grpc.health.") ||
-			strings.HasPrefix(info.FullMethod, "/grpc.reflection.") {
-			return handler(ctx, req)
-		}
-		cn, _ := PeerCN(ctx)
-		if cn == "" {
-			return nil, fmt.Errorf("missing client cert CN")
-		}
-		if _, ok := allow[cn]; !ok {
-			return nil, fmt.Errorf("CN %q not allowed", cn)
-		}
-		return handler(ctx, req)
-	}
 }

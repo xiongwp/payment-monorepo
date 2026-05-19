@@ -14,7 +14,7 @@ import (
 	"github.com/cloudwego/kitex/client"
 
 	cardcenterv1 "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1"
-	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenterservice"
+	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenter"
 
 	"github.com/xiongwp/card-payment/internal/processor"
 )

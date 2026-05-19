@@ -22,7 +22,7 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
-	cardpaymentservice "github.com/xiongwp/card-payment/kitex_gen/cardpayment/v1/cardpaymentservice"
+	cardpaymentservice "github.com/xiongwp/card-payment/kitex_gen/cardpayment/v1/cardpayment"
 
 	"github.com/xiongwp/card-payment/internal/adapter/amex"
 	"github.com/xiongwp/card-payment/internal/adapter/jcb"
@@ -38,9 +38,6 @@ import (
 	"github.com/xiongwp/card-payment/internal/server"
 	"github.com/xiongwp/card-payment/internal/sharding"
 	"github.com/xiongwp/payment-util/configcenter"
-	"github.com/xiongwp/payment-util/shadow"
-	"github.com/xiongwp/payment-util/piiredact"
-	"github.com/xiongwp/payment-util/trace"
 )
 
 func main() {
@@ -359,14 +356,13 @@ func newCardCenterClient(v *viper.Viper) (processor.CardCenter, error) {
 			registry = splitCSV(v.GetString("registry.endpoints"))
 		}
 	}
+	// cardcenterclient Config Kitex 切换后只剩 Endpoint / RegistryEndpoints /
+	// RPCTimeout. mTLS 字段 (ClientCert/ClientKey/ServerCA/Insecure) 由 transport
+	// 层 client opts 接管, 不再在 Config struct 上.
 	cfg := cardcenterclient.Config{
 		Endpoint:          v.GetString("card_center.endpoint"),
 		RegistryEndpoints: registry,
 		RPCTimeout:        v.GetDuration("card_center.rpc_timeout"),
-		ClientCert:        v.GetString("card_center.client_cert"),
-		ClientKey:         v.GetString("card_center.client_key"),
-		ServerCA:          v.GetString("card_center.server_ca"),
-		Insecure:          v.GetBool("card_center.insecure"),
 	}
 	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
 		return nil, errors.New("card_center.endpoint or card_center.registry_endpoints required")
