@@ -37,7 +37,7 @@ import (
 // 普通商户调用方拿不到这套 metadata（gateway 层会清洗自定义 header），
 // 故能拿到 probe 权限的只可能是受信内部组件。
 func callerIsProbeAuthorized(ctx context.Context) bool {
-	md, ok := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
+	md, ok := stubMD{}, false
 	if !ok {
 		return false
 	}

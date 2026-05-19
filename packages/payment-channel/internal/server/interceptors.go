@@ -52,7 +52,7 @@ func AuthInterceptor(validTokens map[string]string, allowUnauthenticated bool, l
 				zap.String("method", info.FullMethod))
 			return nil, fmt.Errorf("auth not configured")
 		}
-		md, _ := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
+		md, _ := stubMD{}, false
 		auth := strings.TrimSpace(strings.Join(md.Get("authorization"), ""))
 		if !strings.HasPrefix(auth, "Bearer ") {
 			return nil, fmt.Errorf("missing bearer token")

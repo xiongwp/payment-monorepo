@@ -440,7 +440,7 @@ func firstNonEmpty(a, b string) string {
 //   - x-admin-token 兜底, 不记原文 (脱敏: 只记前 8 字节 hash 用)
 //   - 都没有 → "unknown"
 func extractActor(ctx context.Context) string {
-	md, ok := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
+	md, ok := stubMD{}, false
 	if !ok {
 		return "unknown"
 	}

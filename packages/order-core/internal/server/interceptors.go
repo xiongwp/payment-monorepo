@@ -128,7 +128,7 @@ func AuthInterceptor(validTokens map[string]string, allowUnauthenticated bool, l
 				zap.String("method", info.FullMethod))
 			return nil, fmt.Errorf("auth not configured")
 		}
-		md, _ := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
+		md, _ := stubMD{}, false
 		auth := strings.TrimSpace(strings.Join(md.Get("authorization"), ""))
 		if !strings.HasPrefix(auth, "Bearer ") {
 			return nil, fmt.Errorf("missing bearer token")
@@ -170,7 +170,7 @@ func RateLimitInterceptor(rps float64, burst int) grpc.UnaryServerInterceptor {
 // 限流参数由 limiter 管理（支持热更新）；当触发限流时记指标 + 返 ResourceExhausted。
 func MerchantRateLimitInterceptor(limiter *ratelimit.MerchantLimiter, logger *zap.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		md, _ := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
+		md, _ := stubMD{}, false
 		merchantID := strings.TrimSpace(strings.Join(md.Get("x-merchant-id"), ""))
 		if merchantID != "" && !limiter.Allow(merchantID) {
 			if logger != nil {

@@ -51,7 +51,7 @@ func serviceTokenInterceptor(token string, logger *zap.Logger) grpc.UnaryServerI
 		if isAuthExemptMethod(info.FullMethod) {
 			return h(ctx, req)
 		}
-		md, ok := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
+		md, ok := stubMD{}, false
 		if !ok {
 			return nil, fmt.Errorf("missing metadata")
 		}

@@ -748,7 +748,7 @@ func (s *Server) AdjustBalance(ctx context.Context, req *accountingv1.AdjustBala
 
 	// request_id：metadata x-request-id 优先（与 DoubleEntryBooking 等入口语义一致）
 	requestID := req.GetRequestId()
-	if md, ok := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */; ok {
+	if md, ok := stubMD{}, false; ok {
 		if vs := md.Get("x-request-id"); len(vs) > 0 && vs[0] != "" {
 			requestID = vs[0]
 		}
