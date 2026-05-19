@@ -11,10 +11,9 @@ import (
 
 // LoadShedConfig 负载保护配置, main.go ListenAndServe 时传入.
 type LoadShedConfig struct {
-	// MaxInflight 同时处理的 RPC 上限; 0 = 不限.
-	MaxInflight int64
-	// RatePerSecond 令牌桶速率 (RPC/s); 0 = 不限速.
-	RatePerSecond int
+	MaxInflight   int // 同时处理的 RPC 上限; 0 = 不限
+	RatePerSecond int // 令牌桶速率 (RPC/s); 0 = 不限速
+	Burst         int // 令牌桶突发上限; 0 = 等于 RatePerSecond
 }
 
 // loadShedder 双闸门: inflight 信号量 + 令牌桶.
@@ -27,9 +26,13 @@ type loadShedder struct {
 
 func newLoadShedder(cfg LoadShedConfig) *loadShedder {
 	ls := &loadShedder{}
-	ls.maxInflight.Store(cfg.MaxInflight)
-	if cfg.RatePerSecond > 0 {
-		ls.tokenBucket = make(chan struct{}, cfg.RatePerSecond)
+	ls.maxInflight.Store(int64(cfg.MaxInflight))
+	burst := cfg.Burst
+	if burst <= 0 {
+		burst = cfg.RatePerSecond
+	}
+	if burst > 0 {
+		ls.tokenBucket = make(chan struct{}, burst)
 	}
 	return ls
 }

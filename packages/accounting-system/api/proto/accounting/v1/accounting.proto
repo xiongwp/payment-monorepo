@@ -97,11 +97,11 @@ message Account {
 // AccountingEntry 记账分录
 message AccountingEntry {
   string account_no    = 1; // 账户号
-  string debit_amount  = 2; // 借方金额
-  string credit_amount = 3; // 贷方金额
+  string debit_amount  = 2; // 借方金额 (legacy string decimal, 保留兼容)
+  string credit_amount = 3; // 贷方金额 (legacy string decimal, 保留兼容)
   string description   = 4; // 描述
-  string debit_money   = 5; // 高精度借方金额 (string decimal)
-  string credit_money  = 6; // 高精度贷方金额 (string decimal)
+  Money  debit_money   = 5; // 高精度借方金额
+  Money  credit_money  = 6; // 高精度贷方金额
 }
 
 // Transaction 账户流水
@@ -362,6 +362,12 @@ message TriggerDayCutResponse {
   string message = 2;
 }
 
+// Money 高精度金额: currency + minor_units (整数 minor unit 表示, 避免浮点).
+message Money {
+  string currency    = 1; // ISO 4217, e.g. "USD"
+  int64  minor_units = 2; // 最小货币单位整数, e.g. cents (USD: 100 = $1.00)
+}
+
 message AdjustBalanceRequest {
   string account_no        = 1;
   string adjustment_type   = 2; // 调账类型
@@ -371,7 +377,7 @@ message AdjustBalanceRequest {
   string operator          = 6;
   string approval_no       = 7;  // 审批单号
   string currency          = 8;
-  string amount_money      = 9;  // 高精度金额 (string decimal)
+  Money  amount_money      = 9;  // 高精度金额 (currency + minor_units)
   string request_id        = 10; // 幂等 key
   string offset_account_no = 11; // 对方账号 (双分录调账)
   string related_tx_id     = 12; // 关联交易 ID
