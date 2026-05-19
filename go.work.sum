@@ -46,6 +46,7 @@ cloud.google.com/go/dataform v0.9.2/go.mod h1:S8cQUwPNWXo7m/g3DhWHsLBoufRNn9EgFr
 cloud.google.com/go/datafusion v1.7.5/go.mod h1:bYH53Oa5UiqahfbNK9YuYKteeD4RbQSNMx7JF7peGHc=
 cloud.google.com/go/datalabeling v0.8.5/go.mod h1:IABB2lxQnkdUbMnQaOl2prCOfms20mcPxDBm36lps+s=
 cloud.google.com/go/dataplex v1.14.2/go.mod h1:0oGOSFlEKef1cQeAHXy4GZPB/Ife0fz/PxBf+ZymA2U=
+cloud.google.com/go/dataproc v1.12.0/go.mod h1:zrF3aX0uV3ikkMz6z4uBbIKyhRITnxvr4i3IjKsKrw4=
 cloud.google.com/go/dataproc/v2 v2.4.0/go.mod h1:3B1Ht2aRB8VZIteGxQS/iNSJGzt9+CA0WGnDVMEm7Z4=
 cloud.google.com/go/dataqna v0.8.5/go.mod h1:vgihg1mz6n7pb5q2YJF7KlXve6tCglInd6XO0JGOlWM=
 cloud.google.com/go/datastore v1.15.0/go.mod h1:GAeStMBIt9bPS7jMJA85kgkpsMkvseWWXiaHya9Jes8=
@@ -68,6 +69,7 @@ cloud.google.com/go/gkebackup v1.3.5/go.mod h1:KJ77KkNN7Wm1LdMopOelV6OodM01pMuK2
 cloud.google.com/go/gkeconnect v0.8.5/go.mod h1:LC/rS7+CuJ5fgIbXv8tCD/mdfnlAadTaUufgOkmijuk=
 cloud.google.com/go/gkehub v0.14.5/go.mod h1:6bzqxM+a+vEH/h8W8ec4OJl4r36laxTs3A/fMNHJ0wA=
 cloud.google.com/go/gkemulticloud v1.1.1/go.mod h1:C+a4vcHlWeEIf45IB5FFR5XGjTeYhF83+AYIpTy4i2Q=
+cloud.google.com/go/grafeas v0.3.4/go.mod h1:A5m316hcG+AulafjAbPKXBO/+I5itU4LOdKO2R/uDIc=
 cloud.google.com/go/gsuiteaddons v1.6.5/go.mod h1:Lo4P2IvO8uZ9W+RaC6s1JVxo42vgy+TX5a6hfBZ0ubs=
 cloud.google.com/go/iam v1.1.5 h1:1jTsCu4bcsNsE4iiqNT5SHwrDRCfRmIaaaVFhRveTJI=
 cloud.google.com/go/iam v1.1.5/go.mod h1:rB6P/Ic3mykPbFio+vo7403drjlgvoWfYpJhMXEbzv8=
@@ -160,6 +162,7 @@ github.com/antihax/optional v1.0.0 h1:xK2lYat7ZLaVVcIuj82J8kIro4V6kDe0AUDFboUCwc
 github.com/antihax/optional v1.0.0/go.mod h1:uupD/76wgC+ih3iEmQUL+0Ugr19nfwCT1kdvxnR2qWY=
 github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230512164433-5d1fd1a340c9 h1:goHVqTbFX3AIo0tzGr14pgfAW2ZfPChKO21Z9MGf/gk=
 github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230512164433-5d1fd1a340c9/go.mod h1:pSwJ0fSY5KhvocuWSx4fz3BA8OrA1bQn+K1Eli3BRwM=
+github.com/apache/arrow/go/v14 v14.0.2/go.mod h1:u3fgh3EdgN/YQ8cVQRguVW3R+seMybFg8QBQ5LU+eBY=
 github.com/apache/thrift v0.13.0 h1:5hryIiq9gtn+MiLVn0wP37kb/uTeRZgN08WoCsAhIhI=
 github.com/armon/go-metrics v0.4.1 h1:hR91U9KYmb6bLBYLQjyM+3j+rcd/UhE+G78SFnF8gJA=
 github.com/armon/go-metrics v0.4.1/go.mod h1:E6amYzXo6aW1tqzoZGT755KkbgrJsSdpwZ+3JqfkOG4=
@@ -196,6 +199,7 @@ github.com/cloudwego/gopkg v0.0.0-20240731030152-5e0df5ad4e40 h1:H1D2KkfXUimnvJ1
 github.com/cloudwego/gopkg v0.0.0-20240731030152-5e0df5ad4e40/go.mod h1:32yKw2zkpTMtuX6amJR0EMK79f0vGPr67UcArCOlZLU=
 github.com/cloudwego/gopkg v0.1.2/go.mod h1:WoNTdXDPdvL97cBmRUWXVGkh2l2UFmpd9BUvbW2r0Aw=
 github.com/cncf/udpa/go v0.0.0-20191209042840-269d4d468f6f/go.mod h1:M8M6+tZqaGXZJjfX53e64911xZQV5JYwmTeXPW+k8Sc=
+github.com/cncf/udpa/go v0.0.0-20220112060539-c52dc94e7fbe/go.mod h1:6pvJx4me5XPnfI9Z40ddWsdw2W/uZgQLFXToKeRcDiI=
 github.com/cncf/xds/go v0.0.0-20251210132809-ee656c7534f5 h1:6xNmx7iTtyBRev0+D/Tv1FZd4SCg8axKApyNyRsAt/w=
 github.com/cncf/xds/go v0.0.0-20251210132809-ee656c7534f5/go.mod h1:KdCmV+x/BuvyMxRnYBlmVaq4OLiKW6iRQfvC62cvdkI=
 github.com/containerd/errdefs v1.0.0 h1:tg5yIfIlQIrxYtu9ajqY42W3lpS19XqdxRQeEwYG8PI=
@@ -268,9 +272,11 @@ github.com/golang/snappy v0.0.3/go.mod h1:/XxbfmMg8lxefKM7IXC3fBNl/7bRcc72aCRzEW
 github.com/golang/snappy v0.0.4/go.mod h1:/XxbfmMg8lxefKM7IXC3fBNl/7bRcc72aCRzEWrmP2Q=
 github.com/google/cel-go v0.17.1 h1:s2151PDGy/eqpCI80/8dl4VL3xTkqI/YubXLXCFw0mw=
 github.com/google/cel-go v0.17.1/go.mod h1:HXZKzB0LXqer5lHHgfWAnlYwJaQBDKMjxjulNQzhwhY=
+github.com/google/flatbuffers v23.5.26+incompatible/go.mod h1:1AeVuKshWv4vARoZatz6mlQ0JxURH0Kv5+zNeJKJCa8=
 github.com/google/go-cmp v0.5.3/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
 github.com/google/go-cmp v0.5.8/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
 github.com/google/go-cmp v0.5.9/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
+github.com/google/go-pkcs11 v0.2.1-0.20230907215043-c6f79328ddf9/go.mod h1:6eQoGcuNJpa7jnd5pMGdkSaQpNDYvPlXWMcjXXThLlY=
 github.com/google/gofuzz v1.0.0 h1:A8PeW59pxE9IoFRqBp37U+mSNaQoZ46F1f0f863XSXw=
 github.com/google/martian/v3 v3.3.2/go.mod h1:oBOf6HBosgwRXnUGWUB05QECsc6uvmMiJ3+6W4l/CUk=
 github.com/google/s2a-go v0.1.7 h1:60BLSyTrOV4/haCDW4zb1guZItoSq8foHCXrAnjBo/o=
@@ -425,6 +431,7 @@ github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo
 github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
 github.com/zeebo/assert v1.3.0 h1:g7C04CbJuIDKNPFHmsk4hwZDO5O+kntRxzaUoNXj+IQ=
 github.com/zeebo/assert v1.3.0/go.mod h1:Pq9JiuJQpG8JLJdtkwrJESF0Foym2/D9XMU5ciN/wJ0=
+go.einride.tech/aip v0.66.0/go.mod h1:qAhMsfT7plxBX+Oy7Huol6YUvZ0ZzdUz26yZsQwfl1M=
 go.etcd.io/etcd/client/v2 v2.305.12 h1:0m4ovXYo1CHaA/Mp3X/Fak5sRNIWf01wk/X1/G3sGKI=
 go.etcd.io/etcd/client/v2 v2.305.12/go.mod h1:aQ/yhsxMu+Oht1FOupSr60oBvcS9cKXHrzBpDsPTf9E=
 go.etcd.io/etcd/client/v3 v3.5.13/go.mod h1:cqiAeY8b5DEEcpxvgWKsbLIWNM/8Wy2xJSDMtioMcoI=

@@ -548,7 +548,8 @@ func wireAll(lc fx.Lifecycle, logger *zap.Logger) error {
 			}
 			cdcMgr.Stop()
 			if ccCli != nil {
-				_ = ccCli.Close()
+				// Kitex client.Close 不返 error, 直接调
+				ccCli.Close()
 			}
 			_ = rdb.Close()
 			logger.Info("shutdown complete")
