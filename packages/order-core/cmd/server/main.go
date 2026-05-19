@@ -422,6 +422,8 @@ func newAccountingClient(v *viper.Viper, lc fx.Lifecycle, logger *zap.Logger) se
 		RegistryEndpoints: registry,
 		ServiceName:       "accounting-service",
 		Timeout:           v.GetDuration("accounting.rpc_timeout"),
+		// 平台账户的 owner user_id; 不配 = 0 (大多数部署里平台账户挂 user_id=0).
+		PlatformUserID: v.GetInt64("accounting.platform_user_id"),
 	})
 	if err != nil {
 		logger.Error("accounting client init failed; falling back to nil",
