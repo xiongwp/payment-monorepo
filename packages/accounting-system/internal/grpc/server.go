@@ -608,9 +608,10 @@ func (s *Server) GetBalanceSnapshot(ctx context.Context, req *accountingv1.GetBa
 // ─── 管理操作 ─────────────────────────────────────────────────────────────────
 
 func (s *Server) TriggerDayCut(ctx context.Context, req *accountingv1.TriggerDayCutRequest) (*accountingv1.TriggerDayCutResponse, error) {
-	// Currency 字段已从 proto 移除 (proto 漂移). 暂用默认 "USD", 待 .proto 加回字段再 read req.Currency.
-	currency := "USD"
-	if err := s.dayCutSvc.TriggerDayCut(ctx, req.CutDate, currency); err != nil {
+	if req.Currency == "" {
+		return &accountingv1.TriggerDayCutResponse{Code: 400, Message: "currency 必填：日切按币种独立执行"}, nil
+	}
+	if err := s.dayCutSvc.TriggerDayCut(ctx, req.CutDate, req.Currency); err != nil {
 		s.logger.Error("TriggerDayCut failed", zap.Error(err))
 		return &accountingv1.TriggerDayCutResponse{Code: 500, Message: err.Error()}, nil
 	}
