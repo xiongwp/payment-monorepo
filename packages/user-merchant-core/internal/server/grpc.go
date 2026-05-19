@@ -10,10 +10,7 @@ import (
 
 	kitexserver "github.com/cloudwego/kitex/server"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/health"
-	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/reflection"
 
 	auditservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/auditservice"
 	merchantsecretservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
@@ -81,43 +78,9 @@ func NewServer(d Deps) *Server {
 	}
 }
 
-// resolveMerchantLimit —— MerchantLimitResolver 的本服务实现。
-//
-// 解析顺序：
-//   1. metadata["x-merchant-id"]：显式携带（admin-backend 代理时填）
-//   2. Authorization: Bearer sk_live_/sk_test_xxx → hash → MerchantCache 反查
-//
-// 拿到 merchant.ID 之后读 RateLimitRPS；字段为 0 走 DefaultRPS。
-// 不会回源 DB —— 限流不值得为此多一次 RPC；warmup 覆盖了大部分活跃商户。
-func (s *Server) resolveMerchantLimit(ctx context.Context, _ string) (string, float64) {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return "", 0
-	}
-	// Path 1: explicit header
-	if vals := md.Get("x-merchant-id"); len(vals) > 0 && vals[0] != "" {
-		id := vals[0]
-		if s.merchantCache != nil {
-			if m, ok := s.merchantCache.GetByID(id); ok {
-				return id, float64(m.RateLimitRPS)
-			}
-		}
-		return id, 0 // cache miss → 走 DefaultRPS
-	}
-	// Path 2: bearer API key
-	auth := strings.TrimSpace(strings.Join(md.Get("authorization"), ""))
-	if !strings.HasPrefix(auth, "Bearer ") || s.merchantCache == nil {
-		return "", 0
-	}
-	// 这里直接用 service.hashKey 太重；限流路径不回 DB，只查 cache：
-	// LookupByKeyHash 入参是 sha256(plaintext)。共享函数单独抽在 pkg/grpcutil 里太跨层，
-	// 这里 inline 一个 sha256 避免对 service 包产生反向依赖。
-	h := sha256Hex(strings.TrimPrefix(auth, "Bearer "))
-	if m, ok := s.merchantCache.LookupByKeyHash(h); ok {
-		return m.ID, float64(m.RateLimitRPS)
-	}
-	return "", 0
-}
+// resolveMerchantLimit 已删 — 老 gRPC MerchantLimitResolver 实现, 0 caller.
+// Kitex 切换后 MerchantRateLimit MW 需重新设计 (从 TTHeader metainfo 读
+// x-merchant-id / Authorization), 由 kitexutil 提供.
 
 // ListenAndServe 启动 Kitex multi-service server (阻塞).
 //
@@ -157,9 +120,6 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	}
 
 	// 健康检查 / reflection 由 Kitex 自带, 不再手动注册.
-	_ = health.NewServer
-	_ = grpc_health_v1.HealthCheckResponse_SERVING
-	_ = reflection.Register
 
 	go func() { <-ctx.Done(); _ = gs.Stop() }()
 	s.logger.Info("user-merchant-core Kitex listening", zap.String("addr", addr.String()))

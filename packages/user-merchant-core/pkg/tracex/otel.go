@@ -12,7 +12,6 @@ import (
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
-	"google.golang.org/grpc"
 )
 
 // OTelConfig OTel 出口参数。Endpoint 为空 → 不启用（tracex 继续只做 trace_id 串联）。
@@ -78,39 +77,6 @@ func InitOTel(ctx context.Context, cfg OTelConfig) (shutdown func(context.Contex
 	return tp.Shutdown, nil
 }
 
-// OTelServerInterceptor 给每个 RPC 开一个 span。名字用 fullMethod；
-// grpc.code / trace_id 作为 attributes；调用方的 propagator 已生效时
-// 本 span 会 parent=caller。
-func OTelServerInterceptor() grpc.UnaryServerInterceptor {
-	tr := otel.Tracer("user-merchant-core")
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		ctx, span := tr.Start(ctx, info.FullMethod)
-		defer span.End()
-		// 把 tracex 的 trace_id 塞进 span attribute，让 OTel 视图 /
-		// 日志 / metrics 共享同一个 id 方便串
-		if tid := FromContext(ctx); tid != "" {
-			span.SetAttributes(attribute.String("trace_id", tid))
-		}
-		resp, err := handler(ctx, req)
-		if err != nil {
-			span.RecordError(err)
-		}
-		return resp, err
-	}
-}
-
-// OTelClientInterceptor gRPC 客户端拦截器：每次出站调用开一个子 span。
-// W3C TraceContext 自动注入到 outgoing metadata（propagator 在 InitOTel 里设好）。
-// pkg/grpcutil.Dial 默认接入。
-func OTelClientInterceptor() grpc.UnaryClientInterceptor {
-	tr := otel.Tracer("user-merchant-core/client")
-	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		ctx, span := tr.Start(ctx, "client:"+method)
-		defer span.End()
-		err := invoker(ctx, method, req, reply, cc, opts...)
-		if err != nil {
-			span.RecordError(err)
-		}
-		return err
-	}
-}
+// OTelServerInterceptor / OTelClientInterceptor 已删 — gRPC interceptor 不适用 Kitex.
+// 等价 Kitex MW: 用 cloudwego/kitex obs 模块 (kitexutil.OTelMW) — 通过
+// server.WithMiddleware(...) / client.WithMiddleware(...) 接入.

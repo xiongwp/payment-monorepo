@@ -18,7 +18,7 @@ import (
 
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 	"github.com/xiongwp/user-merchant-core/pkg/dbx"
-	"github.com/xiongwp/user-merchant-core/pkg/grpcutil"
+	"github.com/xiongwp/user-merchant-core/internal/auditstore"
 )
 
 func main() {
@@ -77,10 +77,10 @@ func main() {
 	fmt.Printf("OK: %d rows verified, last_row_hash=%s\n", checked, prevHash)
 }
 
-// computeRowHash 必须与 pkg/grpcutil.computeRowHash 字节级一致。
-// （pkg 层不暴露该函数，这里重实现，任何公式变动要两边同步。）
+// computeRowHash 必须与 internal/auditstore.ComputeRowHash 字节级一致.
+// 公式变动两边同步.
 func computeRowHash(r *domain.AdminAuditLog, prevHash string) string {
-	e := &grpcutil.AuditEntry{
+	e := &auditstore.AuditEntry{
 		Actor:       r.Actor,
 		ActorIP:     r.ActorIP,
 		Method:      r.Method,
@@ -91,7 +91,7 @@ func computeRowHash(r *domain.AdminAuditLog, prevHash string) string {
 		TraceID:     r.TraceID,
 		PrevHash:    prevHash,
 	}
-	return grpcutil.ComputeRowHash(e)
+	return auditstore.ComputeRowHash(e)
 }
 
 func die(err error) { fmt.Fprintln(os.Stderr, err); os.Exit(2) }

@@ -34,7 +34,7 @@ import (
 
 	"github.com/xiongwp/user-merchant-core/pkg/configx"
 	"github.com/xiongwp/user-merchant-core/pkg/dbx"
-	"github.com/xiongwp/user-merchant-core/pkg/grpcutil"
+	"github.com/xiongwp/user-merchant-core/internal/auditstore"
 	"github.com/xiongwp/user-merchant-core/pkg/tracex"
 )
 
@@ -426,40 +426,15 @@ func newServer(
 	user *service.UserService,
 	userCard *service.UserCardService,
 	mchCache *cache.MerchantCache,
-	idemStore grpcutil.IdempotencyStore,
-	auditStore grpcutil.AuditStore,
+	idemStore auditstore.IdempotencyStore,
+	auditStr auditstore.AuditStore,
 	auditRepo repo.AuditRepository,
 	v *viper.Viper,
 	logger *zap.Logger,
 ) *server.Server {
-	tokens := map[string]string{}
-	for _, t := range v.GetStringSlice("auth.tokens") {
-		tokens[t] = "ok"
-	}
-
-	// Per-key rate limit（按 metadata header 分桶）。rps<=0 自动 no-op。
-	perKey := grpcutil.PerKeyLimitOptions{
-		RPS:      v.GetFloat64("rate_limit.per_key.rps"),
-		Burst:    v.GetInt("rate_limit.per_key.burst"),
-		Capacity: v.GetInt("rate_limit.per_key.capacity"),
-		TTL:      v.GetDuration("rate_limit.per_key.ttl"),
-	}
-	if header := v.GetString("rate_limit.per_key.header"); header != "" {
-		perKey.KeyFn = grpcutil.KeyFromMetadata(header)
-	}
-
-	// Per-method timeout：所有方法一个默认，热路径可单独调小。
-	timeouts := grpcutil.TimeoutConfig{
-		Default: v.GetDuration("timeouts.default"),
-	}
-	if byMethod := v.GetStringMapString("timeouts.by_method"); len(byMethod) > 0 {
-		timeouts.ByMethod = make(map[string]time.Duration, len(byMethod))
-		for m, val := range byMethod {
-			if d, err := time.ParseDuration(val); err == nil {
-				timeouts.ByMethod[m] = d
-			}
-		}
-	}
+	// AuthTokens / RateLimit / PerKey / Timeouts 等老 gRPC interceptor 配置已删 —
+	// Kitex 切换后这些走 server.WithMiddleware (kitexutil.* MW) 配置, 不再由
+	// Server 结构体持有.
 
 	// Mutation method 白名单：幂等键 + 审计只对这些方法开启。
 	// AuthenticateByAPIKey / Get / List / BatchGet 是纯读，不在内。
@@ -489,14 +464,9 @@ func newServer(
 		AuditRepo:          auditRepo,
 		MerchantCache:      mchCache,
 		MerchantDefaultRPS: v.GetFloat64("rate_limit.per_merchant.default_rps"),
-		AuthTokens:         tokens,
-		RateLimitRPS:       v.GetFloat64("rate_limit.rps"),
-		RateBurst:          v.GetInt("rate_limit.burst"),
-		PerKey:             perKey,
-		Timeouts:           timeouts,
 		IdempotencyStore:   idemStore,
 		MutationMethods:    mutations,
-		AuditStore:         auditStore,
+		AuditStore:         auditStr,
 		Logger:             logger,
 	})
 }
