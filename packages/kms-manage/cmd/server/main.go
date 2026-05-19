@@ -282,15 +282,9 @@ func newServer(svc *service.KMSService, v *viper.Viper, cli *configcenter.Client
 	}
 	addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 
-	// Kitex middleware 链 — 用 kitexutil 共享 MW (Auth/Log/Metrics/Recover/CB).
-	// AuthMW 仅在 tokens 配了才生效; tokens 取第一个作为 expected (Kitex 单 token 模式).
-	// TODO: kitexutil.MultiAuthMW 接 tokens map[string]string 走轮询验; 当前 Auth MW 是
-	// stub 实现, 落地真实 metainfo 拿 header 后展开.
-	var expectedToken string
-	for t := range tokens {
-		expectedToken = t
-		break
-	}
+	// Kitex middleware 链 — 待 kitexutil.MultiAuthMW 接通后, 把 tokens map[string]string
+	// 传进去做轮询验. 目前 AuthMW 还是 stub, 不读 tokens 内容.
+	_ = tokens
 	srv := kmsservice.NewServer(
 		&kitexImpl{inner: innerSrv},
 		server.WithServiceAddr(addr),
