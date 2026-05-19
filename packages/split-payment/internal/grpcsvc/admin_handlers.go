@@ -440,19 +440,8 @@ func firstNonEmpty(a, b string) string {
 //   - x-admin-token 兜底, 不记原文 (脱敏: 只记前 8 字节 hash 用)
 //   - 都没有 → "unknown"
 func extractActor(ctx context.Context) string {
-	md, ok := stubMD{}, false
-	if !ok {
-		return "unknown"
-	}
-	if v := md.Get("x-actor"); len(v) > 0 && v[0] != "" {
-		return v[0]
-	}
-	if v := md.Get("x-admin-token"); len(v) > 0 && v[0] != "" {
-		t := v[0]
-		if len(t) > 8 {
-			return "token-" + t[:8]
-		}
-		return "token-" + t
-	}
+	// Kitex metainfo MW 接通前临时返 "unknown"; 真接通后这里读
+	// metainfo.GetValue(ctx, "x-actor") / "x-admin-token" 即可.
+	_ = ctx
 	return "unknown"
 }
