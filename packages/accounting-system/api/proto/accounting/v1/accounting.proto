@@ -505,3 +505,189 @@ service AccountingService {
   // ── 试算平衡（日切后触发，验证借贷平衡与会计恒等式） ──────────────────────────
   rpc RunTrialBalance (RunTrialBalanceRequest) returns (RunTrialBalanceResponse);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// 以下 3 个 service + 它们的 message types 从 accounting-grpc-api/gen/.../*.go
+// 手写文件搬过来. Kitex 切换后这些 RPC 暴露走 kitex_gen.
+// ────────────────────────────────────────────────────────────────────────────
+
+// ─── Admin / batch-task RPCs (老 AccountingAdminService) ─────────────────
+
+message ProcessAsyncTasksRequest {
+  int32 batch_size = 1;
+}
+message ProcessAsyncTasksResponse {
+  int32  code      = 1;
+  string message   = 2;
+  int32  processed = 3;
+}
+
+message DayCutWatchdogRequest {
+  int32 stuck_threshold_seconds = 1;
+}
+message DayCutWatchdogResponse {
+  int32  code    = 1;
+  string message = 2;
+}
+
+message ManualTask {
+  string task_id       = 1;
+  string task_type     = 2;
+  string business_no   = 3;
+  string error_message = 4;
+  int32  retry_count   = 5;
+}
+
+message ListManualTasksRequest {
+  int32 limit = 1;
+}
+message ListManualTasksResponse {
+  int32              code    = 1;
+  string             message = 2;
+  repeated ManualTask tasks  = 3;
+}
+
+message RecoverStuckTasksRequest {
+  int32 stuck_threshold_seconds = 1;
+}
+message RecoverStuckTasksResponse {
+  int32  code      = 1;
+  string message   = 2;
+  int64  recovered = 3;
+}
+
+message ReloadBufferAccountConfigRequest {}
+message ReloadBufferAccountConfigResponse {
+  int32  code          = 1;
+  string message       = 2;
+  int32  account_count = 3;
+}
+
+message BufferAccountEntry {
+  int64  id                   = 1;
+  string account_no           = 2;
+  int32  flush_interval_level = 3;
+  bool   enabled              = 4;
+  string description          = 5;
+  string created_at           = 6;
+  string updated_at           = 7;
+}
+
+message ListBufferAccountsRequest {}
+message ListBufferAccountsResponse {
+  int32                       code    = 1;
+  string                      message = 2;
+  repeated BufferAccountEntry items   = 3;
+}
+
+message CreateBufferAccountRequest {
+  string account_no           = 1;
+  int32  flush_interval_level = 2;
+  string description          = 3;
+}
+message CreateBufferAccountResponse {
+  int32               code    = 1;
+  string              message = 2;
+  BufferAccountEntry  item    = 3;
+}
+
+message UpdateBufferAccountRequest {
+  int64  id                   = 1;
+  bool   enabled              = 2;
+  int32  flush_interval_level = 3;
+  string description          = 4;
+}
+message UpdateBufferAccountResponse {
+  int32  code    = 1;
+  string message = 2;
+}
+
+message DeleteBufferAccountRequest {
+  int64 id = 1;
+}
+message DeleteBufferAccountResponse {
+  int32  code    = 1;
+  string message = 2;
+}
+
+service AccountingAdminService {
+  rpc ProcessAsyncTasks         (ProcessAsyncTasksRequest)         returns (ProcessAsyncTasksResponse);
+  rpc DayCutWatchdog            (DayCutWatchdogRequest)            returns (DayCutWatchdogResponse);
+  rpc ListManualTasks           (ListManualTasksRequest)           returns (ListManualTasksResponse);
+  rpc RecoverStuckTasks         (RecoverStuckTasksRequest)         returns (RecoverStuckTasksResponse);
+  rpc ReloadBufferAccountConfig (ReloadBufferAccountConfigRequest) returns (ReloadBufferAccountConfigResponse);
+  rpc ListBufferAccounts        (ListBufferAccountsRequest)        returns (ListBufferAccountsResponse);
+  rpc CreateBufferAccount       (CreateBufferAccountRequest)       returns (CreateBufferAccountResponse);
+  rpc UpdateBufferAccount       (UpdateBufferAccountRequest)       returns (UpdateBufferAccountResponse);
+  rpc DeleteBufferAccount       (DeleteBufferAccountRequest)       returns (DeleteBufferAccountResponse);
+}
+
+// ─── Freeze RPCs (老 FreezeService) ──────────────────────────────────────
+
+message FreezeBalanceRequest {
+  string       order_no      = 1;
+  string       account_no    = 2;
+  string       business_no   = 3;
+  BusinessType business_type = 4;
+  int64        amount        = 5;
+  string       currency      = 6;
+  string       description   = 7;
+}
+message FreezeBalanceResponse {
+  int32  code     = 1;
+  string message  = 2;
+  string order_no = 3;
+}
+
+message UnfreezeEntry {
+  string account_no    = 1;
+  int64  debit_amount  = 2;
+  int64  credit_amount = 3;
+  string description   = 4;
+}
+
+message UnfreezeAndDebitRequest {
+  string                 freeze_order_no      = 1;
+  string                 freeze_account_no    = 2;
+  string                 freeze_business_no   = 3;
+  BusinessType           freeze_business_type = 4;
+  repeated UnfreezeEntry entries              = 5;
+  string                 currency             = 6;
+  string                 description          = 7;
+}
+message UnfreezeAndDebitResponse {
+  int32           code            = 1;
+  string          message         = 2;
+  string          voucher_no      = 3;
+  repeated string transaction_ids = 4;
+}
+
+message UnfreezeAndReturnRequest {
+  string       freeze_order_no      = 1;
+  string       freeze_account_no    = 2;
+  string       freeze_business_no   = 3;
+  BusinessType freeze_business_type = 4;
+}
+message UnfreezeAndReturnResponse {
+  int32  code    = 1;
+  string message = 2;
+}
+
+service FreezeService {
+  rpc FreezeBalance     (FreezeBalanceRequest)     returns (FreezeBalanceResponse);
+  rpc UnfreezeAndDebit  (UnfreezeAndDebitRequest)  returns (UnfreezeAndDebitResponse);
+  rpc UnfreezeAndReturn (UnfreezeAndReturnRequest) returns (UnfreezeAndReturnResponse);
+}
+
+// ─── Transaction RPCs (老 TransactionService) ────────────────────────────
+//
+// 注: 全部复用 AccountingService 已声明的 message types (BookingRequest 等).
+// 这里只声明 service, 由 *Server 同时实现 AccountingService + TransactionService.
+
+service TransactionService {
+  rpc DoubleEntryBooking       (DoubleEntryBookingRequest)       returns (DoubleEntryBookingResponse);
+  rpc BatchBooking             (BatchBookingRequest)             returns (BatchBookingResponse);
+  rpc HybridDoubleEntryBooking (HybridDoubleEntryBookingRequest) returns (HybridDoubleEntryBookingResponse);
+  rpc AtomicBatchBooking       (AtomicBatchBookingRequest)       returns (AtomicBatchBookingResponse);
+  rpc GetTransaction           (GetTransactionRequest)           returns (GetTransactionResponse);
+}
