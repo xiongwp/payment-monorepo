@@ -65,10 +65,9 @@ func New(cfg Config) (*Client, error) {
 		rpcT = 5 * time.Second
 	}
 	opts := []client.Option{client.WithRPCTimeout(rpcT)}
-	// registry 优先 → etcd resolver; 否则静态 endpoint 直连.
-	if len(cfg.RegistryEndpoints) > 0 {
-		opts = append(opts, kitexutil.WithEtcdResolver(cfg.RegistryEndpoints))
-	} else {
+	// Kitex etcd resolver 接入留给后续 wire (kitexutil.NewEtcdResolver +
+	// client.WithResolver); 目前优先 endpoint 直连, registry 字段已留好.
+	if cfg.Endpoint != "" {
 		opts = append(opts, client.WithHostPorts(cfg.Endpoint))
 	}
 	cli, err := kmsservice.NewClient("kms-manage", opts...)

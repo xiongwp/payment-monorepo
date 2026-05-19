@@ -44,9 +44,8 @@ func New(cfg Config) (*Client, error) {
 		t = 5 * time.Second
 	}
 	opts := []client.Option{client.WithRPCTimeout(t)}
-	if len(cfg.RegistryEndpoints) > 0 {
-		opts = append(opts, kitexutil.WithEtcdResolver(cfg.RegistryEndpoints))
-	} else {
+	// Kitex etcd resolver 接入留给后续 wire; 目前优先 endpoint 直连.
+	if cfg.Endpoint != "" {
 		opts = append(opts, client.WithHostPorts(cfg.Endpoint))
 	}
 	cli, err := cardcenterservice.NewClient("card-center", opts...)
@@ -61,7 +60,9 @@ func (c *Client) Close() error { return nil }
 
 // DeleteCard 通知 card-center 把 stored_token 标 revoked.
 // 参数顺序与历史 stub 保持一致 (userID, storedToken, lastFour, reason).
+// lastFour 字段 cardcenter.proto 里没有, 这里仅用于历史 caller 兼容, 实际不传给 RPC.
 func (c *Client) DeleteCard(ctx context.Context, userID int64, storedToken, lastFour, reason string) error {
+	_ = lastFour
 	if storedToken == "" {
 		return errors.New("stored_token required")
 	}
@@ -71,7 +72,6 @@ func (c *Client) DeleteCard(ctx context.Context, userID int64, storedToken, last
 	_, err := c.cli.DeleteCard(ctx, &cardcenterv1.DeleteCardRequest{
 		UserId:      fmt.Sprintf("%d", userID),
 		StoredToken: storedToken,
-		LastFour:    lastFour,
 		Reason:      reason,
 	})
 	return err
