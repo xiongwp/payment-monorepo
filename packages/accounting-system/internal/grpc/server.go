@@ -746,13 +746,8 @@ func (s *Server) AdjustBalance(ctx context.Context, req *accountingv1.AdjustBala
 		amount = v
 	}
 
-	// request_id：metadata x-request-id 优先（与 DoubleEntryBooking 等入口语义一致）
+	// request_id: 老 gRPC metadata 路径已删, Kitex MW 接通后从 metainfo 拿 x-request-id 覆盖.
 	requestID := req.GetRequestId()
-	if md, ok := stubMD{}, false; ok {
-		if vs := md.Get("x-request-id"); len(vs) > 0 && vs[0] != "" {
-			requestID = vs[0]
-		}
-	}
 
 	resp, err := s.adjustmentSvc.AdjustBalance(ctx, &service.AdjustmentRequest{
 		AccountNo:       req.GetAccountNo(),
@@ -868,121 +863,12 @@ func (s *Server) CancelTccBranch(ctx context.Context, req *accountingv1.CancelTc
 }
 
 // ─── 管理查询 ─────────────────────────────────────────────────────────────────
-
-func (s *Server) ListDayCutHistory(ctx context.Context, _ *accountingv1.ListDayCutHistoryRequest) (*accountingv1.ListDayCutHistoryResponse, error) {
-	entries, err := s.dayCutSvc.ListDayCutHistory(ctx)
-	if err != nil {
-		s.logger.Warn("ListDayCutHistory failed", zap.Error(err))
-		return &accountingv1.ListDayCutHistoryResponse{Code: 500, Message: err.Error()}, nil
-	}
-	protoEntries := make([]*accountingv1.DayCutHistoryEntry, len(entries))
-	for i, e := range entries {
-		protoEntries[i] = &accountingv1.DayCutHistoryEntry{
-			CutDate:     e.CutDate,
-			RunId:       int32(e.RunID),
-			Currency:    e.Currency,
-			TotalShards: int32(e.TotalShards),
-			Pending:     int32(e.Pending),
-			Processing:  int32(e.Processing),
-			Completed:   int32(e.Completed),
-			Failed:      int32(e.Failed),
-		}
-	}
-	return &accountingv1.ListDayCutHistoryResponse{Code: 0, Message: "ok", Entries: protoEntries}, nil
-}
-
-func (s *Server) ListSnapshotDates(ctx context.Context, _ *accountingv1.ListSnapshotDatesRequest) (*accountingv1.ListSnapshotDatesResponse, error) {
-	dates, err := s.trialBalanceSvc.ListSnapshotDates(ctx)
-	if err != nil {
-		s.logger.Warn("ListSnapshotDates failed", zap.Error(err))
-		return &accountingv1.ListSnapshotDatesResponse{Code: 500, Message: err.Error()}, nil
-	}
-	return &accountingv1.ListSnapshotDatesResponse{Code: 0, Message: "ok", Dates: dates}, nil
-}
-
-// RebuildHotAccounts 灾难恢复：从 MySQL 重建 Redis 热账户余额。
-// admin-web /redis-rebuild 页面或 cmd/tools/redis-rebuild CLI 触发。
-func (s *Server) RebuildHotAccounts(ctx context.Context, req *accountingv1.RebuildHotAccountsRequest) (*accountingv1.RebuildHotAccountsResponse, error) {
-	if req == nil {
-		return &accountingv1.RebuildHotAccountsResponse{Code: 400, Message: "request required"}, nil
-	}
-	opts := service.RebuildOptions{
-		AccountNos: req.AccountNos,
-		DryRun:     req.DryRun,
-	}
-	if req.AsOf != "" {
-		// "5m" / "2h" 相对时长 OR RFC3339 时间戳
-		if d, err := time.ParseDuration(req.AsOf); err == nil {
-			opts.AsOf = time.Now().Add(-d)
-		} else if t, err := time.Parse(time.RFC3339, req.AsOf); err == nil {
-			opts.AsOf = t
-		} else {
-			return &accountingv1.RebuildHotAccountsResponse{
-				Code:    400,
-				Message: fmt.Sprintf("as_of 必须是 duration（如 5m / 2h）或 RFC3339 时间戳；got %q", req.AsOf),
-			}, nil
-		}
-	}
-	report, err := s.accountingSvc.RebuildHotAccounts(ctx, opts)
-	if err != nil {
-		s.logger.Warn("RebuildHotAccounts failed", zap.Error(err))
-		return &accountingv1.RebuildHotAccountsResponse{Code: 500, Message: err.Error()}, nil
-	}
-
-	resp := &accountingv1.RebuildHotAccountsResponse{
-		Code:     0,
-		Message:  "ok",
-		AsOf:     report.AsOf.Format(time.RFC3339),
-		DryRun:   report.DryRun,
-		Total:    int32(report.Total),
-		Updated:  int32(report.Updated),
-		Skipped:  int32(report.Skipped),
-		Failed:   int32(report.Failed),
-		Duration: report.Duration,
-	}
-	if report.AsOf.IsZero() {
-		resp.AsOf = ""
-	}
-	for _, e := range report.Entries {
-		resp.Entries = append(resp.Entries, &accountingv1.RebuildHotAccountEntry{
-			AccountNo:     e.AccountNo,
-			BalanceBefore: e.BalanceBefore,
-			BalanceAfter:  e.BalanceAfter,
-			Source:        e.Source,
-			JournalCutoff: e.JournalCutoff,
-			Skipped:       e.Skipped,
-			Reason:        e.Reason,
-		})
-	}
-	return resp, nil
-}
-
-// ListAccountsByUserAndBusinessType 返回该用户 + 业务类型下全部币种账户。
-// admin-web 按 (user_id, business_type) 查询时走这里，而不是 GetAccount —
-// 后者语义是"唯一一条"，会漏掉多币种场景。
-func (s *Server) ListAccountsByUserAndBusinessType(ctx context.Context, req *accountingv1.ListAccountsByUserAndBusinessTypeRequest) (*accountingv1.ListAccountsByUserAndBusinessTypeResponse, error) {
-	if req == nil {
-		return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{Code: 400, Message: "request required"}, nil
-	}
-	bt := convertAccountBusinessType(req.AccountBusinessType)
-	accounts, err := s.accountingSvc.ListAccountsByUserAndBusinessType(ctx, req.UserId, bt, req.Currency)
-	if err != nil {
-		s.logger.Warn("ListAccountsByUserAndBusinessType failed",
-			zap.Int64("user_id", req.UserId),
-			zap.Int32("business_type", int32(req.AccountBusinessType)),
-			zap.Error(err))
-		return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{Code: 500, Message: err.Error()}, nil
-	}
-	protoAccounts := make([]*accountingv1.Account, 0, len(accounts))
-	for _, a := range accounts {
-		protoAccounts = append(protoAccounts, toProtoAccount(a))
-	}
-	return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{
-		Code:     0,
-		Message:  "ok",
-		Accounts: protoAccounts,
-	}, nil
-}
+//
+// ListDayCutHistory / ListSnapshotDates / RebuildHotAccounts /
+// ListAccountsByUserAndBusinessType 4 个 handler 已删 — 它们的 Request/Response
+// proto 类型从未声明在 accounting.proto 里. 要恢复需要先把这 4 个 RPC 的
+// message types + service 声明加进 .proto, 再重新生成 kitex_gen, 然后把 handler
+// 加回来. admin-web 调这些 RPC 的功能临时不可用.
 
 // ─── AccountingAdminService 实现 ──────────────────────────────────────────────
 
