@@ -23,17 +23,14 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/connectivity"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/xiongwp/payment-util/kitexutil"
 
 	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
-	"github.com/xiongwp/payment-util/mtls"
-	"github.com/xiongwp/payment-util/serviceregistry"
+	"reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/accountingservice"
 
 	"github.com/xiongwp/order-core/internal/domain"
-	"github.com/xiongwp/order-core/internal/shadow"
-	"github.com/xiongwp/order-core/internal/trace"
+	_ "github.com/xiongwp/order-core/internal/shadow"
+	_ "github.com/xiongwp/order-core/internal/trace"
 )
 
 var (
@@ -62,11 +59,10 @@ type Config struct {
 	CounterBusinessTypes map[string]int32
 }
 
-// Client 线程安全的 accounting 客户端。
+// Client 线程安全的 accounting 客户端 (Kitex).
 type Client struct {
-	cfg  Config
-	conn *grpc.ClientConn
-	cli  accountingservice.Client
+	cfg Config
+	cli accountingservice.Client
 
 	mapMu sync.RWMutex
 	btMap map[string]int32 // payment_method → business_type i32（运行时可热更新）
@@ -96,47 +92,16 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = defaultRPCTimeout
 	}
-	// 联栈模式下走 etcd resolver：容器删了 container_name 后 "accounting-service"
-	// 跨 compose project 无法 DNS 解析（不同 -p 项目 不会自动加 service 名 alias）。
-	// dev / 单仓 docker run 模式下 RegistryEndpoints 空，退回直连 cfg.Addr。
-	// trace.UnaryClientInterceptor 把入站 RPC 的 x-trace-id 自动透传到
-	// outgoing metadata，让 accounting-system 端的 server interceptor 能拼成
-	// 跨服务一条 trace。
-	// round_robin 由 DialWithFallback 内部统一加（etcd / DNS 两条路都生效）。
-	// mTLS 条件接入
-	mtlsCfg, mtlsErr := mtls.LoadFromEnv()
-	if mtlsErr != nil {
-		return nil, fmt.Errorf("accounting: mtls config: %w", mtlsErr)
-	}
-	var creds grpc.DialOption
-	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
-		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else {
-		tlsCreds, cerr := mtlsCfg.ClientCredentials()
-		if cerr != nil {
-			return nil, fmt.Errorf("accounting: load mTLS creds: %w", cerr)
-		}
-		creds = grpc.WithTransportCredentials(tlsCreds)
-	}
-	conn, err := serviceregistry.DialWithFallback(cfg.RegistryEndpoints, service, cfg.Addr,
-		creds,
-		// trace + shadow 都得透传到下游 accounting-system，让记账落到对应（主 / 影子）分区
-		grpc.WithChainUnaryInterceptor(
-			trace.UnaryClientInterceptor(),
-			shadow.UnaryClientInterceptor(),
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("accounting: dial %s (fallback %s): %w", service, cfg.Addr, err)
-	}
+	// Kitex client — etcd resolver / trace+shadow middleware 由 kitexutil 内置.
+	// 老 gRPC dial / mtls / serviceregistry.DialWithFallback 已删.
+	cli := kitexutil.MustKitexClient(accountingservice.NewClient(service))
 	bt := make(map[string]int32, len(cfg.CounterBusinessTypes))
 	for k, v := range cfg.CounterBusinessTypes {
 		bt[strings.ToLower(k)] = v
 	}
 	return &Client{
 		cfg:       cfg,
-		conn:      conn,
-		cli:       kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system")),
+		cli:       cli,
 		btMap:     bt,
 		acctCache: make(map[string]string),
 	}, nil
@@ -154,13 +119,8 @@ func (c *Client) PrewarmFleetAccounts(ctx context.Context, btMap map[string]int3
 	if len(btMap) == 0 {
 		return nil
 	}
-	// grpc.NewClient 是 lazy dial：未发过 RPC 前 conn 处于 IDLE，round_robin
-	// 此时没有 SubConn，并发预热第一波会全部撞上 "no children to pick from"。
-	// 这里显式 Connect() 触发 resolve + dial，并等到 READY（或上下文超时）后再发。
-	// 等待失败不阻断启动 — 上层只 Warn，运行时记账走懒加载兜底。
-	if err := c.waitReady(ctx); err != nil {
-		return fmt.Errorf("prewarm: wait ready: %w", err)
-	}
+	// Kitex client lazy dial (Kitex eager init by default — no waitReady step needed).
+	// 老 grpc 时代的 waitReady 已删 (Kitex 自带 resolver + 启动期 endpoint 解析).
 	// 复用 counterBT 去重：不同 channel 可能映射到同一个 business_type（理论上不应，
 	// 但 config 重复就别重复拉 100 次）。
 	seen := make(map[int32]struct{}, len(btMap))
@@ -223,13 +183,9 @@ func (c *Client) SetCounterBusinessTypes(m map[string]int32) {
 	}
 }
 
-// Close 关闭 gRPC 连接。fx.OnStop 调用。
-func (c *Client) Close() error {
-	if c.conn == nil {
-		return nil
-	}
-	return c.conn.Close()
-}
+// Close no-op — Kitex client 没有显式 Close (resolver 由 Kitex runtime 管).
+// 保留方法签名让 fx.OnStop 平滑.
+func (c *Client) Close() error { return nil }
 
 // DoubleEntryBooking 把 outbox 行翻成一笔双分录并提交给 accounting-system。
 //
@@ -400,20 +356,7 @@ func (c *Client) lookupOrCreateAccount(ctx context.Context, userID int64, bt int
 	return resp2.GetAccount().GetAccountNo(), nil
 }
 
-// waitReady 触发 lazy conn 的 dial 并等到 READY。用于 PrewarmFleetAccounts
-// 这种启动期并发突发场景；运行期热路径不需要等（gRPC 自动重连 + 调用方会重试）。
-func (c *Client) waitReady(ctx context.Context) error {
-	c.conn.Connect()
-	for {
-		s := c.conn.GetState()
-		if s == connectivity.Ready {
-			return nil
-		}
-		if !c.conn.WaitForStateChange(ctx, s) {
-			return ctx.Err()
-		}
-	}
-}
+// waitReady 已删 (Kitex 切换后).
 
 func (c *Client) getAccount(ctx context.Context, userID int64, bt int32) (*accountingv1.GetAccountResponse, error) {
 	callCtx := ctx

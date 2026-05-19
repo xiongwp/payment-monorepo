@@ -15,44 +15,31 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/xiongwp/payment-util/mtls"
-	"github.com/xiongwp/payment-util/serviceregistry"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/keepalive"
+	"github.com/xiongwp/payment-util/kitexutil"
 
-	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
-	orderv1 "reconcile-system/packages/order-core/kitex_gen/order/v1"
-	paymentcorev1 "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1"
-	riskv1 "reconcile-system/packages/risk-manage/kitex_gen/risk/v1"
-	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
+	"reconcile-system/packages/kms-manage/kitex_gen/kms/v1/kmsservice"
+	"reconcile-system/packages/order-core/kitex_gen/order/v1/chargeservice"
+	"reconcile-system/packages/order-core/kitex_gen/order/v1/disputeservice"
+	"reconcile-system/packages/order-core/kitex_gen/order/v1/ledgerservice"
+	"reconcile-system/packages/order-core/kitex_gen/order/v1/orderauditservice"
+	"reconcile-system/packages/order-core/kitex_gen/order/v1/paymentintentservice"
+	"reconcile-system/packages/order-core/kitex_gen/order/v1/refundservice"
+	"reconcile-system/packages/order-core/kitex_gen/order/v1/webhookdeliveryservice"
+	"reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
+	"reconcile-system/packages/risk-manage/kitex_gen/risk/v1/riskservice"
+	"reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
+	"reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/merchantservice"
+	"reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/umauditservice"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 	"github.com/xiongwp/payment-admin-web/backend/internal/handler"
 )
 
 func main() {
-	orderAddr := envOrDefault("ORDER_GRPC_ADDR", "127.0.0.1:9091")
-	paymentCoreAddr := envOrDefault("PAYMENT_CORE_GRPC_ADDR", "127.0.0.1:9090")
-	kmsAddr := envOrDefault("KMS_GRPC_ADDR", "127.0.0.1:9290")
-	riskAddr := envOrDefault("RISK_GRPC_ADDR", "127.0.0.1:9490")
-	userMerchantAddr := envOrDefault("USER_MERCHANT_GRPC_ADDR", "127.0.0.1:9191")
 	port := envOrDefault("PORT", "9190")
-
-	// REGISTRY_ENDPOINTS（逗号分隔 etcd:2379,...）：BFF 通过 etcd resolver
-	// 拨号到所有副本 + round_robin LB；空就退回直连各 *_GRPC_ADDR 环境变量。
-	registry := splitCSV(os.Getenv("REGISTRY_ENDPOINTS"))
-
-	orderConn := mustDial(registry, "order-core", orderAddr)
-	paymentConn := mustDial(registry, "payment-core", paymentCoreAddr)
-	kmsConn := mustDial(registry, "kms-manage", kmsAddr)
-	riskConn := mustDial(registry, "risk-manage", riskAddr)
-	userMerchantConn := mustDial(registry, "user-merchant-core", userMerchantAddr)
-	defer orderConn.Close()
-	defer paymentConn.Close()
-	defer kmsConn.Close()
-	defer riskConn.Close()
-	defer userMerchantConn.Close()
+	// Kitex 切换后, 各下游服务由 *service.NewClient("<svc>") 自行解决
+	// (etcd resolver / endpoint 由 Kitex 内置 + REGISTRY_ENDPOINTS 环境变量).
+	// 老的 mustDial *grpc.ClientConn 已删.
 
 	deps := clients.Deps{
 		PI:              kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core")),
