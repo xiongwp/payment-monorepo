@@ -100,6 +100,8 @@ message AccountingEntry {
   string debit_amount  = 2; // 借方金额
   string credit_amount = 3; // 贷方金额
   string description   = 4; // 描述
+  string debit_money   = 5; // 高精度借方金额 (string decimal)
+  string credit_money  = 6; // 高精度贷方金额 (string decimal)
 }
 
 // Transaction 账户流水
@@ -118,6 +120,7 @@ message Transaction {
   google.protobuf.Timestamp transaction_time      = 12;
   string                    description           = 13;
   int32                     status                = 14;
+  int32                     booking_type          = 15; // 记账类型 (hot/cold path)
 }
 
 // BalanceSnapshot 账户余额快照
@@ -351,6 +354,7 @@ message GetBalanceSnapshotResponse {
 
 message TriggerDayCutRequest {
   string cut_date = 1; // 格式 "2006-01-02"
+  string currency = 2; // 日切按币种独立执行
 }
 
 message TriggerDayCutResponse {
@@ -359,13 +363,18 @@ message TriggerDayCutResponse {
 }
 
 message AdjustBalanceRequest {
-  string account_no      = 1;
-  string adjustment_type = 2; // 调账类型
-  string amount          = 3;
-  bool   is_increase     = 4;
-  string reason          = 5;
-  string operator        = 6;
-  string approval_no     = 7; // 审批单号
+  string account_no        = 1;
+  string adjustment_type   = 2; // 调账类型
+  string amount            = 3;
+  bool   is_increase       = 4;
+  string reason            = 5;
+  string operator          = 6;
+  string approval_no       = 7;  // 审批单号
+  string currency          = 8;
+  string amount_money      = 9;  // 高精度金额 (string decimal)
+  string request_id        = 10; // 幂等 key
+  string offset_account_no = 11; // 对方账号 (双分录调账)
+  string related_tx_id     = 12; // 关联交易 ID
 }
 
 message AdjustBalanceResponse {
@@ -431,8 +440,8 @@ message CancelTccBranchResponse {
 
 // RunTrialBalanceRequest 试算平衡请求
 message RunTrialBalanceRequest {
-  // snapshot_date 日切日期（格式 "2006-01-02"），对应 account_balance_snapshot.snapshot_date
-  string snapshot_date = 1;
+  string snapshot_date = 1; // 日切日期 (2006-01-02)
+  string currency      = 2; // 币种 (日切按币种独立执行)
 }
 
 // RunTrialBalanceResponse 试算平衡响应

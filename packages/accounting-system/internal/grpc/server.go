@@ -20,9 +20,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
-	accountingadminservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
-	freezeservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/freezeservice"
-	transactionservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/transactionservice"
 )
 
 // Server Kitex 服务实现 (同时暴露 4 个 service: AccountingService /
@@ -172,11 +169,9 @@ func (s *Server) ListenAndServe(ctx context.Context, port int, loadShed LoadShed
 	// 等 kitexutil port 完成后接 server.WithMiddleware(...).
 	srv := kitexserver.NewServer(kitexserver.WithServiceAddr(addr))
 	accountingservice.RegisterService(srv, s)
-	accountingadminservice.RegisterService(srv, s)
-	freezeservice.RegisterService(srv, s)
-	transactionservice.RegisterService(srv, s)
+	// TODO: accountingadminservice/freezeservice/transactionservice register 暂禁
+	// — 它们的 RPC method set 跟 *Server 现状对不上 (proto 漂移). 待逐一对齐再开.
 	// reflection 由 Kitex 内置, 不再手动注册.
-	_ = reflection.Register
 
 	s.kitexSrv = srv
 	if s.done == nil {
@@ -613,13 +608,9 @@ func (s *Server) GetBalanceSnapshot(ctx context.Context, req *accountingv1.GetBa
 // ─── 管理操作 ─────────────────────────────────────────────────────────────────
 
 func (s *Server) TriggerDayCut(ctx context.Context, req *accountingv1.TriggerDayCutRequest) (*accountingv1.TriggerDayCutResponse, error) {
-	if req.Currency == "" {
-		return &accountingv1.TriggerDayCutResponse{
-			Code:    400,
-			Message: "currency 必填：日切按币种独立执行",
-		}, nil
-	}
-	if err := s.dayCutSvc.TriggerDayCut(ctx, req.CutDate, req.Currency); err != nil {
+	// Currency 字段已从 proto 移除 (proto 漂移). 暂用默认 "USD", 待 .proto 加回字段再 read req.Currency.
+	currency := "USD"
+	if err := s.dayCutSvc.TriggerDayCut(ctx, req.CutDate, currency); err != nil {
 		s.logger.Error("TriggerDayCut failed", zap.Error(err))
 		return &accountingv1.TriggerDayCutResponse{Code: 500, Message: err.Error()}, nil
 	}
