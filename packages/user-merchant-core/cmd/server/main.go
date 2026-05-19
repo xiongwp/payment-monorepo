@@ -654,9 +654,11 @@ func newRiskClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.R
 		logger.Info("risk.endpoint and registry.endpoints both unset; using NoopRiskClient (all-allow, no graph writes)")
 		return service.NoopRiskClient{}
 	}
-	api := kitexutil.MustKitexClient(riskservice.NewClient("risk-manage"))
+	api := kitexutil.MustKitexClient(riskservice.NewClient("risk-manage",
+		kitexutil.DefaultHostPorts("risk-manage"),
+	))
 	logger.Info("risk client constructed (Kitex)",
-		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
+		zap.String("endpoint_hint", endpoint), zap.Strings("registry", registry))
 	return &grpcRiskAdapter{api: api, timeout: v.GetDuration("risk.rpc_timeout")}
 }
 
@@ -745,9 +747,11 @@ func newAccountingClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) ser
 		logger.Info("accounting.endpoint and registry.endpoints both unset; using NoopAccountingClient (no account binding on Register)")
 		return service.NoopAccountingClient{}
 	}
-	api := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system"))
+	api := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system",
+		kitexutil.DefaultHostPorts("accounting-system"),
+	))
 	logger.Info("accounting client constructed (Kitex)",
-		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
+		zap.String("endpoint_hint", endpoint), zap.Strings("registry", registry))
 	return &grpcAccountingAdapter{api: api, timeout: v.GetDuration("accounting.rpc_timeout")}
 }
 

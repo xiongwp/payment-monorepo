@@ -384,18 +384,18 @@ func newHTTPSVerifier(v *viper.Viper, logger *zap.Logger) httpsauth.Verifier {
 	if endpoint == "" {
 		endpoint = v.GetString("auth.user_merchant_endpoint")
 	}
-	if endpoint == "" {
-		logger.Warn("https.enabled=true but auth.user_merchant.endpoint empty; disabling verifier")
-		return nil
-	}
 	timeout := v.GetDuration("auth.user_merchant.rpc_timeout")
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
-	uc, err := userservice.NewClient("user-merchant-core",
-		client.WithHostPorts(endpoint),
-		client.WithRPCTimeout(timeout),
-	)
+	// endpoint 配了走 endpoint, 否则 helper 兜底 user-merchant-core:9191.
+	opts := []client.Option{client.WithRPCTimeout(timeout)}
+	if endpoint != "" {
+		opts = append(opts, client.WithHostPorts(endpoint))
+	} else {
+		opts = append(opts, kitexutil.DefaultHostPorts("user-merchant-core"))
+	}
+	uc, err := userservice.NewClient("user-merchant-core", opts...)
 	if err != nil {
 		logger.Warn("user-merchant-core Kitex client init failed; HTTPS verifier disabled",
 			zap.String("endpoint", endpoint), zap.Error(err))

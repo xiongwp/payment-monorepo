@@ -313,7 +313,9 @@ func newUserwebHandler(v *viper.Viper, logger *zap.Logger) (*userweb.Handler, er
 		logger.Warn("user_merchant.endpoint and registry.endpoints both unset; signup/login pages will fail")
 		return nil, nil
 	}
-	h, err := userweb.NewHandler(kitexutil.MustKitexClient(userservice.NewClient("user-merchant-core")), logger)
+	h, err := userweb.NewHandler(kitexutil.MustKitexClient(userservice.NewClient("user-merchant-core",
+		kitexutil.DefaultHostPorts("user-merchant-core"),
+	)), logger)
 	if err != nil {
 		return nil, err
 	}

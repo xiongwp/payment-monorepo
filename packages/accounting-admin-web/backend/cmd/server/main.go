@@ -33,14 +33,18 @@ func main() {
 			}
 		}
 	}
-	// Kitex 切换后 transport / resolver 都由 kitexutil 内部接管, 不再走 grpc.Dial.
-	// grpcAddr / registry 仍是有效配置入口 (kitexutil 内部会 LookupEnv); 这里保留
-	// 仅用于日志.
-	_ = grpcAddr
+	// Kitex client host:port 由 kitexutil.DefaultHostPorts 统一解析
+	// (env ACCOUNTING_SYSTEM_GRPC_ADDR > 默认 accounting-system:50051).
+	// grpcAddr / registry 旧 env 仅留 log; 实际拨号走 helper.
 	_ = registry
+	log.Printf("accounting-system gRPC target (legacy env hint): %s", grpcAddr)
 
-	client := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system"))
-	adminClient := kitexutil.MustKitexClient(accountingadminservice.NewClient("accounting-system"))
+	client := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system",
+		kitexutil.DefaultHostPorts("accounting-system"),
+	))
+	adminClient := kitexutil.MustKitexClient(accountingadminservice.NewClient("accounting-system",
+		kitexutil.DefaultHostPorts("accounting-system"),
+	))
 
 	// Build handlers
 	accountH := handler.NewAccountHandler(client)
