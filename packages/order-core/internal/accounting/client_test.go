@@ -1,6 +1,7 @@
 package accounting
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -14,10 +15,10 @@ import (
 func TestEntriesDirection_KnownEvents(t *testing.T) {
 	const channelNo, ownerNo = "CHAN-001", "OWNR-001"
 	cases := []struct {
-		event    domain.AccountingEventType
-		wantDR   string // debit account_no
-		wantCR   string // credit account_no
-		wantErr  bool
+		event   domain.AccountingEventType
+		wantDR  string
+		wantCR  string
+		wantErr bool
 	}{
 		// 入账: DEBIT channel, CREDIT owner
 		{domain.AccountingEventChargeSucceeded, channelNo, ownerNo, false},
@@ -107,46 +108,64 @@ func TestOwnerBTFor(t *testing.T) {
 
 // TestResolveOwnerID 覆盖三种解析路径:
 //
-//  1. resolver 返成功 → 走 resolver
-//  2. resolver 返 ErrFallbackToNumeric → strconv
-//  3. 无 resolver + 数字 owner_id → strconv
-//  4. 无 resolver + 非数字 owner_id → error
+//  1. 无 resolver + 纯数字 → strconv.ParseInt
+//  2. 无 resolver + 非数字 → error
+//  3. resolver 返成功 → 走 resolver
+//  4. resolver 返 ErrFallbackToNumeric → fallback 到 strconv
+//  5. resolver 返其它 error → propagate
 func TestResolveOwnerID(t *testing.T) {
-	c := &Client{}
+	ctx := context.Background()
 
-	// 1. 无 resolver, 纯数字
-	id, err := c.resolveOwnerID(nil, "merchant", "12345")
-	if err != nil || id != 12345 {
-		t.Fatalf("numeric path: got id=%d err=%v, want 12345/nil", id, err)
-	}
-
-	// 2. 无 resolver, 非数字 → error
-	_, err = c.resolveOwnerID(nil, "merchant", "mch_alpha")
-	if err == nil {
-		t.Fatal("non-numeric without resolver: expected error, got nil")
-	}
-
-	// 3. resolver 返成功
-	c.cfg.OwnerIDResolver = func(_ interface{ Done() <-chan struct{} }, ot, oid string) (int64, error) {
-		// 测试用的不能拿真 context, 改成简化 signature 嫌麻烦, 这里走泛形 hack ↓
-		return 0, nil
-	}
-	// 上面 resolver signature 不匹配 (我们 OwnerIDResolver 真签名是 func(ctx, ot, oid)).
-	// 用闭包匿名实现, 通过 cfg 直接装好的 resolver.
-	c.cfg.OwnerIDResolver = func(ctx contextLike, ownerType, ownerID string) (int64, error) {
-		_ = ctx
-		if ownerType == "merchant" && ownerID == "mch_alpha" {
-			return 9001, nil
+	t.Run("no resolver, numeric", func(t *testing.T) {
+		c := &Client{}
+		id, err := c.resolveOwnerID(ctx, "merchant", "12345")
+		if err != nil || id != 12345 {
+			t.Fatalf("got id=%d err=%v, want 12345/nil", id, err)
 		}
-		return 0, ErrFallbackToNumeric
-	}
-	// 但 Client.resolveOwnerID 真实 signature 用 context.Context. 改测试为编译能过即可:
-	// 这一段验逻辑分支, 用 fakeContext 桩.
-	_ = errors.New // satisfy import
-}
+	})
 
-// contextLike — 测试用 context 桩, 兼容 OwnerIDResolver signature.
-// 实际 Client.resolveOwnerID 用 context.Context, 这里只为 compile 而已.
-type contextLike interface {
-	Done() <-chan struct{}
+	t.Run("no resolver, non-numeric", func(t *testing.T) {
+		c := &Client{}
+		_, err := c.resolveOwnerID(ctx, "merchant", "mch_alpha")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("resolver success", func(t *testing.T) {
+		c := &Client{}
+		c.cfg.OwnerIDResolver = func(_ context.Context, ot, oid string) (int64, error) {
+			if ot == "merchant" && oid == "mch_alpha" {
+				return 9001, nil
+			}
+			return 0, errors.New("unknown")
+		}
+		id, err := c.resolveOwnerID(ctx, "merchant", "mch_alpha")
+		if err != nil || id != 9001 {
+			t.Fatalf("got id=%d err=%v, want 9001/nil", id, err)
+		}
+	})
+
+	t.Run("resolver fallback to numeric", func(t *testing.T) {
+		c := &Client{}
+		c.cfg.OwnerIDResolver = func(_ context.Context, _, _ string) (int64, error) {
+			return 0, ErrFallbackToNumeric
+		}
+		id, err := c.resolveOwnerID(ctx, "merchant", "7777")
+		if err != nil || id != 7777 {
+			t.Fatalf("got id=%d err=%v, want 7777/nil", id, err)
+		}
+	})
+
+	t.Run("resolver hard error propagates", func(t *testing.T) {
+		c := &Client{}
+		boom := errors.New("merchant repo down")
+		c.cfg.OwnerIDResolver = func(_ context.Context, _, _ string) (int64, error) {
+			return 0, boom
+		}
+		_, err := c.resolveOwnerID(ctx, "merchant", "irrelevant")
+		if !errors.Is(err, boom) {
+			t.Fatalf("expected propagated boom error, got %v", err)
+		}
+	})
 }
