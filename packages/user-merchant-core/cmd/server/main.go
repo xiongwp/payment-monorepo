@@ -18,9 +18,9 @@ import (
 
 	"github.com/xiongwp/payment-util/mtls"
 
-	accv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
 	"github.com/xiongwp/payment-util/serviceregistry"
-	riskv1 "github.com/xiongwp/risk-manage/api/proto/risk/v1"
+	riskv1 "reconcile-system/packages/risk-manage/kitex_gen/risk/v1"
 	"github.com/xiongwp/user-merchant-core/internal/authpkg"
 	"github.com/xiongwp/user-merchant-core/internal/cache"
 	"github.com/xiongwp/user-merchant-core/internal/healthz"
@@ -729,7 +729,7 @@ func newRiskClient(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.
 }
 
 type grpcRiskAdapter struct {
-	api     riskv1.RiskServiceClient
+	api     riskservice.Client
 	timeout time.Duration
 }
 

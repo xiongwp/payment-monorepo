@@ -20,7 +20,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	channelv1 "github.com/xiongwp/payment-channel/api/proto/channel/v1"
+	channelv1 "reconcile-system/packages/payment-channel/kitex_gen/channel/v1"
 	"github.com/xiongwp/payment-channel/internal/channel"
 	"github.com/xiongwp/payment-channel/internal/server"
 	"github.com/xiongwp/payment-channel/internal/service"
@@ -84,7 +84,7 @@ func (i *idIssuer) Next(prefix, piID string) (string, error) {
 
 // ─── harness ──────────────────────────────────────────────────────
 
-func spinUpChannelServer(t *testing.T, ad channel.Adapter) channelv1.AcquirerServiceClient {
+func spinUpChannelServer(t *testing.T, ad channel.Adapter) acquirerservice.Client {
 	t.Helper()
 	logger := zap.NewNop()
 	reg := channel.NewRegistry()

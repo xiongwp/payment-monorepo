@@ -27,7 +27,7 @@ import (
 
 	"go.uber.org/zap"
 
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
 )
 
 // cacheEntry 短期缓存 jwt → user_id 校验结果
@@ -42,7 +42,7 @@ type cacheEntry struct {
 // 60s 短期缓存避免每个 HTTPS 请求都打 RPC（每秒可能数百绑卡 / 列卡请求）。
 // 登出后最多 60s 仍能用旧 jwt — 业务可接受；不可接受时把 cacheTTL 调到 0 即可。
 type UserMerchantVerifier struct {
-	uc       usermerchantv1.UserServiceClient
+	uc       userservice.Client
 	timeout  time.Duration
 	cacheTTL time.Duration
 	cache    sync.Map // map[sha256(jwt)]cacheEntry
@@ -50,7 +50,7 @@ type UserMerchantVerifier struct {
 }
 
 // NewUserMerchantVerifier 构造
-func NewUserMerchantVerifier(uc usermerchantv1.UserServiceClient, logger *zap.Logger) *UserMerchantVerifier {
+func NewUserMerchantVerifier(uc userservice.Client, logger *zap.Logger) *UserMerchantVerifier {
 	return &UserMerchantVerifier{
 		uc:       uc,
 		timeout:  3 * time.Second,

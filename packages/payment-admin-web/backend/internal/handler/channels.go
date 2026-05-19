@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
+	paymentcorev1 "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )

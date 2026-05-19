@@ -21,11 +21,11 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
-	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
-	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
-	riskv1 "github.com/xiongwp/risk-manage/api/proto/risk/v1"
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
+	orderv1 "reconcile-system/packages/order-core/kitex_gen/order/v1"
+	paymentcorev1 "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1"
+	riskv1 "reconcile-system/packages/risk-manage/kitex_gen/risk/v1"
+	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 	"github.com/xiongwp/payment-admin-web/backend/internal/handler"

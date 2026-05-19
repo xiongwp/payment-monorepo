@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/status"
 )
@@ -30,7 +30,7 @@ const CookieName = "uauth"
 type Handler struct {
 	// pages 每页一棵独立模板树（layout + 该 page）；别名 see loadTemplates。
 	pages  map[string]*template.Template
-	uc     usermerchantv1.UserServiceClient
+	uc     userservice.Client
 	logger *zap.Logger
 	// CookieDomain / CookieSecure 由 main.go 按部署环境配置。
 	CookieDomain string
@@ -42,7 +42,7 @@ type Handler struct {
 }
 
 // NewHandler 装配模板 + gRPC client。
-func NewHandler(uc usermerchantv1.UserServiceClient, logger *zap.Logger) (*Handler, error) {
+func NewHandler(uc userservice.Client, logger *zap.Logger) (*Handler, error) {
 	pages, err := loadTemplates()
 	if err != nil {
 		return nil, err

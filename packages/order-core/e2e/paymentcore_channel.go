@@ -13,7 +13,7 @@ import (
 
 	"google.golang.org/grpc"
 
-	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
+	paymentcorev1 "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1"
 
 	"github.com/xiongwp/order-core/internal/channel"
 )
@@ -22,7 +22,7 @@ import (
 // 把调用翻译成 paymentcorev1 gRPC 请求发给 payment-core。
 type PaymentCoreGRPCChannel struct {
 	name string
-	cli  paymentcorev1.PaymentCoreServiceClient
+	cli  paymentcoreservice.Client
 }
 
 // NewPaymentCoreGRPCChannel 从一个已建好的 grpc.ClientConn 构造。

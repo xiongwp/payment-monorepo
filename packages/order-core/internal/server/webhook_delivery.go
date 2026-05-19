@@ -9,7 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
+	orderv1 "reconcile-system/packages/order-core/kitex_gen/order/v1"
 	"github.com/xiongwp/order-core/internal/repo"
 	"github.com/xiongwp/order-core/internal/shadow"
 	"github.com/xiongwp/order-core/internal/webhook"

@@ -7,7 +7,7 @@ import (
 
 	"github.com/gorilla/mux"
 
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )
@@ -18,10 +18,10 @@ import (
 // URL so it's hard to accidentally wipe the wrong merchant.
 type MerchantSecretHandler struct {
 	deps clients.Deps
-	cli  usermerchantv1.MerchantSecretServiceClient
+	cli  merchantsecretservice.Client
 }
 
-func NewMerchantSecretHandler(d clients.Deps, cli usermerchantv1.MerchantSecretServiceClient) *MerchantSecretHandler {
+func NewMerchantSecretHandler(d clients.Deps, cli merchantsecretservice.Client) *MerchantSecretHandler {
 	return &MerchantSecretHandler{deps: d, cli: cli}
 }
 

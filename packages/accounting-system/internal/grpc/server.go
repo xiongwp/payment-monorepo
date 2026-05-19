@@ -15,7 +15,7 @@ import (
 	"github.com/accounting-system/internal/repository"
 	"github.com/accounting-system/internal/service"
 	"github.com/shopspring/decimal"
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"

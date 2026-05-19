@@ -9,7 +9,7 @@ package service
 import (
 	"context"
 
-	riskv1 "github.com/xiongwp/risk-manage/api/proto/risk/v1"
+	riskv1 "reconcile-system/packages/risk-manage/kitex_gen/risk/v1"
 )
 
 // RiskClient 仅暴露 user-merchant-core 用到的两个方法。

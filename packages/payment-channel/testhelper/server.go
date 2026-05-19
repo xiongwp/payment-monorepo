@@ -18,7 +18,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	channelv1 "github.com/xiongwp/payment-channel/api/proto/channel/v1"
+	channelv1 "reconcile-system/packages/payment-channel/kitex_gen/channel/v1"
 	"github.com/xiongwp/payment-channel/internal/channel"
 	"github.com/xiongwp/payment-channel/internal/domain"
 	"github.com/xiongwp/payment-channel/internal/server"
@@ -85,7 +85,7 @@ type ScriptedAdapter struct {
 
 // Server 持有启动的 payment-channel 实例 + 拨号 client。
 type Server struct {
-	Client  channelv1.AcquirerServiceClient
+	Client  acquirerservice.Client
 	Conn    *grpc.ClientConn
 	Listener *bufconn.Listener
 	cleanup func()

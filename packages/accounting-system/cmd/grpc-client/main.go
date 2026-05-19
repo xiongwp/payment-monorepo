@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -99,7 +99,7 @@ func main() {
 // ─── 测试客户端 ───────────────────────────────────────────────────────────────
 
 type testClient struct {
-	c       accountingv1.AccountingServiceClient
+	c       accountingservice.Client
 	timeout time.Duration
 	shadow  bool // 影子流量开关（-shadow flag 注入）
 	// 跨 case 共享的账户号

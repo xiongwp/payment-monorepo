@@ -20,7 +20,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
+	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
 	"github.com/xiongwp/kms-manage/internal/keystore"
 	"github.com/xiongwp/kms-manage/internal/metrics"
 	"github.com/xiongwp/kms-manage/internal/server"
@@ -47,7 +47,7 @@ func DefaultConfig() StartConfig {
 
 // Server 持有启动的 kms-manage 实例 + 拨号 client。
 type Server struct {
-	Client   kmsv1.KMSServiceClient
+	Client   kmsservice.Client
 	Conn     *grpc.ClientConn
 	Listener *bufconn.Listener
 	cleanup  func()

@@ -13,7 +13,7 @@ import (
 	"github.com/gorilla/mux"
 	"google.golang.org/grpc"
 
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )
@@ -21,7 +21,7 @@ import (
 // fakeMerchant 只覆盖测试用到的两个方法；其它方法走 embedded nil interface
 // （任何意外调用都会 panic 暴露误用）。
 type fakeMerchant struct {
-	usermerchantv1.MerchantServiceClient
+	merchantservice.Client
 	rotateCalls atomic.Int32
 	kycCalls    atomic.Int32
 }

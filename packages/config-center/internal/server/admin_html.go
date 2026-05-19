@@ -37,8 +37,10 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/xiongwp/config-center/internal/service"
-	"github.com/xiongwp/payment-util/serviceregistry"
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	kitexclient "github.com/cloudwego/kitex/client"
+
+	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
+	userservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
 )
 
 // cacheEntry 缓存条目：响应 + 过期时间。
@@ -115,20 +117,22 @@ func (c *tokenIntrospectorCache) set(token string, resp *usermerchantv1.Introspe
 	c.items[token] = elem
 }
 
-// tokenIntrospector 封装 user-merchant-core IntrospectToken 调用 + 缓存。
+// tokenIntrospector 封装 user-merchant-core IntrospectToken 调用 + 缓存. Kitex 版.
 type tokenIntrospector struct {
-	client usermerchantv1.UserServiceClient
+	client userservice.Client
 	cache  *tokenIntrospectorCache
 	logger *zap.Logger
 }
 
-// NewTokenIntrospector 创建 token introspector（调用方传入 endpoint）。
+// NewTokenIntrospector 创建 token introspector (调用方传入 endpoint).
+// 切 Kitex 后跟 gRPC wire 不互通; user-merchant-core server 已同步切.
 func NewTokenIntrospector(endpoint string, logger *zap.Logger) (*tokenIntrospector, error) {
-	conn, err := serviceregistry.DialDirect(endpoint)
+	client, err := userservice.NewClient("user-merchant-core",
+		kitexclient.WithHostPorts(endpoint),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("dial user-merchant-core: %w", err)
+		return nil, fmt.Errorf("kitex dial user-merchant-core: %w", err)
 	}
-	client := usermerchantv1.NewUserServiceClient(conn)
 	return &tokenIntrospector{
 		client: client,
 		cache:  newTokenIntrospectorCache(),

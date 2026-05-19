@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	riskv1 "github.com/xiongwp/risk-manage/api/proto/risk/v1"
+	riskv1 "reconcile-system/packages/risk-manage/kitex_gen/risk/v1"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )

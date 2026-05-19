@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
+	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
 	kmsth "github.com/xiongwp/kms-manage/testhelper"
 
 	"github.com/xiongwp/payment-core/internal/kmsclient"
@@ -13,7 +13,7 @@ import (
 
 // bufClient 把 kms-manage testhelper 起的 gRPC client 包成 payment-core 的
 // kmsclient.Client 接口。实际生产走 kmsclient.Dial，测试里图省事直接走 bufconn。
-type bufClient struct{ c kmsv1.KMSServiceClient }
+type bufClient struct{ c kmsservice.Client }
 
 func (b bufClient) Encrypt(ctx context.Context, plaintext []byte, aadContext string) (string, error) {
 	r, err := b.c.Encrypt(ctx, &kmsv1.EncryptRequest{Plaintext: plaintext, Context: aadContext})

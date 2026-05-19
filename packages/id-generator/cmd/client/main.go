@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	pb "github.com/xiongwp/id-generator/internal/proto"
+	pb "reconcile-system/packages/id-generator/kitex_gen/idgen/v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

@@ -29,8 +29,8 @@ import (
 	"sync"
 	"time"
 
-	accv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
-	riskv1 "github.com/xiongwp/risk-manage/api/proto/risk/v1"
+	accv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
+	riskv1 "reconcile-system/packages/risk-manage/kitex_gen/risk/v1"
 	"go.uber.org/zap"
 
 	"github.com/xiongwp/user-merchant-core/internal/authpkg"

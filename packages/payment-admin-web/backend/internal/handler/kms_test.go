@@ -11,13 +11,13 @@ import (
 
 	"github.com/gorilla/mux"
 
-	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
+	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
 	kmsth "github.com/xiongwp/kms-manage/testhelper"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )
 
-func newKMSRouter(t *testing.T) (*mux.Router, kmsv1.KMSServiceClient) {
+func newKMSRouter(t *testing.T) (*mux.Router, kmsservice.Client) {
 	t.Helper()
 	srv := kmsth.Start(t, kmsth.DefaultConfig())
 

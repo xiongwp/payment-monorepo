@@ -36,7 +36,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -162,7 +162,7 @@ func main() {
 
 // ─── setup phase ──────────────────────────────────────────────────────────────
 
-func runSetup(cli accountingv1.AccountingServiceClient) {
+func runSetup(cli accountingservice.Client) {
 	log.Println("═══ Phase 1: 创建系统账户 ═══")
 	mustCreateSystemAccounts(cli)
 
@@ -187,7 +187,7 @@ func runSetup(cli accountingv1.AccountingServiceClient) {
 	initialRecharge(cli)
 }
 
-func mustCreateSystemAccounts(cli accountingv1.AccountingServiceClient) {
+func mustCreateSystemAccounts(cli accountingservice.Client) {
 	ctx := context.Background()
 
 	create := func(userID int64,
@@ -219,7 +219,7 @@ func mustCreateSystemAccounts(cli accountingv1.AccountingServiceClient) {
 }
 
 func createAccounts(
-	cli accountingv1.AccountingServiceClient,
+	cli accountingservice.Client,
 	count int,
 	userIDStart int64,
 	accType accountingv1.AccountType,
@@ -308,7 +308,7 @@ func createAccounts(
 	log.Printf("  完成: 成功 %d, 失败 %d", ok.Load(), fail.Load())
 }
 
-func initialRecharge(cli accountingv1.AccountingServiceClient) {
+func initialRecharge(cli accountingservice.Client) {
 	jobs := make(chan string, 1000)
 	var wg sync.WaitGroup
 	var ok, fail atomic.Int64
@@ -366,7 +366,7 @@ func initialRecharge(cli accountingv1.AccountingServiceClient) {
 
 // ─── load test ────────────────────────────────────────────────────────────────
 
-func runLoadTest(cli accountingv1.AccountingServiceClient) {
+func runLoadTest(cli accountingservice.Client) {
 	log.Printf("═══ Phase 5: 压测开始 (%d 笔 / %d 并发) ═══", *flagTxns, *flagWorkers)
 
 	m := &metrics{startTime: time.Now()}
@@ -468,7 +468,7 @@ func bizNo(prefix string) string {
 }
 
 // txnRecharge: 充值中间账户 → 用户账户
-func txnRecharge(ctx context.Context, cli accountingv1.AccountingServiceClient, rng *rand.Rand) error {
+func txnRecharge(ctx context.Context, cli accountingservice.Client, rng *rand.Rand) error {
 	userAcc := randomUserAcc(rng)
 	if userAcc == "" {
 		return fmt.Errorf("no user account")
@@ -498,7 +498,7 @@ func txnRecharge(ctx context.Context, cli accountingv1.AccountingServiceClient, 
 }
 
 // txnTransfer: 用户A → 用户B
-func txnTransfer(ctx context.Context, cli accountingv1.AccountingServiceClient, rng *rand.Rand) error {
+func txnTransfer(ctx context.Context, cli accountingservice.Client, rng *rand.Rand) error {
 	sender := randomUserAcc(rng)
 	receiver := randomUserAcc(rng)
 	if sender == "" || receiver == "" || sender == receiver {
@@ -536,7 +536,7 @@ func txnTransfer(ctx context.Context, cli accountingv1.AccountingServiceClient, 
 //	服务手续费账户：X × 1%
 //	平台手续费账户：X × 2%
 //	借方合计 = 贷方合计 = X  （复式记账平衡）
-func txnPayment(ctx context.Context, cli accountingv1.AccountingServiceClient, rng *rand.Rand) error {
+func txnPayment(ctx context.Context, cli accountingservice.Client, rng *rand.Rand) error {
 	userAcc := randomUserAcc(rng)
 	merchantAcc := randomMerchantAcc(rng)
 	if userAcc == "" || merchantAcc == "" {

@@ -3,15 +3,15 @@ package handler
 import (
 	"net/http"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
 )
 
 // DayCutHandler handles day-cut endpoints.
 type DayCutHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewDayCutHandler(client accountingv1.AccountingServiceClient) *DayCutHandler {
+func NewDayCutHandler(client accountingservice.Client) *DayCutHandler {
 	return &DayCutHandler{client: client}
 }
 

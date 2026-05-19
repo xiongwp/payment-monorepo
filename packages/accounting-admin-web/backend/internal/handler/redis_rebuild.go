@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
 )
 
 // RedisRebuildHandler 调 accounting-system gRPC 触发热账户重建。
@@ -13,10 +13,10 @@ import (
 // 默认就是 gRPC 通道，鉴权/超时/可观测性已经统一过；admin HTTP 只留给
 // CLI（cmd/tools/redis-rebuild）等运维场景。
 type RedisRebuildHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewRedisRebuildHandler(client accountingv1.AccountingServiceClient) *RedisRebuildHandler {
+func NewRedisRebuildHandler(client accountingservice.Client) *RedisRebuildHandler {
 	return &RedisRebuildHandler{client: client}
 }
 

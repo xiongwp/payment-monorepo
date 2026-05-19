@@ -5,15 +5,15 @@ import (
 	"strconv"
 
 	"github.com/gorilla/mux"
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
 )
 
 // AdminHandler handles buffer account admin endpoints via gRPC.
 type AdminHandler struct {
-	admin accountingv1.AccountingAdminServiceClient
+	admin accountingadminservice.Client
 }
 
-func NewAdminHandler(admin accountingv1.AccountingAdminServiceClient) *AdminHandler {
+func NewAdminHandler(admin accountingadminservice.Client) *AdminHandler {
 	return &AdminHandler{admin: admin}
 }
 

@@ -11,14 +11,14 @@ import (
 	"github.com/gorilla/mux"
 	"google.golang.org/grpc"
 
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )
 
 // fakeAudit 只实现拦截器最终用到的 ListAuditLogs；其余方法 panic 暴露误用。
 type fakeAudit struct {
-	usermerchantv1.AuditServiceClient
+	umauditservice.Client
 	gotReq *usermerchantv1.ListAuditLogsRequest
 	resp   *usermerchantv1.ListAuditLogsResponse
 }

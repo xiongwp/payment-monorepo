@@ -22,7 +22,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
+	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
 	"github.com/xiongwp/kms-manage/internal/keystore"
 )
 
@@ -170,7 +170,7 @@ func remoteDecrypt(addr, contextStr, ciphertext string) error {
 	return nil
 }
 
-func dial(addr string) (kmsv1.KMSServiceClient, func(), error) {
+func dial(addr string) (kmsservice.Client, func(), error) {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, nil, err

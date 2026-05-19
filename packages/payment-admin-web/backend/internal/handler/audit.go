@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
+	orderv1 "reconcile-system/packages/order-core/kitex_gen/order/v1"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )
@@ -112,7 +112,7 @@ func isHighSensitivity(action, path string) bool {
 //
 // Actor comes from AuthMiddleware (token-derived) via actorFromRequest, no
 // longer from a client-supplied X-Admin-User header.
-func AuditMiddleware(audit orderv1.AuditServiceClient) func(http.Handler) http.Handler {
+func AuditMiddleware(audit orderauditservice.Client) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if audit == nil || !isMutating(r.Method) || r.Method == http.MethodOptions {

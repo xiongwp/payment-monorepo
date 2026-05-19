@@ -19,7 +19,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
-	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
+	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
 	"github.com/xiongwp/kms-manage/internal/service"
 )
 

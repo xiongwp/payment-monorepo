@@ -27,7 +27,7 @@ import (
 	insecuregrpc "google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
 
 	cardcenterservice "reconcile-system/packages/card-center/kitex_gen/cardcenter/v1/cardcenterservice"
 

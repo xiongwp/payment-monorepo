@@ -3,15 +3,15 @@ package handler
 import (
 	"net/http"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
 )
 
 // TrialBalanceHandler handles trial balance endpoints.
 type TrialBalanceHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewTrialBalanceHandler(client accountingv1.AccountingServiceClient) *TrialBalanceHandler {
+func NewTrialBalanceHandler(client accountingservice.Client) *TrialBalanceHandler {
 	return &TrialBalanceHandler{client: client}
 }
 

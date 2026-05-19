@@ -5,7 +5,7 @@ import (
 	"strconv"
 
 	"github.com/gorilla/mux"
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
 )
 
 // accountJSON matches the frontend Account interface
@@ -58,10 +58,10 @@ func protoAccountToJSON(a *accountingv1.Account) *accountJSON {
 
 // AccountHandler handles account-related endpoints.
 type AccountHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewAccountHandler(client accountingv1.AccountingServiceClient) *AccountHandler {
+func NewAccountHandler(client accountingservice.Client) *AccountHandler {
 	return &AccountHandler{client: client}
 }
 

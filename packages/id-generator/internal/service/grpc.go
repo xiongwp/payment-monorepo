@@ -13,7 +13,7 @@ import (
 	"github.com/xiongwp/payment-util/shadow"
 
 	"github.com/xiongwp/id-generator/internal/generator"
-	pb "github.com/xiongwp/id-generator/internal/proto"
+	pb "reconcile-system/packages/id-generator/kitex_gen/idgen/v1"
 	"github.com/xiongwp/id-generator/internal/segment"
 )
 

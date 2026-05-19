@@ -27,7 +27,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
 	"github.com/xiongwp/payment-util/mtls"
 	"github.com/xiongwp/payment-util/serviceregistry"
 
@@ -66,7 +66,7 @@ type Config struct {
 type Client struct {
 	cfg  Config
 	conn *grpc.ClientConn
-	cli  accountingv1.AccountingServiceClient
+	cli  accountingservice.Client
 
 	mapMu sync.RWMutex
 	btMap map[string]int32 // payment_method → business_type i32（运行时可热更新）

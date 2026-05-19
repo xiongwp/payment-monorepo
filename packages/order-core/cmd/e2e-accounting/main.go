@@ -44,9 +44,11 @@ import (
 	grpcreflectionv1 "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	"google.golang.org/grpc/status"
 
-	"github.com/xiongwp/payment-util/serviceregistry"
+	kitexclient "github.com/cloudwego/kitex/client"
 
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
+	orderv1 "reconcile-system/packages/order-core/kitex_gen/order/v1"
+	paymentintentservice "reconcile-system/packages/order-core/kitex_gen/order/v1/paymentintentservice"
+	webhookservice "reconcile-system/packages/order-core/kitex_gen/order/v1/webhookservice"
 )
 
 type balanceResp struct {
@@ -90,44 +92,43 @@ func main() {
 		fmt.Fprintln(os.Stderr, "🌑 e2e shadow=1 — 全链路走影子路径")
 	}
 
-	// 服务发现模式：
-	//   - -etcd 非空（in-network e2e）：用 payment-util/serviceregistry etcd resolver
-	//     解析 order-core 注册的容器 DNS:port（同 docker network 才能拨通）
-	//   - -etcd 空（宿主机 e2e，默认）：用 -addr，连不通时 docker ps 自动找
-	//     order-core 容器的 9091 host 映射端口（compose --scale 时端口会漂，
-	//     这条路径让 e2e 不用每次手动 docker ps + 改 -addr）
-	var conn *grpc.ClientConn
+	// 服务发现 (Kitex 切换后):
+	//   - -etcd 非空 → kitexutil.NewEtcdResolver (TODO 接入)
+	//   - -etcd 空 → direct -addr, 连不通时 docker ps 自动找端口映射 (compose 自动漂)
+	var endpoint string
 	if *etcdEnd != "" {
-		eps := strings.Split(*etcdEnd, ",")
-		c, derr := serviceregistry.DialFromEndpoints(eps, "order-core",
-			grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if derr != nil {
-			die("etcd-resolved dial order-core: %v\n  HINT: e2e 在容器内跑才能解析容器 DNS；宿主机模式不要传 -etcd", derr)
-		}
-		fmt.Printf("[discover] order-core via etcd %v\n", eps)
-		conn = c
+		// TODO: client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, "")) 取代 direct addr
+		fmt.Printf("[discover] -etcd 模式暂用 -addr 直连 (kitex resolver 待接), etcd=%s\n", *etcdEnd)
+		endpoint = *grpcAddr
 	} else {
 		resolvedAddr, err := resolveOrderCoreAddr(ctx, *grpcAddr)
 		if err != nil {
 			die("resolve order-core grpc addr: %v\n"+
-				"  HINT: 默认尝试 %s + docker ps 自动发现都失败了。\n"+
-				"        手动传 -addr 127.0.0.1:<port> 或用 -etcd '<etcd_addr>:2379' 走容器内服务发现。\n"+
+				"  HINT: 默认尝试 %s + docker ps 自动发现都失败了.\n"+
+				"        手动传 -addr 127.0.0.1:<port>.\n"+
 				"        docker ps | grep order-core   # 找 0.0.0.0:XXXX->9091/tcp",
 				err, *grpcAddr)
 		}
 		if resolvedAddr != *grpcAddr {
-			fmt.Printf("[discover] order-core grpc addr resolved %s -> %s (docker port mapping)\n", *grpcAddr, resolvedAddr)
+			fmt.Printf("[discover] order-core kitex addr resolved %s -> %s (docker port mapping)\n", *grpcAddr, resolvedAddr)
 		}
-		c, derr := grpc.NewClient(resolvedAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if derr != nil {
-			die("dial order-core: %v", derr)
-		}
-		conn = c
+		endpoint = resolvedAddr
 	}
-	defer conn.Close()
 
-	piCli := orderv1.NewPaymentIntentServiceClient(conn)
-	wkCli := orderv1.NewWebhookServiceClient(conn)
+	piCli, err := paymentintentservice.NewClient("order-core",
+		kitexclient.WithHostPorts(endpoint),
+		kitexclient.WithRPCTimeout(*timeout),
+	)
+	if err != nil {
+		die("kitex dial PaymentIntentService: %v", err)
+	}
+	wkCli, err := webhookservice.NewClient("order-core",
+		kitexclient.WithHostPorts(endpoint),
+		kitexclient.WithRPCTimeout(*timeout),
+	)
+	if err != nil {
+		die("kitex dial WebhookService: %v", err)
+	}
 
 	// ── 校验 customer_id 落在 accounting-system 允许的 user_id 段内 ────────
 	// accounting-system 硬规则：user_id ∈ [100000000, 899999999]。

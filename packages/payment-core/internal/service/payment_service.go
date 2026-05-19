@@ -21,7 +21,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	channelv1 "github.com/xiongwp/payment-channel/api/proto/channel/v1"
+	channelv1 "reconcile-system/packages/payment-channel/kitex_gen/channel/v1"
 	"github.com/xiongwp/payment-core/internal/channel"
 	"github.com/xiongwp/payment-core/internal/channelclient"
 	"github.com/xiongwp/payment-core/internal/channelops"

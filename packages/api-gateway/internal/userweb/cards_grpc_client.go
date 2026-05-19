@@ -4,7 +4,7 @@
 // ⚠️ COMPILE PREREQUISITE:
 //   1. cd packages/user-merchant-core && make proto
 //      (regenerates user_card.pb.go + user_card_grpc.pb.go)
-//   2. then this file's references to usermerchantv1.UserCardServiceClient /
+//   2. then this file's references to usercardservice.Client /
 //      *AttachCardRequest / *CardInfo will resolve.
 //
 // Wiring (in main.go after make proto):
@@ -20,13 +20,13 @@ package userweb
 import (
 	"context"
 
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
 	"google.golang.org/grpc"
 )
 
 // grpcCardClient 通过 mTLS gRPC 调 user-merchant-core.UserCardService。
 type grpcCardClient struct {
-	uc usermerchantv1.UserCardServiceClient
+	uc usercardservice.Client
 }
 
 // NewGRPCCardClient 装配真实 client。conn 必须连到 user-merchant-core 的 listener。

@@ -29,8 +29,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	channelv1 "github.com/xiongwp/payment-channel/api/proto/channel/v1"
-	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
+	channelv1 "reconcile-system/packages/payment-channel/kitex_gen/channel/v1"
+	paymentcorev1 "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1"
 	"github.com/xiongwp/payment-core/internal/channelclient"
 	"github.com/xiongwp/payment-core/internal/routing"
 	"github.com/xiongwp/payment-core/internal/server"
@@ -166,7 +166,7 @@ func spinUpFakeChannel(t *testing.T, fake *fakeChannelServer) *bufconn.Listener 
 // bufconnClient 把 bufconn 包成 channelclient.Client。
 type bufconnChannelClient struct {
 	conn *grpc.ClientConn
-	api  channelv1.AcquirerServiceClient
+	api  acquirerservice.Client
 }
 
 func newBufconnChannelClient(t *testing.T, lis *bufconn.Listener) channelclient.Client {
@@ -203,7 +203,7 @@ func (c *bufconnChannelClient) Close() error { return c.conn.Close() }
 
 // spinUpPaymentCore 启动真实的 payment-core Server（routing + service 全走完）。
 // 上游 payment-channel 用 fake bufconn 顶替，外部渠道响应 = fake 的 scripted。
-func spinUpPaymentCore(t *testing.T, channelCli channelclient.Client, rules []routing.Rule) paymentcorev1.PaymentCoreServiceClient {
+func spinUpPaymentCore(t *testing.T, channelCli channelclient.Client, rules []routing.Rule) paymentcoreservice.Client {
 	t.Helper()
 	logger := zap.NewNop()
 

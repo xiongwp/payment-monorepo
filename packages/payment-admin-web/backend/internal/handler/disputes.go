@@ -9,17 +9,17 @@ import (
 
 	"github.com/gorilla/mux"
 
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
+	orderv1 "reconcile-system/packages/order-core/kitex_gen/order/v1"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )
 
 type DisputeHandler struct {
 	deps clients.Deps
-	cli  orderv1.DisputeServiceClient
+	cli  disputeservice.Client
 }
 
-func NewDisputeHandler(d clients.Deps, cli orderv1.DisputeServiceClient) *DisputeHandler {
+func NewDisputeHandler(d clients.Deps, cli disputeservice.Client) *DisputeHandler {
 	return &DisputeHandler{deps: d, cli: cli}
 }
 

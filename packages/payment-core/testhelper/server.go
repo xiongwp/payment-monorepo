@@ -17,8 +17,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	channelv1 "github.com/xiongwp/payment-channel/api/proto/channel/v1"
-	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
+	channelv1 "reconcile-system/packages/payment-channel/kitex_gen/channel/v1"
+	paymentcorev1 "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1"
 	"github.com/xiongwp/payment-core/internal/channelclient"
 	"github.com/xiongwp/payment-core/internal/routing"
 	"github.com/xiongwp/payment-core/internal/server"
@@ -48,7 +48,7 @@ type StartConfig struct {
 
 // Server 是启动后的 payment-core 句柄。
 type Server struct {
-	Client   paymentcorev1.PaymentCoreServiceClient
+	Client   paymentcoreservice.Client
 	Conn     *grpc.ClientConn
 	Listener *bufconn.Listener
 	cleanup  func()
@@ -132,7 +132,7 @@ func toInternalRules(rs []Rule) []routing.Rule {
 }
 
 // bufconnChannelClient 把 channelv1 client 包成 channelclient.Client 接口。
-type bufconnChannelClient struct{ api channelv1.AcquirerServiceClient }
+type bufconnChannelClient struct{ api acquirerservice.Client }
 
 func (c *bufconnChannelClient) Charge(ctx context.Context, in *channelv1.ChargeRequest) (*channelv1.ChargeResponse, error) {
 	return c.api.Charge(ctx, in)

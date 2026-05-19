@@ -4,15 +4,15 @@ import (
 	"net/http"
 	"strings"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
 )
 
 // AdjustmentHandler handles balance adjustment endpoints.
 type AdjustmentHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewAdjustmentHandler(client accountingv1.AccountingServiceClient) *AdjustmentHandler {
+func NewAdjustmentHandler(client accountingservice.Client) *AdjustmentHandler {
 	return &AdjustmentHandler{client: client}
 }
 

@@ -26,13 +26,13 @@ import (
 	"context"
 	"fmt"
 
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
+	orderv1 "reconcile-system/packages/order-core/kitex_gen/order/v1"
 	"google.golang.org/grpc"
 )
 
 // grpcPaymentClient 通过 mTLS gRPC 调 order-core.PaymentIntentService。
 type grpcPaymentClient struct {
-	pi orderv1.PaymentIntentServiceClient
+	pi paymentintentservice.Client
 }
 
 // NewGRPCPaymentClient 装配真实 client。
