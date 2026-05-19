@@ -19,10 +19,13 @@
 package kitexutil
 
 import (
+	"context"
 	"os"
 	"strings"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/pkg/discovery"
+	"github.com/cloudwego/kitex/pkg/rpcinfo"
 	"github.com/cloudwego/kitex/transport"
 )
 
@@ -83,25 +86,54 @@ func envVarFor(svcName string) string {
 
 // DefaultClientOptions 返回 Kitex client 推荐的拨号 Options 组合:
 //
-//  1. WithHostPorts(...)  — env / 默认端口表解析出的 host:port
-//  2. WithTransportProtocol(transport.GRPC) — 强制 gRPC over HTTP/2 over TCP
-//
-// 为什么要 (2): Kitex 默认 transport (TTHeader/Framed) 在某些 host:port 字符串下
-// 会被 netpoll 解读为 unix socket 路径 (报错 "dial unix accounting-system:50051:
-// no such file or directory"). 显式声明 GRPC 强制 TCP+HTTP2, 跟标准 gRPC 互通,
-// 也跟服务端 (如果用 server.WithTransportProtocol(transport.GRPC)) 对齐.
+//  1. WithResolver(tcpStaticResolver) — 把 host:port 包成显式 network="tcp"
+//     的 discovery.Instance, 绕过 Kitex 默认 WithHostPorts 在 v0.16.x 下
+//     生成的 instance.Network()=="" 缺陷 (会被 netpoll 解读成 unix socket,
+//     报 "dial unix accounting-system:50051: no such file or directory").
+//  2. WithTransportProtocol(transport.GRPC) — 强制 gRPC over HTTP/2 over TCP.
 //
 // 用法 (variadic spread):
 //
 //	cli, _ := accountingservice.NewClient("accounting-system",
 //	    kitexutil.DefaultClientOptions("accounting-system")...,
 //	)
-//
-// 老 caller 用 DefaultHostPorts 单 Option 也可以工作 (默认 transport), 但建议
-// 切到 DefaultClientOptions 避免 "dial unix" 那类网络栈混淆.
 func DefaultClientOptions(svcName string) []client.Option {
+	addr := resolveHostPort(svcName)
 	return []client.Option{
-		DefaultHostPorts(svcName),
+		client.WithResolver(newTCPStaticResolver(addr)),
 		client.WithTransportProtocol(transport.GRPC),
 	}
 }
+
+// tcpStaticResolver 静态 resolver, 每次 Resolve 都返同一个 instance, 强制
+// Network()="tcp". 是 Kitex WithHostPorts 的安全替代.
+type tcpStaticResolver struct {
+	addr     string
+	instance discovery.Instance
+}
+
+func newTCPStaticResolver(addr string) discovery.Resolver {
+	return &tcpStaticResolver{
+		addr:     addr,
+		instance: discovery.NewInstance("tcp", addr, 10, nil),
+	}
+}
+
+func (r *tcpStaticResolver) Target(_ context.Context, _ rpcinfo.EndpointInfo) string {
+	return r.addr
+}
+
+func (r *tcpStaticResolver) Resolve(_ context.Context, _ string) (discovery.Result, error) {
+	return discovery.Result{
+		Cacheable: true,
+		CacheKey:  r.addr,
+		Instances: []discovery.Instance{r.instance},
+	}, nil
+}
+
+func (r *tcpStaticResolver) Diff(cacheKey string, prev, next discovery.Result) (discovery.Change, bool) {
+	// 静态 resolver, 不变化.
+	return discovery.Change{}, false
+}
+
+func (r *tcpStaticResolver) Name() string { return "kitexutil-tcp-static" }
