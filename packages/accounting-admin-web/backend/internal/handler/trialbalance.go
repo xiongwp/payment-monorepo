@@ -92,15 +92,8 @@ func (h *TrialBalanceHandler) RunTrialBalance(w http.ResponseWriter, r *http.Req
 }
 
 // ListSnapshotDates GET /v1/trial-balance/dates
+// ListSnapshotDates RPC 在 proto 精简时砍掉, 临时降级为空 dates 列表.
 func (h *TrialBalanceHandler) ListSnapshotDates(w http.ResponseWriter, r *http.Request) {
-	resp, err := h.client.ListSnapshotDates(r.Context(), &accountingv1.ListSnapshotDatesRequest{})
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	if resp.Code != 0 {
-		writeError(w, int(resp.Code), resp.Message)
-		return
-	}
-	writeJSON(w, map[string]interface{}{"dates": resp.Dates})
+	_ = r
+	writeJSON(w, map[string]interface{}{"dates": []string{}, "stub": true})
 }

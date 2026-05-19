@@ -155,24 +155,11 @@ func (h *AccountHandler) GetAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "account_no or (user_id + account_business_type) required")
 		return
 	}
-	userID, _ := strconv.ParseInt(userIDStr, 10, 64)
-	businessType, _ := strconv.Atoi(businessTypeStr)
-	listResp, err := h.client.ListAccountsByUserAndBusinessType(r.Context(), &accountingv1.ListAccountsByUserAndBusinessTypeRequest{
-		UserId:              userID,
-		AccountBusinessType: accountingv1.AccountBusinessType(businessType),
-		Currency:            currencyFilter,
-	})
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	if listResp.Code != 0 {
-		writeError(w, int(listResp.Code), listResp.Message)
-		return
-	}
-	out := make([]*accountJSON, 0, len(listResp.Accounts))
-	for _, a := range listResp.Accounts {
-		out = append(out, protoAccountToJSON(a))
-	}
-	writeJSON(w, map[string]interface{}{"accounts": out, "count": len(out)})
+	// ListAccountsByUserAndBusinessType RPC 在 accounting.proto 精简时被砍掉,
+	// 当前未在 accountingv1 中提供. admin web 端临时降级为空列表 + 200 OK,
+	// 等 RPC 重新加回 proto + service handler 后改回真实调用.
+	_ = userIDStr
+	_ = businessTypeStr
+	_ = currencyFilter
+	writeJSON(w, map[string]interface{}{"accounts": []*accountJSON{}, "count": 0, "stub": true})
 }

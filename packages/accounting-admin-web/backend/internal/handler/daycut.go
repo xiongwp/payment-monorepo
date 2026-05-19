@@ -52,40 +52,8 @@ func (h *DayCutHandler) TriggerDayCut(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetDayCutHistory GET /v1/day-cut/history
+// ListDayCutHistory RPC 在 proto 精简时砍掉, 临时降级为空 entries 列表.
 func (h *DayCutHandler) GetDayCutHistory(w http.ResponseWriter, r *http.Request) {
-	resp, err := h.client.ListDayCutHistory(r.Context(), &accountingv1.ListDayCutHistoryRequest{})
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	if resp.Code != 0 {
-		writeError(w, int(resp.Code), resp.Message)
-		return
-	}
-
-	type entrySer struct {
-		CutDate     string `json:"cut_date"`
-		RunID       int32  `json:"run_id"`
-		Currency    string `json:"currency"`
-		TotalShards int32  `json:"total_shards"`
-		Pending     int32  `json:"pending"`
-		Processing  int32  `json:"processing"`
-		Completed   int32  `json:"completed"`
-		Failed      int32  `json:"failed"`
-	}
-
-	entries := make([]entrySer, 0, len(resp.Entries))
-	for _, e := range resp.Entries {
-		entries = append(entries, entrySer{
-			CutDate:     e.CutDate,
-			RunID:       e.RunId,
-			Currency:    e.Currency,
-			TotalShards: e.TotalShards,
-			Pending:     e.Pending,
-			Processing:  e.Processing,
-			Completed:   e.Completed,
-			Failed:      e.Failed,
-		})
-	}
-	writeJSON(w, map[string]interface{}{"entries": entries})
+	_ = r
+	writeJSON(w, map[string]interface{}{"entries": []map[string]interface{}{}, "stub": true})
 }

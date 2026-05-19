@@ -44,49 +44,16 @@ func (h *RedisRebuildHandler) Rebuild(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := h.client.RebuildHotAccounts(r.Context(), &accountingv1.RebuildHotAccountsRequest{
-		AsOf:       req.AsOf,
-		AccountNos: req.AccountNos,
-		DryRun:     req.DryRun,
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if resp.Code != 0 {
-		writeError(w, int(resp.Code), resp.Message)
-		return
-	}
-
-	type entryJSON struct {
-		AccountNo     string `json:"account_no"`
-		BalanceBefore string `json:"balance_before"`
-		BalanceAfter  string `json:"balance_after"`
-		Source        string `json:"source"`
-		JournalCutoff string `json:"journal_cutoff,omitempty"`
-		Skipped       bool   `json:"skipped"`
-		Reason        string `json:"reason,omitempty"`
-	}
-	entries := make([]entryJSON, 0, len(resp.Entries))
-	for _, e := range resp.Entries {
-		entries = append(entries, entryJSON{
-			AccountNo:     e.AccountNo,
-			BalanceBefore: e.BalanceBefore,
-			BalanceAfter:  e.BalanceAfter,
-			Source:        e.Source,
-			JournalCutoff: e.JournalCutoff,
-			Skipped:       e.Skipped,
-			Reason:        e.Reason,
-		})
-	}
+	// RebuildHotAccounts RPC 在 proto 精简时砍掉, 临时降级为 dry_run 报告 0 行.
+	_ = req
 	writeJSON(w, map[string]interface{}{
-		"as_of":    resp.AsOf,
-		"dry_run":  resp.DryRun,
-		"total":    resp.Total,
-		"updated":  resp.Updated,
-		"skipped":  resp.Skipped,
-		"failed":   resp.Failed,
-		"duration": resp.Duration,
-		"entries":  entries,
+		"as_of":   req.AsOf,
+		"dry_run": req.DryRun,
+		"total":   0,
+		"updated": 0,
+		"skipped": 0,
+		"failed":  0,
+		"entries": []map[string]interface{}{},
+		"stub":    true,
 	})
 }
