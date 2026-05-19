@@ -724,7 +724,7 @@ func newRiskClient(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.
 	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
 	logger.Info("risk client dialed",
 		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
-	api := riskv1.NewRiskServiceClient(conn)
+	api := kitexutil.MustKitexClient(riskservice.NewClient("risk-manage"))
 	return &grpcRiskAdapter{api: api, timeout: v.GetDuration("risk.rpc_timeout")}
 }
 

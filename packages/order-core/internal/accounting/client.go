@@ -136,7 +136,7 @@ func New(cfg Config) (*Client, error) {
 	return &Client{
 		cfg:       cfg,
 		conn:      conn,
-		cli:       accountingv1.NewAccountingServiceClient(conn),
+		cli:       kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system")),
 		btMap:     bt,
 		acctCache: make(map[string]string),
 	}, nil

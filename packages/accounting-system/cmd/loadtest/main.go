@@ -134,7 +134,7 @@ func main() {
 		log.Fatalf("连接 gRPC 失败 %s: %v", *flagAddr, err)
 	}
 	defer conn.Close()
-	cli := accountingv1.NewAccountingServiceClient(conn)
+	cli := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system"))
 
 	if *flagShadow {
 		log.Println("🌑 shadow=true（默认）— 所有 RPC 走 *_shadow 路径；不影响主流量数据")

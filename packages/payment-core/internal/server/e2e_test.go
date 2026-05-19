@@ -181,7 +181,7 @@ func newBufconnChannelClient(t *testing.T, lis *bufconn.Listener) channelclient.
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	return &bufconnChannelClient{conn: conn, api: channelv1.NewAcquirerServiceClient(conn)}
+	return &bufconnChannelClient{conn: conn, api: kitexutil.MustKitexClient(acquirerservice.NewClient("payment-channel"))}
 }
 
 func (c *bufconnChannelClient) Charge(ctx context.Context, in *channelv1.ChargeRequest) (*channelv1.ChargeResponse, error) {
@@ -239,7 +239,7 @@ func spinUpPaymentCore(t *testing.T, channelCli channelclient.Client, rules []ro
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	return paymentcorev1.NewPaymentCoreServiceClient(conn)
+	return kitexutil.MustKitexClient(paymentcoreservice.NewClient("payment-core"))
 }
 
 // defaultPHRules 和 config/config.yaml 里的 routing 保持一致。

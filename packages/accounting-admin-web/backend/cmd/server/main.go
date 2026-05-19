@@ -42,8 +42,8 @@ func main() {
 	}
 	defer conn.Close()
 
-	client := accountingv1.NewAccountingServiceClient(conn)
-	adminClient := accountingv1.NewAccountingAdminServiceClient(conn)
+	client := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system"))
+	adminClient := kitexutil.MustKitexClient(accountingadminservice.NewClient("accounting-system"))
 
 	// Build handlers
 	accountH := handler.NewAccountHandler(client)

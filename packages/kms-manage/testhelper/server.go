@@ -119,7 +119,7 @@ func Start(t testing.TB, cfg StartConfig) *Server {
 	}
 	t.Cleanup(cleanup)
 	return &Server{
-		Client:   kmsv1.NewKMSServiceClient(conn),
+		Client:   kitexutil.MustKitexClient(kmsservice.NewClient("kms-manage")),
 		Conn:     conn,
 		Listener: lis,
 		cleanup:  cleanup,

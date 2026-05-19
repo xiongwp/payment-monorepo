@@ -29,7 +29,7 @@ type PaymentCoreGRPCChannel struct {
 func NewPaymentCoreGRPCChannel(name string, conn *grpc.ClientConn) *PaymentCoreGRPCChannel {
 	return &PaymentCoreGRPCChannel{
 		name: name,
-		cli:  paymentcorev1.NewPaymentCoreServiceClient(conn),
+		cli:  kitexutil.MustKitexClient(paymentcoreservice.NewClient("payment-core")),
 	}
 }
 

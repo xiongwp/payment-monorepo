@@ -37,7 +37,7 @@ type grpcPaymentClient struct {
 
 // NewGRPCPaymentClient 装配真实 client。
 func NewGRPCPaymentClient(conn *grpc.ClientConn) PaymentServiceClient {
-	return &grpcPaymentClient{pi: orderv1.NewPaymentIntentServiceClient(conn)}
+	return &grpcPaymentClient{pi: kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core"))}
 }
 
 // CreateAndConfirmCardPayment 单次往返：Create + Confirm 内联（confirmation_method=automatic）。

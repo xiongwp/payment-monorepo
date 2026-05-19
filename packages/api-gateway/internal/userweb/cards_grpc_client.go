@@ -33,7 +33,7 @@ type grpcCardClient struct {
 //
 // 调用方负责 conn 生命周期（fx OnStop 关连接）；本 client 只持引用。
 func NewGRPCCardClient(conn *grpc.ClientConn) CardServiceClient {
-	return &grpcCardClient{uc: usermerchantv1.NewUserCardServiceClient(conn)}
+	return &grpcCardClient{uc: kitexutil.MustKitexClient(usercardservice.NewClient("user-merchant-core"))}
 }
 
 // AttachCard 把 stored_token + 元数据持久化到 user_card 表。

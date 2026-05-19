@@ -123,7 +123,7 @@ func runCreate(ctx context.Context, conn *grpc.ClientConn, args []string) {
 	live := fs.Bool("live", false, "livemode")
 	_ = fs.Parse(args)
 
-	cli := orderv1.NewPaymentIntentServiceClient(conn)
+	cli := kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core"))
 	resp, err := cli.Create(ctx, &orderv1.CreatePaymentIntentRequest{
 		MchId:              *mch,
 		BusinessId:         *biz,
@@ -147,7 +147,7 @@ func runConfirm(ctx context.Context, conn *grpc.ClientConn, args []string) {
 	pm := fs.String("pm", "", "payment_method (single)")
 	cs := fs.String("cs", "", "client_secret")
 	_ = fs.Parse(args)
-	cli := orderv1.NewPaymentIntentServiceClient(conn)
+	cli := kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core"))
 	resp, err := cli.Confirm(ctx, &orderv1.ConfirmPaymentIntentRequest{
 		Id: *id, PaymentMethod: *pm, ClientSecret: *cs,
 	})
@@ -161,7 +161,7 @@ func runConfirmAction(ctx context.Context, conn *grpc.ClientConn, args []string)
 	var data kvFlag
 	fs.Var(&data, "k", "verification_data key=value (repeatable)")
 	_ = fs.Parse(args)
-	cli := orderv1.NewPaymentIntentServiceClient(conn)
+	cli := kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core"))
 	resp, err := cli.ConfirmPaymentAction(ctx, &orderv1.ConfirmPaymentActionRequest{
 		Id: *id, ActionId: *actionID, VerificationData: data,
 	})
@@ -173,7 +173,7 @@ func runCapture(ctx context.Context, conn *grpc.ClientConn, args []string) {
 	id := fs.String("id", "", "pi_id")
 	amt := fs.Int64("amount", 0, "amount_to_capture (0 = full)")
 	_ = fs.Parse(args)
-	cli := orderv1.NewPaymentIntentServiceClient(conn)
+	cli := kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core"))
 	resp, err := cli.Capture(ctx, &orderv1.CapturePaymentIntentRequest{
 		Id: *id, AmountToCapture: *amt,
 	})
@@ -185,7 +185,7 @@ func runCancel(ctx context.Context, conn *grpc.ClientConn, args []string) {
 	id := fs.String("id", "", "pi_id")
 	reason := fs.String("reason", "", "cancellation_reason")
 	_ = fs.Parse(args)
-	cli := orderv1.NewPaymentIntentServiceClient(conn)
+	cli := kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core"))
 	resp, err := cli.Cancel(ctx, &orderv1.CancelPaymentIntentRequest{
 		Id: *id, CancellationReason: *reason,
 	})
@@ -196,7 +196,7 @@ func runRetrieve(ctx context.Context, conn *grpc.ClientConn, args []string) {
 	fs := flag.NewFlagSet("retrieve", flag.ExitOnError)
 	id := fs.String("id", "", "pi_id")
 	_ = fs.Parse(args)
-	cli := orderv1.NewPaymentIntentServiceClient(conn)
+	cli := kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core"))
 	resp, err := cli.Retrieve(ctx, &orderv1.RetrievePaymentIntentRequest{Id: *id})
 	dump(resp, err)
 }
@@ -207,7 +207,7 @@ func runList(ctx context.Context, conn *grpc.ClientConn, args []string) {
 	page := fs.Int("page", 1, "page")
 	size := fs.Int("size", 20, "page_size")
 	_ = fs.Parse(args)
-	cli := orderv1.NewPaymentIntentServiceClient(conn)
+	cli := kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core"))
 	resp, err := cli.List(ctx, &orderv1.ListPaymentIntentsRequest{MchId: *mch, Page: int32(*page), PageSize: int32(*size)})
 	dump(resp, err)
 }
@@ -219,7 +219,7 @@ func runRefund(ctx context.Context, conn *grpc.ClientConn, args []string) {
 	amt := fs.Int64("amount", 0, "amount (0 = full)")
 	reason := fs.String("reason", "", "reason: duplicate / fraudulent / requested_by_customer / expired_uncaptured")
 	_ = fs.Parse(args)
-	cli := orderv1.NewRefundServiceClient(conn)
+	cli := kitexutil.MustKitexClient(refundservice.NewClient("order-core"))
 	resp, err := cli.Create(ctx, &orderv1.CreateRefundRequest{
 		PaymentIntentId: *pi, ChargeId: *ch, Amount: *amt,
 		Reason: parseRefundReason(*reason),
@@ -231,7 +231,7 @@ func runListCharges(ctx context.Context, conn *grpc.ClientConn, args []string) {
 	fs := flag.NewFlagSet("list-charges", flag.ExitOnError)
 	pi := fs.String("pi", "", "payment_intent_id")
 	_ = fs.Parse(args)
-	cli := orderv1.NewChargeServiceClient(conn)
+	cli := kitexutil.MustKitexClient(chargeservice.NewClient("order-core"))
 	resp, err := cli.List(ctx, &orderv1.ListChargesRequest{PaymentIntentId: *pi})
 	dump(resp, err)
 }
@@ -240,7 +240,7 @@ func runListRefunds(ctx context.Context, conn *grpc.ClientConn, args []string) {
 	fs := flag.NewFlagSet("list-refunds", flag.ExitOnError)
 	pi := fs.String("pi", "", "payment_intent_id")
 	_ = fs.Parse(args)
-	cli := orderv1.NewRefundServiceClient(conn)
+	cli := kitexutil.MustKitexClient(refundservice.NewClient("order-core"))
 	resp, err := cli.List(ctx, &orderv1.ListRefundsRequest{PaymentIntentId: *pi})
 	dump(resp, err)
 }
@@ -262,7 +262,7 @@ func runWebhook(ctx context.Context, conn *grpc.ClientConn, args []string) {
 	if *dir == "client" {
 		d = orderv1.WebhookDirection_WEBHOOK_DIRECTION_CLIENT
 	}
-	cli := orderv1.NewWebhookServiceClient(conn)
+	cli := kitexutil.MustKitexClient(webhookservice.NewClient("order-core"))
 	resp, err := cli.Ingest(ctx, &orderv1.IngestWebhookRequest{
 		Direction:   d,
 		ChannelName: *channelName,

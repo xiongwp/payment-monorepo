@@ -54,7 +54,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	c := accountingv1.NewAccountingServiceClient(conn)
+	c := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system"))
 	fmt.Printf("✓ connected to %s\n\n", *addr)
 
 	tc := &testClient{c: c, timeout: *timeout, shadow: *shadowFl}

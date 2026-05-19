@@ -24,8 +24,6 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	insecuregrpc "google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/keepalive"
 
 	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
 
@@ -449,7 +447,7 @@ func newHTTPSVerifier(v *viper.Viper, conn *grpc.ClientConn, logger *zap.Logger)
 	if !v.GetBool("https.enabled") || conn == nil {
 		return nil
 	}
-	uc := usermerchantv1.NewUserServiceClient(conn)
+	uc := kitexutil.MustKitexClient(userservice.NewClient("user-merchant-core"))
 	return httpsauth.NewUserMerchantVerifier(uc, logger)
 }
 

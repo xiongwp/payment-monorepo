@@ -71,7 +71,7 @@ func Start(t testing.TB, cfg StartConfig) *Server {
 	}
 
 	router := routing.NewRouter(toInternalRules(cfg.Rules))
-	channelCli := &bufconnChannelClient{api: channelv1.NewAcquirerServiceClient(cfg.ChannelConn)}
+	channelCli := &bufconnChannelClient{api: kitexutil.MustKitexClient(acquirerservice.NewClient("payment-channel"))}
 	paymentSvc := service.NewPaymentService(router, channelCli, nil, logger)
 	webhookSvc := service.NewWebhookService(logger)
 	handler := server.NewServer(server.Deps{
@@ -106,7 +106,7 @@ func Start(t testing.TB, cfg StartConfig) *Server {
 	}
 	t.Cleanup(cleanup)
 	return &Server{
-		Client:   paymentcorev1.NewPaymentCoreServiceClient(conn),
+		Client:   kitexutil.MustKitexClient(paymentcoreservice.NewClient("payment-core")),
 		Conn:     conn,
 		Listener: lis,
 		cleanup:  cleanup,

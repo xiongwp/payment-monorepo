@@ -116,7 +116,7 @@ func spinUpChannelServer(t *testing.T, ad channel.Adapter) acquirerservice.Clien
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	return channelv1.NewAcquirerServiceClient(conn)
+	return kitexutil.MustKitexClient(acquirerservice.NewClient("payment-channel"))
 }
 
 // ─── E2E tests ─────────────────────────────────────────────────────

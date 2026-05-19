@@ -55,19 +55,19 @@ func main() {
 	defer userMerchantConn.Close()
 
 	deps := clients.Deps{
-		PI:              orderv1.NewPaymentIntentServiceClient(orderConn),
-		Charge:          orderv1.NewChargeServiceClient(orderConn),
-		Refund:          orderv1.NewRefundServiceClient(orderConn),
-		Merchant:        usermerchantv1.NewMerchantServiceClient(userMerchantConn),
-		Audit:           orderv1.NewAuditServiceClient(orderConn),
-		WebhookDelivery: orderv1.NewWebhookDeliveryServiceClient(orderConn),
-		Ledger:          orderv1.NewLedgerServiceClient(orderConn),
-		Dispute:         orderv1.NewDisputeServiceClient(orderConn),
-		MerchantSecret:    usermerchantv1.NewMerchantSecretServiceClient(userMerchantConn),
-		UserMerchantAudit: usermerchantv1.NewAuditServiceClient(userMerchantConn),
-		PCore:           paymentcorev1.NewPaymentCoreServiceClient(paymentConn),
-		KMS:             kmsv1.NewKMSServiceClient(kmsConn),
-		Risk:            riskv1.NewRiskServiceClient(riskConn),
+		PI:              kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core")),
+		Charge:          kitexutil.MustKitexClient(chargeservice.NewClient("order-core")),
+		Refund:          kitexutil.MustKitexClient(refundservice.NewClient("order-core")),
+		Merchant:        kitexutil.MustKitexClient(merchantservice.NewClient("user-merchant-core")),
+		Audit:           kitexutil.MustKitexClient(orderauditservice.NewClient("order-core")),
+		WebhookDelivery: kitexutil.MustKitexClient(webhookdeliveryservice.NewClient("order-core")),
+		Ledger:          kitexutil.MustKitexClient(ledgerservice.NewClient("order-core")),
+		Dispute:         kitexutil.MustKitexClient(disputeservice.NewClient("order-core")),
+		MerchantSecret:    kitexutil.MustKitexClient(merchantsecretservice.NewClient("user-merchant-core")),
+		UserMerchantAudit: kitexutil.MustKitexClient(umauditservice.NewClient("user-merchant-core")),
+		PCore:           kitexutil.MustKitexClient(paymentcoreservice.NewClient("payment-core")),
+		KMS:             kitexutil.MustKitexClient(kmsservice.NewClient("kms-manage")),
+		Risk:            kitexutil.MustKitexClient(riskservice.NewClient("risk-manage")),
 	}
 
 	orderH := handler.NewOrderHandler(deps)

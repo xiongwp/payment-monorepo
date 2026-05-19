@@ -8,7 +8,6 @@ import (
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"google.golang.org/grpc"
 )
 
 // SelfRegistration bundles the etcd client + Registrar created by RegisterSelf,
@@ -76,21 +75,8 @@ var (
 	sharedClientErr error
 )
 
-// DialFromEndpoints creates a gRPC ClientConn for `service` using etcd-based
-// service discovery. Idempotent: the underlying etcd client + resolver are
-// initialized once per process (first call wins).
-//
-// On endpoints == nil/empty the call returns ErrNoEndpoints; caller should
-// fall back to direct grpc.NewClient when running without etcd.
-func DialFromEndpoints(endpoints []string, service string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
-	if len(endpoints) == 0 {
-		return nil, ErrNoEndpoints
-	}
-	if err := initSharedResolver(endpoints); err != nil {
-		return nil, err
-	}
-	return Dial(service, opts...)
-}
+// DialFromEndpoints DEPRECATED — see dial.go. 切 Kitex 后真实调用走
+// kitexutil.NewEtcdResolver + <svc>service.NewClient.
 
 func initSharedResolver(endpoints []string) error {
 	sharedClientMu.Lock()
@@ -106,13 +92,16 @@ func initSharedResolver(endpoints []string) error {
 		sharedClientErr = err
 		return err
 	}
-	if err := RegisterResolver(cli); err != nil {
-		_ = cli.Close()
-		sharedClientErr = err
-		return err
-	}
+	// gRPC resolver registration 已废弃; Kitex 用 discovery.Resolver 接口.
 	sharedClient = cli
 	return nil
+}
+
+// EnsureEtcdClient 启动期初始化共享 etcd client (跟 leader election 复用).
+//
+// 跟老 initSharedResolver 等价但不再调用 RegisterResolver (gRPC-only).
+func EnsureEtcdClient(endpoints []string) error {
+	return initSharedResolver(endpoints)
 }
 
 // SharedEtcdClient returns the etcd client created by the first DialFromEndpoints

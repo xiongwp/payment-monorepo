@@ -135,7 +135,7 @@ func Start(t testing.TB, adapters ...ScriptedAdapter) *Server {
 	}
 	t.Cleanup(cleanup)
 	return &Server{
-		Client:   channelv1.NewAcquirerServiceClient(conn),
+		Client:   kitexutil.MustKitexClient(acquirerservice.NewClient("payment-channel")),
 		Conn:     conn,
 		Listener: lis,
 		cleanup:  cleanup,

@@ -175,7 +175,7 @@ func dial(addr string) (kmsservice.Client, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return kmsv1.NewKMSServiceClient(conn), func() { _ = conn.Close() }, nil
+	return kitexutil.MustKitexClient(kmsservice.NewClient("kms-manage")), func() { _ = conn.Close() }, nil
 }
 
 // ─── tiny utils ────────────────────────────────────────────────
