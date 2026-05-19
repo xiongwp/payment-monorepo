@@ -120,3 +120,45 @@ docker exec etcd etcdctl del 'accounting-service/<bad-addr>'
 | 其他 9 个 | 跟包名一致 |
 
 `payment-util/kitexutil/hostports.go::defaultHosts` 表是 source-of-truth。
+
+## 完成清单(ETCD migration)
+
+Server 端自注册(`DefaultServerOptions`)已接通:
+
+- `accounting-system` (svc=`accounting-service`, port=50051)
+- `order-core` (svc=`order-core`, port=9091)
+- `user-merchant-core` (svc=`user-merchant-core`, port=9191)
+- `payment-core` (svc=`payment-core`, port=9090)
+- `payment-channel` (svc=`payment-channel`, port=9092)
+- `risk-manage` (svc=`risk-manage`, port=9490)
+- `card-center` (svc=`card-center`, port=9443)
+- `card-payment` (svc=`card-payment`, port=9443)
+- `split-payment` (svc=`split-payment`, port=9098)
+- `kms-manage` (svc=`kms-manage`, port=9290)
+- `id-generator` (svc=`id-generator`, port=9090)
+
+Caller 端(`DefaultClientOptions`)走 etcd:
+
+- payment-core: risk / kms / channel client
+- payment-channel/card adapter → card-payment
+- order-core: accounting / cardcenter / usermerchant / paymentcore client
+- user-merchant-core: cardcenter / kms client
+- card-center: kms client
+- card-payment: cardcenter client
+- split-payment: accounting client
+- payment-admin-web BFF: moneyflow → split-payment
+- api-gateway: user-merchant-core
+- accounting-admin-web BFF: accounting
+
+## 集成验证步骤
+
+1. 起 etcd: `cd packages/etcd && docker compose up -d`
+2. `docker exec etcd etcdctl endpoint health` — 应返 `etcd:2379 is healthy`
+3. 起任一业务服务(配 `REGISTRY_ENDPOINTS=etcd:2379`):
+   ```bash
+   docker exec etcd etcdctl get --prefix '' --keys-only
+   # 应看到 <svc>/<advertise-addr> key
+   ```
+4. 起 caller, log 应该看不到 `no resolver available` / `dial unix` 报错
+5. graceful stop server: `docker stop <svc>`,key 立刻消失(`etcdctl watch` 验证)
+6. kill -9 server: 30s 后 lease TTL 失效,key 自动消失

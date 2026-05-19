@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/pkg/discovery"
+	"github.com/cloudwego/kitex/pkg/rpcinfo"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -46,14 +47,8 @@ func NewEtcdResolver(cli *clientv3.Client, prefix string) *EtcdResolver {
 }
 
 // Target Kitex Resolver 接口必须实现 — 返 service 名 (Kitex 用它作 cache key).
-func (r *EtcdResolver) Target(_ context.Context, target rpcInfoLike) string {
+func (r *EtcdResolver) Target(_ context.Context, target rpcinfo.EndpointInfo) string {
 	return target.ServiceName()
-}
-
-// rpcInfoLike Kitex 0.10 Resolver.Target 收 rpcinfo.EndpointInfo, 这里抽接口
-// 减少跨 vendor 边界 — 真接 Kitex 时直接传 rpcinfo.EndpointInfo 也满足这个接口.
-type rpcInfoLike interface {
-	ServiceName() string
 }
 
 // Resolve 拉某 service 的所有实例.
