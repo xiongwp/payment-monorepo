@@ -11,8 +11,10 @@ RUN apk add --no-cache git ca-certificates
 WORKDIR /src
 COPY . .
 
+# vendor/ 目录还在源里, Go 默认走 vendor 模式; 显式 -mod=mod 强制走 module cache.
+RUN rm -rf vendor
 RUN go mod tidy && go mod download
-RUN go build -trimpath -ldflags="-s -w" -o /out/aml-screening ./cmd/server
+RUN go build -mod=mod -trimpath -ldflags="-s -w" -o /out/aml-screening ./cmd/server
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata wget && \
