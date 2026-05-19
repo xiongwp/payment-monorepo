@@ -35,6 +35,7 @@ import (
 	accountingadminservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
 	"github.com/spf13/viper"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"github.com/xiongwp/payment-util/serviceregistry"
 	"os"
 )
 
