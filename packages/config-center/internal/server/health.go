@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 	"gorm.io/gorm"
 )
 
@@ -125,20 +124,10 @@ func (s *HealthGRPCServer) Check(ctx context.Context, req *healthCheckRequest) (
 	return &healthCheckResponse{Status: 1}, nil // SERVING
 }
 
-// RegisterHealthService stub - 真正的 grpc 接线在 main.go 直接用
-// google.golang.org/grpc/health 标准 server 包；这里留 hook 便于切换。
-func RegisterHealthService(s *grpc.Server, hc *HealthChecker) {
-	// 集成点：main.go 接入标准 grpc/health 包时 wire 这里。
-	// 本 v1 stub。
-}
-
 // MountHTTP 把 /healthz + /readyz 挂到 mux。main.go 启动期调一次。
+// gRPC health.v1 已切 Kitex (kitex 内置 health check 或 cmd/server/main.go MW),
+// 老的 MountGRPC / RegisterHealthService 已删.
 func (h *HealthChecker) MountHTTP(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", h.Liveness)
 	mux.HandleFunc("/readyz", h.Readiness)
-}
-
-// MountGRPC 接通 grpc.health.v1（v1.0 stub；caller 如需可换 google grpc/health）。
-func (h *HealthChecker) MountGRPC(s *grpc.Server) {
-	RegisterHealthService(s, h)
 }

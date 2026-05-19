@@ -15,7 +15,6 @@ import (
 
 // DisputeServer adapts service.DisputeService onto the gRPC surface.
 type DisputeServer struct {
-	orderv1.UnimplementedDisputeServiceServer
 	svc service.DisputeService
 }
 

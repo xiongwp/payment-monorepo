@@ -11,7 +11,6 @@ import (
 
 // LedgerServer adapts service.LedgerService onto the gRPC surface.
 type LedgerServer struct {
-	orderv1.UnimplementedLedgerServiceServer
 	svc service.LedgerService
 }
 

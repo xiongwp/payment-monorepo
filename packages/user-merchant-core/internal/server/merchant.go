@@ -12,7 +12,6 @@ import (
 
 // MerchantServer adapts service.MerchantService onto the gRPC MerchantService.
 type MerchantServer struct {
-	usermerchantv1.UnimplementedMerchantServiceServer
 	svc service.MerchantService
 }
 

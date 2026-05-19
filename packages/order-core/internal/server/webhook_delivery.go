@@ -18,7 +18,6 @@ import (
 // WebhookDeliveryServer exposes list / retry / test-send on webhook_deliveries
 // so the admin UI can audit + manually kick stuck webhooks.
 type WebhookDeliveryServer struct {
-	orderv1.UnimplementedWebhookDeliveryServiceServer
 	mgr    *repo.Manager
 	disp   *webhook.Dispatcher
 }

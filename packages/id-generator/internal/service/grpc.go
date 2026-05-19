@@ -18,7 +18,6 @@ import (
 )
 
 type Server struct {
-	pb.UnimplementedIDServiceServer
 	Sf        *generator.Node
 	SegMain   *segment.Buffer // 主流量号段
 	SegShadow *segment.Buffer // 影子号段；nil 时 shadow 流量回退到 Sf 兜底

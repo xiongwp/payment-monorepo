@@ -13,7 +13,6 @@ import (
 // No business logic here: audit is structurally simple (INSERT / SELECT), and
 // introducing a service layer would just add a pass-through.
 type AuditServer struct {
-	orderv1.UnimplementedAuditServiceServer
 	repo repo.AdminAuditRepository
 }
 

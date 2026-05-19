@@ -69,9 +69,9 @@ type AccountingOrderResetter interface {
 	ResetOrder(ctx context.Context, orderNo, businessNo string, force bool) error
 }
 
-// Server 实现 AdminServiceServer.
+// Server 实现 Kitex AdminService (kitex_gen/.../adminservice.AdminService).
+// 老 grpc UnimplementedAdminServiceServer embed 已删 (Kitex 不需要).
 type Server struct {
-	UnimplementedAdminServiceServer
 	Graphs     GraphRepo
 	Accounting AccountingMetaCaller    // nil → TriggerEvent 返错; DryRun 不受影响
 	RuleSync   AccountingRuleSyncer    // nil → SaveGraph 跳过 rule 同步

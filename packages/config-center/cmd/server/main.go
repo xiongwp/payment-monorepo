@@ -27,7 +27,6 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 
@@ -50,13 +49,11 @@ func main() {
 			newHealthChecker,
 			newHTTPAPI,
 			newAdminUI,
-			newGRPCServer,
 		),
 		fx.Invoke(
 			assertProdSafety,
 			startMetricsServer,
 			startHTTPServer,
-			startGRPCServer,
 			startServiceRegistrar,
 		),
 	)
@@ -153,11 +150,8 @@ func newAdminUI(r *repo.Repo, svc *service.Service, logger *zap.Logger) *AdminUI
 	return &AdminUI{repo: r, svc: svc, logger: logger}
 }
 
-func newGRPCServer() *grpc.Server {
-	// v1.0：保留 gRPC server（含 health.v1）；configcenter.v1 RPC 待 protoc 后接。
-	srv := grpc.NewServer()
-	return srv
-}
+// newGRPCServer 已删 — config-center 切 Kitex 后, gRPC stub server (含 health.v1)
+// 不再需要 (K8s 改走 HTTP /healthz; Kitex 业务 server 在 cmd/server/main.go 自己起).
 
 // ─── lifecycle invokes ───────────────────────────────────────────────────
 
@@ -234,36 +228,7 @@ func startHTTPServer(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger,
 	})
 }
 
-func startGRPCServer(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger,
-	grpcSrv *grpc.Server, hc *server.HealthChecker) {
-
-	port := v.GetInt("server.grpc_port")
-	if port == 0 {
-		port = 9690
-	}
-	hc.MountGRPC(grpcSrv)
-	addr := fmt.Sprintf(":%d", port)
-
-	lc.Append(fx.Hook{
-		OnStart: func(_ context.Context) error {
-			ln, err := net.Listen("tcp", addr)
-			if err != nil {
-				return err
-			}
-			go func() {
-				if err := grpcSrv.Serve(ln); err != nil {
-					logger.Error("grpc server", zap.Error(err))
-				}
-			}()
-			logger.Info("config-center: gRPC on " + addr)
-			return nil
-		},
-		OnStop: func(ctx context.Context) error {
-			grpcSrv.GracefulStop()
-			return nil
-		},
-	})
-}
+// startGRPCServer 已删 — Kitex server 自带 listener 在 main.go 自启.
 
 // promHandler /metrics handler。
 func promHandler() http.Handler {

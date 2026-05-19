@@ -7,16 +7,11 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 
-	"github.com/xiongwp/payment-util/serviceregistry"
-	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
 	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
@@ -24,8 +19,6 @@ import (
 )
 
 type Server struct {
-	kmsv1.UnimplementedKMSServiceServer
-
 	svc        *service.KMSService
 	auth       map[string]string
 	allowedIDs ClientIdentityAllowList
@@ -129,53 +122,8 @@ func buildServerTLS(p TLSPaths) (*tls.Config, error) {
 	}, nil
 }
 
-// ListenAndServe 开 gRPC 监听。ctx 关闭时 GracefulStop。
-//
-// **mTLS 双层鉴权（P0-4 完成）**：
-//
-//	层 1 — TLS 握手期：grpc.Creds(NewTLS) + ClientAuth=RequireAndVerifyClientCert
-//	         调用方没合法 client cert → 握手期就被踢，进不来 interceptor。
-//	层 2 — ClientIdentityInterceptor：cert 合法仍要 CN/SAN 命中白名单。
-//	         即使 CA 误签了一个 cert，没在 allowed_client_ids 里照样 deny。
-//	层 3 — AuthInterceptor (Bearer)：保留作 break-glass / 老客户兼容。
-//
-// 三层 AND，全过才放行 handler。
-func (s *Server) ListenAndServe(ctx context.Context, port int) error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		return err
-	}
-	// HardenedServerOptions 加 KeepaliveEnforcementPolicy{MinTime:5s, PermitWithoutStream:true}
-	// —— 必须挂，否则配套 client（serviceregistry.DialDirect 默认 10s/3s ping）会被
-	// grpc-go 默认 EnforcementPolicy{MinTime:5min, PermitWithoutStream:false} 当 abuse
-	// 用 GOAWAY "ENHANCE_YOUR_CALM / too_many_pings" 踢回去，导致 client 反复重连永远建不稳。
-	srvOpts := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(
-			RecoverInterceptor(s.logger),
-			trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
-			LoggingInterceptor(s.logger),
-			MetricsInterceptor(),
-			RateLimitInterceptor(s.rateLimiter),
-			ClientIdentityInterceptor(s.allowedIDs, s.logger),
-			AuthInterceptor(s.auth, s.logger),
-		),
-	}
-	if s.tlsCfg != nil {
-		srvOpts = append(srvOpts, grpc.Creds(credentials.NewTLS(s.tlsCfg)))
-		s.logger.Info("kms-manage TLS enabled (mTLS RequireAndVerifyClientCert)")
-	} else {
-		s.logger.Warn("kms-manage running INSECURE (no TLS) — dev mode only")
-	}
-	srvOpts = append(srvOpts, serviceregistry.HardenedServerOptions()...)
-	srv := grpc.NewServer(srvOpts...)
-	kmsv1.RegisterKMSServiceServer(srv, s)
-	s.logger.Info("kms-manage grpc listening", zap.Int("port", port))
-	go func() {
-		<-ctx.Done()
-		srv.GracefulStop()
-	}()
-	return srv.Serve(lis)
-}
+// ListenAndServe 已删 — Kitex 切换后 cmd/server/main.go 直接 kmsservice.NewServer
+// 把 *Server (实现 5 个 RPC 方法) 接到 Kitex runtime, 不再用 grpc.NewServer.
 
 // ─── RPC handlers ──────────────────────────────
 

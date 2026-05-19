@@ -15,10 +15,7 @@ import (
 	"github.com/xiongwp/payment-util/shadow"
 	putil "github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/keepalive"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -85,13 +82,8 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 		// kitexserver.WithMiddleware(kitexutil.LogMW(s.logger)),
 		// kitexserver.WithMiddleware(kitexutil.MetricsMW()),
 	)
-	// 防 import 未用 — 后续 MW / TLS / keepalive 真接 Kitex 等价 API 后这些 _ = 全删:
-	_ = kitexutil.LogMW
-	_ = grpc.ServerOption(nil)
-	_ = keepalive.ServerParameters{}
-	_ = metadata.MD(nil)
-	_ = status.Code(0)
-	_ = codes.OK
+	// gRPC 占位 _ = ... 已删 (Kitex 不再需要 grpc.ServerOption / keepalive / metadata).
+	_ = kitexutil.LogMW // 留 (Kitex MW 接通后用)
 	s.logger.Info("risk-manage Kitex listening", zap.Int("port", port))
 	go func() {
 		<-ctx.Done()

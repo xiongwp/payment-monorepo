@@ -12,7 +12,6 @@ import (
 
 // UserServer adapts *service.UserService onto the gRPC UserService.
 type UserServer struct {
-	usermerchantv1.UnimplementedUserServiceServer
 	svc *service.UserService
 }
 

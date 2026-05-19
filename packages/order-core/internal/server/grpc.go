@@ -327,7 +327,6 @@ func (s *Server) List(ctx context.Context, req *orderv1.ListPaymentIntentsReques
 // ─── forwarder: ChargeService ────────────────────────────────────────────────
 
 type ChargeForwarder struct {
-	orderv1.UnimplementedChargeServiceServer
 	s *Server
 }
 
@@ -352,7 +351,6 @@ func (c *ChargeForwarder) List(ctx context.Context, req *orderv1.ListChargesRequ
 // ─── forwarder: RefundService ────────────────────────────────────────────────
 
 type RefundForwarder struct {
-	orderv1.UnimplementedRefundServiceServer
 	s *Server
 }
 
@@ -400,7 +398,6 @@ func (f *RefundForwarder) List(ctx context.Context, req *orderv1.ListRefundsRequ
 // ─── forwarder: WebhookService ───────────────────────────────────────────────
 
 type WebhookForwarder struct {
-	orderv1.UnimplementedWebhookServiceServer
 	s *Server
 }
 

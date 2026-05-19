@@ -36,8 +36,6 @@ func mapDomainErr(err error) error { return grpcErr(err) }
 
 // UserCardServer adapts *service.UserCardService onto the gRPC UserCardService.
 type UserCardServer struct {
-	usermerchantv1.UnimplementedUserCardServiceServer
-	usermerchantv1.UnimplementedUserCardInternalServiceServer
 	svc *service.UserCardService
 }
 

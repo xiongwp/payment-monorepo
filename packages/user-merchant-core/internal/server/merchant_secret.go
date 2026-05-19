@@ -10,7 +10,6 @@ import (
 
 // MerchantSecretServer gRPC adapter for merchant channel secret storage.
 type MerchantSecretServer struct {
-	usermerchantv1.UnimplementedMerchantSecretServiceServer
 	svc service.MerchantSecretService
 }
 

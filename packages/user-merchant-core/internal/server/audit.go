@@ -11,7 +11,6 @@ import (
 // AuditServer 把 admin_audit_log 的只读查询暴露成 gRPC。
 // 不带 Write：写入由 grpcutil.AuditInterceptor 在每条 mutation 之后自动完成。
 type AuditServer struct {
-	usermerchantv1.UnimplementedAuditServiceServer
 	repo repo.AuditRepository
 }
 
