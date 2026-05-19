@@ -33,7 +33,9 @@ import (
 	kmsservice "github.com/xiongwp/kms-manage/kitex_gen/kms/v1/kmsservice"
 	paymentcoreservice "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
 	riskservice "github.com/xiongwp/risk-manage/kitex_gen/risk/v1/riskservice"
-	splitadminservice "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1/adminservice"
+	// splitadminservice 暂时 stub: split-payment 还没生成 kitex_gen (无 proto IDL).
+	// SplitPayment 字段类型用 any, handler 取出后必须 type assert + nil check.
+	// splitadminservice "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1/adminservice"
 )
 
 // Deps 是传给 handler 的一包 Kitex RPC 客户端, 生产时全部已 dial 好.
@@ -62,5 +64,7 @@ type Deps struct {
 	PCore         paymentcoreservice.Client
 	KMS           kmsservice.Client
 	Risk          riskservice.Client
-	SplitPayment  splitadminservice.Client
+	// SplitPayment 是 split-payment.AdminService Kitex client. 当前 stub
+	// (kitex_gen 未生成), 用 any 占位; handler 调用必须 nil check + type assert.
+	SplitPayment  any
 }

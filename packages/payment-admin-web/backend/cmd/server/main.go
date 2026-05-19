@@ -20,7 +20,7 @@ import (
 	"github.com/xiongwp/order-core/kitex_gen/order/v1/chargeservice"
 	"github.com/xiongwp/order-core/kitex_gen/order/v1/disputeservice"
 	"github.com/xiongwp/order-core/kitex_gen/order/v1/ledgerservice"
-	"github.com/xiongwp/order-core/kitex_gen/order/v1/orderauditservice"
+	orderauditservice "github.com/xiongwp/order-core/kitex_gen/order/v1/auditservice"
 	"github.com/xiongwp/order-core/kitex_gen/order/v1/paymentintentservice"
 	"github.com/xiongwp/order-core/kitex_gen/order/v1/refundservice"
 	"github.com/xiongwp/order-core/kitex_gen/order/v1/webhookdeliveryservice"
@@ -28,7 +28,7 @@ import (
 	"github.com/xiongwp/risk-manage/kitex_gen/risk/v1/riskservice"
 	"github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
 	"github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/merchantservice"
-	"github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/umauditservice"
+	umauditservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/auditservice"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 	"github.com/xiongwp/payment-admin-web/backend/internal/handler"

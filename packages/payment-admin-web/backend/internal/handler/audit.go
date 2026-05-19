@@ -11,6 +11,7 @@ import (
 	"time"
 
 	orderv1 "github.com/xiongwp/order-core/kitex_gen/order/v1"
+	orderauditservice "github.com/xiongwp/order-core/kitex_gen/order/v1/auditservice"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )
