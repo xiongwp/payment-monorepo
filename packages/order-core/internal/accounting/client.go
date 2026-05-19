@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 	accv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 
@@ -103,7 +104,12 @@ func New(cfg Config) (*Client, error) {
 	if serviceName == "" {
 		serviceName = "accounting-system"
 	}
-	opts := []client.Option{client.WithRPCTimeout(cfg.Timeout)}
+	opts := []client.Option{
+		client.WithRPCTimeout(cfg.Timeout),
+		// 强制 gRPC over HTTP/2 over TCP, 避开 Kitex netpoll 把 host:port 当 unix
+		// socket 路径解读的 "dial unix ...: no such file or directory" 陷阱.
+		client.WithTransportProtocol(transport.GRPC),
+	}
 	if cfg.Addr != "" {
 		opts = append(opts, client.WithHostPorts(cfg.Addr))
 	}

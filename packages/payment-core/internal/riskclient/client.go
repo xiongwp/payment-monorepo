@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 
 	riskv1 "github.com/xiongwp/risk-manage/kitex_gen/risk/v1"
 	riskservice "github.com/xiongwp/risk-manage/kitex_gen/risk/v1/riskservice"
@@ -116,7 +117,7 @@ func Dial(registry []string, endpoint string, rpcTimeout time.Duration) (Client,
 	opts := []client.Option{
 		client.WithRPCTimeout(rpcTimeout),
 		client.WithHostPorts(endpoint),
-		// TODO: shadow / trace MW (port 老 grpc shadow.UnaryClientInterceptor + trace.UnaryClientInterceptor)
+		client.WithTransportProtocol(transport.GRPC),		// TODO: shadow / trace MW (port 老 grpc shadow.UnaryClientInterceptor + trace.UnaryClientInterceptor)
 	}
 	_ = registry // TODO: etcd resolver (kitexutil.NewEtcdResolver)
 

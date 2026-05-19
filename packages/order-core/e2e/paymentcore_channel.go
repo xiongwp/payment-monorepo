@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 	paymentcorev1 "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1"
 	paymentcoreservice "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
 
@@ -29,15 +30,20 @@ type PaymentCoreGRPCChannel struct {
 }
 
 // NewPaymentCoreGRPCChannel 用 payment-core 端点构造 (空 = 走 kitexutil helper 兜底
-// payment-core:9091, 或 PAYMENT_CORE_GRPC_ADDR env 覆盖).
+// payment-core:9091, 或 PAYMENT_CORE_GRPC_ADDR env 覆盖). 显式 transport.GRPC 避开
+// Kitex netpoll "dial unix ...: no such file or directory" 陷阱.
 func NewPaymentCoreGRPCChannel(name, endpoint string) *PaymentCoreGRPCChannel {
-	opt := kitexutil.DefaultHostPorts("payment-core")
+	opts := []client.Option{
+		client.WithTransportProtocol(transport.GRPC),
+	}
 	if endpoint != "" {
-		opt = client.WithHostPorts(endpoint)
+		opts = append(opts, client.WithHostPorts(endpoint))
+	} else {
+		opts = append(opts, kitexutil.DefaultHostPorts("payment-core"))
 	}
 	return &PaymentCoreGRPCChannel{
 		name: name,
-		cli:  kitexutil.MustKitexClient(paymentcoreservice.NewClient("payment-core", opt)),
+		cli:  kitexutil.MustKitexClient(paymentcoreservice.NewClient("payment-core", opts...)),
 	}
 }
 

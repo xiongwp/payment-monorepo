@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 	"go.uber.org/zap"
 
 	cardpaymentv1 "github.com/xiongwp/card-payment/kitex_gen/cardpayment/v1"
@@ -45,7 +46,7 @@ func New(cfg Config, logger *zap.Logger) (*Adapter, error) {
 	}
 	cli, err := cardpaymentservice.NewClient("card-payment",
 		client.WithHostPorts(cfg.CardPaymentEndpoint),
-		client.WithRPCTimeout(cfg.RPCTimeout),
+		client.WithTransportProtocol(transport.GRPC),		client.WithRPCTimeout(cfg.RPCTimeout),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dial card-payment: %w", err)

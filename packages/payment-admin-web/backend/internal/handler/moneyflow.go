@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 
 	splitv1 "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1"
 	adminservice "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1/adminservice"
@@ -41,7 +42,7 @@ func (h *MoneyflowHandler) ensure() error {
 		}
 		cli, err := adminservice.NewClient("split-payment",
 			client.WithHostPorts(addr),
-			client.WithRPCTimeout(15*time.Second),
+			client.WithTransportProtocol(transport.GRPC),			client.WithRPCTimeout(15*time.Second),
 		)
 		if err != nil {
 			h.dialEr = err

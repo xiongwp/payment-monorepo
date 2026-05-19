@@ -394,7 +394,7 @@ func newHTTPSVerifier(v *viper.Viper, logger *zap.Logger) httpsauth.Verifier {
 	if endpoint != "" {
 		opts = append(opts, client.WithHostPorts(endpoint))
 	} else {
-		opts = append(opts, kitexutil.DefaultHostPorts("user-merchant-core"))
+		opts = append(opts, kitexutil.DefaultClientOptions("user-merchant-core")...)
 	}
 	uc, err := userservice.NewClient("user-merchant-core", opts...)
 	if err != nil {

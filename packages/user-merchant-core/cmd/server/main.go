@@ -655,7 +655,7 @@ func newRiskClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.R
 		return service.NoopRiskClient{}
 	}
 	api := kitexutil.MustKitexClient(riskservice.NewClient("risk-manage",
-		kitexutil.DefaultHostPorts("risk-manage"),
+		kitexutil.DefaultClientOptions("risk-manage")...,
 	))
 	logger.Info("risk client constructed (Kitex)",
 		zap.String("endpoint_hint", endpoint), zap.Strings("registry", registry))
@@ -748,7 +748,7 @@ func newAccountingClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) ser
 		return service.NoopAccountingClient{}
 	}
 	api := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system",
-		kitexutil.DefaultHostPorts("accounting-system"),
+		kitexutil.DefaultClientOptions("accounting-system")...,
 	))
 	logger.Info("accounting client constructed (Kitex)",
 		zap.String("endpoint_hint", endpoint), zap.Strings("registry", registry))

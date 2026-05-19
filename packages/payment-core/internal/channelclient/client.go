@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 
 	channelv1 "github.com/xiongwp/payment-channel/kitex_gen/channel/v1"
 	acquirerservice "github.com/xiongwp/payment-channel/kitex_gen/channel/v1/acquirerservice"
@@ -70,7 +71,7 @@ func Dial(registry []string, endpoint string, rpcTimeout time.Duration) (Client,
 	opts := []client.Option{
 		client.WithRPCTimeout(rpcTimeout),
 		client.WithHostPorts(endpoint),
-		// TODO: 接 etcd resolver — client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, ""))
+		client.WithTransportProtocol(transport.GRPC),		// TODO: 接 etcd resolver — client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, ""))
 		// TODO: per-method retry policy — Charge/Capture/Void/Refund 仅 UNAVAILABLE; Query +DEADLINE_EXCEEDED
 		// TODO: shadow + trace MW (port 老 grpc interceptor)
 	}

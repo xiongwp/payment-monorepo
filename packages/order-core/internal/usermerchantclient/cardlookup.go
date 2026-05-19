@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
 	usercardinternalservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/usercardinternalservice"
 )
@@ -52,7 +53,7 @@ func New(cfg Config) (CardLookup, error) {
 	}
 	cli, err := usercardinternalservice.NewClient("user-merchant-core",
 		client.WithHostPorts(cfg.Endpoint),
-		client.WithRPCTimeout(t),
+		client.WithTransportProtocol(transport.GRPC),		client.WithRPCTimeout(t),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dial user-merchant-core internal: %w", err)

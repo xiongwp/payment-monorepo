@@ -39,19 +39,19 @@ func main() {
 	// Kitex client host:port 由 kitexutil.DefaultHostPorts 统一解析:
 	// env <SVC>_GRPC_ADDR 优先, 否则用 docker 容器 DNS + 默认端口表.
 	deps := clients.Deps{
-		PI:              kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core", kitexutil.DefaultHostPorts("order-core"))),
-		Charge:          kitexutil.MustKitexClient(chargeservice.NewClient("order-core", kitexutil.DefaultHostPorts("order-core"))),
-		Refund:          kitexutil.MustKitexClient(refundservice.NewClient("order-core", kitexutil.DefaultHostPorts("order-core"))),
-		Merchant:        kitexutil.MustKitexClient(merchantservice.NewClient("user-merchant-core", kitexutil.DefaultHostPorts("user-merchant-core"))),
-		Audit:           kitexutil.MustKitexClient(orderauditservice.NewClient("order-core", kitexutil.DefaultHostPorts("order-core"))),
-		WebhookDelivery: kitexutil.MustKitexClient(webhookdeliveryservice.NewClient("order-core", kitexutil.DefaultHostPorts("order-core"))),
-		Ledger:          kitexutil.MustKitexClient(ledgerservice.NewClient("order-core", kitexutil.DefaultHostPorts("order-core"))),
-		Dispute:         kitexutil.MustKitexClient(disputeservice.NewClient("order-core", kitexutil.DefaultHostPorts("order-core"))),
-		MerchantSecret:    kitexutil.MustKitexClient(merchantsecretservice.NewClient("user-merchant-core", kitexutil.DefaultHostPorts("user-merchant-core"))),
-		UserMerchantAudit: kitexutil.MustKitexClient(umauditservice.NewClient("user-merchant-core", kitexutil.DefaultHostPorts("user-merchant-core"))),
-		PCore:           kitexutil.MustKitexClient(paymentcoreservice.NewClient("payment-core", kitexutil.DefaultHostPorts("payment-core"))),
-		KMS:             kitexutil.MustKitexClient(kmsservice.NewClient("kms-manage", kitexutil.DefaultHostPorts("kms-manage"))),
-		Risk:            kitexutil.MustKitexClient(riskservice.NewClient("risk-manage", kitexutil.DefaultHostPorts("risk-manage"))),
+		PI:              kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		Charge:          kitexutil.MustKitexClient(chargeservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		Refund:          kitexutil.MustKitexClient(refundservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		Merchant:        kitexutil.MustKitexClient(merchantservice.NewClient("user-merchant-core", kitexutil.DefaultClientOptions("user-merchant-core")...)),
+		Audit:           kitexutil.MustKitexClient(orderauditservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		WebhookDelivery: kitexutil.MustKitexClient(webhookdeliveryservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		Ledger:          kitexutil.MustKitexClient(ledgerservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		Dispute:         kitexutil.MustKitexClient(disputeservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		MerchantSecret:    kitexutil.MustKitexClient(merchantsecretservice.NewClient("user-merchant-core", kitexutil.DefaultClientOptions("user-merchant-core")...)),
+		UserMerchantAudit: kitexutil.MustKitexClient(umauditservice.NewClient("user-merchant-core", kitexutil.DefaultClientOptions("user-merchant-core")...)),
+		PCore:           kitexutil.MustKitexClient(paymentcoreservice.NewClient("payment-core", kitexutil.DefaultClientOptions("payment-core")...)),
+		KMS:             kitexutil.MustKitexClient(kmsservice.NewClient("kms-manage", kitexutil.DefaultClientOptions("kms-manage")...)),
+		Risk:            kitexutil.MustKitexClient(riskservice.NewClient("risk-manage", kitexutil.DefaultClientOptions("risk-manage")...)),
 	}
 
 	orderH := handler.NewOrderHandler(deps)

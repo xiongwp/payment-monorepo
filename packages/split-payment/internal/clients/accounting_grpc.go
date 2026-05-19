@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 
 	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 	transactionservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/transactionservice"
@@ -59,6 +60,9 @@ type AccountingGRPCClient struct {
 func NewAccountingGRPCClient(endpoint string) (*AccountingGRPCClient, error) {
 	cli, err := transactionservice.NewClient("accounting-system",
 		client.WithHostPorts(endpoint),
+		// 强制 gRPC over HTTP/2 over TCP, 避开 Kitex netpoll 把 host:port 当 unix
+		// socket 路径解读的 "dial unix ...: no such file or directory" 陷阱.
+		client.WithTransportProtocol(transport.GRPC),
 		client.WithRPCTimeout(3*time.Second),
 	)
 	if err != nil {

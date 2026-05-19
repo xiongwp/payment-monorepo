@@ -40,10 +40,10 @@ func main() {
 	log.Printf("accounting-system gRPC target (legacy env hint): %s", grpcAddr)
 
 	client := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system",
-		kitexutil.DefaultHostPorts("accounting-system"),
+		kitexutil.DefaultClientOptions("accounting-system")...,
 	))
 	adminClient := kitexutil.MustKitexClient(accountingadminservice.NewClient("accounting-system",
-		kitexutil.DefaultHostPorts("accounting-system"),
+		kitexutil.DefaultClientOptions("accounting-system")...,
 	))
 
 	// Build handlers

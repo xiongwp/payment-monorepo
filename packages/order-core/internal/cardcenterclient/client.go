@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 	cardcenterv1 "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1"
 	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenter"
 )
@@ -61,7 +62,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	cli, err := cardcenterservice.NewClient("card-center",
 		client.WithHostPorts(cfg.Endpoint),
-		client.WithRPCTimeout(t),
+		client.WithTransportProtocol(transport.GRPC),		client.WithRPCTimeout(t),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dial card-center: %w", err)

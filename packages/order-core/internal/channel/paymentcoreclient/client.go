@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 
 	paymentcorev1 "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1"
 	paymentcoreservice "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
@@ -36,7 +37,7 @@ func Dial(name string, registry []string, endpoint string, rpcTimeout time.Durat
 	opts := []client.Option{
 		client.WithRPCTimeout(rpcTimeout),
 		client.WithHostPorts(endpoint),
-		// TODO: 接 etcd resolver — client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, ""))
+		client.WithTransportProtocol(transport.GRPC),		// TODO: 接 etcd resolver — client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, ""))
 		// TODO: per-method retry policy — UNAVAILABLE 最多 3 次
 		// TODO: shadow + trace MW (port 老 grpc interceptor)
 	}

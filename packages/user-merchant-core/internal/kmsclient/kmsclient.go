@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 	"github.com/xiongwp/payment-util/kitexutil"
 
 	kmsv1 "github.com/xiongwp/kms-manage/kitex_gen/kms/v1"
@@ -64,7 +65,12 @@ func New(cfg Config) (*Client, error) {
 	if rpcT <= 0 {
 		rpcT = 5 * time.Second
 	}
-	opts := []client.Option{client.WithRPCTimeout(rpcT)}
+	opts := []client.Option{
+		client.WithRPCTimeout(rpcT),
+		// 强制 gRPC over HTTP/2 over TCP, 避开 Kitex netpoll 把 host:port 当 unix
+		// socket 路径解读的 "dial unix ...: no such file or directory" 陷阱.
+		client.WithTransportProtocol(transport.GRPC),
+	}
 	// Kitex etcd resolver 接入留给后续 wire (kitexutil.NewEtcdResolver +
 	// client.WithResolver); 目前优先 endpoint 直连, registry 字段已留好.
 	if cfg.Endpoint != "" {

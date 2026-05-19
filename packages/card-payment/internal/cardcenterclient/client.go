@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 
 	cardcenterv1 "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1"
 	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenter"
@@ -48,7 +49,7 @@ func New(cfg Config) (*Client, error) {
 	opts := []client.Option{
 		client.WithRPCTimeout(t),
 		client.WithHostPorts(cfg.Endpoint),
-	}
+		client.WithTransportProtocol(transport.GRPC),	}
 	// TODO: 接 etcd 后 opts = append(opts, client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, "")))
 	_ = cfg.RegistryEndpoints
 

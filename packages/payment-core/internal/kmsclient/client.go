@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 	"github.com/xiongwp/payment-util/kitexutil"
 
 	kmsv1 "github.com/xiongwp/kms-manage/kitex_gen/kms/v1"
@@ -53,7 +54,7 @@ func Dial(registry []string, endpoint, bearerToken string, rpcTimeout time.Durat
 	opts := []client.Option{
 		client.WithRPCTimeout(rpcTimeout),
 		client.WithHostPorts(endpoint),
-		// TODO: shadow + trace MW (port 老 grpc shadow.UnaryClientInterceptor / trace.UnaryClientInterceptor)
+		client.WithTransportProtocol(transport.GRPC),		// TODO: shadow + trace MW (port 老 grpc shadow.UnaryClientInterceptor / trace.UnaryClientInterceptor)
 	}
 	if len(registry) > 0 {
 		// TODO: opts = append(opts, client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, "")))
