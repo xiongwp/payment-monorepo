@@ -10,9 +10,6 @@ import (
 	"fmt"
 	"strconv"
 	"time"
-
-	"google.golang.org/grpc"
-
 	paymentcorev1 "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1"
 
 	"github.com/xiongwp/order-core/internal/channel"

@@ -8,9 +8,6 @@ import (
 
 	"github.com/accounting-system/internal/metrics"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // recoveryInterceptor 捕获 handler panic，把它转成 codes.Internal error 而不是杀进程。
@@ -30,7 +27,7 @@ func recoveryInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
 					zap.Any("panic", r),
 					zap.ByteString("stack", stack),
 				)
-				err = status.Errorf(codes.Internal, "internal server error: panic recovered")
+				err = fmt.Errorf("internal server error: panic recovered")
 			}
 		}()
 		return handler(ctx, req)
@@ -169,7 +166,7 @@ func (ls *loadShedder) unaryInterceptor() grpc.UnaryServerInterceptor {
 			if cur > max {
 				ls.inflight.Add(-1)
 				metrics.LoadShedDroppedTotal.WithLabelValues("max_inflight").Inc()
-				return nil, status.Errorf(codes.ResourceExhausted, "server overloaded: max_inflight=%d exceeded", max)
+				return nil, fmt.Errorf("server overloaded: max_inflight=%d exceeded", max)
 			}
 			defer ls.inflight.Add(-1)
 		}
@@ -181,7 +178,7 @@ func (ls *loadShedder) unaryInterceptor() grpc.UnaryServerInterceptor {
 				// got token, proceed
 			default:
 				metrics.LoadShedDroppedTotal.WithLabelValues("rate_limit").Inc()
-				return nil, status.Errorf(codes.ResourceExhausted, "server overloaded: rate limit exceeded")
+				return nil, fmt.Errorf("server overloaded: rate limit exceeded")
 			}
 		}
 

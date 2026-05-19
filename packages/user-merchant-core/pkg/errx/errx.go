@@ -15,9 +15,6 @@ package errx
 import (
 	"errors"
 	"sync"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type entry struct {
@@ -61,5 +58,5 @@ func Map(err error) error {
 			return status.Error(e.code, err.Error())
 		}
 	}
-	return status.Error(codes.Internal, err.Error())
+	return fmt.Errorf("%s", err.Error())
 }

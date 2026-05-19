@@ -22,10 +22,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -79,7 +75,7 @@ func newTraceID() string {
 // extractIncomingTraceID 优先用客户端 / 上游网关传入的 x-trace-id，否则新建一个。
 // 让一条用户请求的 trace_id 跨多个微服务保持一致。
 func extractIncomingTraceID(ctx context.Context) string {
-	md, ok := metadata.FromIncomingContext(ctx)
+	md, ok := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
 	if ok {
 		if vals := md.Get(TraceIDHeader); len(vals) > 0 && vals[0] != "" {
 			return vals[0]

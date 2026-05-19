@@ -1,8 +1,6 @@
 package server
 
 import (
-	"google.golang.org/grpc/codes"
-
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 	"github.com/xiongwp/user-merchant-core/pkg/errx"
 )

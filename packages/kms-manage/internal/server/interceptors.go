@@ -11,12 +11,6 @@ import (
 
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/peer"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
@@ -177,10 +171,10 @@ func AuthInterceptor(validTokens map[string]string, logger *zap.Logger) grpc.Una
 		if len(expected) == 0 || skip(info.FullMethod) {
 			return handler(ctx, req)
 		}
-		md, _ := metadata.FromIncomingContext(ctx)
+		md, _ := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
 		auth := strings.TrimSpace(strings.Join(md.Get("authorization"), ""))
 		if !strings.HasPrefix(auth, "Bearer ") {
-			return nil, status.Error(codes.Unauthenticated, "missing bearer token")
+			return nil, fmt.Errorf("missing bearer token")
 		}
 		tok := []byte(strings.TrimPrefix(auth, "Bearer "))
 		// OR 累加全扫 → 任一匹配 = match==1。不要 break early，避免泄露"哪个槽位
@@ -192,7 +186,7 @@ func AuthInterceptor(validTokens map[string]string, logger *zap.Logger) grpc.Una
 		if match != 1 {
 			// 仅记 method（不带 token / token 长度），方便排查"哪个 caller 配错了"。
 			logger.Warn("auth rejected", zap.String("method", info.FullMethod))
-			return nil, status.Error(codes.Unauthenticated, "invalid token")
+			return nil, fmt.Errorf("invalid token")
 		}
 		return handler(ctx, req)
 	}
@@ -208,7 +202,7 @@ func RateLimitInterceptor(limiter *rate.Limiter) grpc.UnaryServerInterceptor {
 	}
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		if !limiter.Allow() {
-			return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
+			return nil, fmt.Errorf("rate limit exceeded")
 		}
 		return handler(ctx, req)
 	}
@@ -286,7 +280,7 @@ func ClientIdentityInterceptor(allow ClientIdentityAllowList, logger *zap.Logger
 			logger.Warn("client identity rejected (no peer cert)",
 				zap.String("method", info.FullMethod),
 				zap.String("addr", addr))
-			return nil, status.Error(codes.Unauthenticated, "missing client cert identity")
+			return nil, fmt.Errorf("missing client cert identity")
 		}
 		for _, id := range ids {
 			if _, ok := allow[id]; ok {
@@ -298,7 +292,7 @@ func ClientIdentityInterceptor(allow ClientIdentityAllowList, logger *zap.Logger
 			zap.String("method", info.FullMethod),
 			zap.String("addr", addr),
 			zap.Strings("identities", ids))
-		return nil, status.Error(codes.PermissionDenied, "client identity not allowed")
+		return nil, fmt.Errorf("client identity not allowed")
 	}
 }
 
@@ -310,7 +304,7 @@ func RecoverInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
 					zap.String("method", info.FullMethod),
 					zap.Any("recover", r),
 					zap.String("stack", string(debug.Stack())))
-				err = status.Errorf(codes.Internal, "internal panic")
+				err = fmt.Errorf("internal panic")
 			}
 		}()
 		return handler(ctx, req)

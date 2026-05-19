@@ -4,12 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/peer"
-	"google.golang.org/grpc/status"
-	"google.golang.org/grpc/credentials"
 )
 
 // ClientCNAllowList method → 允许调用的客户端证书 CN 集合
@@ -84,14 +78,14 @@ func UnaryClientCNInterceptor(allow ClientCNAllowList) grpc.UnaryServerIntercept
 		allowed, hasRule := allow[op]
 		if !hasRule {
 			// 未配规则的方法默认拒，避免漏配 = 全开
-			return nil, status.Errorf(codes.PermissionDenied, "method %s has no client_cn allowlist", info.FullMethod)
+			return nil, fmt.Errorf("method %s has no client_cn allowlist", info.FullMethod)
 		}
 		cn, _ := PeerCN(ctx)
 		if cn == "" {
-			return nil, status.Error(codes.Unauthenticated, "missing client certificate CN")
+			return nil, fmt.Errorf("missing client certificate CN")
 		}
 		if _, ok := allowed[cn]; !ok {
-			return nil, status.Errorf(codes.PermissionDenied, "client CN %q not allowed for %s", cn, info.FullMethod)
+			return nil, fmt.Errorf("client CN %q not allowed for %s", cn, info.FullMethod)
 		}
 		// 把 CN 注进 ctx，service 层 audit 用
 		ctx = withClientCN(ctx, cn)

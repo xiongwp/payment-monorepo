@@ -19,10 +19,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/peer"
-	"google.golang.org/grpc/status"
 )
 
 // ─── Prometheus metrics (per-method) ─────────────────────────────────────
@@ -88,7 +84,7 @@ func PanicRecoverInterceptor(log *zap.Logger) grpc.UnaryServerInterceptor {
 						zap.Any("panic", r),
 						zap.ByteString("stack", stack))
 				}
-				err = status.Errorf(codes.Internal, "internal server error (panic recovered)")
+				err = fmt.Errorf("internal server error (panic recovered)")
 				resp = nil
 			}
 		}()

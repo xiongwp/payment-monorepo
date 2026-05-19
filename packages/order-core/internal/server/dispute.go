@@ -4,10 +4,6 @@ import (
 	"context"
 	"errors"
 	"time"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	orderv1 "reconcile-system/packages/order-core/kitex_gen/order/v1"
 	"github.com/xiongwp/order-core/internal/domain"
 	"github.com/xiongwp/order-core/internal/service"
@@ -252,13 +248,13 @@ func disputeGrpcErr(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, domain.ErrDisputeNotFound):
-		return status.Error(codes.NotFound, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	case errors.Is(err, domain.ErrValidation):
-		return status.Error(codes.InvalidArgument, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	case errors.Is(err, domain.ErrDisputeInvalidTransition):
-		return status.Error(codes.FailedPrecondition, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	}
-	return status.Error(codes.Internal, err.Error())
+	return fmt.Errorf("%s", err.Error())
 }
 
 func copyStrMap(in map[string]string) domain.Metadata {

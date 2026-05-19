@@ -5,11 +5,6 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/peer"
-	"google.golang.org/grpc/status"
-
 	cardpaymentv1 "reconcile-system/packages/card-payment/kitex_gen/cardpayment/v1"
 
 	"github.com/xiongwp/card-payment/internal/processor"
@@ -32,7 +27,7 @@ func (s *Server) Register() {}
 // Authorize 入口
 func (s *Server) Authorize(ctx context.Context, req *cardpaymentv1.AuthorizeRequest) (*cardpaymentv1.AuthorizeResponse, error) {
 	if req.GetPaymentToken() == "" || req.GetPiId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "payment_token / pi_id required")
+		return nil, fmt.Errorf("payment_token / pi_id required")
 	}
 	in := &processor.AuthorizeInput{
 		PaymentToken:       req.GetPaymentToken(),
@@ -54,7 +49,7 @@ func (s *Server) Authorize(ctx context.Context, req *cardpaymentv1.AuthorizeRequ
 	}
 	out, err := s.proc.Authorize(ctx, in)
 	if err != nil {
-		return nil, status.Error(codes.Internal, "authorize failed")
+		return nil, fmt.Errorf("authorize failed")
 	}
 	return &cardpaymentv1.AuthorizeResponse{
 		NetworkRefNo:  out.NetworkRefNo,
@@ -69,16 +64,16 @@ func (s *Server) Authorize(ctx context.Context, req *cardpaymentv1.AuthorizeRequ
 
 // Capture / Refund / Void / Query 暂用 Unimplemented；processor 后续扩展。
 func (s *Server) Capture(ctx context.Context, req *cardpaymentv1.CaptureRequest) (*cardpaymentv1.CaptureResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "capture not implemented yet")
+	return nil, fmt.Errorf("capture not implemented yet")
 }
 func (s *Server) Refund(ctx context.Context, req *cardpaymentv1.RefundRequest) (*cardpaymentv1.RefundResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "refund not implemented yet")
+	return nil, fmt.Errorf("refund not implemented yet")
 }
 func (s *Server) Void(ctx context.Context, req *cardpaymentv1.VoidRequest) (*cardpaymentv1.VoidResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "void not implemented yet")
+	return nil, fmt.Errorf("void not implemented yet")
 }
 func (s *Server) Query(ctx context.Context, req *cardpaymentv1.QueryRequest) (*cardpaymentv1.QueryResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "query not implemented yet")
+	return nil, fmt.Errorf("query not implemented yet")
 }
 
 // ─── Client CN allowlist interceptor ──────────────────────────────────────
@@ -120,10 +115,10 @@ func UnaryClientCNInterceptor(allow ClientCNAllowList) grpc.UnaryServerIntercept
 		}
 		cn, _ := PeerCN(ctx)
 		if cn == "" {
-			return nil, status.Error(codes.Unauthenticated, "missing client cert CN")
+			return nil, fmt.Errorf("missing client cert CN")
 		}
 		if _, ok := allow[cn]; !ok {
-			return nil, status.Errorf(codes.PermissionDenied, "CN %q not allowed", cn)
+			return nil, fmt.Errorf("CN %q not allowed", cn)
 		}
 		return handler(ctx, req)
 	}

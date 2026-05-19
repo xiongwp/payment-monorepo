@@ -15,9 +15,6 @@ import (
 	"runtime/debug"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // HTTPRecovery panic recovery middleware：捕获所有 handler panic，log stack
@@ -59,7 +56,7 @@ func GRPCUnaryRecovery(logger *zap.Logger) grpc.UnaryServerInterceptor {
 						zap.String("method", info.FullMethod),
 						zap.ByteString("stack", debug.Stack()))
 				}
-				err = status.Errorf(codes.Internal, "internal server error: %v", rec)
+				err = fmt.Errorf("internal server error: %v", rec)
 				resp = nil
 			}
 		}()

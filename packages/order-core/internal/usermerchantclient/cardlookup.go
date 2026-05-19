@@ -17,10 +17,6 @@ import (
 	"fmt"
 	"os"
 	"time"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // CardLookup 接口：仅为 order-core 内 Confirm 路径定义。生产实现走 mTLS gRPC

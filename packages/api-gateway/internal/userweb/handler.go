@@ -20,7 +20,6 @@ import (
 
 	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/status"
 )
 
 // CookieName JWT cookie 名。

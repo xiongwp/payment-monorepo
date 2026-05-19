@@ -11,9 +11,6 @@ import (
 
 	kitexserver "github.com/cloudwego/kitex/server"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	paymentcorev1 "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1"
 	paymentcoreservice "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
 
@@ -102,7 +99,7 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 
 func (s *Server) Charge(ctx context.Context, req *paymentcorev1.ChargeRequest) (*paymentcorev1.ChargeResponse, error) {
 	if req.GetPaymentIntentId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "payment_intent_id required")
+		return nil, fmt.Errorf("payment_intent_id required")
 	}
 	out, err := s.svc.Charge(ctx, &channel.PaymentRequest{
 		PaymentIntentID:  req.GetPaymentIntentId(),
@@ -121,7 +118,7 @@ func (s *Server) Charge(ctx context.Context, req *paymentcorev1.ChargeRequest) (
 		Extra:            req.GetExtra(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return paymentResponseToProto(out), nil
 }
@@ -135,7 +132,7 @@ func (s *Server) Capture(ctx context.Context, req *paymentcorev1.CaptureRequest)
 		Extra:           req.GetExtra(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &paymentcorev1.OpResponse{
 		ResultType:     string(out.ResultType),
@@ -155,7 +152,7 @@ func (s *Server) Void(ctx context.Context, req *paymentcorev1.VoidRequest) (*pay
 		Extra:           req.GetExtra(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &paymentcorev1.OpResponse{
 		ResultType:     string(out.ResultType),
@@ -178,7 +175,7 @@ func (s *Server) Refund(ctx context.Context, req *paymentcorev1.RefundRequest) (
 		Extra:           req.GetExtra(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &paymentcorev1.OpResponse{
 		ResultType:     string(out.ResultType),
@@ -197,7 +194,7 @@ func (s *Server) Query(ctx context.Context, req *paymentcorev1.QueryRequest) (*p
 		Extra:           req.GetExtra(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &paymentcorev1.QueryResponse{
 		ResultType:     string(out.ResultType),
@@ -213,7 +210,7 @@ func (s *Server) Query(ctx context.Context, req *paymentcorev1.QueryRequest) (*p
 func (s *Server) ParseWebhook(ctx context.Context, req *paymentcorev1.ParseWebhookRequest) (*paymentcorev1.WebhookEvent, error) {
 	evt, err := s.whSvc.Parse(ctx, req.GetAdapter(), req.GetHeaders(), req.GetBody())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &paymentcorev1.WebhookEvent{
 		EventId:         evt.EventID,

@@ -9,11 +9,6 @@ import (
 
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
-
 	"github.com/xiongwp/payment-channel/internal/metrics"
 )
 
@@ -55,12 +50,12 @@ func AuthInterceptor(validTokens map[string]string, allowUnauthenticated bool, l
 			}
 			logger.Warn("AuthInterceptor: no tokens configured and allowUnauthenticated=false; rejecting",
 				zap.String("method", info.FullMethod))
-			return nil, status.Error(codes.Unauthenticated, "auth not configured")
+			return nil, fmt.Errorf("auth not configured")
 		}
-		md, _ := metadata.FromIncomingContext(ctx)
+		md, _ := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
 		auth := strings.TrimSpace(strings.Join(md.Get("authorization"), ""))
 		if !strings.HasPrefix(auth, "Bearer ") {
-			return nil, status.Error(codes.Unauthenticated, "missing bearer token")
+			return nil, fmt.Errorf("missing bearer token")
 		}
 		tok := []byte(strings.TrimPrefix(auth, "Bearer "))
 		var match int
@@ -69,7 +64,7 @@ func AuthInterceptor(validTokens map[string]string, allowUnauthenticated bool, l
 		}
 		if match != 1 {
 			logger.Debug("auth rejected", zap.String("method", info.FullMethod))
-			return nil, status.Error(codes.Unauthenticated, "invalid token")
+			return nil, fmt.Errorf("invalid token")
 		}
 		return handler(ctx, req)
 	}
@@ -85,7 +80,7 @@ func RateLimitInterceptor(limiter *rate.Limiter) grpc.UnaryServerInterceptor {
 	}
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		if !limiter.Allow() {
-			return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
+			return nil, fmt.Errorf("rate limit exceeded")
 		}
 		return handler(ctx, req)
 	}
@@ -98,7 +93,7 @@ func RecoverInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
 				logger.Error("panic in grpc handler",
 					zap.String("method", info.FullMethod),
 					zap.Any("recover", r))
-				err = status.Errorf(codes.Internal, "internal panic")
+				err = fmt.Errorf("internal panic")
 			}
 		}()
 		return handler(ctx, req)

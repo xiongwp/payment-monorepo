@@ -17,10 +17,6 @@ package server
 
 import (
 	"context"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 	"github.com/xiongwp/user-merchant-core/internal/service"
@@ -28,7 +24,7 @@ import (
 
 // errInvalidArg gRPC InvalidArgument helper（本文件 local；errors.go 里 grpcErr 走通用 sentinel 映射）
 func errInvalidArg(msg string) error {
-	return status.Error(codes.InvalidArgument, msg)
+	return fmt.Errorf("%s", msg)
 }
 
 // mapDomainErr domain error → gRPC status；委托给 grpcErr（errors.go）

@@ -13,9 +13,6 @@ import (
 	kitexserver "github.com/cloudwego/kitex/server"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	channelv1 "reconcile-system/packages/payment-channel/kitex_gen/channel/v1"
 	acquirerservice "reconcile-system/packages/payment-channel/kitex_gen/channel/v1/acquirerservice"
 
@@ -115,7 +112,7 @@ var _ = time.Second
 
 func (s *Server) Charge(ctx context.Context, req *channelv1.ChargeRequest) (*channelv1.ChargeResponse, error) {
 	if req.GetAdapter() == "" || req.GetPiId() == "" || req.GetIdempotencyKey() == "" {
-		return nil, status.Error(codes.InvalidArgument, "adapter / pi_id / idempotency_key required")
+		return nil, fmt.Errorf("adapter / pi_id / idempotency_key required")
 	}
 	in := &channel.ChargeRequest{
 		PiID:             req.GetPiId(),
@@ -138,7 +135,7 @@ func (s *Server) Charge(ctx context.Context, req *channelv1.ChargeRequest) (*cha
 	}
 	out, err := s.svc.Charge(ctx, req.GetAdapter(), in)
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return chargeRespToProto(out), nil
 }
@@ -151,7 +148,7 @@ func (s *Server) Capture(ctx context.Context, req *channelv1.CaptureRequest) (*c
 		IdempotencyKey: req.GetIdempotencyKey(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return opRespToProto(out), nil
 }
@@ -163,7 +160,7 @@ func (s *Server) Void(ctx context.Context, req *channelv1.VoidRequest) (*channel
 		IdempotencyKey: req.GetIdempotencyKey(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return opRespToProto(out), nil
 }
@@ -177,7 +174,7 @@ func (s *Server) Refund(ctx context.Context, req *channelv1.RefundRequest) (*cha
 		IdempotencyKey: req.GetIdempotencyKey(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return opRespToProto(out), nil
 }
@@ -188,7 +185,7 @@ func (s *Server) Query(ctx context.Context, req *channelv1.QueryRequest) (*chann
 		ExternalRefNo: req.GetExternalRefNo(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &channelv1.QueryResponse{
 		Result:         string(out.Result),

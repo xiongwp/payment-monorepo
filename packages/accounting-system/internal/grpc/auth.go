@@ -20,10 +20,6 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 )
 
 // MetadataServiceTokenKey 是调用方传递服务 token 的 metadata 头名（小写）。
@@ -55,19 +51,19 @@ func serviceTokenInterceptor(token string, logger *zap.Logger) grpc.UnaryServerI
 		if isAuthExemptMethod(info.FullMethod) {
 			return h(ctx, req)
 		}
-		md, ok := metadata.FromIncomingContext(ctx)
+		md, ok := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
 		if !ok {
-			return nil, status.Error(codes.Unauthenticated, "missing metadata")
+			return nil, fmt.Errorf("missing metadata")
 		}
 		vals := md.Get(MetadataServiceTokenKey)
 		if len(vals) == 0 {
-			return nil, status.Error(codes.Unauthenticated, "missing x-svc-token")
+			return nil, fmt.Errorf("missing x-svc-token")
 		}
 		if subtle.ConstantTimeCompare([]byte(vals[0]), tokenBytes) != 1 {
 			// 不打印 token 值。method 信息有助于定位哪个客户端配错了。
 			logger.Warn("gRPC: invalid service token",
 				zap.String("method", info.FullMethod))
-			return nil, status.Error(codes.Unauthenticated, "invalid x-svc-token")
+			return nil, fmt.Errorf("invalid x-svc-token")
 		}
 		return h(ctx, req)
 	}

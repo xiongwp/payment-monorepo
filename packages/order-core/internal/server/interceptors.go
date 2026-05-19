@@ -9,10 +9,6 @@ import (
 
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
@@ -130,17 +126,17 @@ func AuthInterceptor(validTokens map[string]string, allowUnauthenticated bool, l
 			}
 			logger.Warn("auth rejected: no valid tokens configured",
 				zap.String("method", info.FullMethod))
-			return nil, status.Error(codes.Unauthenticated, "auth not configured")
+			return nil, fmt.Errorf("auth not configured")
 		}
-		md, _ := metadata.FromIncomingContext(ctx)
+		md, _ := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
 		auth := strings.TrimSpace(strings.Join(md.Get("authorization"), ""))
 		if !strings.HasPrefix(auth, "Bearer ") {
-			return nil, status.Error(codes.Unauthenticated, "missing bearer token")
+			return nil, fmt.Errorf("missing bearer token")
 		}
 		tok := strings.TrimPrefix(auth, "Bearer ")
 		if _, ok := validTokens[tok]; !ok {
 			logger.Debug("auth rejected", zap.String("method", info.FullMethod))
-			return nil, status.Error(codes.Unauthenticated, "invalid token")
+			return nil, fmt.Errorf("invalid token")
 		}
 		return handler(ctx, req)
 	}
@@ -162,7 +158,7 @@ func RateLimitInterceptor(rps float64, burst int) grpc.UnaryServerInterceptor {
 	limiter := rate.NewLimiter(rate.Limit(rps), burst)
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		if !limiter.Allow() {
-			return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
+			return nil, fmt.Errorf("rate limit exceeded")
 		}
 		return handler(ctx, req)
 	}
@@ -174,7 +170,7 @@ func RateLimitInterceptor(rps float64, burst int) grpc.UnaryServerInterceptor {
 // 限流参数由 limiter 管理（支持热更新）；当触发限流时记指标 + 返 ResourceExhausted。
 func MerchantRateLimitInterceptor(limiter *ratelimit.MerchantLimiter, logger *zap.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		md, _ := metadata.FromIncomingContext(ctx)
+		md, _ := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
 		merchantID := strings.TrimSpace(strings.Join(md.Get("x-merchant-id"), ""))
 		if merchantID != "" && !limiter.Allow(merchantID) {
 			if logger != nil {
@@ -182,7 +178,7 @@ func MerchantRateLimitInterceptor(limiter *ratelimit.MerchantLimiter, logger *za
 					zap.String("merchant_id", merchantID),
 					zap.String("method", info.FullMethod))
 			}
-			return nil, status.Error(codes.ResourceExhausted, "merchant rate limit exceeded")
+			return nil, fmt.Errorf("merchant rate limit exceeded")
 		}
 		return handler(ctx, req)
 	}
@@ -197,7 +193,7 @@ func RecoverInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
 					zap.String("method", info.FullMethod),
 					zap.Any("recover", r),
 					zap.String("stack", string(debug.Stack())))
-				err = status.Errorf(codes.Internal, "internal panic")
+				err = fmt.Errorf("internal panic")
 			}
 		}()
 		return handler(ctx, req)

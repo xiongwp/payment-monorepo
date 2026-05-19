@@ -16,7 +16,6 @@ import (
 	"reconcile-system/packages/split-payment/internal/workflow"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc/metadata"
 )
 
 // GraphRepo 跟 adminhttp.GraphRepo 同形态接口, 复制一份避免 internal 包循环 import.
@@ -441,7 +440,7 @@ func firstNonEmpty(a, b string) string {
 //   - x-admin-token 兜底, 不记原文 (脱敏: 只记前 8 字节 hash 用)
 //   - 都没有 → "unknown"
 func extractActor(ctx context.Context) string {
-	md, ok := metadata.FromIncomingContext(ctx)
+	md, ok := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
 	if !ok {
 		return "unknown"
 	}

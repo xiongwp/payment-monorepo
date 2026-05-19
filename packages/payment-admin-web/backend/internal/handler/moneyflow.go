@@ -28,10 +28,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 )
 
 // designerHTML — MF-2 frontend designer 直接 embed 进二进制.

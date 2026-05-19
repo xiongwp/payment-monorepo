@@ -10,8 +10,6 @@ import (
 
 	kitexserver "github.com/cloudwego/kitex/server"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/metadata"
-
 	auditservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/auditservice"
 	merchantsecretservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
 	merchantservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/merchantservice"

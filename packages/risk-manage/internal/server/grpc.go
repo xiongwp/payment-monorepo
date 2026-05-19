@@ -15,8 +15,6 @@ import (
 	"github.com/xiongwp/payment-util/shadow"
 	putil "github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
@@ -147,13 +145,12 @@ func (s *Server) Screen(ctx context.Context, req *riskv1.ScreenRequest) (*riskv1
 	}
 	// Tenant 隔离：商户 key 调 Screen 必须 merchant_id 匹配；空时自动注入 principal 的 merchant_id。
 	if err := auth.RequireMerchantMatch(ctx, req.GetMerchantId()); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	merchantID := auth.FillMerchantID(ctx, req.GetMerchantId())
 	// per-merchant 限流：超额返 ResourceExhausted，order-core 应识别为可重试。
 	if s.limiter != nil && !s.limiter.Allow(merchantID) {
-		return nil, status.Errorf(codes.ResourceExhausted,
-			"merchant %s exceeded screen QPS quota", merchantID)
+		return nil, fmt.Errorf("merchant %s exceeded screen QPS quota", merchantID)
 	}
 	resp, _ := s.screenOne(ctx, req, merchantID)
 	return resp, nil
@@ -295,7 +292,7 @@ func (s *Server) Report(ctx context.Context, req *riskv1.ReportRequest) (*riskv1
 		return &riskv1.ReportResponse{}, nil
 	}
 	if err := auth.RequireMerchantMatch(ctx, req.GetMerchantId()); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	merchantID := auth.FillMerchantID(ctx, req.GetMerchantId())
 	txn := &engine.TxnContext{
@@ -344,7 +341,7 @@ func requireNonMerchant(ctx context.Context) error {
 		return nil
 	}
 	if p.Scope == auth.ScopeMerchant {
-		return status.Error(codes.PermissionDenied, "merchant scope cannot access admin endpoints")
+		return fmt.Errorf("merchant scope cannot access admin endpoints")
 	}
 	return nil
 }
@@ -353,7 +350,7 @@ func requireNonMerchant(ctx context.Context) error {
 
 func (s *Server) AddBlacklist(ctx context.Context, req *riskv1.BlacklistEntryMsg) (*riskv1.BlacklistOpResponse, error) {
 	if req.GetDimension() == "" || req.GetValue() == "" {
-		return nil, status.Error(codes.InvalidArgument, "dimension and value required")
+		return nil, fmt.Errorf("dimension and value required")
 	}
 	s.bl.Add(ctx, req.GetDimension(), req.GetValue(), req.GetReason())
 	s.logger.Info("blacklist added",
@@ -363,7 +360,7 @@ func (s *Server) AddBlacklist(ctx context.Context, req *riskv1.BlacklistEntryMsg
 
 func (s *Server) RemoveBlacklist(ctx context.Context, req *riskv1.BlacklistEntryMsg) (*riskv1.BlacklistOpResponse, error) {
 	if req.GetDimension() == "" || req.GetValue() == "" {
-		return nil, status.Error(codes.InvalidArgument, "dimension and value required")
+		return nil, fmt.Errorf("dimension and value required")
 	}
 	s.bl.Remove(ctx, req.GetDimension(), req.GetValue())
 	s.logger.Info("blacklist removed",
@@ -387,7 +384,7 @@ func (s *Server) ListBlacklist(ctx context.Context, req *riskv1.ListBlacklistReq
 // ErasePersonalData GDPR right-to-erasure。要 ScopeInternal（合规操作不让商户调）。
 func (s *Server) ErasePersonalData(ctx context.Context, req *riskv1.EraseRequest) (*riskv1.EraseResponse, error) {
 	if p, ok := auth.PrincipalFrom(ctx); !ok || p == nil || p.Scope != auth.ScopeInternal {
-		return nil, status.Error(codes.PermissionDenied, "erase requires internal scope")
+		return nil, fmt.Errorf("erase requires internal scope")
 	}
 	res, err := s.svc.ErasePersonalData(ctx, &service.EraseInput{
 		CustomerID:  req.GetCustomerId(),
@@ -400,7 +397,7 @@ func (s *Server) ErasePersonalData(ctx context.Context, req *riskv1.EraseRequest
 		RequestedBy: req.GetRequestedBy(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &riskv1.EraseResponse{
 		LinkEdgesPurged: int32(res.LinkEdgesPurged),

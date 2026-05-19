@@ -2,10 +2,6 @@ package server
 
 import (
 	"errors"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	"github.com/xiongwp/order-core/internal/domain"
 )
 
@@ -21,12 +17,12 @@ func grpcErr(err error) error {
 		errors.Is(err, domain.ErrPayActionNotFound),
 		errors.Is(err, domain.ErrLedgerAccountNotFound),
 		errors.Is(err, domain.ErrDisputeNotFound):
-		return status.Error(codes.NotFound, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	case errors.Is(err, domain.ErrValidation):
-		return status.Error(codes.InvalidArgument, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	case errors.Is(err, domain.ErrInvalidTransition),
 		errors.Is(err, domain.ErrPayActionNotPending):
-		return status.Error(codes.FailedPrecondition, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	}
-	return status.Error(codes.Internal, err.Error())
+	return fmt.Errorf("%s", err.Error())
 }

@@ -12,8 +12,6 @@ import (
 	accountingv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
 	"github.com/xiongwp/accounting-admin-web/backend/internal/handler"
 	"github.com/xiongwp/payment-util/serviceregistry"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {

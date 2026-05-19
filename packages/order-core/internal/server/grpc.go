@@ -9,11 +9,6 @@ import (
 
 	kitexserver "github.com/cloudwego/kitex/server"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/health"
-	"google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/reflection"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	orderv1 "reconcile-system/packages/order-core/kitex_gen/order/v1"
@@ -181,13 +176,13 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 
 func (s *Server) Create(ctx context.Context, req *orderv1.CreatePaymentIntentRequest) (*orderv1.CreatePaymentIntentResponse, error) {
 	if req.GetAmount() <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "amount must be > 0")
+		return nil, fmt.Errorf("amount must be > 0")
 	}
 	if req.GetCurrency() == "" {
-		return nil, status.Error(codes.InvalidArgument, "currency required")
+		return nil, fmt.Errorf("currency required")
 	}
 	if req.GetMchId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "mch_id required")
+		return nil, fmt.Errorf("mch_id required")
 	}
 	pi, err := s.piSvc.Create(ctx, &service.CreatePaymentIntentInput{
 		Amount:              req.GetAmount(),
@@ -215,7 +210,7 @@ func (s *Server) Create(ctx context.Context, req *orderv1.CreatePaymentIntentReq
 
 func (s *Server) Retrieve(ctx context.Context, req *orderv1.RetrievePaymentIntentRequest) (*orderv1.RetrievePaymentIntentResponse, error) {
 	if req.GetId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "id required")
+		return nil, fmt.Errorf("id required")
 	}
 	pi, err := s.piSvc.Retrieve(ctx, req.GetId())
 	if err != nil {
@@ -234,7 +229,7 @@ func (s *Server) Update(ctx context.Context, req *orderv1.UpdatePaymentIntentReq
 
 func (s *Server) Confirm(ctx context.Context, req *orderv1.ConfirmPaymentIntentRequest) (*orderv1.ConfirmPaymentIntentResponse, error) {
 	if req.GetId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "id required")
+		return nil, fmt.Errorf("id required")
 	}
 	if splits := req.GetPaymentMethods(); len(splits) > 0 {
 		in := make([]service.PaymentSplit, 0, len(splits))
@@ -686,16 +681,16 @@ func mapError(err error) error {
 		errors.Is(err, domain.ErrChargeNotFound),
 		errors.Is(err, domain.ErrRefundNotFound),
 		errors.Is(err, domain.ErrPayActionNotFound):
-		return status.Error(codes.NotFound, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	case errors.Is(err, domain.ErrValidation):
-		return status.Error(codes.InvalidArgument, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	case errors.Is(err, domain.ErrInvalidTransition),
 		errors.Is(err, domain.ErrPayActionNotPending):
-		return status.Error(codes.FailedPrecondition, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	case errors.Is(err, domain.ErrRefundAmountExceeded),
 		errors.Is(err, domain.ErrPayActionTooManyAttempts):
-		return status.Error(codes.AlreadyExists, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	default:
-		return status.Error(codes.Internal, "internal error")
+		return fmt.Errorf("internal error")
 	}
 }

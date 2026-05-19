@@ -11,9 +11,6 @@ import (
 
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	kmsv1 "reconcile-system/packages/kms-manage/kitex_gen/kms/v1"
 	"github.com/xiongwp/kms-manage/internal/service"
 )
@@ -129,7 +126,7 @@ func buildServerTLS(p TLSPaths) (*tls.Config, error) {
 
 func (s *Server) Encrypt(ctx context.Context, req *kmsv1.EncryptRequest) (*kmsv1.EncryptResponse, error) {
 	if len(req.GetPlaintext()) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "plaintext required")
+		return nil, fmt.Errorf("plaintext required")
 	}
 	out, err := s.svc.Encrypt(ctx, service.EncryptIn{
 		KeyID:     req.GetKeyId(),
@@ -144,10 +141,10 @@ func (s *Server) Encrypt(ctx context.Context, req *kmsv1.EncryptRequest) (*kmsv1
 
 func (s *Server) Decrypt(ctx context.Context, req *kmsv1.DecryptRequest) (*kmsv1.DecryptResponse, error) {
 	if req.GetCiphertext() == "" {
-		return nil, status.Error(codes.InvalidArgument, "ciphertext required")
+		return nil, fmt.Errorf("ciphertext required")
 	}
 	if req.GetContext() == "" {
-		return nil, status.Error(codes.InvalidArgument, "context (AAD) required for decrypt — use 'svc:<service>:<field>' format")
+		return nil, fmt.Errorf("context (AAD) required for decrypt — use 'svc:<service>:<field>' format")
 	}
 	out, err := s.svc.Decrypt(ctx, service.DecryptIn{
 		Ciphertext: req.GetCiphertext(),
@@ -178,7 +175,7 @@ func (s *Server) GenerateDataKey(ctx context.Context, req *kmsv1.GenerateDataKey
 func (s *Server) DescribeKey(_ context.Context, req *kmsv1.DescribeKeyRequest) (*kmsv1.DescribeKeyResponse, error) {
 	m, ok := s.svc.DescribeKey(req.GetKeyId())
 	if !ok {
-		return nil, status.Errorf(codes.NotFound, "key %q not found", req.GetKeyId())
+		return nil, fmt.Errorf("key %q not found", req.GetKeyId())
 	}
 	_, active := s.svc.ListKeys()
 	return &kmsv1.DescribeKeyResponse{
@@ -209,5 +206,5 @@ func toStatus(err error) error {
 	if err == nil {
 		return nil
 	}
-	return status.Error(codes.InvalidArgument, err.Error())
+	return fmt.Errorf("%s", err.Error())
 }

@@ -17,10 +17,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
-
 	channelv1 "reconcile-system/packages/payment-channel/kitex_gen/channel/v1"
 	"github.com/xiongwp/payment-core/internal/channel"
 	"github.com/xiongwp/payment-core/internal/channelclient"
@@ -41,7 +37,7 @@ import (
 // 普通商户调用方拿不到这套 metadata（gateway 层会清洗自定义 header），
 // 故能拿到 probe 权限的只可能是受信内部组件。
 func callerIsProbeAuthorized(ctx context.Context) bool {
-	md, ok := metadata.FromIncomingContext(ctx)
+	md, ok := /* TODO Kitex metainfo */ (interface{}, bool)(nil, false) /* was: metadata.FromIncomingContext(ctx) */
 	if !ok {
 		return false
 	}
@@ -708,7 +704,7 @@ func (s *PaymentService) Refund(ctx context.Context, req *channel.RefundChannelR
 	// P0-3: refund_id 必须非空——否则同一 pi 的多次部分退款会因 idempotency_key 一致
 	// 在 payment-channel 侧被合并/丢弃，造成"少退"。
 	if req.RefundID == "" {
-		return nil, status.Error(codes.InvalidArgument, "refund_id required")
+		return nil, fmt.Errorf("refund_id required")
 	}
 	adapter, err := s.adapterForOp(ctx, req.PaymentIntentID, req.ExternalRefNo, req.Extra)
 	if err != nil {
@@ -790,8 +786,7 @@ func (s *PaymentService) adapterForOp(_ context.Context, piID, _ string, extra m
 	if a := extra["adapter"]; a != "" {
 		return a, nil
 	}
-	return "", status.Errorf(codes.InvalidArgument,
-		"adapterForOp: extra[adapter] is required for refund/query/capture/void (pi=%s); "+
+	return "", fmt.Errorf("adapterForOp: extra[adapter] is required for refund/query/capture/void (pi=%s); "+
 			"router-based fallback removed to avoid mis-routing after routing rule hot reload", piID)
 }
 
