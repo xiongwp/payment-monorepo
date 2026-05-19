@@ -40,6 +40,17 @@ ACTION="${1:-up}"
 NETWORK="${SHARED_DB_NETWORK:-payment-stack}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# --rebuild: 给 up 加 --build --no-cache, 强制重 build 所有镜像. 改了代码后用.
+# --rebuild-only=<svc1,svc2>: 仅重 build 指定 stack, 其余沿用 cache.
+REBUILD=0
+REBUILD_ONLY=""
+for arg in "$@"; do
+  case "$arg" in
+    --rebuild)              REBUILD=1 ;;
+    --rebuild-only=*)       REBUILD_ONLY="${arg#--rebuild-only=}" ;;
+  esac
+done
+
 # 顺序定义；每条 = stack 目录 + 阻塞等待 healthcheck 端口（空 = 不等）
 # **config-center 必须排第一**：业务服务启动期会同步连它拉 snapshot
 STACKS=(
@@ -69,7 +80,20 @@ ensure_network() {
 stack_up() {
   local dir="$1" healthURL="$2"
   info "启动 stack: $dir"
-  (cd "$ROOT/packages/$dir" && docker compose up -d) || die "$dir up 失败"
+  local up_args=(up -d)
+  # 决定是否给这个 stack 加 --build --no-cache
+  local force=0
+  if [[ "$REBUILD" -eq 1 ]]; then
+    force=1
+  elif [[ -n "$REBUILD_ONLY" ]]; then
+    case ",$REBUILD_ONLY," in *",$dir,"*) force=1 ;; esac
+  fi
+  if [[ "$force" -eq 1 ]]; then
+    info "  rebuild: docker compose build --no-cache $dir"
+    (cd "$ROOT/packages/$dir" && docker compose build --no-cache) || die "$dir build 失败"
+    up_args+=(--force-recreate)
+  fi
+  (cd "$ROOT/packages/$dir" && docker compose "${up_args[@]}") || die "$dir up 失败"
   if [[ -n "$healthURL" ]]; then
     info "  等待 $healthURL ..."
     for i in $(seq 1 60); do

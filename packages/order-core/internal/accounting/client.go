@@ -36,6 +36,24 @@ var (
 	ErrAccountNotFound = errors.New("accounting: account not found for tuple (user_id, business_type, currency)")
 )
 
+// OwnerIDResolver 把 outbox.OwnerID (varchar(64), 业务侧 ID) 解析成 accounting 侧
+// 的 int64 user_id. 如果 outbox.OwnerID 本身就是纯数字, 实现层可以返 nil 让默认
+// strconv.ParseInt 路径接管.
+//
+// 用例: 商户表 merchant.id 是 "mch_xxx" 字符串, accounting.account.user_id 是
+// int64 (历史包袱). 业务方在 main.go 注入一个 resolver:
+//
+//	cfg.OwnerIDResolver = func(ctx context.Context, ownerType, ownerID string) (int64, error) {
+//	    if ownerType == "merchant" {
+//	        return merchantRepo.GetInternalUserID(ctx, ownerID)
+//	    }
+//	    return 0, accounting.ErrFallbackToNumeric  // 走 strconv.ParseInt
+//	}
+type OwnerIDResolver func(ctx context.Context, ownerType, ownerID string) (int64, error)
+
+// ErrFallbackToNumeric resolver 不知道怎么解析时返回; client 会 fallback 到 strconv.
+var ErrFallbackToNumeric = errors.New("owner_id resolver: fallback to numeric parse")
+
 // Config 初始化参数. ServiceName 给 Kitex client name 用 (etcd resolver 时是 service key).
 type Config struct {
 	Addr                 string
@@ -45,6 +63,8 @@ type Config struct {
 	CounterBusinessTypes map[string]int32
 	// PlatformUserID 平台账户的 owner user_id. 默认 0; 业务方可以改成自有平台 user.
 	PlatformUserID int64
+	// OwnerIDResolver 可选; 不配 → 当 ownerID 是纯数字 strconv 直接解析.
+	OwnerIDResolver OwnerIDResolver
 }
 
 // accCacheEntry 账户号解析缓存条目. 5min TTL, 按 (user_id, BT, currency) 三元组.
@@ -103,15 +123,38 @@ func New(cfg Config) (*Client, error) {
 	}, nil
 }
 
-// PrewarmFleetAccounts 启动时把 payment-channel 维度的 platform 渠道账户预创建,
-// 防止首笔交易因为 buffer 账户不存在而失败.
+// PrewarmFleetAccounts 启动时把 payment-channel 维度的 platform 渠道 buffer
+// 账户在 accounting 侧预创建, 防止首笔交易 hit ErrAccountNotFound.
 //
 // channelBT: payment_method (lowercase) → buffer business_type (例: stripe→7001).
-// currency: PHP / USD / ... 全大写.
+// currency:  PHP / USD / ... 全大写 (空 → 跳过 prewarm, 仅热缓存 BT 映射).
 //
-// 当前只热缓存 BT 映射; 真预创建账户由 ops 走 /admin/platform-accounts/fleet 完成.
-func (c *Client) PrewarmFleetAccounts(_ context.Context, channelBT map[string]int32, _ string) error {
+// 实装: 对每个 channelBT 项调 accountingservice.CreateAccount(user_id=PlatformUserID,
+// account_type=PLATFORM, business_type=channelBT, currency=...). accounting 侧
+// 对 (user_id, business_type) 加了唯一约束, 重复创建返 409 → 忽略.
+// 非 409 错误 (DB 挂 / RPC 超时) 落 warning 不阻断启动, 首笔交易仍会按需创建.
+func (c *Client) PrewarmFleetAccounts(ctx context.Context, channelBT map[string]int32, currency string) error {
 	c.SetCounterBusinessTypes(channelBT)
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if currency == "" {
+		return nil // 调用方未提供 currency, 仅热缓存即可.
+	}
+	for pm, bt := range channelBT {
+		_, err := c.cli.CreateAccount(ctx, &accv1.CreateAccountRequest{
+			UserId:              c.cfg.PlatformUserID,
+			AccountType:         accv1.AccountType_ACCOUNT_TYPE_PLATFORM,
+			Category:            accv1.AccountCategory_ACCOUNT_CATEGORY_ASSET, // channel buffer 是 "应收渠道款" 资产
+			Currency:            currency,
+			AccountBusinessType: accv1.AccountBusinessType(bt),
+			Description:         fmt.Sprintf("channel buffer for %s (auto-prewarm)", pm),
+		})
+		if err != nil {
+			// 网络 / RPC 错误 — 不阻断启动, 首笔交易会按需重试 (account_no resolution 走 List).
+			// caller 关心错误可以记 log; 这里返第一个 error 让上层决定.
+			return fmt.Errorf("prewarm %s (bt=%d %s): %w", pm, bt, currency, err)
+		}
+		// resp.Code != 0 (e.g. 409 duplicate) → 已存在, idempotent OK, 不报错.
+	}
 	return nil
 }
 
@@ -180,9 +223,9 @@ func (c *Client) DoubleEntryBooking(ctx context.Context, ob *domain.AccountingOu
 	if err != nil {
 		return fmt.Errorf("resolve channel account (user=%d bt=%d): %w", c.cfg.PlatformUserID, counterBT, err)
 	}
-	ownerID, err := parseInt64(ob.OwnerID)
+	ownerID, err := c.resolveOwnerID(ctx, string(ob.OwnerType), ob.OwnerID)
 	if err != nil {
-		return fmt.Errorf("parse owner_id %q: %w", ob.OwnerID, err)
+		return fmt.Errorf("resolve owner_id %q (type=%s): %w", ob.OwnerID, ob.OwnerType, err)
 	}
 	ownerNo, err := c.resolveAccountNo(ctx, ownerID, int32(ownerBT), ob.Currency)
 	if err != nil {
@@ -294,23 +337,28 @@ func ownerBTFor(ot domain.AccountingOwnerType) (accv1.AccountBusinessType, error
 
 // entriesDirection 按 EventType 决定借贷方向, 返 (debitAccountNo, creditAccountNo).
 //
-// charge.succeeded:
+// 方向矩阵 (见 domain.AccountingEventType 注释表):
 //
-//	Money flow:    channel → platform → merchant
-//	Bookkeeping:   DEBIT channel-buffer (asset+ "应收渠道款")
-//	               CREDIT owner-pending (liability+ "欠商户/用户")
-//
-// refund.succeeded:
-//
-//	Money flow:    merchant → platform → channel (退给买家)
-//	Bookkeeping:   DEBIT owner-pending (liability-)
-//	               CREDIT channel-buffer (asset-)
+//	入账方向 (channel → owner): charge_succeeded, dispute_won
+//	出账方向 (owner → channel): refund_succeeded, dispute_opened, chargeback_received
+//	内部费用 (owner → platform-pnl): fee_charged — 需要 caller 传第三个账户 (TBD)
+//	reversal: 上游业务决定具体方向, 这里按 refund 处理
 func entriesDirection(et domain.AccountingEventType, channelNo, ownerNo string) (debit, credit string, err error) {
 	switch et {
-	case domain.AccountingEventChargeSucceeded:
+	case domain.AccountingEventChargeSucceeded,
+		domain.AccountingEventDisputeWon:
+		// 入账: DEBIT channel-buffer, CREDIT owner-pending
 		return channelNo, ownerNo, nil
-	case domain.AccountingEventRefundSucceeded:
+	case domain.AccountingEventRefundSucceeded,
+		domain.AccountingEventDisputeOpened,
+		domain.AccountingEventChargebackReceived,
+		domain.AccountingEventReversalSucceeded:
+		// 出账: DEBIT owner-pending, CREDIT channel-buffer
 		return ownerNo, channelNo, nil
+	case domain.AccountingEventFeeCharged:
+		// fee_charged 需要 platform-pnl 账户 (业务费 / 服务费收入), 当前 mapper
+		// 没维护第三个账户号; 留待 fee 实装时扩 Config.PlatformPnLBT + 第三个 resolve.
+		return "", "", fmt.Errorf("event_type %q requires platform-pnl account resolution (TBD)", et)
 	default:
 		return "", "", fmt.Errorf("unsupported event_type %q", et)
 	}
@@ -320,10 +368,16 @@ func entriesDirection(et domain.AccountingEventType, channelNo, ownerNo string) 
 // 未识别的 EventType 落 PAYMENT (charge 默认), 保守不阻断.
 func eventTypeToBusinessType(et domain.AccountingEventType) accv1.BusinessType {
 	switch et {
-	case domain.AccountingEventChargeSucceeded:
+	case domain.AccountingEventChargeSucceeded,
+		domain.AccountingEventDisputeWon:
 		return accv1.BusinessType_BUSINESS_TYPE_PAYMENT
-	case domain.AccountingEventRefundSucceeded:
+	case domain.AccountingEventRefundSucceeded,
+		domain.AccountingEventDisputeOpened,
+		domain.AccountingEventChargebackReceived,
+		domain.AccountingEventReversalSucceeded:
 		return accv1.BusinessType_BUSINESS_TYPE_REFUND
+	case domain.AccountingEventFeeCharged:
+		return accv1.BusinessType_BUSINESS_TYPE_COMMISSION
 	default:
 		return accv1.BusinessType_BUSINESS_TYPE_PAYMENT
 	}
@@ -345,9 +399,21 @@ func firstNonEmpty(ss ...string) string {
 	return ""
 }
 
-// parseInt64 把 owner_id 字符串解析成 int64. 业务层 ownerID 是 varchar(64) 给字母
-// 数字 ID (e.g. "mch_xxx") 留余地; 但目前 accounting 侧 user_id 是 int64, 所以
-// outbox 写入处必须用纯数字 ID; 这里 strconv 严格解析, 拒接 trailing garbage.
-func parseInt64(s string) (int64, error) {
-	return strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+// resolveOwnerID 三选一:
+//
+//	1. cfg.OwnerIDResolver != nil + 返非 ErrFallbackToNumeric → 用 resolver 结果
+//	2. OwnerID 是纯数字 → strconv.ParseInt
+//	3. 都不行 → 报错
+func (c *Client) resolveOwnerID(ctx context.Context, ownerType, ownerID string) (int64, error) {
+	if c.cfg.OwnerIDResolver != nil {
+		id, err := c.cfg.OwnerIDResolver(ctx, ownerType, ownerID)
+		if err == nil {
+			return id, nil
+		}
+		if !errors.Is(err, ErrFallbackToNumeric) {
+			return 0, err
+		}
+		// fallthrough → strconv
+	}
+	return strconv.ParseInt(strings.TrimSpace(ownerID), 10, 64)
 }

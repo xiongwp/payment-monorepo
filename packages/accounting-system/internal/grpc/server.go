@@ -1582,10 +1582,27 @@ func (s *Server) CreateTransaction(ctx context.Context, req *accountingv1.Create
 	}
 	legs := req.GetLegs()
 	if len(legs) == 0 {
+		// Rule-engine derivation 兜底: 当 caller 没派生 legs 时, 让 server 按
+		// (product_code, event_code) 查 transaction_rule 当文档/审计回执用. 真要
+		// 据 rule 自动派生 account_no + amount 需要 caller 再传 (from_party_id,
+		// to_party_id, amount, currency) — proto 当前没有这些字段, 所以这里只
+		// 把命中的 rule 行回 error message, 让 caller 能据此 debug + 自行扩展.
+		var hint string
+		if req.GetProductCode() != "" {
+			if rules, err := s.ruleRepo.ListRulesByProduct(ctx, req.GetProductCode()); err == nil {
+				matched := 0
+				for _, r := range rules {
+					if r.EventCode == "" || r.EventCode == req.GetEventCode() {
+						matched++
+					}
+				}
+				hint = fmt.Sprintf(" (matched %d rule(s) for product=%s event=%s; caller must derive legs from these)", matched, req.GetProductCode(), req.GetEventCode())
+			}
+		}
 		return &accountingv1.CreateTransactionResponse{
 			OrderNo:      req.GetIdempotencyKey(),
 			Status:       "failed",
-			ErrorMessage: "legs empty: rule-engine derivation not implemented, caller must populate legs",
+			ErrorMessage: "legs empty" + hint,
 		}, nil
 	}
 

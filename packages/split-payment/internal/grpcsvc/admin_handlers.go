@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bytedance/gopkg/cloud/metainfo"
 	"github.com/xiongwp/split-payment/internal/domain"
 	"github.com/xiongwp/split-payment/internal/observability"
 	"github.com/xiongwp/split-payment/internal/workflow"
@@ -92,10 +93,7 @@ func (s *Server) ListGraphs(ctx context.Context, _ *ListGraphsRequest) (*ListGra
 	}
 	items := make([]*GraphSummary, 0, len(list))
 	for _, g := range list {
-		items = append(items, &GraphSummary{
-			Key: g.Key, Name: g.Name, Version: g.Version, Status: g.Status,
-			OwnerType: g.OwnerType, OwnerId: g.OwnerID,
-		})
+		items = append(items, graphToWireSummary(g))
 	}
 	return &ListGraphsResponse{Items: items}, nil
 }
@@ -116,11 +114,7 @@ func (s *Server) GetGraph(ctx context.Context, req *GetGraphRequest) (*GetGraphR
 	if err != nil {
 		return nil, fmt.Errorf("marshal spec: %w", err)
 	}
-	return &GetGraphResponse{Graph: &Graph{
-		Key: g.Key, Name: g.Name, Version: g.Version, Status: g.Status,
-		OwnerType: g.OwnerType, OwnerId: g.OwnerID,
-		SpecJson: specBytes,
-	}}, nil
+	return &GetGraphResponse{Graph: graphToWire(g, specBytes)}, nil
 }
 
 // SaveGraph — upsert.
@@ -151,13 +145,14 @@ func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGra
 		outcome = "invalid"
 		return nil, errors.New("graph.key required")
 	}
-	g := &domain.Graph{
-		Key:       req.Graph.Key,
-		Name:      req.Graph.Name,
-		Version:   firstNonEmpty(req.Graph.Version, "1.0.0"),
-		Status:    firstNonEmpty(req.Graph.Status, "draft"),
-		OwnerType: req.Graph.OwnerType,
-		OwnerID:   req.Graph.OwnerId,
+	g := graphFromWire(req.Graph)
+	// SaveGraph 入参允许 Version/Status 留空 → 给默认; 这两个是上层 saga 行为,
+	// 不放进 graphFromWire (那是纯结构转换).
+	if g.Version == "" {
+		g.Version = "1.0.0"
+	}
+	if g.Status == "" {
+		g.Status = "draft"
 	}
 	if len(req.Graph.SpecJson) > 0 {
 		if err := json.Unmarshal(req.Graph.SpecJson, &g.Spec); err != nil {
@@ -439,9 +434,27 @@ func firstNonEmpty(a, b string) string {
 //   - x-actor 优先 (BFF 应该传入业务侧用户身份)
 //   - x-admin-token 兜底, 不记原文 (脱敏: 只记前 8 字节 hash 用)
 //   - 都没有 → "unknown"
+// extractActor 从 Kitex 传输元数据里取 actor 标识 (audit log + 资金审计用).
+//
+//   - x-actor       优先 (BFF 把业务侧用户身份显式塞进来)
+//   - x-admin-token 兜底 (脱敏: 只记前 8 字节, 不落原文)
+//   - 都没有        "unknown" (不强求, 但 audit 表能区分链路)
+//
+// 走 metainfo.GetValue 是 Kitex 跨服务传 header 的标准 API; client 端用
+// metainfo.WithValue / metainfo.WithPersistentValue 注入, 走 TTHeader / gRPC
+// metadata 透传 (Kitex 自动处理).
 func extractActor(ctx context.Context) string {
-	// Kitex metainfo MW 接通前临时返 "unknown"; 真接通后这里读
-	// metainfo.GetValue(ctx, "x-actor") / "x-admin-token" 即可.
-	_ = ctx
+	if v, ok := metainfo.GetValue(ctx, "x-actor"); ok && v != "" {
+		return v
+	}
+	if v, ok := metainfo.GetPersistentValue(ctx, "x-actor"); ok && v != "" {
+		return v
+	}
+	if t, ok := metainfo.GetValue(ctx, "x-admin-token"); ok && t != "" {
+		if len(t) > 8 {
+			return "token-" + t[:8]
+		}
+		return "token-" + t
+	}
 	return "unknown"
 }

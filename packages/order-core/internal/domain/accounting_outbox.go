@@ -17,12 +17,29 @@ const (
 	AccountingOutboxFailed  AccountingOutboxStatus = "failed"
 )
 
-// AccountingEventType 指导 worker 按哪个方向落账。
+// AccountingEventType 指导 worker 按哪个方向落账.
+//
+// 一表概览 (借/贷方向 = order-core mapper 内 entriesDirection):
+//
+//	event_type            | DEBIT 侧               | CREDIT 侧              | BusinessType
+//	---------------------|------------------------|-----------------------|-------------
+//	charge_succeeded     | channel-buffer         | owner-pending-settle  | PAYMENT
+//	refund_succeeded     | owner-pending-settle   | channel-buffer        | REFUND
+//	dispute_opened       | owner-pending-settle   | channel-buffer (扣回) | REFUND
+//	dispute_won          | channel-buffer         | owner-pending-settle  | PAYMENT
+//	chargeback_received  | owner-pending-settle   | channel-buffer        | REFUND
+//	fee_charged          | owner-pending-settle   | platform-pnl          | COMMISSION
+//	reversal_succeeded   | (按上游事件反向)        | (反向)                | REFUND
 type AccountingEventType string
 
 const (
-	AccountingEventChargeSucceeded AccountingEventType = "charge_succeeded"
-	AccountingEventRefundSucceeded AccountingEventType = "refund_succeeded"
+	AccountingEventChargeSucceeded     AccountingEventType = "charge_succeeded"
+	AccountingEventRefundSucceeded     AccountingEventType = "refund_succeeded"
+	AccountingEventDisputeOpened       AccountingEventType = "dispute_opened"        // 争议挂起: 临时把钱从商户应付划回渠道应收
+	AccountingEventDisputeWon          AccountingEventType = "dispute_won"           // 我方胜诉: 撤回 dispute_opened, 重新挂账给商户
+	AccountingEventChargebackReceived  AccountingEventType = "chargeback_received"   // 渠道发起拒付强扣
+	AccountingEventFeeCharged          AccountingEventType = "fee_charged"           // 平台费 / 服务费向商户收
+	AccountingEventReversalSucceeded   AccountingEventType = "reversal_succeeded"    // 全链路 reversal (split-payment 用)
 )
 
 // AccountingOwnerType 账户归属。

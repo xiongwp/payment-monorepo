@@ -272,7 +272,9 @@ func (h *AdminHandler) adminActorMiddleware(next http.HandlerFunc) http.HandlerF
 			return
 		}
 
-		// 调 user-merchant-core IntrospectToken (目前 stub, 永远返 valid=false → 401)
+		// 调 user-merchant-core IntrospectToken (真实装 JWT verify + session 表二次
+		// 校验; 见 user-merchant-core/internal/service/user_service.go::IntrospectToken).
+		// 本地 dev 没真 token 时设 CONFIG_CENTER_DEV_BYPASS=1 跳过这一步.
 		resp, err := h.introspect.introspect(r.Context(), token)
 		if err != nil {
 			h.logger.Warn("admin: introspect failed", zap.Error(err))
