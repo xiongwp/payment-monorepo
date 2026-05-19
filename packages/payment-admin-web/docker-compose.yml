@@ -35,6 +35,7 @@ services:
         order-core:          ../order-core
         user-merchant-core:  ../user-merchant-core
         accounting-grpc-api: ../accounting-grpc-api
+        split-payment:       ../split-payment
       secrets:
         - GITHUB_TOKEN
     image: payment-admin-backend:local

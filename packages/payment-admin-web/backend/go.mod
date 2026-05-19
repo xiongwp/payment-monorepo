@@ -10,6 +10,7 @@ require (
 	github.com/xiongwp/payment-core v0.0.1
 	github.com/xiongwp/payment-util v0.0.1
 	github.com/xiongwp/risk-manage v0.0.1
+	github.com/xiongwp/split-payment v0.0.1
 	github.com/xiongwp/user-merchant-core v0.0.1
 	golang.org/x/time v0.5.0
 	google.golang.org/grpc v1.80.0
@@ -74,6 +75,7 @@ replace (
 	github.com/xiongwp/payment-channel => ../../payment-channel
 	github.com/xiongwp/payment-core => ../../payment-core
 	github.com/xiongwp/risk-manage => ../../risk-manage
+	github.com/xiongwp/split-payment => ../../split-payment
 	github.com/xiongwp/user-merchant-core => ../../user-merchant-core
 )
 
