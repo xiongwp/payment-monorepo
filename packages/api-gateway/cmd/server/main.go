@@ -15,16 +15,12 @@ import (
 
 	"github.com/spf13/viper"
 	"github.com/xiongwp/payment-util/configcenter"
-	"github.com/xiongwp/payment-util/mtls"
-	"github.com/xiongwp/payment-util/serviceregistry"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/keepalive"
 
-	usermerchantv1 "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1"
+	"reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
 
 	"github.com/xiongwp/api-gateway/internal/metrics"
 	"github.com/xiongwp/api-gateway/internal/server"
@@ -51,8 +47,6 @@ func main() {
 			newConfigCenterClient,
 			newRateLimitHub,
 			newServerConfig,
-			newUserMerchantConn,
-			newOrderCoreConn,
 			newUserwebHandler,
 			newCardHandler,
 			newServer,
@@ -300,31 +294,16 @@ func newServer(cfg server.Config, uw *userweb.Handler, ch *userweb.CardHandler, 
 //
 // PCI nano-discipline：cards_new.html 是 JS-only 直发 card-center HTTPS，
 // PAN 永远不经过 api-gateway。本 handler 的 /cards/attach 只接 stored_token + masked。
-func newCardHandler(uw *userweb.Handler, umc UserMerchantConn, oc OrderCoreConn, v *viper.Viper, logger *zap.Logger) *userweb.CardHandler {
+func newCardHandler(uw *userweb.Handler, v *viper.Viper, logger *zap.Logger) *userweb.CardHandler {
 	if uw == nil {
 		return nil
 	}
-	enabled := v.GetBool("cards.enabled")
-
-	// CardServiceClient: 真 gRPC vs stub
-	var cardClient userweb.CardServiceClient
-	if enabled && umc.ClientConn != nil {
-		cardClient = userweb.NewGRPCCardClient(umc.ClientConn)
-		logger.Info("CardHandler.cards: real gRPC → user-merchant-core.UserCardService")
-	} else {
-		cardClient = userweb.NewStubCardClient()
-		logger.Info("CardHandler.cards: stub mode")
-	}
-
-	// PaymentServiceClient: 真 gRPC vs stub
-	var payClient userweb.PaymentServiceClient
-	if enabled && oc.ClientConn != nil {
-		payClient = userweb.NewGRPCPaymentClient(oc.ClientConn)
-		logger.Info("CardHandler.payments: real gRPC → order-core.PaymentIntentService")
-	} else {
-		payClient = userweb.NewStubPaymentClient()
-		logger.Info("CardHandler.payments: stub mode")
-	}
+	// gRPC card / payment clients 已切 Kitex — 真接通需要 Kitex client
+	// (userservice / paymentintentservice). 此处先走 stub, real wiring 是
+	// 后续 KX-WIDE 收尾的活儿.
+	cardClient := userweb.NewStubCardClient()
+	payClient := userweb.NewStubPaymentClient()
+	logger.Info("CardHandler: stub mode (Kitex card/payment client wiring pending)")
 
 	ch := userweb.NewCardHandler(uw, cardClient, payClient)
 	ch.CardCenterURL = v.GetString("cards.card_center_url")
