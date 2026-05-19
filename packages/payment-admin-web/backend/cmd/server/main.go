@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -280,16 +279,7 @@ func main() {
 		if err := srv.Shutdown(ctx); err != nil {
 			log.Printf("graceful shutdown: %v", err)
 		}
-		// Close gRPC conns so downstream balancers stop routing to us.
-		for name, c := range map[string]*grpc.ClientConn{
-			"order-core": orderConn, "payment-core": paymentConn,
-			"kms-manage": kmsConn, "risk-manage": riskConn,
-			"user-merchant-core": userMerchantConn,
-		} {
-			if err := c.Close(); err != nil {
-				log.Printf("close %s: %v", name, err)
-			}
-		}
+		// Kitex client 无显式 Close — resolver / 连接由 Kitex runtime 管.
 		log.Printf("shutdown complete")
 	}
 }
@@ -312,134 +302,8 @@ func envInt(name string, def int) int {
 	return n
 }
 
-// mustDial 优先走 etcd resolver（多副本场景）；endpoints 空就退回直连 fallbackAddr。
-// fallbackAddr 用于本地 dev / 单实例部署 / etcd 故障兜底。
-//
-// 启动期还会做一道**注册探测**：REGISTRY_ENDPOINTS 配了，但 etcd 上 0 个
-// <service>/* 注册条目时，自动降级到 fallbackAddr 直连，避免出现 round_robin
-// balancer "no children to pick from" 的红错（kms-manage / risk-manage 等
-// 容器还没起 / 起来但还没注册就常踩这个）。等 service 真注册了，下次 BFF
-// 重启会自动切回 etcd resolver 模式（也可挂热重载，目前先 boot-time 兜底）。
-//
-// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
-// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
-// 生产必须有证书，否则 panic。
-func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn {
-	// Load mTLS config; fail-fast in production if certs missing
-	mtlsCfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		log.Fatalf("mtls config: %v", err)
-	}
-
-	var creds grpc.DialOption
-	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
-		// Dev/test mode: no mTLS certs configured
-		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else {
-		// mTLS mode: load credentials
-		tlsCreds, cerr := mtlsCfg.ClientCredentials()
-		if cerr != nil {
-			log.Fatalf("failed to load mTLS credentials for %s: %v", service, cerr)
-		}
-		creds = grpc.WithTransportCredentials(tlsCreds)
-	}
-
-	keepalive := grpc.WithKeepaliveParams(keepalive.ClientParameters{
-		Time:                30 * time.Second,
-		Timeout:             10 * time.Second,
-		PermitWithoutStream: true,
-	})
-
-	if len(registry) > 0 {
-		// 探测 etcd 上有没有 <service>/* 注册条目；2s 超时不挡 BFF 启动。
-		registered, err := serviceregistry.HasRegisteredInstances(registry, service, 2*time.Second)
-		if err != nil {
-			log.Printf("[bff] WARN probe etcd for %q failed: %v；继续按 fallback 直连", service, err)
-		}
-		if !registered {
-			log.Printf("[bff] WARN %q etcd 无注册条目，降级直连 %s（待该服务起来并注册到 etcd 后重启 BFF 会自动切回 etcd resolver）",
-				service, fallbackAddr)
-			target := fallbackAddr
-			if !strings.Contains(target, "://") {
-				target = "passthrough:///" + target
-			}
-			conn, derr := grpc.NewClient(target,
-				creds,
-				keepalive,
-				grpc.WithDefaultServiceConfig(`{
-					"loadBalancingConfig":[{"round_robin":{}}],
-					"healthCheckConfig":{"serviceName":""},
-					"methodConfig":[{
-						"name":[{}],
-						"retryPolicy":{
-							"maxAttempts":3,
-							"initialBackoff":"0.1s",
-							"maxBackoff":"1s",
-							"backoffMultiplier":2,
-							"retryableStatusCodes":["UNAVAILABLE"]
-						}
-					}]
-				}`),
-			)
-			if derr != nil {
-				log.Fatalf("dial %s fallback (%s): %v", service, target, derr)
-			}
-			return conn
-		}
-		conn, err := serviceregistry.DialFromEndpoints(registry, service,
-			creds,
-			keepalive,
-		)
-		if err != nil {
-			log.Fatalf("dial %s via etcd %v: %v", service, registry, err)
-		}
-		log.Printf("[bff] dialed %s via etcd %v", service, registry)
-		return conn
-	}
-	// dns 显式前缀触发 gRPC 内置 DNS resolver；不写默认是 passthrough（不 re-resolve），
-	// 后端容器重启 / 副本切换 / 启动顺序错时会卡在 "no children to pick from"。
-	target := fallbackAddr
-	if !strings.Contains(target, "://") {
-		target = "passthrough:///" + target
-	}
-	conn, err := grpc.NewClient(target,
-		creds,
-		keepalive,
-		// round_robin 多副本均衡 + 30s DNS re-resolve (resolveNowFreq is internal,
-		// 但 idle 连接重建会触发 re-resolve)。配 healthCheck 让 unhealthy backend 自动剔除。
-		grpc.WithDefaultServiceConfig(`{
-			"loadBalancingConfig":[{"round_robin":{}}],
-			"healthCheckConfig":{"serviceName":""},
-			"methodConfig":[{
-				"name":[{}],
-				"retryPolicy":{
-					"maxAttempts":3,
-					"initialBackoff":"0.1s",
-					"maxBackoff":"1s",
-					"backoffMultiplier":2,
-					"retryableStatusCodes":["UNAVAILABLE"]
-				}
-			}]
-		}`),
-	)
-	if err != nil {
-		log.Fatalf("dial %s (%s): %v", service, target, err)
-	}
-	return conn
-}
-
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	out := make([]string, 0, 4)
-	for _, p := range strings.Split(s, ",") {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
+// mustDial / splitCSV 已删 — Kitex 切换后 *_GRPC_ADDR + REGISTRY_ENDPOINTS 环境变量
+// 由 Kitex client 自己读取.
 
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {

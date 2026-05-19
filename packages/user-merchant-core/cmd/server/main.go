@@ -12,15 +12,11 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/keepalive"
-
-	"github.com/xiongwp/payment-util/mtls"
 
 	accv1 "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1"
-	"github.com/xiongwp/payment-util/serviceregistry"
+	"reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/accountingservice"
 	riskv1 "reconcile-system/packages/risk-manage/kitex_gen/risk/v1"
+	"reconcile-system/packages/risk-manage/kitex_gen/risk/v1/riskservice"
 	"github.com/xiongwp/user-merchant-core/internal/authpkg"
 	"github.com/xiongwp/user-merchant-core/internal/cache"
 	"github.com/xiongwp/user-merchant-core/internal/healthz"
@@ -682,49 +678,17 @@ func newMailer(logger *zap.Logger) service.Mailer {
 //
 // mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
 // 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
-func newRiskClient(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.RiskClient {
+func newRiskClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.RiskClient {
 	endpoint := v.GetString("risk.endpoint")
 	registry := v.GetStringSlice("registry.endpoints")
 	if endpoint == "" && len(registry) == 0 {
 		logger.Info("risk.endpoint and registry.endpoints both unset; using NoopRiskClient (all-allow, no graph writes)")
 		return service.NoopRiskClient{}
 	}
-
-	// Load mTLS config; fail-fast in production if certs missing
-	mtlsCfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		logger.Error("mtls config failed; falling back to noop risk client", zap.Error(err))
-		return service.NoopRiskClient{}
-	}
-
-	var creds grpc.DialOption
-	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
-		// Dev/test mode: no mTLS certs configured
-		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else {
-		// mTLS mode: load credentials
-		tlsCreds, cerr := mtlsCfg.ClientCredentials()
-		if cerr != nil {
-			logger.Warn("failed to load mTLS credentials for risk-manage; falling back to noop", zap.Error(cerr))
-			return service.NoopRiskClient{}
-		}
-		creds = grpc.WithTransportCredentials(tlsCreds)
-	}
-
-	conn, err := serviceregistry.DialWithFallback(registry, "risk-manage", endpoint,
-		creds,
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
-		}),
-	)
-	if err != nil {
-		logger.Warn("risk dial failed; falling back to noop", zap.Error(err))
-		return service.NoopRiskClient{}
-	}
-	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
-	logger.Info("risk client dialed",
-		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
+	// Kitex client — etcd resolver / endpoint 由 Kitex 内置. 老 gRPC dial + mTLS 已删.
 	api := kitexutil.MustKitexClient(riskservice.NewClient("risk-manage"))
+	logger.Info("risk client constructed (Kitex)",
+		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
 	return &grpcRiskAdapter{api: api, timeout: v.GetDuration("risk.rpc_timeout")}
 }
 
@@ -807,54 +771,22 @@ func (promIntrospectCacheHook) Lookup(hit bool) {
 //
 // mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
 // 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
-func newAccountingClient(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.AccountingClient {
+func newAccountingClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.AccountingClient {
 	endpoint := v.GetString("accounting.endpoint")
 	registry := v.GetStringSlice("registry.endpoints")
 	if endpoint == "" && len(registry) == 0 {
 		logger.Info("accounting.endpoint and registry.endpoints both unset; using NoopAccountingClient (no balance accounts opened)")
 		return service.NoopAccountingClient{}
 	}
-
-	// Load mTLS config; fail-fast in production if certs missing
-	mtlsCfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		logger.Error("mtls config failed; falling back to noop accounting client", zap.Error(err))
-		return service.NoopAccountingClient{}
-	}
-
-	var creds grpc.DialOption
-	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
-		// Dev/test mode: no mTLS certs configured
-		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else {
-		// mTLS mode: load credentials
-		tlsCreds, cerr := mtlsCfg.ClientCredentials()
-		if cerr != nil {
-			logger.Warn("failed to load mTLS credentials for accounting-system; falling back to noop", zap.Error(cerr))
-			return service.NoopAccountingClient{}
-		}
-		creds = grpc.WithTransportCredentials(tlsCreds)
-	}
-
-	conn, err := serviceregistry.DialWithFallback(registry, "accounting-service", endpoint,
-		creds,
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
-		}),
-	)
-	if err != nil {
-		logger.Warn("accounting dial failed; falling back to noop", zap.Error(err))
-		return service.NoopAccountingClient{}
-	}
-	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
-	logger.Info("accounting client dialed",
+	// Kitex client — etcd resolver / endpoint 由 Kitex 内置. 老 gRPC dial + mTLS 已删.
+	api := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-service"))
+	logger.Info("accounting client constructed (Kitex)",
 		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
-	api := accv1.NewAccountingServiceClient(conn)
 	return &grpcAccountingAdapter{api: api, timeout: v.GetDuration("accounting.rpc_timeout")}
 }
 
 type grpcAccountingAdapter struct {
-	api     accv1.AccountingServiceClient
+	api     accountingservice.Client
 	timeout time.Duration
 }
 
