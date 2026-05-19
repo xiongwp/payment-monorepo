@@ -1,0 +1,111 @@
+// AccountingAdminService — reverse-written from admin_extensions.go (handwritten gRPC service).
+//
+// NOTE: This is a SKELETON proto. The actual message types (HotAccount /
+// BufferAccount / ManualEntry / TrialBalance / DayCut / etc.) are defined in
+// accounting.proto. This file declares the *service contract* — RPC method
+// list — so Kitex can generate adminservice stubs. The Request/Response
+// message types should reference the existing accounting.proto messages.
+//
+// Generation: ./idl/generate.sh accounting (it picks up all .proto files in
+// idl/accounting/v1/).
+
+syntax = "proto3";
+
+package accounting.v1;
+
+option go_package = "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1;accountingv1";
+
+// AccountingAdminService — 运维管理面 (热账户配置 / 调账 / 试算平衡 / 日切 / TCC).
+//
+// 跟 AccountingService (业务面) 分离的目的:
+//   - 不同 mTLS 客户端白名单 (admin 入口只 accounting-admin-web)
+//   - 不同 rate-limit + audit log 留存策略
+//   - 不同 SLO (admin 慢一点 OK; 业务面强 SLA)
+service AccountingAdminService {
+  // 热账户管理 — internal/admin/hot_account_repo + admin_extensions.go
+  rpc ListHotAccounts(ListHotAccountsRequest) returns (ListHotAccountsResponse);
+  rpc UpdateHotAccount(UpdateHotAccountRequest) returns (UpdateHotAccountResponse);
+  rpc ReloadHotAccounts(ReloadHotAccountsRequest) returns (ReloadHotAccountsResponse);
+
+  // 缓冲账户管理 — internal/admin/buffer_account_repo
+  rpc ListBufferAccounts(ListBufferAccountsRequest) returns (ListBufferAccountsResponse);
+  rpc UpdateBufferAccount(UpdateBufferAccountRequest) returns (UpdateBufferAccountResponse);
+  rpc ReloadBufferAccounts(ReloadBufferAccountsRequest) returns (ReloadBufferAccountsResponse);
+
+  // 调账 — 人工调账走 admin (业务流不该用)
+  rpc Adjust(AdjustRequest) returns (AdjustResponse);
+
+  // 试算平衡 + 日切 — 已在 accounting.proto 暴露 RunTrialBalance / TriggerDayCut /
+  // ListDayCutHistory / ListSnapshotDates, 这里复用即可, 不重复声明.
+}
+
+// 简化版 message — 真实 Request/Response 字段从 internal/admin/* 抽出.
+// 当前 stub 仅满足 Kitex 编译; 后续补全 ListAccount{Type,Status,...} 字段.
+
+message ListHotAccountsRequest {
+  string status_filter = 1; // active / disabled / "" = all
+}
+message HotAccount {
+  string account_no = 1;
+  string description = 2;
+  int32 priority = 3;
+  bool enabled = 4;
+}
+message ListHotAccountsResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated HotAccount items = 3;
+}
+
+message UpdateHotAccountRequest {
+  HotAccount account = 1;
+}
+message UpdateHotAccountResponse {
+  int32 code = 1;
+  string message = 2;
+}
+
+message ReloadHotAccountsRequest {}
+message ReloadHotAccountsResponse {
+  int32 code = 1;
+  string message = 2;
+  int32 reloaded_count = 3;
+}
+
+message ListBufferAccountsRequest {
+  string status_filter = 1;
+}
+message BufferAccount {
+  string account_no = 1;
+  string description = 2;
+  bool enabled = 3;
+}
+message ListBufferAccountsResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated BufferAccount items = 3;
+}
+
+message UpdateBufferAccountRequest { BufferAccount account = 1; }
+message UpdateBufferAccountResponse { int32 code = 1; string message = 2; }
+
+message ReloadBufferAccountsRequest {}
+message ReloadBufferAccountsResponse {
+  int32 code = 1;
+  string message = 2;
+  int32 reloaded_count = 3;
+}
+
+message AdjustRequest {
+  string account_no = 1;
+  int64 amount_minor = 2; // 可负
+  string currency = 3;
+  string reason = 4;
+  string operator = 5;
+  string idempotency_key = 6;
+}
+message AdjustResponse {
+  int32 code = 1;
+  string message = 2;
+  string voucher_no = 3;
+}

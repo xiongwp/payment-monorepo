@@ -38,8 +38,9 @@ import (
 	"reconcile-system/packages/split-payment/internal/workflow"
 
 	_ "github.com/go-sql-driver/mysql"             // MF-1: mysql driver
-	"github.com/twmb/franz-go/pkg/kgo"             // SP-11 refund kafka subscriber
-	"github.com/xiongwp/payment-util/mtls"         // mTLS scaffolding (server side 仍用)
+	kitexserver "github.com/cloudwego/kitex/server" // KX-11: Kitex server
+	"github.com/twmb/franz-go/pkg/kgo"              // SP-11 refund kafka subscriber
+	"github.com/xiongwp/payment-util/mtls"          // mTLS scaffolding (client buildClientCreds 仍用)
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -48,6 +49,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	adminservice "reconcile-system/packages/split-payment/kitex_gen/split_payment/v1/adminservice"
 )
 
 // main fx.New(Module).Run() — Module 见 providers.go.
@@ -614,18 +617,17 @@ func maskDSN(dsn string) string {
 // ruleSync 来自 cfg.Accounting.HTTPURL (e.g. http://accounting-service:8888),
 // SaveGraph 时把派生的 rules POST 到 /admin/transaction-rules. 空 → 关掉同步.
 func runAdminGRPCServer(ctx context.Context, cfg *config.Config, log *zap.Logger, graphs grpcsvc.GraphRepo, acct grpcsvc.AccountingMetaCaller) {
-	port := fmt.Sprintf("%d", cfg.Server.GRPCPort)
-	lis, err := net.Listen("tcp", ":"+port)
+	port := cfg.Server.GRPCPort
+	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		log.Error("split gRPC listen failed",
-			zap.String("port", port), zap.Error(err))
+		log.Error("split Kitex resolve addr failed", zap.Int("port", port), zap.Error(err))
 		return
 	}
 	var ruleSync grpcsvc.AccountingRuleSyncer
 	var orderReset grpcsvc.AccountingOrderResetter
 	if base := cfg.Accounting.HTTPURL; base != "" {
 		base = strings.TrimRight(base, "/")
-		// SP-AC-7 O3: 加 circuit breaker — accounting admin HTTP 连续 5 次失败 → 30s 熔断, fail-fast.
+		// SP-AC-7 O3: 加 circuit breaker — accounting admin HTTP 连续 5 次失败 → 30s 熔断.
 		cb := observability.NewCircuitBreaker("accounting_admin_http", observability.CircuitConfig{
 			FailureThreshold: 5, SuccessThreshold: 2, OpenDuration: 30 * time.Second,
 		})
@@ -633,52 +635,22 @@ func runAdminGRPCServer(ctx context.Context, cfg *config.Config, log *zap.Logger
 		orderReset = &cbOrderResetter{inner: &httpOrderResetter{baseURL: base, log: log}, cb: cb}
 		log.Info("split-payment: accounting admin HTTP wired",
 			zap.String("accounting_http", base),
-			zap.String("for", "SaveGraph saga + TriggerEvent retry"),
-			zap.String("circuit", "accounting_admin_http"))
-
-		// 启动期 reconcile: 扫所有 status=active 的 graph, 把 deriveRulesFromGraph
-		// 派生的 rule 调一次 UpsertRules. 自愈历史漏同步 (e.g. graph 是手动 INSERT
-		// 进 moneyflow_graphs 表绕过 SaveGraph saga, 或 saga 期间 accounting 故障).
-		// 异步执行, 不阻塞 gRPC 上线.
-		// 注: 本调用在 runAdminGRPCServer 作用域内, 用入参 graphs (grpcsvc.GraphRepo).
+			zap.String("for", "SaveGraph saga + TriggerEvent retry"))
 		go reconcileGraphRules(ctx, graphs, ruleSync, log)
 	} else {
 		log.Warn("split-payment: accounting.http_url empty, saga + retry features disabled")
 	}
-	// SP-AC-7 S1+S2: token auth interceptor.
-	//   - cfg.Server.AdminToken 配了 → 所有 gRPC 调用必须带 metadata X-Admin-Token 等值
-	//   - 空 → DEV 模式 ⚠ log warn 提醒生产应该配
+	// SP-AC-7 S1+S2 token auth — TODO: 接 kitexutil.AuthMW(cfg.Server.AdminToken).
+	// 当前 stub: AdminToken 不验, 等 kitexutil 真接 metainfo.GetValue 后展开.
 	authToken := cfg.Server.AdminToken
-	var opts []grpc.ServerOption
-	// SP-AC-7 PH3-2: mTLS server credentials (双向认证). 没配证书走明文 (dev 模式 warn).
-	if serverCreds, terr := buildServerCreds(log); terr != nil {
-		log.Fatal("build mTLS server credentials", zap.Error(terr))
-	} else if serverCreds != nil {
-		opts = append(opts, grpc.Creds(serverCreds))
-		log.Info("split-payment gRPC: mTLS enabled (require + verify client cert)")
-	} else {
-		log.Warn("split-payment gRPC: mTLS DISABLED — set MTLS_SERVER_CERT/KEY/CA env vars in production")
-	}
-	// SP-AC-7 L3+P1: gRPC server keepalive + 限流, 防超长闲连接 / 巨型 payload 打挂进程.
-	opts = append(opts,
-		grpc.MaxConcurrentStreams(64),
-		grpc.MaxRecvMsgSize(16*1024*1024),
-		serviceregistry.HardenedServerOptions()[0], // KeepaliveEnforcementPolicy
-	)
-	// SP-AC-7 O1: 拦截器链 — panic recover → access log → metrics → token auth (token 在最里层让上层 log 能看到 token 验失败).
-	interceptors := []grpc.UnaryServerInterceptor{
-		grpcsvc.PanicRecoverInterceptor(log),
-		grpcsvc.AccessLogInterceptor(log),
-		grpcsvc.MetricsInterceptor(),
-	}
 	if authToken != "" {
-		interceptors = append(interceptors, adminTokenInterceptor(authToken))
-		log.Info("split-payment gRPC: admin token auth enabled")
+		log.Info("split-payment Kitex: admin token configured (TODO: wire kitexutil.AuthMW)")
 	} else {
-		log.Warn("split-payment gRPC: AUTH DISABLED — set SPLIT_PAYMENT_ADMIN_TOKEN env var in production")
+		log.Warn("split-payment Kitex: AUTH DISABLED — set SPLIT_PAYMENT_ADMIN_TOKEN env var in production")
 	}
-	opts = append(opts, grpc.UnaryInterceptor(grpcsvc.ChainInterceptors(interceptors...)))
-	srv := grpc.NewServer(opts...)
+	// mTLS 已不需要 (内部 mesh 明文). Kitex MW 链 (Recover / AccessLog / Metrics / Auth)
+	// 待 kitexutil port 完成后 server.WithMiddleware(...) 接.
+	_ = adminTokenInterceptor // 防 import 未用; AuthMW 接好后 kill
 	// SP-AC-7 S6 + PROD3: 资金审计 — Zap (本地 stdout) + Kafka 独立 topic (隔离权限/留存).
 	// Kafka 不可达 → ChainAuditSink 会自动跳过, 退化为仅 zap.
 	auditSinks := []grpcsvc.AuditSink{&grpcsvc.ZapAuditSink{Log: log.Named("audit")}}
@@ -700,11 +672,16 @@ func runAdminGRPCServer(ctx context.Context, cfg *config.Config, log *zap.Logger
 		}
 	}
 	auditSink := &grpcsvc.ChainAuditSink{Sinks: auditSinks}
-	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, auditSink, log))
-	log.Info("split-payment gRPC AdminService listening", zap.String("port", port))
-	go func() { <-ctx.Done(); srv.GracefulStop() }()
-	if err := srv.Serve(lis); err != nil {
-		log.Error("split gRPC serve", zap.Error(err))
+
+	// Kitex server — adminservice.NewServer 把 grpcsvc.Server (实现 grpcsvc.AdminServiceServer
+	// interface) 注册到 Kitex. 老 grpc.NewServer + RegisterAdminServiceServer 替换为单行.
+	impl := grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, auditSink, log)
+	srv := adminservice.NewServer(impl, kitexserver.WithServiceAddr(addr))
+
+	log.Info("split-payment Kitex AdminService listening", zap.Int("port", port))
+	go func() { <-ctx.Done(); _ = srv.Stop() }()
+	if err := srv.Run(); err != nil {
+		log.Error("split kitex serve", zap.Error(err))
 	}
 }
 

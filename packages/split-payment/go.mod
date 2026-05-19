@@ -3,6 +3,7 @@ module reconcile-system/packages/split-payment
 go 1.25.0
 
 require (
+	github.com/cloudwego/kitex v0.10.0
 	github.com/go-sql-driver/mysql v1.8.1 // MF-1: MySQL driver
 	github.com/prometheus/client_golang v1.23.2 // SP-AC-7 P9: metrics
 	github.com/spf13/viper v1.19.0 // config YAML + env override

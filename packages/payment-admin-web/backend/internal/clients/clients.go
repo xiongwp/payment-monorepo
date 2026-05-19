@@ -1,37 +1,66 @@
-// Package clients 聚合 admin BFF 用到的所有 RPC client.
+// Package clients 聚合 admin BFF 用到的所有 Kitex RPC client.
 //
-// 当前混合状态: KMS 已切 Kitex (kmsservice.Client); 其它 7 个 service 仍是 gRPC
-// (待 KX-3/4/5/... 后逐个换). idl/MIGRATION.md 跟踪推进.
+// 全 monorepo Kitex 迁移后, 13 个 leaf service 全部走 Kitex. 这里 13 个字段对应:
+//   - order-core (8 services): PaymentIntent / Charge / Refund / Webhook /
+//     Audit / WebhookDelivery / Ledger / Dispute
+//   - user-merchant-core (6 services): Merchant / MerchantSecret / Audit /
+//     User / UserCard (UserCardInternal admin BFF 不直接调)
+//   - payment-core: PaymentCore
+//   - kms-manage: KMS
+//   - risk-manage: Risk
+//   - split-payment: SplitPaymentAdmin
 package clients
 
 import (
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	// order-core (8 services in kitex_gen/order/v1/)
+	auditservice "reconcile-system/packages/order-core/kitex_gen/order/v1/auditservice"
+	chargeservice "reconcile-system/packages/order-core/kitex_gen/order/v1/chargeservice"
+	disputeservice "reconcile-system/packages/order-core/kitex_gen/order/v1/disputeservice"
+	ledgerservice "reconcile-system/packages/order-core/kitex_gen/order/v1/ledgerservice"
+	paymentintentservice "reconcile-system/packages/order-core/kitex_gen/order/v1/paymentintentservice"
+	refundservice "reconcile-system/packages/order-core/kitex_gen/order/v1/refundservice"
+	webhookdeliveryservice "reconcile-system/packages/order-core/kitex_gen/order/v1/webhookdeliveryservice"
+	webhookservice "reconcile-system/packages/order-core/kitex_gen/order/v1/webhookservice"
 
-	// Kitex 已切的服务用 kitex_gen 路径:
+	// user-merchant-core (5 callable services, UserCardInternal 内部专用不暴露给 admin BFF)
+	umAuditservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/auditservice"
+	merchantsecretservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
+	merchantservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/merchantservice"
+	usercardservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/usercardservice"
+	userservice "reconcile-system/packages/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
+
+	// Other Kitex services (1 service each)
 	kmsservice "reconcile-system/packages/kms-manage/kitex_gen/kms/v1/kmsservice"
 	paymentcoreservice "reconcile-system/packages/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
 	riskservice "reconcile-system/packages/risk-manage/kitex_gen/risk/v1/riskservice"
+	splitadminservice "reconcile-system/packages/split-payment/kitex_gen/split_payment/v1/adminservice"
 )
 
-// Deps 是传给 handler 的一包 RPC 客户端, 生产时全部已 dial 好.
+// Deps 是传给 handler 的一包 Kitex RPC 客户端, 生产时全部已 dial 好.
 //
-// 注: KMS 字段类型从 kmsv1.KMSServiceClient (gRPC) 切到 kmsservice.Client (Kitex).
-// 上游 handler 的调用代码 (c.KMS.Encrypt(ctx, req)) 形态一致, 不用改; 但 grpc.CallOption
-// 类型的可变参数没了 — 如果有显式传 grpc.CallOption 的地方需要删.
+// 调用方式跟老 gRPC 形态一致 (c.PI.CreatePaymentIntent(ctx, req)), 不需要改 handler;
+// 但 grpc.CallOption 可变参数没了 — 如果有显式传 grpc.CallOption 的地方需要删.
 type Deps struct {
-	PI                orderv1.PaymentIntentServiceClient
-	Charge            orderv1.ChargeServiceClient
-	Refund            orderv1.RefundServiceClient
-	Merchant          usermerchantv1.MerchantServiceClient
-	Audit             orderv1.AuditServiceClient
-	UserMerchantAudit usermerchantv1.AuditServiceClient
-	WebhookDelivery   orderv1.WebhookDeliveryServiceClient
-	Ledger            orderv1.LedgerServiceClient
-	Dispute           orderv1.DisputeServiceClient
-	MerchantSecret    usermerchantv1.MerchantSecretServiceClient
-	PCore             paymentcoreservice.Client // Kitex
+	// order-core 8 services
+	PI              paymentintentservice.Client
+	Charge          chargeservice.Client
+	Refund          refundservice.Client
+	WebhookDelivery webhookdeliveryservice.Client
+	Audit           auditservice.Client
+	Ledger          ledgerservice.Client
+	Dispute         disputeservice.Client
+	Webhook         webhookservice.Client
 
-	KMS  kmsservice.Client  // Kitex
-	Risk riskservice.Client // Kitex
+	// user-merchant-core 5 services
+	Merchant          merchantservice.Client
+	MerchantSecret    merchantsecretservice.Client
+	UserMerchantAudit umAuditservice.Client
+	User              userservice.Client
+	UserCard          usercardservice.Client
+
+	// 单 service
+	PCore         paymentcoreservice.Client
+	KMS           kmsservice.Client
+	Risk          riskservice.Client
+	SplitPayment  splitadminservice.Client
 }

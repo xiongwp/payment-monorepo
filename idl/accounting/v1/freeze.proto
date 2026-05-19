@@ -1,0 +1,81 @@
+// FreezeService — reverse-written from freeze_extensions.go (handwritten gRPC service).
+//
+// 跟 AccountingService 的 FreezeAccount/UnfreezeAccount 不同 — 这个是 per-amount
+// 资金冻结 (商户保证金 / 退款 hold / 黑名单冻结的 partial freeze).
+
+syntax = "proto3";
+
+package accounting.v1;
+
+option go_package = "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1;accountingv1";
+
+service FreezeService {
+  rpc FreezeBalance(FreezeBalanceRequest) returns (FreezeBalanceResponse);
+  rpc UnfreezeBalance(UnfreezeBalanceRequest) returns (UnfreezeBalanceResponse);
+  rpc ConsumeFreeze(ConsumeFreezeRequest) returns (ConsumeFreezeResponse);
+  rpc GetFreeze(GetFreezeRequest) returns (GetFreezeResponse);
+  rpc ListFreezes(ListFreezesRequest) returns (ListFreezesResponse);
+}
+
+message FreezeBalanceRequest {
+  string account_no = 1;
+  int64 amount_minor = 2;
+  string currency = 3;
+  string reason = 4;
+  string idempotency_key = 5;
+  string expire_at = 6; // RFC3339; 空 = 永久冻结直到主动 Unfreeze
+}
+message FreezeBalanceResponse {
+  int32 code = 1;
+  string message = 2;
+  string freeze_id = 3;
+  int64 frozen_amount = 4;
+}
+
+message UnfreezeBalanceRequest {
+  string freeze_id = 1;
+  string reason = 2;
+}
+message UnfreezeBalanceResponse {
+  int32 code = 1;
+  string message = 2;
+}
+
+message ConsumeFreezeRequest {
+  string freeze_id = 1;
+  int64 consume_amount = 2; // 部分消耗也可; 剩余继续冻结
+  string voucher_no = 3;    // 关联的真实落账凭证号
+}
+message ConsumeFreezeResponse {
+  int32 code = 1;
+  string message = 2;
+  int64 remaining_frozen = 3;
+}
+
+message GetFreezeRequest { string freeze_id = 1; }
+message FreezeRecord {
+  string freeze_id = 1;
+  string account_no = 2;
+  int64 amount = 3;
+  int64 consumed = 4;
+  string currency = 5;
+  string status = 6; // active / consumed / expired / cancelled
+  string created_at = 7;
+  string expire_at = 8;
+}
+message GetFreezeResponse {
+  int32 code = 1;
+  string message = 2;
+  FreezeRecord record = 3;
+}
+
+message ListFreezesRequest {
+  string account_no = 1;
+  string status_filter = 2;
+  int32 limit = 3;
+}
+message ListFreezesResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated FreezeRecord items = 3;
+}

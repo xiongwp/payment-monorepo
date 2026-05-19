@@ -3,6 +3,7 @@ module github.com/accounting-system
 go 1.25.0
 
 require (
+	github.com/cloudwego/kitex v0.10.0
 	github.com/go-sql-driver/mysql v1.7.1
 	github.com/segmentio/kafka-go v0.4.47
 	github.com/shopspring/decimal v1.3.1

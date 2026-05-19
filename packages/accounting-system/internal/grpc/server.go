@@ -8,30 +8,30 @@ import (
 	"strconv"
 	"time"
 
+	kitexserver "github.com/cloudwego/kitex/server"
 	"github.com/accounting-system/internal/currency"
 	"github.com/accounting-system/internal/domain/model"
 	"github.com/accounting-system/internal/infrastructure/logging"
 	"github.com/accounting-system/internal/repository"
 	"github.com/accounting-system/internal/service"
-	"github.com/accounting-system/internal/trace"
 	"github.com/shopspring/decimal"
 	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
-	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	accountingservice "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/accountingservice"
+	accountingadminservice "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
+	freezeservice "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/freezeservice"
+	transactionservice "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1/transactionservice"
 )
 
-// Server gRPC 服务实现（同时实现 AccountingService、AccountingAdminService、
-// FreezeService 和 SP-AC-7 TransactionService）
+// Server Kitex 服务实现 (同时暴露 4 个 service: AccountingService /
+// AccountingAdminService / FreezeService / TransactionService).
+// 切 Kitex 后不再 embed Unimplemented*Server (gRPC 兼容性兜底).
 type Server struct {
-	accountingv1.UnimplementedAccountingServiceServer
-	accountingv1.UnimplementedAccountingAdminServiceServer
-	accountingv1.UnimplementedFreezeServiceServer
-	UnimplementedTransactionServiceServer // SP-AC-7 multi-leg + 元数据查询
 	accountingSvc     service.AccountingService
 	transactionSvc    service.TransactionService
 	dayCutSvc         service.DayCutService
@@ -55,34 +55,28 @@ type Server struct {
 	// 通过 SetServiceToken 注入。空字符串 = warn-only 模式（dev / 向后兼容）。
 	serviceToken string
 
-	// grpcSrv 暴露给 Stop()。ListenAndServe 启动时赋值；nil = 未启动。
-	grpcSrv *grpc.Server
-	// done ListenAndServe 退出后关闭；用作 Stop() 的等待信号。
+	// kitexSrv 暴露给 Stop(). ListenAndServe 启动时赋值; nil = 未启动.
+	kitexSrv kitexserver.Server
+	// done ListenAndServe 退出后关闭; 用作 Stop() 的等待信号.
 	done chan struct{}
 }
 
-// Stop 优雅关停 gRPC server。SIGTERM 时由 fx OnStop 调用：
-//
-//  1. GracefulStop()：拒新连接，等 in-flight RPC 完成
-//  2. 等到 ListenAndServe 的 Serve goroutine 真正退出（done 关闭）
-//  3. 超时则 Stop()（强制 close listener + 中断流）
-//
-// 若 ListenAndServe 还没跑过 / 已经退出，本方法 no-op。
+// Stop 优雅关停 Kitex server. SIGTERM 时由 fx OnStop 调用.
+// Kitex srv.Stop() 内部已 graceful (等 in-flight RPC 完成); 用 select 限上限.
 func (s *Server) Stop(ctx context.Context) error {
-	if s.grpcSrv == nil {
+	if s.kitexSrv == nil {
 		return nil
 	}
 	doneCh := make(chan struct{})
 	go func() {
-		s.grpcSrv.GracefulStop()
+		_ = s.kitexSrv.Stop()
 		close(doneCh)
 	}()
 	select {
 	case <-doneCh:
 		return nil
 	case <-ctx.Done():
-		s.logger.Warn("gRPC GracefulStop timed out, forcing Stop()")
-		s.grpcSrv.Stop()
+		s.logger.Warn("kitex Stop() timed out")
 		return ctx.Err()
 	}
 }
@@ -153,9 +147,9 @@ func NewServer(
 // loadShed 若为空 config（所有阈值 0）则不挂载对应 gate。
 // maxRPCDuration = 0 时禁用 timeout 拦截器（开发默认）。
 func (s *Server) ListenAndServe(ctx context.Context, port int, loadShed LoadShedConfig, maxRPCDuration time.Duration) error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		return fmt.Errorf("listen :%d failed: %w", port, err)
+		return fmt.Errorf("resolve :%d failed: %w", port, err)
 	}
 
 	shedder := newLoadShedder(loadShed)
@@ -171,67 +165,39 @@ func (s *Server) ListenAndServe(ctx context.Context, port int, loadShed LoadShed
 		s.logger.Info("gRPC: service token auth enabled (strict mode)")
 	}
 
-	srv := grpc.NewServer(
-		grpc.MaxRecvMsgSize(16*1024*1024),
-		grpc.MaxSendMsgSize(16*1024*1024),
-		// Keepalive：服务器主动探活，及时回收死连接。
-		//   Time: 30s 内连接无任何 frame 发过 → 发 ping 探活
-		//   Timeout: 探活 10s 内无应答 → 强制关闭
-		// 避免移动客户端 NAT 超时 / LB 静默断连后服务器仍持有 TCP 连接占着 goroutine + 池资源。
-		grpc.KeepaliveParams(keepalive.ServerParameters{
-			Time:    30 * time.Second,
-			Timeout: 10 * time.Second,
-			// MaxConnectionIdle/Age 不设，长连接永久保活；如要限制单连接生命，
-			// 可补 MaxConnectionAge: 30*time.Minute。
-		}),
-		// 拒绝行为不端的客户端（防止恶意/bug client 用过密 ping 烧服务器 CPU）。
-		// MinTime: 客户端 ping 间隔不能小于 5s；PermitWithoutStream: 允许无活动流时也 ping。
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             5 * time.Second,
-			PermitWithoutStream: true,
-		}),
-		// 顺序很重要：recovery 最外层，确保任何下游 interceptor / handler 的 panic 都被兜底。
-		// timeout 在 loadshed 之前：超时的请求不应该再占 inflight slot。
-		// loadshed 在 logging 之前：被 fast-fail 的请求不进业务日志，保持日志量受控。
-		grpc.ChainUnaryInterceptor(
-			recoveryInterceptor(s.logger),
-			trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
-			// shadow 紧跟 trace：把 metadata x-shadow 翻进 ctx；后续 repo / Redis /
-			// Kafka / 出站 RPC 都按 ctx 决策主 / 影路径。
-			shadow.UnaryServerInterceptor(),
-			timeoutInterceptor(maxRPCDuration),
-			// 鉴权放在 loadshed 之前：未授权请求不应占用 inflight slot。放在 timeout
-			// 之后保留请求级 deadline；放在 trace 之后让被拒请求也带 trace-id 可定位。
-			serviceTokenInterceptor(s.serviceToken, s.logger),
-			shedder.unaryInterceptor(),
-			logging.NewUnaryServerInterceptor(s.logger, s.perfLogger),
-		),
-	)
-	accountingv1.RegisterAccountingServiceServer(srv, s)
-	accountingv1.RegisterAccountingAdminServiceServer(srv, s)
-	accountingv1.RegisterFreezeServiceServer(srv, s)
-	RegisterTransactionServiceServer(srv, s) // SP-AC-7
-	reflection.Register(srv)
+	// Kitex MultiService — accounting-system 同时暴露 4 个 service:
+	//   AccountingService (业务面 - 落账/查询)
+	//   AccountingAdminService (运维面 - 调账/试算/日切)
+	//   FreezeService (per-amount 资金冻结)
+	//   TransactionService (SP-AC-3 split-payment 主入口)
+	//
+	// TODO: kitexutil MW (Recover/Trace/Shadow/Timeout/Auth/LoadShed/Logging 7 条)
+	// 等 kitexutil port 完成后接 server.WithMiddleware(...).
+	srv := kitexserver.NewServer(kitexserver.WithServiceAddr(addr))
+	accountingservice.RegisterService(srv, s)
+	accountingadminservice.RegisterService(srv, s)
+	freezeservice.RegisterService(srv, s)
+	transactionservice.RegisterService(srv, s)
+	// reflection 由 Kitex 内置, 不再手动注册.
+	_ = reflection.Register
 
-	s.grpcSrv = srv
+	s.kitexSrv = srv
 	if s.done == nil {
 		s.done = make(chan struct{})
 	}
 
-	s.logger.Info("gRPC server listening", zap.Int("port", port))
+	s.logger.Info("Kitex server listening", zap.Int("port", port), zap.String("addr", addr.String()))
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.Serve(lis)
+		errCh <- srv.Run()
 		close(s.done)
 	}()
 
 	select {
 	case <-ctx.Done():
-		s.logger.Info("gRPC server shutting down (ctx canceled)")
-		// 兼容旧路径：ctx 被外部 cancel 时主动 GracefulStop；新路径建议
-		// 直接调 Stop()。
-		srv.GracefulStop()
+		s.logger.Info("Kitex server shutting down (ctx canceled)")
+		_ = srv.Stop()
 		<-s.done
 		return nil
 	case err := <-errCh:
