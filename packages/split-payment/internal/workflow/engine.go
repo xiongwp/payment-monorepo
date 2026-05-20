@@ -176,8 +176,9 @@ func (e *Engine) Handle(ctx context.Context, ev BusinessEvent) error {
 		if !matchesTrigger(g, ev) {
 			continue
 		}
-		// SP-AC-7 PH3-8: 验证 ChargeStrategy. 未知值拒绝执行; 占位值 (direct/destination)
-		// log warn 但仍按 separate 路径走 (向后兼容).
+		// SP-AC-7 PH3-8 + P2-STRAT-1: 验证 ChargeStrategy. 未知 / 未实现 (direct/destination)
+		// 都返 err 让 engine 跳过这张图 — runtime 双保险, 跟 SaveGraph 入口拒绝形成深度防御.
+		// 正常路径只会有 separate 或空值 (= separate) 通过.
 		if _, warn, csErr := domain.ValidateChargeStrategy(g.Spec.ChargeStrategy); csErr != nil {
 			e.Log.Error("graph charge_strategy invalid; skipping",
 				zap.String("graph_key", g.Key), zap.Error(csErr))
