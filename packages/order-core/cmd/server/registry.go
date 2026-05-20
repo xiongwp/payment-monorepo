@@ -71,62 +71,11 @@ func (t *LeaderToolkit) RunWorker(ctx context.Context, name string, task func(ct
 	go serviceregistry.RunLeaderLoop(ctx, t.Client, key, t.Identity, t.TTL, task)
 }
 
-func startServiceRegistrar(lc fx.Lifecycle, t *LeaderToolkit, v *viper.Viper, logger *zap.Logger) {
-	endpoints := v.GetStringSlice("registry.endpoints")
-	if len(endpoints) == 0 {
-		return
-	}
-	service := v.GetString("registry.service_name")
-	if service == "" {
-		service = "order-core"
-	}
-	port := v.GetInt("server.grpc_port")
-	if port == 0 {
-		port = 9091
-	}
-	// 注册地址：viper override > serviceregistry.AdvertiseAddr (env / 探主网卡 IP / hostname 兜底)
-	// 之前直接 os.Hostname() (= t.Identity) 会拿到容器 ID，docker DNS 不解析它，
-	// client 拿到端点后无法 dial。生产 K8s 走 REGISTRY_ADVERTISE_ADDR=POD_IP downward API。
-	var addr string
-	if h := v.GetString("registry.advertise_host"); h != "" {
-		addr = fmt.Sprintf("%s:%d", h, port)
-	} else {
-		addr = serviceregistry.AdvertiseAddr(port)
-	}
-
-	var reg *serviceregistry.Registrar
-	lc.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
-			r, err := serviceregistry.NewRegistrar(t.Client, service, addr)
-			if err != nil {
-				logger.Error("registrar setup failed", zap.Error(err))
-				return nil
-			}
-			regCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			if err := r.Register(regCtx, t.TTL); err != nil {
-				logger.Error("service registration failed", zap.Error(err),
-					zap.String("service", service), zap.String("addr", addr))
-				return nil
-			}
-			reg = r
-			logger.Info("service registered to etcd",
-				zap.String("service", service), zap.String("addr", addr),
-				zap.Strings("etcd", endpoints), zap.Duration("ttl", t.TTL))
-			return nil
-		},
-		OnStop: func(_ context.Context) error {
-			// 只 revoke lease（立刻把端点从 etcd 摘掉）；不关 etcd client，避免
-			// worker goroutine 还在 RunLeaderLoop 里用同一个 client 时撞上 closed 客户端。
-			// 进程退出时 client 自然回收。
-			if reg != nil {
-				_ = reg.Close()
-				logger.Info("service deregistered from etcd",
-					zap.String("service", service), zap.String("addr", addr))
-			}
-			return nil
-		},
-	})
+// startServiceRegistrar — REG-REDESIGN no-op.
+// 见 packages/payment-core/cmd/server/registry.go 的注释; 注册走 kitexutil.
+// LeaderToolkit (cron worker 领导选举) 跟注册无关, 保留.
+func startServiceRegistrar(_ fx.Lifecycle, _ *LeaderToolkit, _ *viper.Viper, logger *zap.Logger) {
+	logger.Debug("startServiceRegistrar: no-op (REG-REDESIGN — 注册走 kitexutil.DefaultServerOptions)")
 }
 
 func hostnameOrUnknown() string {

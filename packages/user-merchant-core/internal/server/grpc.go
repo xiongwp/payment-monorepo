@@ -103,8 +103,15 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("user-merchant-core", fmt.Sprintf("%s:%d", advHost, port))...)
 	gs := kitexserver.NewServer(srvOpts...)
 
+	// MULTISVC: 6 个 service 共用 9191 端口. 多个 service 都有 List 方法
+	// (Merchant.List / User.List / Audit.List / UserCard.List), Kitex 启动期
+	// 检测到方法冲突会 ERROR exit: "method name [List] is conflicted between
+	// services but no fallback service is specified".
+	// 解法: 一个 service 用 WithFallbackService() 标 fallback. 选 merchantservice
+	// 作主 service. 当 client 的 metadata 里没带 service-name (旧 wire 或某些 mux 路径)
+	// 时, Kitex 默认路由到 fallback. 现代 client 带 service-name 时仍按名字路由.
 	if s.merchantSvc != nil {
-		merchantservice.RegisterService(gs, NewMerchantServer(s.merchantSvc))
+		merchantservice.RegisterService(gs, NewMerchantServer(s.merchantSvc), kitexserver.WithFallbackService())
 	}
 	if s.merchantSecretSvc != nil {
 		merchantsecretservice.RegisterService(gs, NewMerchantSecretServer(s.merchantSecretSvc))

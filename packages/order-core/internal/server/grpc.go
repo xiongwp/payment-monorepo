@@ -145,8 +145,12 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("order-core", fmt.Sprintf("%s:%d", advHost, port))...)
 	gs := kitexserver.NewServer(srvOpts...)
 
-	// 主链路 4 个 service — 一定注册
-	paymentintentservice.RegisterService(gs, s)
+	// 主链路 4 个 service — 一定注册.
+	// MULTISVC: paymentintent / refund / webhookdelivery 都有 List 方法, Kitex
+	// multi-service 启动期会 "method name [List] is conflicted between services
+	// but no fallback service is specified" 直接 ERROR exit.
+	// 选 paymentintentservice 当 fallback (最常被调用的主 service).
+	paymentintentservice.RegisterService(gs, s, kitexserver.WithFallbackService())
 	chargeservice.RegisterService(gs, NewChargeForwarder(s))
 	refundservice.RegisterService(gs, NewRefundForwarder(s))
 	webhookservice.RegisterService(gs, NewWebhookForwarder(s))

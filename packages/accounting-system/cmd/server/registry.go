@@ -1,9 +1,11 @@
+// REG-REDESIGN: StartServiceRegistrar 已变 no-op.
+// 注册路径统一到 payment-util/kitexutil.DefaultServerOptions.
+//
+// NewEtcdClient 保留 — 给 leader election / shared etcd client 用 (不做注册).
 package main
 
 import (
-	"context"
 	"fmt"
-	"time"
 
 	"github.com/spf13/viper"
 	"github.com/xiongwp/payment-util/serviceregistry"
@@ -12,87 +14,26 @@ import (
 	"go.uber.org/zap"
 )
 
-// NewEtcdClient creates an etcd client used for service registry + leader
-// election. Returns (nil, nil) when registry.endpoints is empty so that
-// dev environments without etcd still boot.
+// NewEtcdClient creates an etcd client used for leader election / shared etcd
+// state. Service registration is handled separately by kitexutil.
+// Returns (nil, nil) when registry.endpoints is empty so dev still boots.
 func NewEtcdClient(v *viper.Viper, logger *zap.Logger) (*clientv3.Client, error) {
 	endpoints := v.GetStringSlice("registry.endpoints")
 	if len(endpoints) == 0 {
-		logger.Info("registry.endpoints empty; service self-registration disabled")
+		logger.Info("registry.endpoints empty; leader election etcd client disabled")
 		return nil, nil
 	}
 	cli, err := serviceregistry.NewEtcdClient(endpoints)
 	if err != nil {
 		return nil, fmt.Errorf("etcd client: %w", err)
 	}
-	logger.Info("etcd client connected", zap.Strings("endpoints", endpoints))
+	logger.Info("etcd client connected (for leader election)", zap.Strings("endpoints", endpoints))
 	return cli, nil
 }
 
-// StartServiceRegistrar publishes (service_name, host:grpc_port) into etcd
-// with a TTL lease + heartbeat. On graceful shutdown the lease is revoked
-// so other callers stop dialing this instance immediately; on crash the
-// lease expires within TTL and etcd cleans it up.
-//
-// The advertised addr defaults to os.Hostname() — works inside docker-compose
-// (sibling DNS) and K8s (pod headless service). Override via REGISTRY_ADVERTISE_ADDR
-// if you need a routable IP from outside the cluster.
-func StartServiceRegistrar(lc fx.Lifecycle, cli *clientv3.Client, v *viper.Viper, logger *zap.Logger) {
-	if cli == nil {
-		return
-	}
-	service := v.GetString("registry.service_name")
-	if service == "" {
-		service = "accounting-service"
-	}
-
-	port := v.GetInt("server.grpc_port")
-	if port == 0 {
-		port = 50051
-	}
-
-	// 注册地址：viper override > serviceregistry.AdvertiseAddr (env / 探主网卡 IP / hostname 兜底)
-	// 之前直接 os.Hostname() 会拿到容器 ID，docker DNS 不解析它，client 拿到端点后无法 dial。
-	var addr string
-	if h := v.GetString("registry.advertise_host"); h != "" {
-		addr = fmt.Sprintf("%s:%d", h, port)
-	} else {
-		addr = serviceregistry.AdvertiseAddr(port)
-	}
-
-	ttl := v.GetDuration("registry.ttl")
-	if ttl < time.Second {
-		ttl = 30 * time.Second // REG-TTL: 10s 太短, 一次 etcd 抖动就过期
-	}
-
-	reg, err := serviceregistry.NewRegistrar(cli, service, addr)
-	if err != nil {
-		logger.Error("registrar setup failed; continuing without registration",
-			zap.Error(err), zap.String("service", service), zap.String("addr", addr))
-		return
-	}
-
-	lc.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
-			regCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			if err := reg.Register(regCtx, ttl); err != nil {
-				logger.Error("service registration failed",
-					zap.Error(err), zap.String("service", service), zap.String("addr", addr))
-				return nil // 不阻断启动；调用方走 DNS fallback
-			}
-			logger.Info("service registered to etcd",
-				zap.String("service", service), zap.String("addr", addr), zap.Duration("ttl", ttl))
-			return nil
-		},
-		OnStop: func(_ context.Context) error {
-			if err := reg.Close(); err != nil {
-				logger.Warn("service deregister failed", zap.Error(err))
-			} else {
-				logger.Info("service deregistered from etcd",
-					zap.String("service", service), zap.String("addr", addr))
-			}
-			return nil
-		},
-	})
+// StartServiceRegistrar — REG-REDESIGN no-op.
+// 注册走 kitexutil.DefaultServerOptions. 此函数保留签名让 main.go fx.Invoke
+// 不破坏 build.
+func StartServiceRegistrar(_ fx.Lifecycle, _ *clientv3.Client, _ *viper.Viper, logger *zap.Logger) {
+	logger.Debug("StartServiceRegistrar: no-op (REG-REDESIGN — 注册走 kitexutil.DefaultServerOptions)")
 }
