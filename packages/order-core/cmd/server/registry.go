@@ -41,7 +41,7 @@ type LeaderToolkit struct {
 func newLeaderToolkit(v *viper.Viper, logger *zap.Logger) *LeaderToolkit {
 	t := &LeaderToolkit{
 		Identity: hostnameOrUnknown(),
-		TTL:      ttlOrDefault(v, 10*time.Second),
+		TTL:      ttlOrDefault(v, 30*time.Second), // REG-TTL: 10s 太短, 一次抖动就过期; 30s 更稳
 	}
 	endpoints := v.GetStringSlice("registry.endpoints")
 	if len(endpoints) == 0 {

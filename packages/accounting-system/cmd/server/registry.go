@@ -62,7 +62,7 @@ func StartServiceRegistrar(lc fx.Lifecycle, cli *clientv3.Client, v *viper.Viper
 
 	ttl := v.GetDuration("registry.ttl")
 	if ttl < time.Second {
-		ttl = 10 * time.Second
+		ttl = 30 * time.Second // REG-TTL: 10s 太短, 一次 etcd 抖动就过期
 	}
 
 	reg, err := serviceregistry.NewRegistrar(cli, service, addr)

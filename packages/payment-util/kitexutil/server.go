@@ -15,6 +15,7 @@
 package kitexutil
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"time"
@@ -36,11 +37,14 @@ import (
 func DefaultServerOptions(svcName, advertiseAddr string) []kitexserver.Option {
 	eps := RegistryEndpointsFromEnv()
 	if len(eps) == 0 {
+		// REG-TTL: 把"没注册"明确打出来, 别让 ops 误以为已注册.
+		fmt.Fprintf(os.Stderr, "[kitexutil] svc=%s REGISTRY_ENDPOINTS empty, etcd registration disabled (caller will fail to discover)\n", svcName)
 		return nil
 	}
 	cli, err := NewEtcdClient(eps, 5*time.Second)
 	if err != nil {
-		// etcd 不通就别注册; 进程仍起来 (静态 DNS 还能拨), 等 etcd 恢复重启即可.
+		// REG-TTL: etcd 不通时 loud log; 进程仍起来 (静态 DNS 兜底), 但 ops 必须知道.
+		fmt.Fprintf(os.Stderr, "[kitexutil] svc=%s etcd dial failed: %v — skipping registration\n", svcName, err)
 		return nil
 	}
 	if advertiseAddr == "" {
@@ -48,9 +52,11 @@ func DefaultServerOptions(svcName, advertiseAddr string) []kitexserver.Option {
 	}
 	reg, err := NewEtcdRegistry(cli, svcName, advertiseAddr, 30*time.Second)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[kitexutil] svc=%s NewEtcdRegistry failed: %v — skipping registration\n", svcName, err)
 		_ = cli.Close()
 		return nil
 	}
+	fmt.Fprintf(os.Stderr, "[kitexutil] svc=%s etcd registration armed (addr=%s, ttl=30s, endpoints=%v)\n", svcName, advertiseAddr, eps)
 	info := &registry.Info{
 		ServiceName: svcName,
 		Addr:        plainAddr{addr: advertiseAddr},

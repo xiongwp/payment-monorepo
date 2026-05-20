@@ -50,7 +50,7 @@ func startServiceRegistrar(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) 
 
 	ttl := v.GetDuration("registry.ttl")
 	if ttl < time.Second {
-		ttl = 10 * time.Second
+		ttl = 30 * time.Second // REG-TTL: 10s 太短, 一次 etcd 抖动就过期
 	}
 
 	var sr *serviceregistry.SelfRegistration

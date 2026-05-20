@@ -37,6 +37,9 @@ import (
 
 // EtcdRegistry Kitex server.Registry 实现; 跟 serviceregistry.Registrar 用
 // 同一份数据格式 (etcd 官方 endpoints.Endpoint JSON).
+//
+// REG-TTL: keepalive channel 关闭时自动重 grant + AddEndpoint, 防止 etcd 短暂
+// 失联后 entry 永久消失. 老实现只 drain channel, 必须重启进程才能恢复.
 type EtcdRegistry struct {
 	cli     *clientv3.Client
 	service string // 注册时用的 service 名 (= docker DNS 名, 不是包名)
@@ -48,6 +51,7 @@ type EtcdRegistry struct {
 	leaseID   clientv3.LeaseID
 	keepCanc  context.CancelFunc
 	closeOnce sync.Once
+	stopped   bool // Deregister 之后置 true, reconnect goroutine 看到就退出
 }
 
 // NewEtcdRegistry 构造 (不立刻注册; Register 时才写 etcd).
@@ -99,6 +103,21 @@ func (r *EtcdRegistry) Register(info *registry.Info) error {
 	if addr == "" {
 		return fmt.Errorf("kitexutil: empty advertise addr")
 	}
+	// 落到结构体里供 reconnect 用 (Kitex 第一次 Register 后值固定).
+	r.mu.Lock()
+	r.service = svc
+	r.addr = addr
+	r.mu.Unlock()
+
+	return r.doRegisterOnce()
+}
+
+// doRegisterOnce 一次完整的 grant + AddEndpoint + keepalive 装载; 失败保留
+// r.leaseID=0 让 caller 知道还没注册. 不更新 r.service/r.addr (已在 Register 设).
+func (r *EtcdRegistry) doRegisterOnce() error {
+	r.mu.Lock()
+	svc, addr := r.service, r.addr
+	r.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -123,25 +142,73 @@ func (r *EtcdRegistry) Register(info *registry.Info) error {
 		_, _ = r.cli.Revoke(ctx, lease.ID)
 		return fmt.Errorf("kitexutil: keepalive: %w", err)
 	}
-	go func() {
-		for range ch {
-			// drain; channel close = etcd 失联 / lease 过期, Deregister 会清理
-		}
-	}()
 
 	r.mu.Lock()
-	r.leaseID = lease.ID
-	r.keepCanc = cancelKA
+	stopped := r.stopped
+	if !stopped {
+		r.leaseID = lease.ID
+		r.keepCanc = cancelKA
+	}
 	r.mu.Unlock()
+
+	if stopped {
+		cancelKA()
+		_, _ = r.cli.Revoke(context.Background(), lease.ID)
+		return nil
+	}
+
+	go r.keepaliveLoop(ch)
 	return nil
+}
+
+// keepaliveLoop drain 心跳; channel 关闭 (etcd 失联 / lease 过期) 后自动重 grant.
+// Deregister 把 r.stopped 置 true 通知本 goroutine 永久退出.
+func (r *EtcdRegistry) keepaliveLoop(ch <-chan *clientv3.LeaseKeepAliveResponse) {
+	for range ch {
+		// 心跳正常, 啥也不做
+	}
+	r.mu.Lock()
+	stopped := r.stopped
+	r.leaseID = 0
+	if r.keepCanc != nil {
+		r.keepCanc()
+		r.keepCanc = nil
+	}
+	r.mu.Unlock()
+	if stopped {
+		return
+	}
+	backoff := time.Second
+	for {
+		r.mu.Lock()
+		if r.stopped {
+			r.mu.Unlock()
+			return
+		}
+		r.mu.Unlock()
+		if err := r.doRegisterOnce(); err == nil {
+			return
+		}
+		time.Sleep(backoff)
+		if backoff < 30*time.Second {
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+		}
+	}
 }
 
 // Deregister Kitex server.Registry 接口. 关停时调, 立刻 revoke lease 删 endpoint.
 // 进程崩溃情况下 lease TTL 过期后由 etcd 自动清理.
+//
+// REG-TTL: 同时通过 r.stopped 通知 keepaliveLoop 永久退出 (防它在 graceful
+// shutdown 期间又重新 grant 一个新的 lease).
 func (r *EtcdRegistry) Deregister(info *registry.Info) error {
 	var firstErr error
 	r.closeOnce.Do(func() {
 		r.mu.Lock()
+		r.stopped = true
 		leaseID := r.leaseID
 		cancel := r.keepCanc
 		r.leaseID = 0
