@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	kitexserver "github.com/cloudwego/kitex/server"
@@ -385,15 +386,52 @@ func (s *Server) DoubleEntryBooking(ctx context.Context, req *accountingv1.Doubl
 }
 
 func (s *Server) BatchBooking(ctx context.Context, req *accountingv1.BatchBookingRequest) (*accountingv1.BatchBookingResponse, error) {
-	results := make([]*accountingv1.DoubleEntryBookingResponse, 0, len(req.Requests))
-	var success, failed int32
-	for _, r := range req.Requests {
-		res, err := s.DoubleEntryBooking(ctx, r)
-		if err != nil {
-			res = &accountingv1.DoubleEntryBookingResponse{Code: 500, Message: err.Error()}
+	// 每条 item 仍经由 s.DoubleEntryBooking → accountingSvc.DoubleEntryBooking 完整
+	// service 路径 (幂等 / 聚合 / 校验都不旁路). Parallel=true 时用 goroutine fan-out,
+	// 顺序结果对应 req.Requests 的原下标. 单条 item 失败不阻断其它 (各自独立幂等).
+	//
+	// TODO: NewAccountingFacadeService.BatchBooking 提供更完整的 orchestration
+	// (batch ID, async 路径, kafka 推送), 等 facade 被 wire 进 main.go 后切过去.
+	n := len(req.Requests)
+	results := make([]*accountingv1.DoubleEntryBookingResponse, n)
+	if n == 0 {
+		return &accountingv1.BatchBookingResponse{Code: 0, Message: "ok"}, nil
+	}
+
+	if req.GetParallel() {
+		var wg sync.WaitGroup
+		// 限制并发上限避免打爆下游 DB / hot-account; 8 是经验值 (跟 accountingSvc
+		// 内部 conn pool max_idle 同量级).
+		const maxConcurrency = 8
+		sem := make(chan struct{}, maxConcurrency)
+		for i, r := range req.Requests {
+			i, r := i, r
+			wg.Add(1)
+			sem <- struct{}{}
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+				res, err := s.DoubleEntryBooking(ctx, r)
+				if err != nil {
+					res = &accountingv1.DoubleEntryBookingResponse{Code: 500, Message: err.Error()}
+				}
+				results[i] = res
+			}()
 		}
-		results = append(results, res)
-		if res.Code == 0 {
+		wg.Wait()
+	} else {
+		for i, r := range req.Requests {
+			res, err := s.DoubleEntryBooking(ctx, r)
+			if err != nil {
+				res = &accountingv1.DoubleEntryBookingResponse{Code: 500, Message: err.Error()}
+			}
+			results[i] = res
+		}
+	}
+
+	var success, failed int32
+	for _, res := range results {
+		if res != nil && res.Code == 0 {
 			success++
 		} else {
 			failed++
@@ -404,7 +442,7 @@ func (s *Server) BatchBooking(ctx context.Context, req *accountingv1.BatchBookin
 		Message: "ok",
 		Success: success,
 		Failed:  failed,
-		Total:   int32(len(req.Requests)),
+		Total:   int32(n),
 		Results: results,
 	}, nil
 }
