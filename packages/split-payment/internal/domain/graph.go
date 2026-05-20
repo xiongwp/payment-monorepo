@@ -69,6 +69,30 @@ const (
 	ChargeStrategySeparate    = "separate"    // 平台收, 按 edge 规则分多个 Transfer (默认 + 唯一真实实现).
 )
 
+// ReversalStrategy 常量 (graph.spec.reversal.strategy 配置用).
+const (
+	ReversalStrategyProportional      = "proportional"      // 唯一真实现
+	ReversalStrategyFixedFromPlatform = "fixed_from_platform" // 占位, Phase 3 才接
+	ReversalStrategyFailIfImbalance   = "fail_if_imbalance"   // 占位, Phase 3 才接
+)
+
+// ValidateReversalStrategy 检查 spec.reversal.strategy 是否被引擎支持.
+//
+// P2-STRAT-1: 之前 engine 不论 strategy 都走 proportional → 商户配
+// fixed_from_platform / fail_if_imbalance 时悄悄被改路径. 现在 SaveGraph 时
+// 直接拒绝, 不让未实现的策略落库.
+func ValidateReversalStrategy(s string) error {
+	switch s {
+	case "", ReversalStrategyProportional:
+		return nil
+	case ReversalStrategyFixedFromPlatform, ReversalStrategyFailIfImbalance:
+		return fmt.Errorf("reversal strategy %q 未实现 (Phase 3 才接); 当前只支持 'proportional' "+
+			"(或留空 = 默认 proportional)", s)
+	default:
+		return fmt.Errorf("unknown reversal strategy %q (allowed: proportional)", s)
+	}
+}
+
 // ValidateChargeStrategy 检查 ChargeStrategy 合法性.
 //
 // P2-STRAT-1: direct / destination 之前静默降级 separate, 现在改成**拒绝**

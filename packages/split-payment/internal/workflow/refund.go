@@ -121,25 +121,9 @@ func (e *Engine) HandleRefund(
 	}
 
 	// 3) Reversal strategy.
-	// P2-STRAT-1: 之前不论 graph 配什么 strategy, 都默认走 proportional → 商户配
-	// fixed_from_platform / fail_if_imbalance 时引擎悄悄改路径 (= 资金错配风险).
-	// 现在: 真去 GraphRepo 读 spec.reversal.strategy, 命中未实现的策略 → 直接 err.
-	// 触发 caller 显式更新 graph (改成 proportional) 或者等真实现.
-	if graphRepo != nil && plan.GraphID > 0 {
-		g, err := graphRepo.GetByID(ctx, plan.GraphID)
-		if err == nil && g != nil && g.Spec.Reversal != nil {
-			switch g.Spec.Reversal.Strategy {
-			case "", ReversalSpecStrategyProportional:
-				// OK, fall through to proportional 计算
-			case ReversalSpecStrategyFixedFromPlatform, ReversalSpecStrategyFailIfImbalance:
-				return fmt.Errorf("reversal strategy %q 未实现 (Phase 3 才接); "+
-					"当前只支持 proportional. 请在 designer 把 spec.reversal.strategy 改成 'proportional' "+
-					"或留空 (= 默认 proportional)", g.Spec.Reversal.Strategy)
-			default:
-				return fmt.Errorf("reversal strategy %q 未知 (allowed: proportional)", g.Spec.Reversal.Strategy)
-			}
-		}
-	}
+	// P2-STRAT-1: 真校验在 SaveGraph 入口做 (见 domain.ValidateReversalStrategy);
+	// 这里到达 runtime 时已经过滤, 不允许未实现的 strategy 落库.
+	// proportional 是当前唯一合法值, 直接走计算逻辑.
 
 	// 4) 按 proportional 算每条 transfer reverse 多少
 	totalCharge := int64(0)
