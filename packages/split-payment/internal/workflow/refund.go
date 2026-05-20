@@ -227,10 +227,31 @@ func (e *Engine) HandleRefund(
 				continue
 			}
 			if err := trRepo.AddReversedAmount(ctx, t.ID, allocs[i]); err != nil {
-				e.Log.Error("AddReversedAmount failed",
-					zap.String("transfer_id", t.ID), zap.Error(err))
-				rv.Status = domain.ReversalStatusFailed
-				rv.FailureMessage = err.Error()
+				// HIGH-FIX-4: 之前只改内存 rv.Status, DB 里 reversal 仍 pending 永远不被
+				// 看到 → 资金孤儿 (transfer.reversed_amount 没加, reversal 行卡死 pending).
+				// 修复: ① 入 retry queue 让 worker 重补 AddReversedAmount,
+				//      ② 没接 retry → log critical + 走 firstErr 让 Kafka 重投, 重试时
+				//        Insert 因 idempotency_key 冲突幂等跳过, AddReversedAmount 再来一次.
+				e.Log.Error("CRITICAL: reversal inserted but AddReversedAmount failed (orphan window); "+
+					"reversal 状态卡 pending + transfer.reversed_amount 未累加",
+					zap.String("reversal_id", rv.ID),
+					zap.String("transfer_id", t.ID),
+					zap.Int64("delta", allocs[i]),
+					zap.Error(err))
+				if e.ReversalRetry != nil {
+					if qErr := e.ReversalRetry.Enqueue(ctx, rv.ID, t.ID, allocs[i], err); qErr != nil {
+						e.Log.Error("ReversalRetry enqueue also failed; fall back to firstErr",
+							zap.String("reversal_id", rv.ID), zap.Error(qErr))
+						if firstErr == nil {
+							firstErr = err
+						}
+					} else {
+						e.Log.Info("reversal AddReversedAmount failure enqueued for retry",
+							zap.String("reversal_id", rv.ID), zap.String("transfer_id", t.ID))
+					}
+				} else if firstErr == nil {
+					firstErr = err
+				}
 				continue
 			}
 			rv.Status = domain.ReversalStatusSucceeded

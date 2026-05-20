@@ -148,8 +148,28 @@ func (w *PayoutDispatchWorker) tick(ctx context.Context) {
 		if newStatus == "" {
 			newStatus = domain.PayoutStatusInTransit
 		}
-		_ = w.Payouts.UpdateStatus(ctx, p.ID,
-			newStatus, res.FailureCode, res.FailureMsg, res.ArrivalDate)
+		// HIGH-FIX-1: 之前 _ = UpdateStatus 吞错; 通道已 dispatch 但 DB 写败 →
+		// 下轮 cron 看到 status 仍是上一阶段 → 重派 → 商户重复出款.
+		// 失败立即标 manual_review_required 并打 critical log (运维必须人工核对).
+		if uerr := w.Payouts.UpdateStatus(ctx, p.ID,
+			newStatus, res.FailureCode, res.FailureMsg, res.ArrivalDate); uerr != nil {
+			w.Log.Error("CRITICAL: payout dispatched to channel but UpdateStatus failed; "+
+				"manual reconciliation required (channel 已发款, DB 仍旧 status, 下轮 cron 会重派)",
+				zap.String("payout_id", p.ID),
+				zap.String("bank_ref", res.BankRef),
+				zap.String("desired_status", string(newStatus)),
+				zap.Error(uerr))
+			// 退化: 至少把 status 标 manual_review 防止重派. 这步再失败也 log critical.
+			if mErr := w.Payouts.UpdateStatus(ctx, p.ID,
+				domain.PayoutStatusFailed,
+				"manual_review_required",
+				"dispatched_but_db_update_failed: "+uerr.Error(),
+				res.ArrivalDate); mErr != nil {
+				w.Log.Error("CRITICAL: manual_review 标记也失败, payout 处于不确定态",
+					zap.String("payout_id", p.ID), zap.Error(mErr))
+			}
+			continue
+		}
 		p.Status = newStatus
 		p.ArrivalDate = res.ArrivalDate
 		if w.Events != nil {

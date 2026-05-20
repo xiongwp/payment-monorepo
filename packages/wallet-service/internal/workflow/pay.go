@@ -145,7 +145,13 @@ func (s *Service) Pay(ctx context.Context, req PayRequest) (*domain.Transaction,
 		txn.VoucherNo = resp.Results[0].VoucherNo
 	}
 	txn.Status = domain.TxStatusCompleted
-	_ = s.Txns.Save(ctx, txn)
+	// HIGH-FIX-3: 之前 _ = Txns.Save 吞错; accounting 已 AtomicBatchBooking 落账 (钱真动了)
+	// 但本地 txn 仍 Pending → 余额查询/对账时跟 accounting 不一致, 用户投诉时查不到完成时间.
+	// 失败 propagate, caller 拿到 (txn, err) 已知 voucher_no, 走对账修复 (booking 已成功 不能回滚).
+	if err := s.Txns.Save(ctx, txn); err != nil {
+		return txn, fmt.Errorf("CRITICAL: accounting booking succeeded (voucher=%s) but txn save failed; "+
+			"manual reconciliation required: %w", txn.VoucherNo, err)
+	}
 	s.audit(ctx, txn)
 	return txn, nil
 }
@@ -195,7 +201,11 @@ func (s *Service) Transfer(ctx context.Context, req TransferRequest) (*domain.Tr
 		Direction: "out", Counterparty: req.ToOwnerType + ":" + req.ToOwnerID,
 		Status: domain.TxStatusPending, CreatedAt: s.now(),
 	}
-	_ = s.Txns.Save(ctx, txn)
+	// HIGH-FIX-3: Pending 落盘失败直接返错; 没 txn 行就不调 booking, 避免 booking 完了
+	// 找不到对应 txn 行的孤儿. (跟 Pay 起手 Save 同款行为, 不再 swallow).
+	if err := s.Txns.Save(ctx, txn); err != nil {
+		return nil, fmt.Errorf("save pending transfer txn: %w", err)
+	}
 
 	resp, err := s.Acct.AtomicBatchBooking(ctx, &accountingv1.AtomicBatchBookingRequest{
 		BatchRequestId:  txn.TxnID,
@@ -223,7 +233,11 @@ func (s *Service) Transfer(ctx context.Context, req TransferRequest) (*domain.Tr
 		txn.VoucherNo = resp.Results[0].VoucherNo
 	}
 	txn.Status = domain.TxStatusCompleted
-	_ = s.Txns.Save(ctx, txn)
+	// HIGH-FIX-3: 跟 Pay 同款: booking 成功后 Save 失败 propagate, 防余额错乱.
+	if err := s.Txns.Save(ctx, txn); err != nil {
+		return txn, fmt.Errorf("CRITICAL: transfer booking succeeded (voucher=%s) but src txn save failed; "+
+			"manual reconciliation required: %w", txn.VoucherNo, err)
+	}
 
 	// 也给 dst 钱包记一条 in 方向 (便于历史查询)
 	dstTxn := *txn
@@ -233,7 +247,16 @@ func (s *Service) Transfer(ctx context.Context, req TransferRequest) (*domain.Tr
 	dstTxn.OwnerID = req.ToOwnerID
 	dstTxn.Direction = "in"
 	dstTxn.Counterparty = req.FromOwnerType + ":" + req.FromOwnerID
-	_ = s.Txns.Save(ctx, &dstTxn)
+	// dst 仅是历史镜像 (booking 已落完整双边), 失败 log 但不阻断 — src 完成已足够.
+	if err := s.Txns.Save(ctx, &dstTxn); err != nil {
+		// 失败用 audit 记录, 让 ops 知道 dst 历史镜像缺失需补.
+		s.audit(ctx, &domain.Transaction{
+			TxnID: dstTxn.TxnID, OwnerType: dstTxn.OwnerType, OwnerID: dstTxn.OwnerID,
+			Type: domain.TypeTransfer, Status: domain.TxStatusFailed,
+			FailureReason: "dst history mirror save failed: " + err.Error(),
+			CreatedAt:     s.now(),
+		})
+	}
 
 	s.audit(ctx, txn)
 	return txn, nil
