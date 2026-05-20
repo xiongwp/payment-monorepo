@@ -47,11 +47,14 @@ services:
       KMS_GRPC_ADDR: "kms-manage:9290"
       RISK_GRPC_ADDR: "risk-manage:9490"
       USER_MERCHANT_GRPC_ADDR: "user-merchant-core:9191"
-      ACCOUNTING_ADMIN_HTTP_ADDR: "http://accounting-system:8888"
+      # MF-SERVE: docker DNS 名是 accounting-service (compose service / etcd 注册名),
+      # 不是 Go 包名 accounting-system.
+      ACCOUNTING_ADMIN_HTTP_ADDR: "http://accounting-service:8888"
+      ACCOUNTING_HTTP_URL:       "http://accounting-service:8888"
       # SP-AC-7: split-payment 是内部 gRPC 服务. host 上跑 (本机 dev), 容器通过
       # host.docker.internal 访问 (extra_hosts 下面注入 host-gateway).
       SPLIT_PAYMENT_GRPC_ADDR: "host.docker.internal:9098"
-      ACCOUNTING_GRPC_ADDR:    "accounting-system:50051"
+      ACCOUNTING_GRPC_ADDR:    "accounting-service:50051"
       # 服务发现：BFF 也用 etcd resolver 跨副本负载均衡
       REGISTRY_ENDPOINTS: "etcd:2379"
       PORT: "9190"

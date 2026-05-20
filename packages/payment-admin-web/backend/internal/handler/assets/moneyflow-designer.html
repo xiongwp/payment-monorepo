@@ -944,9 +944,12 @@ async function loadGraphs() {
   try {
     const r = await fetch(`${API_BASE}/api/moneyflow/graphs`);
     const resp = await r.json();
-    // BFF response shape: {code, message, data: {data: [...]}} (envelope), 也兼容直返 shape.
+    // MF-LIST-FIX: BFF 实际返 {code, message, data: {items: [...]}}.
+    // 兼容三种: data 直接 array / data.data array (老 envelope) / data.items array (新).
     const list = Array.isArray(resp.data)
       ? resp.data
+      : Array.isArray(resp.data && resp.data.items)
+      ? resp.data.items
       : Array.isArray(resp.data && resp.data.data)
       ? resp.data.data
       : [];
