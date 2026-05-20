@@ -23,6 +23,9 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
+	accountingadminservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
+	freezeservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/freezeservice"
+	transactionservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/transactionservice"
 )
 
 // envOrDefault — 单行 env getter, 默认值兜底 (本文件多处使用, 保持代码一致).
@@ -188,9 +191,14 @@ func (s *Server) ListenAndServe(ctx context.Context, port int, loadShed LoadShed
 	advertise := fmt.Sprintf("%s:%d", envOrDefault("ADVERTISE_HOST", "accounting-service"), port)
 	serverOpts = append(serverOpts, kitexutil.DefaultServerOptions("accounting-service", advertise)...)
 	srv := kitexserver.NewServer(serverOpts...)
-	accountingservice.RegisterService(srv, s)
-	// TODO: accountingadminservice/freezeservice/transactionservice register 暂禁
-	// — 它们的 RPC method set 跟 *Server 现状对不上 (proto 漂移). 待逐一对齐再开.
+	// ACCT-MULTISVC: multi-service 模式注册 4 个 service. 方法名跨 service 有冲突
+	// (e.g. GetTransaction 同时在 AccountingService 和 TransactionService), 必须
+	// 给一个 fallback. 选 AccountingService — 它是业务主入口 (落账/查询).
+	// (跟 user-merchant-core / order-core 同模式).
+	accountingservice.RegisterService(srv, s, kitexserver.WithFallbackService())
+	accountingadminservice.RegisterService(srv, s)
+	freezeservice.RegisterService(srv, s)
+	transactionservice.RegisterService(srv, s)
 	// reflection 由 Kitex 内置, 不再手动注册.
 
 	s.kitexSrv = srv
@@ -275,6 +283,17 @@ func (s *Server) GetAccount(ctx context.Context, req *accountingv1.GetAccountReq
 	default:
 		return &accountingv1.GetAccountResponse{Code: 400, Message: "account_no or user_id_and_business_type required"}, nil
 	}
+}
+
+// ReloadBufferAccountConfig 从 account_meta.buffer_account_config 重新拉取配置.
+// ACCT-MULTISVC: AccountingAdminService interface 要求, 转发给 service 层.
+func (s *Server) ReloadBufferAccountConfig(ctx context.Context, _ *accountingv1.ReloadBufferAccountConfigRequest) (*accountingv1.ReloadBufferAccountConfigResponse, error) {
+	cnt, err := s.accountingSvc.ReloadBufferAccountConfig(ctx)
+	if err != nil {
+		s.logger.Warn("ReloadBufferAccountConfig failed", zap.Error(err))
+		return &accountingv1.ReloadBufferAccountConfigResponse{Code: 500, Message: err.Error()}, nil
+	}
+	return &accountingv1.ReloadBufferAccountConfigResponse{Code: 0, Message: "ok", AccountCount: int32(cnt)}, nil
 }
 
 // FreezeAccount 把账户状态从 Active 翻成 Frozen,后续所有出账被拒。
