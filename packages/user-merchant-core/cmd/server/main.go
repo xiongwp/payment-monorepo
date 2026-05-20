@@ -747,8 +747,9 @@ func newAccountingClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) ser
 		logger.Info("accounting.endpoint and registry.endpoints both unset; using NoopAccountingClient (no account binding on Register)")
 		return service.NoopAccountingClient{}
 	}
-	api := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system",
-		kitexutil.DefaultClientOptions("accounting-system")...,
+	// ETCD-5: accounting 在 etcd 注册名是 "accounting-service" (= docker DNS).
+	api := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-service",
+		kitexutil.DefaultClientOptions("accounting-service")...,
 	))
 	logger.Info("accounting client constructed (Kitex)",
 		zap.String("endpoint_hint", endpoint), zap.Strings("registry", registry))

@@ -171,7 +171,8 @@ func dialAccountingAdmin(cfg BatchTaskConfig) (accountingadminservice.Client, er
 	endpoint := cfg.GrpcAddr
 	log.Printf("[batchtask] kitex dial %s (endpoint=%s, registry=%v)",
 		cfg.RegistryService, endpoint, cfg.RegistryEndpoints)
-	return accountingadminservice.NewClient("accounting-system",
+	// ETCD-5: accounting 在 etcd 注册名是 "accounting-service" (= docker DNS).
+	return accountingadminservice.NewClient("accounting-service",
 		kitexclient.WithHostPorts(endpoint),
 		kitexclient.WithRPCTimeout(time.Duration(cfg.DialTimeoutSeconds)*time.Second),
 	)

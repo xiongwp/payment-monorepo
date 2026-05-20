@@ -48,18 +48,21 @@ type hostPort struct {
 }
 
 var defaultHosts = map[string]hostPort{
-	"accounting-system":  {"accounting-service", "50051"}, // docker DNS != pkg name
+	// ETCD-NAME: 老入口用 Go 包名作 key, 新入口直接用 etcd 注册名 (= docker DNS) 作 key.
+	// 二者并列, 让 caller 不论用哪种名字都能 resolve 到正确 host:port.
+	"accounting-system":  {"accounting-service", "50051"}, // legacy: Go pkg name
+	"accounting-service": {"accounting-service", "50051"}, // canonical: etcd name
 	"user-merchant-core": {"user-merchant-core", "9191"},
 	"order-core":         {"order-core", "9091"},
 	"payment-core":       {"payment-core", "9091"},
 	"payment-channel":    {"payment-channel", "9091"},
 	"card-payment":       {"card-payment", "9091"},
 	"card-center":        {"card-center", "9443"},
-	"kms-manage":         {"kms", "9290"},               // docker DNS != pkg name
+	"kms-manage":         {"kms", "9290"}, // docker DNS != pkg name
 	"risk-manage":        {"risk-manage", "9090"},
 	"split-payment":      {"split-payment", "9098"},
 	"config-center":      {"config-center", "9092"},
-	"id-generator":       {"id-service", "9090"},        // docker DNS != pkg name
+	"id-generator":       {"id-service", "9090"}, // docker DNS != pkg name
 }
 
 // DefaultHostPorts 给 Kitex client 装上一个 host:port 解析:

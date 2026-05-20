@@ -39,11 +39,13 @@ func main() {
 	_ = registry
 	log.Printf("accounting-system gRPC target (legacy env hint): %s", grpcAddr)
 
-	client := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-system",
-		kitexutil.DefaultClientOptions("accounting-system")...,
+	// ETCD-5: accounting 在 etcd 注册名是 "accounting-service" (= docker DNS),
+	// 不是 Go 包名 "accounting-system". 二者必须一致, 否则 EtcdResolver 拉不到实例.
+	client := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-service",
+		kitexutil.DefaultClientOptions("accounting-service")...,
 	))
-	adminClient := kitexutil.MustKitexClient(accountingadminservice.NewClient("accounting-system",
-		kitexutil.DefaultClientOptions("accounting-system")...,
+	adminClient := kitexutil.MustKitexClient(accountingadminservice.NewClient("accounting-service",
+		kitexutil.DefaultClientOptions("accounting-service")...,
 	))
 
 	// Build handlers

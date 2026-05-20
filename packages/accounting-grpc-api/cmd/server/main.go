@@ -49,18 +49,19 @@ func newLogger(lc fx.Lifecycle) (*zap.Logger, error) {
 // newAdminClient Kitex client 到 accounting-system AccountingAdminService.
 // Kitex 自带 connection pool + keepalive, 不再需要单独 *grpc.ClientConn provider.
 func newAdminClient(log *zap.Logger) (accountingadminservice.Client, error) {
-	grpcAddr := envOr("ACCOUNTING_GRPC_ADDR", "localhost:50051")
-	cli, err := accountingadminservice.NewClient("accounting-system",
+	grpcAddr := envOr("ACCOUNTING_GRPC_ADDR", "accounting-service:50051")
+	// ETCD-5: accounting 在 etcd 注册名是 "accounting-service" (= docker DNS), 不是 Go 包名.
+	// 本仓 (accounting-grpc-api) 是 REST→Kitex 薄网关, 不依赖 payment-util, 走静态 host:port.
+	cli, err := accountingadminservice.NewClient("accounting-service",
 		client.WithHostPorts(grpcAddr),
 		client.WithRPCTimeout(15*time.Second),
-		// TODO: client.WithResolver(kitexutil.NewEtcdResolver(etcdCli, "")) — 接 etcd
 	)
 	if err != nil {
-		log.Error("kitex dial accounting-system failed",
+		log.Error("kitex dial accounting-service failed",
 			zap.String("addr", grpcAddr), zap.Error(err))
 		return nil, fmt.Errorf("accountingadminservice.NewClient %s: %w", grpcAddr, err)
 	}
-	log.Info("accounting-system Kitex client ready", zap.String("addr", grpcAddr))
+	log.Info("accounting-service Kitex client ready", zap.String("addr", grpcAddr))
 	return cli, nil
 }
 
