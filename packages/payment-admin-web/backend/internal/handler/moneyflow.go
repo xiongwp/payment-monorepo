@@ -7,8 +7,10 @@
 package handler
 
 import (
+	"embed"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"strconv"
@@ -23,6 +25,12 @@ import (
 	splitv1 "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1"
 	adminservice "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1/adminservice"
 )
+
+// MF-SERVE: embed 真 designer HTML assets, 替原来返 "SPA route" 占位 stub.
+// 4 个 HTML 都在 ./assets/ 子目录, Designer/DesignerV2/Resources/Rules 各取一个.
+//
+//go:embed assets/moneyflow-designer.html assets/moneyflow-designer-v2.html assets/moneyflow-resources.html assets/moneyflow-rules.html
+var moneyflowAssetsFS embed.FS
 
 // MoneyflowHandler 通过 Kitex 调 split-payment.AdminService.
 type MoneyflowHandler struct {
@@ -181,20 +189,37 @@ func (h *MoneyflowHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, resp)
 }
 
-// Designer / Resources / DesignerV2 / Rules — SPA 静态页, 由前端路由处理.
-// 现在 split-payment 接通后这几个端点改成简单的 redirect / 占位响应,
-// 真正前端代码在 web/ 目录里 (vite build 后挂在 /admin/*).
-func (h *MoneyflowHandler) Designer(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(`<!doctype html><meta charset="utf-8"><title>Money Flow Designer</title>
-<body><h1>Money Flow Designer</h1>
-<p>SPA route — go through /admin/moneyflow/designer via the React app.</p>
-<p>BFF API: <code>/api/moneyflow/graphs</code>, <code>/api/moneyflow/dry-run</code>, <code>/api/moneyflow/trigger</code></p>
-</body>`))
+// Designer / DesignerV2 / Resources / Rules — 真服务 embed 的 HTML asset.
+// MF-SERVE: 之前所有 4 个 handler 都返同一 "SPA route" stub, 真 HTML 没接.
+// 现在每个 handler 单独 serve 对应的 asset.
+func (h *MoneyflowHandler) Designer(w http.ResponseWriter, r *http.Request) {
+	serveMoneyflowAsset(w, r, "assets/moneyflow-designer.html")
 }
-func (h *MoneyflowHandler) Resources(w http.ResponseWriter, r *http.Request)  { h.Designer(w, r) }
-func (h *MoneyflowHandler) DesignerV2(w http.ResponseWriter, r *http.Request) { h.Designer(w, r) }
-func (h *MoneyflowHandler) Rules(w http.ResponseWriter, r *http.Request)      { h.Designer(w, r) }
+
+func (h *MoneyflowHandler) DesignerV2(w http.ResponseWriter, r *http.Request) {
+	serveMoneyflowAsset(w, r, "assets/moneyflow-designer-v2.html")
+}
+
+func (h *MoneyflowHandler) Resources(w http.ResponseWriter, r *http.Request) {
+	serveMoneyflowAsset(w, r, "assets/moneyflow-resources.html")
+}
+
+func (h *MoneyflowHandler) Rules(w http.ResponseWriter, r *http.Request) {
+	serveMoneyflowAsset(w, r, "assets/moneyflow-rules.html")
+}
+
+// serveMoneyflowAsset 从 embed FS 读出 HTML 直接吐 200. 找不到 → 500
+// (开发期常见, 提示 ops 缺文件).
+func serveMoneyflowAsset(w http.ResponseWriter, _ *http.Request, name string) {
+	data, err := fs.ReadFile(moneyflowAssetsFS, name)
+	if err != nil {
+		http.Error(w, "moneyflow asset missing: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+	_, _ = w.Write(data)
+}
 
 // Health 上报 split-payment 拨号状态.
 func (h *MoneyflowHandler) Health(w http.ResponseWriter, _ *http.Request) {
