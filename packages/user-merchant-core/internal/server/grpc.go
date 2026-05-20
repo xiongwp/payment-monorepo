@@ -11,6 +11,7 @@ import (
 	kitexserver "github.com/cloudwego/kitex/server"
 	"github.com/xiongwp/payment-util/kitexutil"
 	"go.uber.org/zap"
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
 	auditservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/auditservice"
 	merchantsecretservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
 	merchantservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/merchantservice"
@@ -127,7 +128,10 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	// P0-PCI-1: UserCardInternalService 拆到独立 internal-only listener,
 	// 不跟公开 service 共端口 (防横向越权: GetStoredTokenForPayment 返存储 token,
 	// 只能让 order-core / api-gateway 在内部网络调).
-	var ucInternal usercardinternalservice.Server
+	// 类型用 handler interface (usermerchantv1.UserCardInternalService) —
+	// kitex_gen/usercardinternalservice 包只导出 NewServer/RegisterService 函数,
+	// 没有 Server 类型. UserCardServer 实现该 interface (GetStoredTokenForPayment).
+	var ucInternal usermerchantv1.UserCardInternalService
 	if s.userCardSvc != nil {
 		ucServer := NewUserCardServer(s.userCardSvc)
 		usercardservice.RegisterService(gs, ucServer)
@@ -151,7 +155,7 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 
 // serveInternal 启动 internal-only Kitex listener (UserCardInternalService 独占).
 // 拆出来防止跟公开 6 个 service 共用端口 → PCI 横向越权.
-func (s *Server) serveInternal(ctx context.Context, ucInternal usercardinternalservice.Server) {
+func (s *Server) serveInternal(ctx context.Context, ucInternal usermerchantv1.UserCardInternalService) {
 	intPort := 9192
 	if v := os.Getenv("INTERNAL_GRPC_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil && p > 0 {

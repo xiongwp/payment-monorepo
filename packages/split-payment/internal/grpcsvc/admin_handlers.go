@@ -163,6 +163,23 @@ func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGra
 		}
 	}
 
+	// P2-STRAT-1: 入口拒绝未实现的 charge / reversal 策略,
+	// 防止商户配 direct/destination 或 fixed_from_platform 时引擎悄悄降级为
+	// separate/proportional 改资金路径. 真等 Phase 4 接通后改 domain.Validate* 放行.
+	if _, warn, csErr := domain.ValidateChargeStrategy(g.Spec.ChargeStrategy); csErr != nil {
+		outcome = "invalid_charge_strategy"
+		return nil, fmt.Errorf("graph %q: %w", g.Key, csErr)
+	} else if warn != "" && s.Log != nil {
+		s.Log.Warn("SaveGraph: charge_strategy warn",
+			zap.String("graph_key", g.Key), zap.String("strategy", g.Spec.ChargeStrategy), zap.String("warn", warn))
+	}
+	if g.Spec.Reversal != nil {
+		if rsErr := domain.ValidateReversalStrategy(g.Spec.Reversal.Strategy); rsErr != nil {
+			outcome = "invalid_reversal_strategy"
+			return nil, fmt.Errorf("graph %q: %w", g.Key, rsErr)
+		}
+	}
+
 	// Saga step 1: derive + push rules to accounting (前置, 失败则全部 abort)
 	if s.RuleSync != nil {
 		rules := deriveRulesFromGraph(g)
