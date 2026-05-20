@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -24,7 +25,9 @@ import (
 	"reconcile-system/packages/data-rights/internal/adminhttp"
 	"reconcile-system/packages/data-rights/internal/audit"
 	"reconcile-system/packages/data-rights/internal/domain"
+	"reconcile-system/packages/data-rights/internal/exporter"
 	"reconcile-system/packages/data-rights/internal/metrics"
+	"reconcile-system/packages/data-rights/internal/notifier"
 	"reconcile-system/packages/data-rights/internal/orchestrator"
 	"reconcile-system/packages/data-rights/internal/store"
 )
@@ -82,13 +85,56 @@ func newPromRegistry() *prometheus.Registry {
 }
 
 func newAdminServer(s *store.MemStore, orch *orchestrator.Orchestrator, sink *audit.HTTPSink, log *zap.Logger) *adminhttp.Server {
-	return &adminhttp.Server{
+	srv := &adminhttp.Server{
 		Store:      s,
 		Orch:       orch,
 		Audit:      sink,
 		AdminToken: os.Getenv("DR_ADMIN_TOKEN"),
 		Log:        log,
 	}
+
+	// P0-DSAR-1b: 真接 Exporter / Notifier. prod 必须装齐, dev 走 stub (Server 内部 log warn).
+	appEnv := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	prod := appEnv == "prod" || appEnv == "production"
+
+	if bucket := os.Getenv("DSAR_S3_BUCKET"); bucket != "" {
+		srv.Exporter = exporter.NewS3Exporter(exporter.Config{
+			Bucket:   bucket,
+			Region:   os.Getenv("DSAR_S3_REGION"),
+			KMSKeyID: os.Getenv("DSAR_KMS_KEY_ID"),
+			Endpoint: os.Getenv("DSAR_S3_ENDPOINT"),
+		})
+		log.Info("data-rights: S3 exporter wired", zap.String("bucket", bucket))
+	} else if prod {
+		panic("data-rights: DSAR_S3_BUCKET 必须配 (APP_ENV=" + appEnv +
+			"). 没真实导出, fulfill 走 stub URL = GDPR/CCPA 不合规 + 数据丢失.")
+	} else {
+		log.Warn("data-rights: DSAR_S3_BUCKET 未配, fulfill 走 stub URL (dev only)")
+	}
+
+	if host := os.Getenv("DSAR_SMTP_HOST"); host != "" {
+		port, _ := strconv.Atoi(os.Getenv("DSAR_SMTP_PORT"))
+		if port == 0 {
+			port = 587
+		}
+		srv.Notifier = &notifier.SMTPNotifier{
+			Host:     host,
+			Port:     port,
+			Username: os.Getenv("DSAR_SMTP_USER"),
+			Password: os.Getenv("DSAR_SMTP_PASS"),
+			From:     os.Getenv("DSAR_SMTP_FROM"),
+			Log:      log,
+		}
+		log.Info("data-rights: SMTP notifier wired", zap.String("host", host))
+	} else if prod {
+		panic("data-rights: DSAR_SMTP_HOST 必须配 (APP_ENV=" + appEnv +
+			"). 用户收不到 fulfill 邮件 = 合规丢链 (法律要求 30d 内告知).")
+	} else {
+		srv.Notifier = &notifier.LogNotifier{Log: log}
+		log.Warn("data-rights: DSAR_SMTP_HOST 未配, 用 LogNotifier (dev only)")
+	}
+
+	return srv
 }
 
 func newHTTPServer(srv *adminhttp.Server, reg *prometheus.Registry) *http.Server {
