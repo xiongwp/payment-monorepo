@@ -150,8 +150,23 @@ func (s *Server) DeleteCard(ctx context.Context, req *cardcenterv1.DeleteCardReq
 }
 
 func (s *Server) RevokeStoredToken(ctx context.Context, req *cardcenterv1.RevokeStoredTokenRequest) (*cardcenterv1.RevokeStoredTokenResponse, error) {
-	// 简化：跟 DeleteCard 同义；reason 不同
-	return &cardcenterv1.RevokeStoredTokenResponse{Ok: true}, nil
+	// MED-FIX-1: 之前 stub 直接返 Ok=true 但什么都没做 — admin 以为 revoke 成功
+	// 实际 token 仍 active, 是安全漏洞 (compromised token 没被 invalidate).
+	//
+	// 根因: proto 只有 stored_token + reason, 没 user_id; 而 stored_card 表按 user_id
+	// shard, repo.SoftDelete 必须知道 user_id 才能定位 shard. 解法二选一:
+	//   1. proto 加 user_id 字段 (推荐, 长期). caller 已经持有 user_id 时优先调 DeleteCard.
+	//   2. 加 cross-shard 扫描的 RevokeByTokenHash service 方法 (慢, 适合 ops 应急工具).
+	//
+	// 在 proto 升级前, 拒绝 silent ok — 让 caller 看到 Unimplemented 显式失败,
+	// 避免合规审计时拿一堆假成功的 audit log.
+	if s.logger != nil {
+		s.logger.Warn("RevokeStoredToken called but unimplemented (proto missing user_id); use DeleteCard with user_id instead",
+			zap.String("trace_id", req.GetTraceId()),
+			zap.String("reason", req.GetReason()))
+	}
+	return &cardcenterv1.RevokeStoredTokenResponse{Ok: false},
+		fmt.Errorf("RevokeStoredToken unimplemented: proto lacks user_id required for sharded lookup; use DeleteCard (user_id + stored_token) instead")
 }
 
 // mapErr 业务错 → gRPC code
