@@ -1653,16 +1653,12 @@ func (s *Server) CreateTransaction(ctx context.Context, req *accountingv1.Create
 			ErrorMessage: "leg[0].currency required",
 		}, nil
 	}
-	// RUNTIME-FIX-1: 按 account_no 聚合 debit/credit 净额, 同账户多次出现只生成
-	// 一条 entry (DoubleEntryBooking.validateEntries 强制每笔 booking 内 account_no
-	// 唯一). 中转户进出相抵 net=0 直接跳过. 跟 transactionService.executeBookkeeping
-	// 同款逻辑, 之前 Kitex handler 没复用导致 raw 2-per-leg entry 提交被 reject.
-	type accSummary struct {
-		debit, credit int64
-		description   string
-	}
-	agg := map[string]*accSummary{}
-	defaultDesc := req.GetRemark()
+	// RUNTIME-FIX-1: 直接委托给 transactionSvc.CreateTransaction —
+	// 它已经做了 ① 按 accNo 聚合 debit/credit 净额 ② 幂等检查 ③ TransactionOrder
+	// 状态机 (pending → processing → success/failed) ④ 重试 ⑤ 中转户 net=0 跳过.
+	// Kitex 层只做 wire → service 类型映射 + leg 基本校验, 不再自己拼 entry,
+	// 防"两条路径不一致"导致 SUSPENSE 类中转户被 validateEntries dup reject.
+	serviceLegs := make([]service.TxnLeg, 0, len(legs))
 	for i, leg := range legs {
 		legCur := strings.TrimSpace(leg.GetCurrency())
 		if legCur == "" {
@@ -1689,84 +1685,30 @@ func (s *Server) CreateTransaction(ctx context.Context, req *accountingv1.Create
 				ErrorMessage: fmt.Sprintf("leg[%d] from_account_no / to_account_no required", i),
 			}, nil
 		}
-		if leg.GetFromAccountNo() == leg.GetToAccountNo() {
-			return &accountingv1.CreateTransactionResponse{
-				OrderNo:      req.GetIdempotencyKey(),
-				Status:       "failed",
-				ErrorMessage: fmt.Sprintf("leg[%d] from == to (%s); self-transfer not allowed", i, leg.GetFromAccountNo()),
-			}, nil
-		}
-		desc := leg.GetDescription()
-		if desc == "" {
-			desc = defaultDesc
-		}
-		amount := leg.GetAmountMinor()
-		fromAcc := leg.GetFromAccountNo()
-		toAcc := leg.GetToAccountNo()
-		if agg[fromAcc] == nil {
-			agg[fromAcc] = &accSummary{description: desc}
-		}
-		agg[fromAcc].debit += amount
-		if agg[toAcc] == nil {
-			agg[toAcc] = &accSummary{description: desc}
-		}
-		agg[toAcc].credit += amount
-	}
-	entries := make([]service.AccountingEntry, 0, len(agg))
-	for accNo, sum := range agg {
-		net := sum.debit - sum.credit
-		switch {
-		case net > 0:
-			entries = append(entries, service.AccountingEntry{
-				AccountNo:    accNo,
-				DebitAmount:  net,
-				CreditAmount: 0,
-				Description:  sum.description,
-			})
-		case net < 0:
-			entries = append(entries, service.AccountingEntry{
-				AccountNo:    accNo,
-				DebitAmount:  0,
-				CreditAmount: -net,
-				Description:  sum.description,
-			})
-			// net == 0: 中转户进出相抵, 不影响余额, 跳过 entry.
-		}
-	}
-	if len(entries) == 0 {
-		return &accountingv1.CreateTransactionResponse{
-			OrderNo:      req.GetIdempotencyKey(),
-			Status:       "failed",
-			ErrorMessage: "all legs aggregated to net 0 (no real money movement)",
-		}, nil
+		serviceLegs = append(serviceLegs, service.TxnLeg{
+			EdgeFromNode:  leg.GetEdgeFromNode(),
+			EdgeToNode:    leg.GetEdgeToNode(),
+			FromAccountID: leg.GetFromAccountNo(),
+			ToAccountID:   leg.GetToAccountNo(),
+			Amount:        strconv.FormatInt(leg.GetAmountMinor(), 10),
+			Currency:      legCur,
+		})
 	}
 
-	businessNo := req.GetBusinessNo()
-	if businessNo == "" {
-		businessNo = req.GetIdempotencyKey()
-	}
 	remark := req.GetRemark()
 	if remark == "" {
 		remark = fmt.Sprintf("%s/%s", req.GetProductCode(), req.GetEventCode())
 	}
-	voucherNo, _, err := s.accountingSvc.DoubleEntryBooking(ctx, &service.DoubleEntryBookingRequest{
-		RequestID:    req.GetIdempotencyKey(),
-		BusinessNo:   businessNo,
-		BusinessType: eventCodeToBusinessType(req.GetEventCode()),
-		Entries:      entries,
-		Currency:     currency,
-		Description:  remark,
+	svcResp, err := s.transactionSvc.CreateTransaction(ctx, &service.CreateTransactionRequest{
+		OrderNo:     req.GetIdempotencyKey(),
+		ProductCode: req.GetProductCode(),
+		EventCode:   req.GetEventCode(),
+		Legs:        serviceLegs,
+		Description: remark,
 	})
 	if err != nil {
-		if errors.Is(err, service.ErrRequestInProgress) {
-			return &accountingv1.CreateTransactionResponse{
-				OrderNo:      req.GetIdempotencyKey(),
-				Status:       "pending",
-				ErrorMessage: err.Error(),
-			}, nil
-		}
 		s.logger.Warn("CreateTransaction failed",
-			zap.String("business_no", businessNo),
+			zap.String("business_no", req.GetBusinessNo()),
 			zap.String("product", req.GetProductCode()),
 			zap.String("event", req.GetEventCode()),
 			zap.Int("legs", len(legs)),
@@ -1777,10 +1719,21 @@ func (s *Server) CreateTransaction(ctx context.Context, req *accountingv1.Create
 			ErrorMessage: err.Error(),
 		}, nil
 	}
+	// service 层 status 是 int8 (model.TransactionOrderStatus*), 映射成 wire 字符串.
+	wireStatus := "posted"
+	switch svcResp.Status {
+	case model.TransactionOrderStatusPending, model.TransactionOrderStatusProcessing:
+		wireStatus = "pending"
+	case model.TransactionOrderStatusFailed:
+		wireStatus = "failed"
+	case model.TransactionOrderStatusSuccess:
+		wireStatus = "posted"
+	}
 	return &accountingv1.CreateTransactionResponse{
-		OrderNo:   req.GetIdempotencyKey(),
-		Status:    "posted",
-		VoucherNo: voucherNo,
+		OrderNo:      svcResp.OrderNo,
+		Status:       wireStatus,
+		VoucherNo:    svcResp.VoucherNo,
+		ErrorMessage: svcResp.ErrorMessage,
 	}, nil
 }
 
