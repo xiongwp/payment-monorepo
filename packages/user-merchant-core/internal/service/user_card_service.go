@@ -97,14 +97,18 @@ func (s *UserCardService) AttachCard(ctx context.Context, in *AttachCardInput) (
 	if err := s.repo.Insert(ctx, card); err != nil {
 		// 入库失败：让 card-center audit 知道这条 stored_token 没被业务持有 →
 		// 异步调 card-center.DeleteCard 标 revoked，best-effort
+		// MED-FIX-6: 之前用 context.Background() 没 timeout, shutdown 会 SIGKILL.
+		// 加 30s timeout bound lifetime, 至少让 log 能写完.
 		if s.cardCenter != nil {
-			go func(tok string) {
-				if cerr := s.cardCenter.DeleteCard(context.Background(), in.UserID,
-					tok, "user_card insert failed", in.TraceID); cerr != nil {
+			go func(tok, traceID string, uid int64) {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if cerr := s.cardCenter.DeleteCard(bgCtx, uid,
+					tok, "user_card insert failed", traceID); cerr != nil {
 					s.logger.Warn("rollback card-center DeleteCard failed",
-						zap.Int64("user_id", in.UserID), zap.Error(cerr))
+						zap.Int64("user_id", uid), zap.Error(cerr))
 				}
-			}(in.StoredToken)
+			}(in.StoredToken, in.TraceID, in.UserID)
 		}
 		return nil, fmt.Errorf("user_card insert: %w", err)
 	}
@@ -149,15 +153,18 @@ func (s *UserCardService) DeleteCard(ctx context.Context, userID, userCardID int
 	if err := s.repo.SoftDelete(ctx, userID, userCardID); err != nil {
 		return err
 	}
-	// 异步通知 card-center 把这条 stored_token 标 revoked
+	// 异步通知 card-center 把这条 stored_token 标 revoked.
+	// MED-FIX-6: 同 AttachCard 路径 — 加 30s timeout, 防 shutdown 时被 SIGKILL.
 	if s.cardCenter != nil {
-		go func(tok string) {
-			if cerr := s.cardCenter.DeleteCard(context.Background(), userID, tok,
+		go func(tok string, uid, uid_card int64, traceID string) {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if cerr := s.cardCenter.DeleteCard(bgCtx, uid, tok,
 				"user requested delete", traceID); cerr != nil {
 				s.logger.Warn("card-center DeleteCard async failed (db deleted)",
-					zap.Int64("user_card_id", userCardID), zap.Error(cerr))
+					zap.Int64("user_card_id", uid_card), zap.Error(cerr))
 			}
-		}(card.StoredToken)
+		}(card.StoredToken, userID, userCardID, traceID)
 	}
 	return nil
 }
