@@ -4,15 +4,16 @@ import (
 	"net/http"
 	"strconv"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 )
 
 // TransactionHandler handles account transaction query endpoints.
 type TransactionHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewTransactionHandler(client accountingv1.AccountingServiceClient) *TransactionHandler {
+func NewTransactionHandler(client accountingservice.Client) *TransactionHandler {
 	return &TransactionHandler{client: client}
 }
 

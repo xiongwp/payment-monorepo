@@ -29,7 +29,7 @@ import (
 	"fmt"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/domain"
 
 	"go.uber.org/zap"
 )
@@ -120,9 +120,10 @@ func (e *Engine) HandleRefund(
 		return nil // 没东西可 reverse
 	}
 
-	// 3) Reversal strategy. 目前只实现 proportional (按比例退);
-	// fixed_from_platform / fail_if_imbalance 是占位, 留 Phase 3 接.
-	// Graph 反查暂略 (RunPlan.GraphID 拿到 → GraphRepo.GetByID 是另一个 trip), 默认走 proportional.
+	// 3) Reversal strategy.
+	// P2-STRAT-1: 真校验在 SaveGraph 入口做 (见 domain.ValidateReversalStrategy);
+	// 这里到达 runtime 时已经过滤, 不允许未实现的 strategy 落库.
+	// proportional 是当前唯一合法值, 直接走计算逻辑.
 
 	// 4) 按 proportional 算每条 transfer reverse 多少
 	totalCharge := int64(0)

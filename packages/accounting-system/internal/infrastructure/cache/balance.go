@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/accounting-system/internal/metrics"
+	"github.com/xiongwp/accounting-system/internal/metrics"
 	"github.com/redis/go-redis/v9"
 	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"

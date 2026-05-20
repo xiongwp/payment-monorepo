@@ -45,6 +45,7 @@ services:
         payment-util: ../payment-util
         kms-manage:   ../kms-manage
         risk-manage:  ../risk-manage
+        card-payment: ../card-payment
       secrets:
         - GITHUB_TOKEN
     image: payment-channel-mockserver:latest
@@ -61,6 +62,7 @@ services:
         payment-util: ../payment-util
         kms-manage:   ../kms-manage
         risk-manage:  ../risk-manage
+        card-payment: ../card-payment
       secrets:
         - GITHUB_TOKEN
     image: payment-channel:latest
@@ -81,7 +83,10 @@ services:
     environment:
       PAYCHAN_LOG_DEV: "false"
       # ── 服务发现 + 下游 KMS（payment-stack 内 DNS）──
+      # kitexutil 读 REGISTRY_ENDPOINTS, viper 兼容读 PAYCHAN_*.
       PAYCHAN_REGISTRY_ENDPOINTS: "etcd:2379"
+      REGISTRY_ENDPOINTS: "etcd:2379"
+      ADVERTISE_HOST: "payment-channel"
       PAYCHAN_KMS_ENDPOINT: "kms-manage:9390"
       # ── config-center：adapter timeouts / rate_limit / retry policy 动态推送
       PAYCHAN_CONFIGCENTER_ENDPOINT: "http://config-center:9691"

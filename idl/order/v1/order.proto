@@ -1,0 +1,381 @@
+syntax = "proto3";
+
+package order.v1;
+
+option go_package = "reconcile-system/packages/order-core/kitex_gen/order/v1;orderv1";
+
+import "google/protobuf/timestamp.proto";
+
+// ─── 枚举（对齐 Stripe PaymentIntent / Charge / Refund 状态）────────────────────
+
+// PaymentIntentStatus 6 态状态机
+enum PaymentIntentStatus {
+  PAYMENT_INTENT_STATUS_UNSPECIFIED     = 0;
+  PAYMENT_INTENT_STATUS_CREATED         = 1; // 已创建，等待选择支付方式
+  PAYMENT_INTENT_STATUS_REQUIRES_ACTION = 2; // 需要用户操作（3DS / 扫码 / 换卡）
+  PAYMENT_INTENT_STATUS_PROCESSING      = 3; // 渠道处理中
+  PAYMENT_INTENT_STATUS_SUCCEEDED       = 4; // 支付成功（终态）
+  PAYMENT_INTENT_STATUS_FAILED          = 5; // 渠道终态失败（可换卡 → REQUIRES_ACTION）
+  PAYMENT_INTENT_STATUS_CANCELED        = 6; // 已取消（终态）
+}
+
+// CaptureMethod 捕获方式
+enum CaptureMethod {
+  CAPTURE_METHOD_UNSPECIFIED = 0;
+  CAPTURE_METHOD_AUTOMATIC   = 1;
+  CAPTURE_METHOD_MANUAL      = 2;
+}
+
+// ConfirmationMethod 确认方式
+enum ConfirmationMethod {
+  CONFIRMATION_METHOD_UNSPECIFIED = 0;
+  CONFIRMATION_METHOD_AUTOMATIC   = 1;
+  CONFIRMATION_METHOD_MANUAL      = 2;
+}
+
+// ChargeStatus Stripe Charge 状态
+enum ChargeStatus {
+  CHARGE_STATUS_UNSPECIFIED = 0;
+  CHARGE_STATUS_PENDING     = 1;
+  CHARGE_STATUS_SUCCEEDED   = 2;
+  CHARGE_STATUS_FAILED      = 3;
+}
+
+// RefundStatus Stripe Refund 状态
+enum RefundStatus {
+  REFUND_STATUS_UNSPECIFIED = 0;
+  REFUND_STATUS_PENDING     = 1;
+  REFUND_STATUS_SUCCEEDED   = 2;
+  REFUND_STATUS_FAILED      = 3;
+  REFUND_STATUS_CANCELED    = 4;
+}
+
+// RefundReason Stripe Refund 原因
+enum RefundReason {
+  REFUND_REASON_UNSPECIFIED           = 0;
+  REFUND_REASON_DUPLICATE             = 1;
+  REFUND_REASON_FRAUDULENT            = 2;
+  REFUND_REASON_REQUESTED_BY_CUSTOMER = 3;
+  REFUND_REASON_EXPIRED_UNCAPTURED    = 4;
+}
+
+// ─── 数据模型 ─────────────────────────────────────────────────────────────────
+
+// PaymentIntent Stripe PI 模型
+message PaymentIntent {
+  string              id                   = 1; // pi_xxx
+  int64               amount               = 2; // 应付金额（= subtotal - coupon - points）
+  int64               amount_subtotal      = 25; // 原价（可选）
+  int64               amount_coupon        = 26; // 优惠券抵扣（可选）
+  int64               amount_points        = 27; // 积分抵扣（可选）
+  string              currency             = 3; // ISO 4217
+  PaymentIntentStatus status               = 4;
+  string              customer_id          = 5; // 可选：商户侧用户/商户 ID
+  string              description          = 6;
+  string              mch_id               = 7;
+  string              mch_order_no         = 8; // 商户原始单号
+  string              business_id          = 29; // 分片路由键，pi_id 前缀由此派生
+  string              idempotency_key      = 30; // 幂等键（展示用；回显 Create 时传入的值）
+  CaptureMethod       capture_method       = 9;
+  ConfirmationMethod  confirmation_method  = 10;
+  string              client_secret        = 11;
+  repeated string     payment_method_types = 12; // 接受的支付方式：VISA / BALANCE / ...
+  string              payment_method       = 13; // 实际使用的支付方式（Confirm 时提供）
+  // 仅记录"进行中"的 charge / refund 列表（终态后会从列表中移除）；
+  // 历史明细请用 ChargeService.List / RefundService.List 查。
+  repeated string     active_charge_ids    = 14;
+  repeated string     active_refund_ids    = 28;
+  int64               amount_capturable    = 15; // 可捕获金额（manual capture）
+  int64               amount_received      = 16; // 实际收到的金额
+  string              return_url           = 17;
+  string              notify_url           = 18;
+  string              statement_descriptor = 19;
+  map<string, string> metadata             = 20;
+  bool                livemode             = 21;
+  google.protobuf.Timestamp created        = 22;
+  google.protobuf.Timestamp updated        = 23;
+  google.protobuf.Timestamp canceled_at    = 24;
+}
+
+// ChargeOutcome Charge 结果详情
+message ChargeOutcome {
+  string risk_level      = 1; // normal / elevated / highest
+  int32  risk_score      = 2;
+  string seller_message  = 3;
+  string type            = 4; // authorized / manual_review / issuer_declined / blocked
+  string reason          = 5;
+  string network_status  = 6;
+}
+
+// Charge Stripe Charge 模型（对应一次 PaymentIntent 下的扣款尝试）
+message Charge {
+  string        id                  = 1;  // ch_xxx
+  string        payment_intent_id   = 2;
+  int64         amount              = 3;
+  int64         amount_captured     = 4;
+  int64         amount_refunded     = 5;
+  string        currency            = 6;
+  ChargeStatus  status              = 7;
+  string        payment_method      = 8;  // VISA / BALANCE / ...
+  bool          captured            = 9;
+  bool          paid                = 10;
+  bool          refunded            = 11;
+  ChargeOutcome outcome             = 12;
+  string        failure_code        = 13;
+  string        failure_message     = 14;
+  string        receipt_url         = 15;
+  string        balance_transaction = 16;
+  bool          livemode            = 17;
+  map<string, string> metadata      = 18;
+  google.protobuf.Timestamp created = 19;
+  google.protobuf.Timestamp updated = 20;
+}
+
+// PayActionStatus PayAction 状态
+enum PayActionStatus {
+  PAY_ACTION_STATUS_UNSPECIFIED = 0;
+  PAY_ACTION_STATUS_PENDING     = 1;
+  PAY_ACTION_STATUS_SUCCEEDED   = 2;
+  PAY_ACTION_STATUS_FAILED      = 3;
+  PAY_ACTION_STATUS_EXPIRED     = 4;
+}
+
+// PayAction 用户挑战（3DS / OTP / 支付密码 / 扫码 / 跳 App）。
+// Confirm / ConfirmPaymentAction 响应里若 next_action != nil，收银台按 action_type 渲染 UI、
+// 用户完成后把结果通过 ConfirmPaymentAction.verification_data 回传。
+message PayAction {
+  string          id                = 1;  // act_xxx
+  string          payment_intent_id = 2;
+  string          charge_id         = 3;
+  // action_type: three_d_secure / otp / pay_password / qrcode / app_redirect
+  string          action_type       = 4;
+  PayActionStatus status            = 5;
+  // payload: 给前端展示 / 跳转的字段，具体结构取决于 action_type
+  //   three_d_secure → {redirect_url, session_id, return_url}
+  //   otp            → {recipient_masked, channel, length, resend_after_sec}
+  //   pay_password   → {algorithm, salt_hint, max_attempts}
+  //   qrcode         → {qrcode_url, qrcode_image_base64, poll_interval_ms}
+  //   app_redirect   → {redirect_url, scheme, return_url}
+  map<string, string> payload       = 6;
+  int32           attempt_count     = 7;
+  int32           max_attempts      = 8;
+  string          failure_reason    = 9;
+  google.protobuf.Timestamp expires_at   = 10;
+  google.protobuf.Timestamp completed_at = 11;
+  google.protobuf.Timestamp created      = 12;
+  google.protobuf.Timestamp updated      = 13;
+}
+
+// Refund Stripe Refund 模型
+message Refund {
+  string       id                = 1; // re_xxx
+  string       charge_id         = 2;
+  string       payment_intent_id = 3;
+  int64        amount            = 4;
+  string       currency          = 5;
+  RefundStatus status            = 6;
+  RefundReason reason            = 7;
+  string       failure_reason    = 8;
+  string       receipt_number    = 9;
+  map<string, string> metadata   = 10;
+  google.protobuf.Timestamp created = 11;
+  google.protobuf.Timestamp updated = 12;
+}
+
+// ─── 请求 / 响应 ──────────────────────────────────────────────────────────────
+
+message CreatePaymentIntentRequest {
+  int64               amount               = 1;
+  string              currency             = 2;
+  string              customer_id          = 3;
+  string              description          = 4;
+  string              mch_id               = 5;
+  string              mch_order_no         = 6;
+  // business_id 分片路由键；未传时服务端 fallback 用 mch_id。
+  // 同 business_id 的订单在同一分片，后续 query 也按此键路由。
+  string              business_id          = 15;
+  // idempotency_key 调用方防重键：(mch_id, idempotency_key) 唯一。
+  // 相同 key 的重复 Create 返回首次结果，不会生成新 PI。
+  string              idempotency_key      = 16;
+  CaptureMethod       capture_method       = 7;
+  ConfirmationMethod  confirmation_method  = 8;
+  repeated string     payment_method_types = 9;
+  string              return_url           = 10;
+  string              notify_url           = 11;
+  string              statement_descriptor = 12;
+  map<string, string> metadata             = 13;
+  bool                livemode             = 14;
+
+  // 卡支付场景：user_id + user_card_id。
+  // Confirm 路径会用这两个字段调 user-merchant-core.UserCardInternalService.GetStoredTokenForPayment
+  // 拿 stored_token，再调 card-center.CreatePaymentToken 派生支付 token。
+  // 非卡支付时留空。
+  int64               user_id              = 17;
+  int64               user_card_id         = 18;
+}
+message CreatePaymentIntentResponse { PaymentIntent payment_intent = 1; }
+
+message RetrievePaymentIntentRequest  { string id = 1; }
+message RetrievePaymentIntentResponse { PaymentIntent payment_intent = 1; }
+
+message UpdatePaymentIntentRequest {
+  string              id          = 1;
+  string              description = 2;
+  map<string, string> metadata    = 3;
+}
+message UpdatePaymentIntentResponse { PaymentIntent payment_intent = 1; }
+
+// PaymentMethodSplit 组合支付：单一支付方式 + 分摊金额
+message PaymentMethodSplit {
+  string              payment_method     = 1; // VISA / BALANCE / ALIPAY / ...
+  int64               amount             = 2; // 本渠道承担金额（分）
+  string              payment_method_ref = 3; // token / card_id / wallet_id（可选）
+  map<string, string> extra              = 4; // 渠道特定字段
+}
+
+message ConfirmPaymentIntentRequest {
+  string id             = 1;
+  // 单渠道便捷字段：payment_method + amount 默认用 PI.amount。与 payment_methods 二选一。
+  string payment_method = 2;
+  string client_secret  = 3;
+  // 组合支付：多渠道时填 payment_methods；sum(amount) 必须等于 PI.amount。
+  repeated PaymentMethodSplit payment_methods = 4;
+}
+message ConfirmPaymentIntentResponse {
+  PaymentIntent payment_intent = 1;
+  // 单渠道场景保留 charge 字段（返回 charges[0] 的别名，向后兼容单笔调用方）。
+  Charge        charge         = 2;
+  // 组合支付下本次 Confirm 创建的所有 Charge —— N 个 payment_methods 对应 N 笔 Charge。
+  repeated Charge charges      = 4;
+  // 若任一 Charge 需要用户动作，返回第一个 pending 的 next_action（典型场景里一次只挑战一个渠道）。
+  PayAction     next_action    = 3;
+}
+
+// ConfirmPaymentAction 收银台回传用户完成挑战后的结果（OTP / 密码 / 3DS token）。
+//
+// verification_data 的 key 约定：
+//   three_d_secure → {three_ds_token} 或渠道特定字段（如 cres / pares）
+//   otp            → {otp}
+//   pay_password   → {password}
+//   qrcode         → 通常由渠道 webhook 通知，不走此接口
+message ConfirmPaymentActionRequest {
+  string id                = 1; // pi_xxx
+  string action_id         = 2; // act_xxx
+  map<string,string> verification_data = 3;
+}
+message ConfirmPaymentActionResponse {
+  PaymentIntent payment_intent = 1;
+  Charge        charge         = 2;
+  PayAction     action         = 3;
+  // next_action 非空表示本次验证通过后仍需要下一步挑战（多因子场景）
+  PayAction     next_action    = 4;
+}
+
+// ─── Webhook / Client Push 入口 ───────────────────────────────────────────────
+
+// WebhookDirection 通知来源方向
+enum WebhookDirection {
+  WEBHOOK_DIRECTION_UNSPECIFIED = 0;
+  WEBHOOK_DIRECTION_CHANNEL     = 1; // 渠道 → 支付系统（异步结果回推）
+  WEBHOOK_DIRECTION_CLIENT      = 2; // 客户端 / 收银台 → 支付系统（主动轮询或推送）
+}
+
+// IngestWebhookRequest 接收渠道或客户端的异步通知 / 主动推送。
+//
+// 服务端按 channel_name 找到 PaymentChannel adapter，用 ParseWebhook 规范化事件，
+// 再根据事件类型推进 PaymentIntent / Charge / Refund 状态。
+message IngestWebhookRequest {
+  WebhookDirection direction   = 1;
+  string           channel_name = 2; // 如 "adyen-visa" / "alipay" / "internal-balance"
+  map<string,string> headers   = 3;  // 原始 HTTP 头（用于签名校验）
+  bytes            body        = 4;  // 原始 body
+}
+message IngestWebhookResponse {
+  bool   ok               = 1;
+  string event_id         = 2; // 渠道事件 ID（用于幂等）
+  string payment_intent_id = 3;
+  string charge_id        = 4;
+  string refund_id        = 5;
+}
+
+message CapturePaymentIntentRequest {
+  string id                 = 1;
+  int64  amount_to_capture  = 2; // 0 表示全额
+}
+message CapturePaymentIntentResponse {
+  PaymentIntent payment_intent = 1;
+  Charge        charge         = 2;
+}
+
+message CancelPaymentIntentRequest {
+  string id                  = 1;
+  string cancellation_reason = 2; // requested_by_customer / duplicate / fraudulent / abandoned
+}
+message CancelPaymentIntentResponse { PaymentIntent payment_intent = 1; }
+
+message ListPaymentIntentsRequest {
+  string mch_id   = 1;
+  int32  page     = 2;
+  int32  page_size = 3;
+}
+message ListPaymentIntentsResponse {
+  repeated PaymentIntent payment_intents = 1;
+  int64                  total           = 2;
+}
+
+message RetrieveChargeRequest  { string id = 1; }
+message RetrieveChargeResponse { Charge charge = 1; }
+
+message ListChargesRequest {
+  string payment_intent_id = 1;
+}
+message ListChargesResponse { repeated Charge charges = 1; }
+
+message CreateRefundRequest {
+  string       charge_id         = 1; // 二选一
+  string       payment_intent_id = 2; // 二选一
+  int64        amount            = 3; // 0 表示全额
+  RefundReason reason            = 4;
+  map<string, string> metadata   = 5;
+}
+message CreateRefundResponse { Refund refund = 1; }
+
+message RetrieveRefundRequest  { string id = 1; }
+message RetrieveRefundResponse { Refund refund = 1; }
+
+message ListRefundsRequest {
+  string charge_id         = 1;
+  string payment_intent_id = 2;
+}
+message ListRefundsResponse { repeated Refund refunds = 1; }
+
+// PaymentIntentService PaymentIntent 生命周期（Stripe API 风格）
+service PaymentIntentService {
+  rpc Create              (CreatePaymentIntentRequest)   returns (CreatePaymentIntentResponse);
+  rpc Retrieve            (RetrievePaymentIntentRequest) returns (RetrievePaymentIntentResponse);
+  rpc Update              (UpdatePaymentIntentRequest)   returns (UpdatePaymentIntentResponse);
+  rpc Confirm             (ConfirmPaymentIntentRequest)  returns (ConfirmPaymentIntentResponse);
+  // ConfirmPaymentAction 收银台回传用户挑战结果（OTP / 密码 / 3DS token）
+  rpc ConfirmPaymentAction(ConfirmPaymentActionRequest)  returns (ConfirmPaymentActionResponse);
+  rpc Capture             (CapturePaymentIntentRequest)  returns (CapturePaymentIntentResponse);
+  rpc Cancel              (CancelPaymentIntentRequest)   returns (CancelPaymentIntentResponse);
+  rpc List                (ListPaymentIntentsRequest)    returns (ListPaymentIntentsResponse);
+}
+
+// WebhookService 接收异步通知：渠道 webhook 或收银台 / 客户端主动推送
+service WebhookService {
+  rpc Ingest (IngestWebhookRequest) returns (IngestWebhookResponse);
+}
+
+// ChargeService Charge 查询
+service ChargeService {
+  rpc Retrieve (RetrieveChargeRequest) returns (RetrieveChargeResponse);
+  rpc List     (ListChargesRequest)    returns (ListChargesResponse);
+}
+
+// RefundService Refund 生命周期
+service RefundService {
+  rpc Create   (CreateRefundRequest)   returns (CreateRefundResponse);
+  rpc Retrieve (RetrieveRefundRequest) returns (RetrieveRefundResponse);
+  rpc List     (ListRefundsRequest)    returns (ListRefundsResponse);
+}

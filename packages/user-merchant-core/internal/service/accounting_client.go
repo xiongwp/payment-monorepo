@@ -12,7 +12,7 @@ package service
 import (
 	"context"
 
-	accv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 )
 
 // AccountingClient 仅暴露 user-merchant-core 用到的 CreateAccount。

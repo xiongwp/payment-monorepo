@@ -9,7 +9,8 @@ import (
 
 	"github.com/gorilla/mux"
 
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
+	orderv1 "github.com/xiongwp/order-core/kitex_gen/order/v1"
+	webhookdeliveryservice "github.com/xiongwp/order-core/kitex_gen/order/v1/webhookdeliveryservice"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )
@@ -17,11 +18,11 @@ import (
 // WebhookDeliveryHandler thin BFF over order-core's WebhookDeliveryService.
 type WebhookDeliveryHandler struct {
 	deps clients.Deps
-	wd   orderv1.WebhookDeliveryServiceClient
+	wd   webhookdeliveryservice.Client
 }
 
 // NewWebhookDeliveryHandler constructs the handler.
-func NewWebhookDeliveryHandler(d clients.Deps, wd orderv1.WebhookDeliveryServiceClient) *WebhookDeliveryHandler {
+func NewWebhookDeliveryHandler(d clients.Deps, wd webhookdeliveryservice.Client) *WebhookDeliveryHandler {
 	return &WebhookDeliveryHandler{deps: d, wd: wd}
 }
 

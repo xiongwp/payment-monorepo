@@ -29,12 +29,13 @@ import (
 	"syscall"
 	"time"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	kitexclient "github.com/cloudwego/kitex/client"
+
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingadminservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
 	"github.com/spf13/viper"
-	"github.com/xiongwp/payment-util/serviceregistry"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/xiongwp/payment-util/serviceregistry"
 	"os"
 )
 
@@ -146,17 +147,12 @@ func main() {
 		}
 	}
 
-	// 连接 gRPC 服务：优先走 etcd resolver（拿所有活副本 + round_robin），
-	// 没配 etcd 退回直连 cfg.GrpcAddr 并加 round_robin service config（DNS 多 IP 也能均摊）。
-	dialCtx, dialCancel := context.WithTimeout(context.Background(), time.Duration(cfg.DialTimeoutSeconds)*time.Second)
-	defer dialCancel()
-	conn, err := dialAccountingService(dialCtx, cfg)
+	// 连接 Kitex: accounting-system 切 Kitex 后, 不再走 grpc.ClientConn.
+	// Kitex 内部自管 connection pool + round_robin LB, 不需要 round_robin service config.
+	adminClient, err := dialAccountingAdmin(cfg)
 	if err != nil {
-		log.Fatalf("[batchtask] dial accounting-system failed: %v", err)
+		log.Fatalf("[batchtask] kitex dial accounting-system failed: %v", err)
 	}
-	defer conn.Close()
-
-	adminClient := accountingv1.NewAccountingAdminServiceClient(conn)
 
 	if *flagRunOnce {
 		runOnce(adminClient, cfg)
@@ -168,20 +164,17 @@ func main() {
 	runDaemon(adminClient, cfg)
 }
 
-// dialAccountingService dispatches between etcd-resolver and direct dial.
-// 在 etcd 模式下不会使用 cfg.GrpcAddr；直连模式下用 cfg.GrpcAddr。
-func dialAccountingService(ctx context.Context, cfg BatchTaskConfig) (*grpc.ClientConn, error) {
-	if len(cfg.RegistryEndpoints) > 0 {
-		log.Printf("[batchtask] dialing %s via etcd %v", cfg.RegistryService, cfg.RegistryEndpoints)
-		return serviceregistry.DialFromEndpoints(cfg.RegistryEndpoints, cfg.RegistryService,
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-		)
-	}
-	log.Printf("[batchtask] dialing %s direct (no registry.endpoints)", cfg.GrpcAddr)
-	return grpc.DialContext(ctx, cfg.GrpcAddr, //nolint:staticcheck
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
+// dialAccountingAdmin Kitex client → accounting-system AccountingAdminService.
+//
+// etcd resolver TODO (kitexutil.NewEtcdResolver), 当前用 direct addr.
+func dialAccountingAdmin(cfg BatchTaskConfig) (accountingadminservice.Client, error) {
+	endpoint := cfg.GrpcAddr
+	log.Printf("[batchtask] kitex dial %s (endpoint=%s, registry=%v)",
+		cfg.RegistryService, endpoint, cfg.RegistryEndpoints)
+	// ETCD-5: accounting 在 etcd 注册名是 "accounting-service" (= docker DNS).
+	return accountingadminservice.NewClient("accounting-service",
+		kitexclient.WithHostPorts(endpoint),
+		kitexclient.WithRPCTimeout(time.Duration(cfg.DialTimeoutSeconds)*time.Second),
 	)
 }
 
@@ -191,16 +184,16 @@ func leaderEtcdClient(cfg BatchTaskConfig) *clientv3.Client {
 	if len(cfg.RegistryEndpoints) == 0 {
 		return nil
 	}
-	// 复用 DialFromEndpoints 留下的进程级 etcd client；如果还没建（dial 失败的边缘情况），
-	// 这里不再重建：返回 nil 让 RunLeaderLoop 退化为直接 task。
-	return serviceregistry.SharedEtcdClient()
+	// TODO: serviceregistry 已退役, leader election etcd client 需要在 main 单独构造
+	// (clientv3.New) 再传给本函数. 当前暂返 nil → RunLeaderLoop 退化为直接 task (单 pod OK).
+	return nil
 }
 
 // ─── 单次模式 ──────────────────────────────────────────────────────────────────
 
 // runOnce executes the configured task(s) once and exits.
 // If --task-type is specified, only that task runs; otherwise all tasks run once.
-func runOnce(client accountingv1.AccountingAdminServiceClient, cfg BatchTaskConfig) {
+func runOnce(client accountingadminservice.Client, cfg BatchTaskConfig) {
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 	defer cancel()
 
@@ -231,7 +224,7 @@ func runOnce(client accountingv1.AccountingAdminServiceClient, cfg BatchTaskConf
 // keyed by task type. 不同 type 对应不同 leader key，可在 N 个 batchtask
 // 副本间天然分布（pod1 接管 process_async_tasks，pod2 接管 day_cut_watchdog 等）；
 // 没配 etcd 时 RunLeaderLoop 退化为直接跑（dev / 单 pod 模式）。
-func runDaemon(client accountingv1.AccountingAdminServiceClient, cfg BatchTaskConfig) {
+func runDaemon(client accountingadminservice.Client, cfg BatchTaskConfig) {
 	log.Printf("[batchtask] daemon mode: connected to %s, starting %d tasks", cfg.GrpcAddr, len(cfg.Tasks))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -266,7 +259,7 @@ func hostnameOrUnknown() string {
 }
 
 // runTaskLoop runs a single task on its configured interval until ctx is cancelled.
-func runTaskLoop(ctx context.Context, client accountingv1.AccountingAdminServiceClient, cfg TaskConfig) {
+func runTaskLoop(ctx context.Context, client accountingadminservice.Client, cfg TaskConfig) {
 	interval := time.Duration(cfg.IntervalSeconds) * time.Second
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -286,7 +279,7 @@ func runTaskLoop(ctx context.Context, client accountingv1.AccountingAdminService
 
 // ─── 任务执行 ──────────────────────────────────────────────────────────────────
 
-func executeTask(ctx context.Context, client accountingv1.AccountingAdminServiceClient, cfg TaskConfig) {
+func executeTask(ctx context.Context, client accountingadminservice.Client, cfg TaskConfig) {
 	callCtx, cancel := context.WithTimeout(ctx, 55*time.Second)
 	defer cancel()
 
@@ -304,7 +297,7 @@ func executeTask(ctx context.Context, client accountingv1.AccountingAdminService
 	}
 }
 
-func executeProcessAsyncTasks(ctx context.Context, client accountingv1.AccountingAdminServiceClient, cfg TaskConfig) {
+func executeProcessAsyncTasks(ctx context.Context, client accountingadminservice.Client, cfg TaskConfig) {
 	batchSize := int32(cfg.BatchSize)
 	if batchSize <= 0 {
 		batchSize = 100
@@ -323,7 +316,7 @@ func executeProcessAsyncTasks(ctx context.Context, client accountingv1.Accountin
 	}
 }
 
-func executeDayCutWatchdog(ctx context.Context, client accountingv1.AccountingAdminServiceClient, cfg TaskConfig) {
+func executeDayCutWatchdog(ctx context.Context, client accountingadminservice.Client, cfg TaskConfig) {
 	threshold := int32(cfg.StuckThresholdSeconds)
 	if threshold <= 0 {
 		threshold = 300
@@ -340,7 +333,7 @@ func executeDayCutWatchdog(ctx context.Context, client accountingv1.AccountingAd
 	log.Printf("[batchtask][day_cut_watchdog] ok")
 }
 
-func executeListManualTasks(ctx context.Context, client accountingv1.AccountingAdminServiceClient, cfg TaskConfig) {
+func executeListManualTasks(ctx context.Context, client accountingadminservice.Client, cfg TaskConfig) {
 	limit := int32(cfg.Limit)
 	if limit <= 0 {
 		limit = 50
@@ -364,7 +357,7 @@ func executeListManualTasks(ctx context.Context, client accountingv1.AccountingA
 	}
 }
 
-func executeRecoverStuckTasks(ctx context.Context, client accountingv1.AccountingAdminServiceClient, cfg TaskConfig) {
+func executeRecoverStuckTasks(ctx context.Context, client accountingadminservice.Client, cfg TaskConfig) {
 	threshold := int32(cfg.StuckThresholdSeconds)
 	if threshold <= 0 {
 		threshold = 300

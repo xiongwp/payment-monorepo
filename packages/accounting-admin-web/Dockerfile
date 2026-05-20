@@ -23,6 +23,8 @@ FROM alpine:3.19 AS payment-util
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 FROM alpine:3.19 AS accounting-grpc-api
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS accounting-system
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS go-builder
 
@@ -35,9 +37,11 @@ ENV GOTOOLCHAIN=auto
 
 ARG ACCOUNTING_GRPC_API_REF=main
 ARG PAYMENT_UTIL_REF=main
+ARG ACCOUNTING_SYSTEM_REF=main
 
 COPY --from=payment-util         / /tmp/payment-util-staged/
 COPY --from=accounting-grpc-api  / /tmp/accounting-grpc-api-staged/
+COPY --from=accounting-system    / /tmp/accounting-system-staged/
 
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
@@ -64,7 +68,8 @@ RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
       rm -rf "${staged}"; \
     }; \
     promote payment-util         "$PAYMENT_UTIL_REF"; \
-    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"
+    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"; \
+    promote accounting-system    "$ACCOUNTING_SYSTEM_REF"
 
 # backend 自己的代码放到 /src/accounting-admin-web/backend，
 # 和 go.mod 里 `replace ../../accounting-grpc-api` 的相对路径一致

@@ -1,91 +1,190 @@
-// data-rights cmd/server — 入口.
+// data-rights cmd/server — uber/fx 装配, 跟 order-core / accounting-system 同款风格.
 //
 // Env:
-//   DR_ADDR              默认 ":8091"
-//   DR_ADMIN_TOKEN       /admin/* 鉴权
-//   DR_OVERDUE_CRON_SEC  扫 overdue 工单的周期 (默认 3600s = 1h)
-
+//
+//	DR_ADDR              默认 ":8091"
+//	DR_ADMIN_TOKEN       /admin/* 鉴权
+//	DR_OVERDUE_CRON_SEC  扫 overdue 工单的周期 (默认 3600s = 1h)
 package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
-	"syscall"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 
 	"reconcile-system/packages/data-rights/internal/adminhttp"
 	"reconcile-system/packages/data-rights/internal/audit"
 	"reconcile-system/packages/data-rights/internal/domain"
+	"reconcile-system/packages/data-rights/internal/exporter"
 	"reconcile-system/packages/data-rights/internal/metrics"
+	"reconcile-system/packages/data-rights/internal/notifier"
 	"reconcile-system/packages/data-rights/internal/orchestrator"
 	"reconcile-system/packages/data-rights/internal/store"
 )
 
 func main() {
-	log, _ := zap.NewProduction()
-	defer log.Sync()
+	fx.New(
+		fx.Provide(
+			newLogger,
+			newStore,
+			newOrchestrator,
+			newAuditSink,
+			newPromRegistry,
+			newAdminServer,
+			newHTTPServer,
+		),
+		fx.Invoke(
+			startHTTPServer,
+			startOverdueScanner,
+		),
+		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
+			return &fxevent.ZapLogger{Logger: log.Named("fx")}
+		}),
+	).Run()
+}
 
-	mem := store.NewMemStore()
-	registry := orchestrator.DefaultRegistry()
-	orch := orchestrator.New(mem, registry, log)
+func newLogger(lc fx.Lifecycle) (*zap.Logger, error) {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, fmt.Errorf("zap build: %w", err)
+	}
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { _ = logger.Sync(); return nil }})
+	return logger, nil
+}
 
-	auditSink := audit.NewHTTPSink(audit.HTTPConfig{
+func newStore() *store.MemStore { return store.NewMemStore() }
+
+func newOrchestrator(s *store.MemStore, log *zap.Logger) *orchestrator.Orchestrator {
+	return orchestrator.New(s, orchestrator.DefaultRegistry(), log)
+}
+
+func newAuditSink(lc fx.Lifecycle, log *zap.Logger) *audit.HTTPSink {
+	sink := audit.NewHTTPSink(audit.HTTPConfig{
 		BaseURL: os.Getenv("AUDITLOG_URL"),
 		Token:   os.Getenv("AUDITLOG_TOKEN"),
 		Service: "data-rights",
 	}, log)
-	defer auditSink.Stop()
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { sink.Stop(); return nil }})
+	return sink
+}
 
+func newPromRegistry() *prometheus.Registry {
+	reg := prometheus.NewRegistry()
+	metrics.MustRegister(reg)
+	return reg
+}
+
+func newAdminServer(s *store.MemStore, orch *orchestrator.Orchestrator, sink *audit.HTTPSink, log *zap.Logger) *adminhttp.Server {
 	srv := &adminhttp.Server{
-		Store:      mem,
+		Store:      s,
 		Orch:       orch,
-		Audit:      auditSink,
+		Audit:      sink,
 		AdminToken: os.Getenv("DR_ADMIN_TOKEN"),
 		Log:        log,
 	}
 
-	reg := prometheus.NewRegistry()
-	metrics.MustRegister(reg)
+	// P0-DSAR-1b: 真接 Exporter / Notifier. prod 必须装齐, dev 走 stub (Server 内部 log warn).
+	appEnv := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	prod := appEnv == "prod" || appEnv == "production"
 
+	if bucket := os.Getenv("DSAR_S3_BUCKET"); bucket != "" {
+		srv.Exporter = exporter.NewS3Exporter(exporter.Config{
+			Bucket:   bucket,
+			Region:   os.Getenv("DSAR_S3_REGION"),
+			KMSKeyID: os.Getenv("DSAR_KMS_KEY_ID"),
+			Endpoint: os.Getenv("DSAR_S3_ENDPOINT"),
+		})
+		log.Info("data-rights: S3 exporter wired", zap.String("bucket", bucket))
+	} else if prod {
+		panic("data-rights: DSAR_S3_BUCKET 必须配 (APP_ENV=" + appEnv +
+			"). 没真实导出, fulfill 走 stub URL = GDPR/CCPA 不合规 + 数据丢失.")
+	} else {
+		log.Warn("data-rights: DSAR_S3_BUCKET 未配, fulfill 走 stub URL (dev only)")
+	}
+
+	if host := os.Getenv("DSAR_SMTP_HOST"); host != "" {
+		port, _ := strconv.Atoi(os.Getenv("DSAR_SMTP_PORT"))
+		if port == 0 {
+			port = 587
+		}
+		srv.Notifier = &notifier.SMTPNotifier{
+			Host:     host,
+			Port:     port,
+			Username: os.Getenv("DSAR_SMTP_USER"),
+			Password: os.Getenv("DSAR_SMTP_PASS"),
+			From:     os.Getenv("DSAR_SMTP_FROM"),
+			Log:      log,
+		}
+		log.Info("data-rights: SMTP notifier wired", zap.String("host", host))
+	} else if prod {
+		panic("data-rights: DSAR_SMTP_HOST 必须配 (APP_ENV=" + appEnv +
+			"). 用户收不到 fulfill 邮件 = 合规丢链 (法律要求 30d 内告知).")
+	} else {
+		srv.Notifier = &notifier.LogNotifier{Log: log}
+		log.Warn("data-rights: DSAR_SMTP_HOST 未配, 用 LogNotifier (dev only)")
+	}
+
+	return srv
+}
+
+func newHTTPServer(srv *adminhttp.Server, reg *prometheus.Registry) *http.Server {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.Handle("/", srv.Routes())
+	return &http.Server{
+		Addr:              getenv("DR_ADDR", ":8091"),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+}
 
-	addr := getenv("DR_ADDR", ":8091")
-	httpSrv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+func startHTTPServer(lc fx.Lifecycle, srv *http.Server, log *zap.Logger) {
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			log.Info("data-rights listening", zap.String("addr", srv.Addr))
+			go func() {
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Error("server failed", zap.String("addr", srv.Addr), zap.Error(err))
+				}
+			}()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			shCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			return srv.Shutdown(shCtx)
+		},
+	})
+}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	// overdue scanner — 每小时检查超 30 天工单, 报 metric + 通知 ops
+func startOverdueScanner(lc fx.Lifecycle, s *store.MemStore, log *zap.Logger) {
+	ctx, cancel := context.WithCancel(context.Background())
 	cronSec, _ := strconv.Atoi(os.Getenv("DR_OVERDUE_CRON_SEC"))
 	if cronSec <= 0 {
 		cronSec = 3600
 	}
-	go scanOverdue(ctx, mem, time.Duration(cronSec)*time.Second, log)
-
-	go func() {
-		log.Info("data-rights listening", zap.String("addr", addr))
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal("server", zap.Error(err))
-		}
-	}()
-
-	<-ctx.Done()
-	log.Info("shutting down...")
-	shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shCancel()
-	_ = httpSrv.Shutdown(shCtx)
+	interval := time.Duration(cronSec) * time.Second
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go scanOverdue(ctx, s, interval, log)
+			log.Info("overdue scanner started", zap.Duration("interval", interval))
+			return nil
+		},
+		OnStop: func(_ context.Context) error { cancel(); return nil },
+	})
 }
 
-func scanOverdue(ctx context.Context, s store.Store, interval time.Duration, log *zap.Logger) {
+func scanOverdue(ctx context.Context, s *store.MemStore, interval time.Duration, log *zap.Logger) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -100,7 +199,6 @@ func scanOverdue(ctx context.Context, s store.Store, interval time.Duration, log
 					zap.Int("count", len(overdue)),
 					zap.String("first", overdue[0].RequestID))
 			}
-			// 状态机指标
 			byState := map[domain.State]int{}
 			all, _ := s.ListRequests(store.ListFilter{Limit: 10000})
 			for _, r := range all {

@@ -3,13 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
+	orderv1 "github.com/xiongwp/order-core/kitex_gen/order/v1"
 	"github.com/xiongwp/order-core/internal/repo"
 	"github.com/xiongwp/order-core/internal/shadow"
 	"github.com/xiongwp/order-core/internal/webhook"
@@ -18,7 +17,6 @@ import (
 // WebhookDeliveryServer exposes list / retry / test-send on webhook_deliveries
 // so the admin UI can audit + manually kick stuck webhooks.
 type WebhookDeliveryServer struct {
-	orderv1.UnimplementedWebhookDeliveryServiceServer
 	mgr    *repo.Manager
 	disp   *webhook.Dispatcher
 }
@@ -42,11 +40,11 @@ func (s *WebhookDeliveryServer) List(ctx context.Context, req *orderv1.ListWebho
 	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	var rows []webhook.Delivery
 	if err := q.Order("id DESC").Limit(limit).Offset(int(req.GetOffset())).Find(&rows).Error; err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	out := &orderv1.ListWebhookDeliveriesResponse{Total: total, Items: make([]*orderv1.WebhookDelivery, 0, len(rows))}
 	for _, r := range rows {
@@ -67,15 +65,15 @@ func (s *WebhookDeliveryServer) Retry(ctx context.Context, req *orderv1.RetryWeb
 			"next_retry_at": time.Now(),
 		})
 	if res.Error != nil {
-		return nil, status.Error(codes.Internal, res.Error.Error())
+		return nil, fmt.Errorf("%s", res.Error.Error())
 	}
 	if res.RowsAffected == 0 {
-		return nil, status.Error(codes.NotFound, "delivery not found")
+		return nil, fmt.Errorf("delivery not found")
 	}
 	var d webhook.Delivery
 	if err := s.mgr.GetMeta().WithContext(ctx).Table(shadow.TableName(ctx, "webhook_deliveries")).
 		Where("id = ?", req.GetId()).First(&d).Error; err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &orderv1.RetryWebhookDeliveryResponse{Delivery: pbWebhookDelivery(&d)}, nil
 }
@@ -91,12 +89,12 @@ func (s *WebhookDeliveryServer) TestSend(ctx context.Context, req *orderv1.TestW
 		Where("id = ?", req.GetMerchantId()).
 		Scan(&mch).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil, status.Error(codes.NotFound, "merchant not found")
+			return nil, fmt.Errorf("merchant not found")
 		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	if mch.WebhookURL == "" {
-		return nil, status.Error(codes.FailedPrecondition, "merchant has no webhook_url configured")
+		return nil, fmt.Errorf("merchant has no webhook_url configured")
 	}
 	evtType := req.GetEventType()
 	if evtType == "" {
@@ -105,7 +103,7 @@ func (s *WebhookDeliveryServer) TestSend(ctx context.Context, req *orderv1.TestW
 	var payload any
 	if p := req.GetPayload(); p != "" {
 		if err := json.Unmarshal([]byte(p), &payload); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "payload not valid JSON: %v", err)
+			return nil, fmt.Errorf("payload not valid JSON: %v", err)
 		}
 	} else {
 		payload = map[string]any{"message": "this is a test webhook from order-core admin"}
@@ -117,7 +115,7 @@ func (s *WebhookDeliveryServer) TestSend(ctx context.Context, req *orderv1.TestW
 	}
 	evtID, err := shadow.EncodeIDStr(ctx, shadow.IDTypeOrderEvtTest, 0, testSeq)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "encode evt id: %v", err)
+		return nil, fmt.Errorf("encode evt id: %v", err)
 	}
 	evt := webhook.Event{
 		ID:         evtID,
@@ -126,13 +124,13 @@ func (s *WebhookDeliveryServer) TestSend(ctx context.Context, req *orderv1.TestW
 		Payload:    payload,
 	}
 	if err := s.disp.Enqueue(ctx, mch.WebhookURL, mch.WebhookSecret, evt); err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	// Return the row we just created
 	var d webhook.Delivery
 	if err := s.mgr.GetMeta().WithContext(ctx).Table(shadow.TableName(ctx, "webhook_deliveries")).
 		Where("event_id = ?", evt.ID).First(&d).Error; err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &orderv1.TestWebhookDeliveryResponse{Delivery: pbWebhookDelivery(&d)}, nil
 }

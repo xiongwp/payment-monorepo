@@ -3,6 +3,8 @@ module github.com/xiongwp/payment-util
 go 1.25.0
 
 require (
+	github.com/bytedance/gopkg v0.1.0
+	github.com/cloudwego/kitex v0.10.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/segmentio/kafka-go v0.4.51
 	go.etcd.io/etcd/client/v3 v3.5.21

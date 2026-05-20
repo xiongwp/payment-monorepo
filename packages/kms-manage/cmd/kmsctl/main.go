@@ -19,10 +19,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/cloudwego/kitex/client"
 
-	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
+	kmsv1 "github.com/xiongwp/kms-manage/kitex_gen/kms/v1"
+	"github.com/xiongwp/kms-manage/kitex_gen/kms/v1/kmsservice"
 	"github.com/xiongwp/kms-manage/internal/keystore"
 )
 
@@ -170,12 +170,12 @@ func remoteDecrypt(addr, contextStr, ciphertext string) error {
 	return nil
 }
 
-func dial(addr string) (kmsv1.KMSServiceClient, func(), error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func dial(addr string) (kmsservice.Client, func(), error) {
+	cli, err := kmsservice.NewClient("kms-manage", client.WithHostPorts(addr))
 	if err != nil {
 		return nil, nil, err
 	}
-	return kmsv1.NewKMSServiceClient(conn), func() { _ = conn.Close() }, nil
+	return cli, func() {}, nil
 }
 
 // ─── tiny utils ────────────────────────────────────────────────

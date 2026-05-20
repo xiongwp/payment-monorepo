@@ -9,12 +9,15 @@ go 1.25.0
 // payment-util 提供 trace 共享包，本仓 internal/trace 是一个转发壳。
 replace (
 	github.com/xiongwp/accounting-grpc-api => ../accounting-grpc-api
+	github.com/xiongwp/accounting-system => ../accounting-system
+	github.com/xiongwp/card-center => ../card-center
 	github.com/xiongwp/kms-manage => ../kms-manage
 	github.com/xiongwp/payment-util => ../payment-util
 	github.com/xiongwp/risk-manage => ../risk-manage
 )
 
 require (
+	github.com/cloudwego/kitex v0.16.2
 	github.com/go-sql-driver/mysql v1.7.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -22,6 +25,8 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/viper v1.19.0
 	github.com/xiongwp/accounting-grpc-api v0.0.0-00010101000000-000000000000
+	github.com/xiongwp/accounting-system v0.0.0-00010101000000-000000000000
+	github.com/xiongwp/card-center v0.0.0-00010101000000-000000000000
 	github.com/xiongwp/kms-manage v0.0.0-00010101000000-000000000000
 	github.com/xiongwp/payment-util v0.0.1
 	github.com/xiongwp/risk-manage v0.0.0-00010101000000-000000000000
@@ -41,9 +46,14 @@ require (
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
+	github.com/boombuler/barcode v1.0.1 // indirect
+	github.com/bytedance/gopkg v0.1.4 // indirect
+	github.com/bytedance/sonic v1.15.1 // indirect
+	github.com/bytedance/sonic/loader v0.5.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/cloudwego/base64x v0.1.6 // indirect
+	github.com/cloudwego/dynamicgo v0.9.1 // indirect
 	github.com/coreos/go-semver v0.3.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.3.2 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
@@ -56,6 +66,7 @@ require (
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -70,6 +81,7 @@ require (
 	github.com/spf13/cast v1.6.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	go.etcd.io/etcd/api/v3 v3.5.21 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.5.21 // indirect
 	go.etcd.io/etcd/client/v3 v3.5.21 // indirect
@@ -81,6 +93,7 @@ require (
 	go.uber.org/dig v1.17.1 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
+	golang.org/x/arch v0.14.0 // indirect
 	golang.org/x/exp v0.0.0-20240103183307-be819d1f06fc // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect

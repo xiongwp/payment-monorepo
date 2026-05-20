@@ -16,6 +16,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -29,7 +31,15 @@ type Provider struct {
 }
 
 func New(signingKey []byte) *Provider {
+	// P0-VAULT-1: prod 必须显式给 signingKey, 用 dev stub key panic.
+	// 完整 prod 实现: mTLS client + Mastercard MDES endpoint + apiKey 注入,
+	// signingKey 仅 dev/staging 走本地 HMAC.
 	if len(signingKey) == 0 {
+		env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+		if env == "prod" || env == "production" {
+			panic("tokenization-vault MDES: signingKey 不能为空 (APP_ENV=" + env + "). " +
+				"prod 必须真接 Mastercard MDES endpoint + 注入真签名密钥; dev stub HMAC 会让 cryptogram 被卡组织拒.")
+		}
 		signingKey = []byte("mdes-dev-stub-key-CHANGE-IN-PROD")
 	}
 	return &Provider{signingKey: signingKey}

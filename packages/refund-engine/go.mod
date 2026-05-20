@@ -4,6 +4,8 @@ go 1.22
 
 require (
 	github.com/xiongwp/payment-util v0.0.1
+	go.uber.org/fx v1.20.1
+
 	go.uber.org/zap v1.27.0
 )
 

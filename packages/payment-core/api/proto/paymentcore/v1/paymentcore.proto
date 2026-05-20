@@ -8,7 +8,7 @@
 syntax = "proto3";
 
 package paymentcore.v1;
-option go_package = "github.com/xiongwp/payment-core/api/proto/paymentcore/v1;paymentcorev1";
+option go_package = "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1;paymentcorev1";
 
 service PaymentCoreService {
   rpc Charge(ChargeRequest) returns (ChargeResponse);

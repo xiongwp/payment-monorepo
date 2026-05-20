@@ -24,10 +24,10 @@ var (
 	TableName              = pshadow.TableName
 	RedisKey               = pshadow.RedisKey
 	KafkaTopic             = pshadow.KafkaTopic
-	FromMetadata           = pshadow.FromMetadata
-	UnaryServerInterceptor = pshadow.UnaryServerInterceptor
-	UnaryClientInterceptor = pshadow.UnaryClientInterceptor
-	HTTPHeaderToContext    = pshadow.HTTPHeaderToContext
+	// FromMetadata / UnaryServerInterceptor / UnaryClientInterceptor 已从
+	// payment-util/shadow 删除 (Kitex 切换). Kitex MW 由 kitexutil 提供, 不再
+	// 走 gRPC interceptor.
+	HTTPHeaderToContext = pshadow.HTTPHeaderToContext
 	WithoutCancel          = pshadow.WithoutCancel
 
 	// 通用 ID 按位编码 helper alias

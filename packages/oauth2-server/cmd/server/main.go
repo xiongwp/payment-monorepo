@@ -1,39 +1,29 @@
-// oauth2-server — OAuth 2.0 client_credentials JWT 颁发服务。
-//
-// 启动:
-//   OAUTH2_ADDR=:8087 \
-//   OAUTH2_ISSUER=https://oauth.payment.local \
-//   OAUTH2_AUDIENCE=payment-api \
-//   OAUTH2_ADMIN_TOKEN=$(head -c 32 /dev/urandom | base64) \
-//   OAUTH2_KEY_PATH=./oauth-rsa.pem \
-//   go run ./cmd/server
+// oauth2-server — OAuth 2.0 client_credentials JWT 颁发服务 — uber/fx 装配.
 //
 // 端口/路由:
-//   POST /oauth2/token             — 颁发 access_token
-//   POST /oauth2/introspect        — 验签 + 解析
-//   POST /oauth2/revoke            — 撤销 (jti 黑名单)
-//   GET  /.well-known/jwks.json    — 公钥 (resource server 拉去缓存)
-//   GET  /.well-known/openid-configuration — Discovery
-//   /admin/* — 内网管理 (X-Admin-Token)
 //
-// 资源服务集成:
-//   1. 启动时 GET /.well-known/jwks.json 拉公钥 (本地缓存 1h)
-//   2. 每个请求 Authorization: Bearer <token>
-//   3. 本地 RS256 验签 + 检 exp/iss/aud
-//   4. 用 claims.scope 做 RBAC
-
+//	POST /oauth2/token             — 颁发 access_token
+//	POST /oauth2/introspect        — 验签 + 解析
+//	POST /oauth2/revoke            — 撤销 (jti 黑名单)
+//	GET  /.well-known/jwks.json    — 公钥
+//	GET  /.well-known/openid-configuration — Discovery
+//	/admin/* — 内网管理 (X-Admin-Token)
 package main
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
-	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
+	"go.uber.org/zap"
 
 	"reconcile-system/packages/oauth2-server/internal/adminhttp"
 	"reconcile-system/packages/oauth2-server/internal/domain"
@@ -42,99 +32,152 @@ import (
 	"reconcile-system/packages/oauth2-server/internal/store"
 
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.uber.org/zap"
 )
 
+type oauthConfig struct {
+	Addr       string
+	Issuer     string
+	Audience   string
+	KeyPath    string
+	AdminToken string
+	TTL        time.Duration
+	DSN        string
+}
+
 func main() {
-	log, _ := zap.NewProduction()
-	defer log.Sync()
+	fx.New(
+		fx.Provide(
+			newLogger,
+			newOAuthConfig,
+			newKeyStore,
+			newStore,
+			newAdminServer,
+			newHTTPServer,
+		),
+		fx.Invoke(
+			seedDevClientsIfRequested,
+			startHTTPServer,
+			startBGTasks,
+		),
+		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
+			return &fxevent.ZapLogger{Logger: log.Named("fx")}
+		}),
+	).Run()
+}
 
-	addr := envOr("OAUTH2_ADDR", ":8087")
-	issuer := envOr("OAUTH2_ISSUER", "https://oauth.payment.local")
-	audience := envOr("OAUTH2_AUDIENCE", "payment-api")
-	keyPath := envOr("OAUTH2_KEY_PATH", "./oauth-rsa.pem")
-	adminToken := envOr("OAUTH2_ADMIN_TOKEN", "")
+func newLogger(lc fx.Lifecycle) (*zap.Logger, error) {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, fmt.Errorf("zap build: %w", err)
+	}
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { _ = logger.Sync(); return nil }})
+	return logger, nil
+}
+
+func newOAuthConfig(log *zap.Logger) *oauthConfig {
 	ttlSec, _ := strconv.Atoi(envOr("OAUTH2_TOKEN_TTL_SEC", "3600"))
-	ttl := time.Duration(ttlSec) * time.Second
-
-	if adminToken == "" {
-		log.Warn("OAUTH2_ADMIN_TOKEN empty — admin endpoints DISABLED. set one for client provisioning")
+	cfg := &oauthConfig{
+		Addr:       envOr("OAUTH2_ADDR", ":8087"),
+		Issuer:     envOr("OAUTH2_ISSUER", "https://oauth.payment.local"),
+		Audience:   envOr("OAUTH2_AUDIENCE", "payment-api"),
+		KeyPath:    envOr("OAUTH2_KEY_PATH", "./oauth-rsa.pem"),
+		AdminToken: envOr("OAUTH2_ADMIN_TOKEN", ""),
+		TTL:        time.Duration(ttlSec) * time.Second,
+		DSN:        os.Getenv("OAUTH2_MYSQL_DSN"),
 	}
-
-	ks := jwks.NewKeyStore(issuer, audience)
-	if err := ks.LoadOrGenerate(keyPath); err != nil {
-		log.Fatal("load/generate RSA key", zap.Error(err))
+	if cfg.AdminToken == "" {
+		log.Warn("OAUTH2_ADMIN_TOKEN empty — admin endpoints DISABLED")
 	}
-	log.Info("RSA key ready",
-		zap.String("kid", ks.Active().KID),
-		zap.String("path", keyPath))
+	return cfg
+}
 
-	var s store.Store
-	var mem *store.MemoryStore
-	if dsn := os.Getenv("OAUTH2_MYSQL_DSN"); dsn != "" {
-		db, err := sql.Open("mysql", dsn)
-		if err != nil {
-			log.Fatal("open mysql", zap.Error(err))
-		}
-		db.SetMaxOpenConns(20)
-		db.SetMaxIdleConns(5)
-		db.SetConnMaxLifetime(30 * time.Minute)
-		if err := db.Ping(); err != nil {
-			log.Fatal("mysql ping", zap.Error(err))
-		}
-		s = store.NewMySQLStore(db)
-		log.Info("using MySQL store", zap.String("driver", "mysql"))
-	} else {
-		mem = store.NewMemoryStore()
-		seedDevClients(log, mem)
-		s = mem
-		log.Warn("using in-memory store (not for HA prod). set OAUTH2_MYSQL_DSN to enable MySQL")
+func newKeyStore(cfg *oauthConfig, log *zap.Logger) (*jwks.KeyStore, error) {
+	ks := jwks.NewKeyStore(cfg.Issuer, cfg.Audience)
+	if err := ks.LoadOrGenerate(cfg.KeyPath); err != nil {
+		log.Error("load/generate RSA key failed", zap.String("path", cfg.KeyPath), zap.Error(err))
+		return nil, fmt.Errorf("ks.LoadOrGenerate: %w", err)
 	}
+	log.Info("RSA key ready", zap.String("kid", ks.Active().KID), zap.String("path", cfg.KeyPath))
+	return ks, nil
+}
 
-	srv := adminhttp.NewServer(log, ks, s, issuer, audience, adminToken, ttl)
+func newStore(cfg *oauthConfig, lc fx.Lifecycle, log *zap.Logger) (store.Store, error) {
+	if cfg.DSN == "" {
+		mem := store.NewMemoryStore()
+		log.Warn("using in-memory store (not for HA prod); set OAUTH2_MYSQL_DSN to enable MySQL")
+		return mem, nil
+	}
+	db, err := sql.Open("mysql", cfg.DSN)
+	if err != nil {
+		log.Error("open mysql failed", zap.Error(err))
+		return nil, fmt.Errorf("sql.Open: %w", err)
+	}
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	if err := db.Ping(); err != nil {
+		log.Error("mysql ping failed", zap.Error(err))
+		return nil, fmt.Errorf("ping: %w", err)
+	}
+	log.Info("using MySQL store")
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return db.Close() }})
+	return store.NewMySQLStore(db), nil
+}
 
+func newAdminServer(cfg *oauthConfig, ks *jwks.KeyStore, s store.Store, log *zap.Logger) *adminhttp.Server {
+	return adminhttp.NewServer(log, ks, s, cfg.Issuer, cfg.Audience, cfg.AdminToken, cfg.TTL)
+}
+
+func newHTTPServer(cfg *oauthConfig, srv *adminhttp.Server, log *zap.Logger) *http.Server {
 	mux := http.NewServeMux()
 	srv.Register(mux)
 	mux.Handle("/metrics", promhttp.Handler())
-
-	h := withAccessLog(log, mux)
-	server := &http.Server{
-		Addr:              addr,
-		Handler:           h,
+	return &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           withAccessLog(log, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-
-	// 后台任务: revocation GC + key purge
-	stop := make(chan struct{})
-	go bgTasks(log, s, mem, ks, stop)
-
-	go func() {
-		log.Info("oauth2-server listening",
-			zap.String("addr", addr),
-			zap.String("issuer", issuer),
-			zap.String("aud", audience),
-			zap.Duration("token_ttl", ttl))
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal("server failed", zap.Error(err))
-		}
-	}()
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	log.Info("shutting down")
-	close(stop)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = server.Shutdown(ctx)
 }
 
-// bgTasks 周期清 revocation + 老 retired key。
-func bgTasks(log *zap.Logger, s store.Store, mem *store.MemoryStore, ks *jwks.KeyStore, stop <-chan struct{}) {
+func startHTTPServer(lc fx.Lifecycle, srv *http.Server, cfg *oauthConfig, log *zap.Logger) {
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			log.Info("oauth2-server listening",
+				zap.String("addr", srv.Addr),
+				zap.String("issuer", cfg.Issuer),
+				zap.String("aud", cfg.Audience),
+				zap.Duration("token_ttl", cfg.TTL))
+			go func() {
+				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Error("server failed", zap.Error(err))
+				}
+			}()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			shutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			return srv.Shutdown(shutCtx)
+		},
+	})
+}
+
+// startBGTasks 周期清 revocation + 老 retired key.
+func startBGTasks(lc fx.Lifecycle, s store.Store, ks *jwks.KeyStore, log *zap.Logger) {
+	stop := make(chan struct{})
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go bgTasks(log, s, ks, stop)
+			return nil
+		},
+		OnStop: func(_ context.Context) error { close(stop); return nil },
+	})
+}
+
+func bgTasks(log *zap.Logger, s store.Store, ks *jwks.KeyStore, stop <-chan struct{}) {
 	t := time.NewTicker(15 * time.Minute)
 	defer t.Stop()
 	for {
@@ -143,18 +186,19 @@ func bgTasks(log *zap.Logger, s store.Store, mem *store.MemoryStore, ks *jwks.Ke
 			return
 		case <-t.C:
 			gcRev := 0
-			if mem != nil {
+			if mem, ok := s.(*store.MemoryStore); ok {
 				gcRev = mem.GCRevoked()
 			} else if mysql, ok := s.(*store.MySQLStore); ok {
 				if n, err := mysql.GCRevoked(); err == nil {
 					gcRev = int(n)
+				} else {
+					log.Warn("mysql GCRevoked failed", zap.Error(err))
 				}
 			}
 			gcKey := ks.PurgeRetired()
 			if gcRev > 0 || gcKey > 0 {
 				log.Info("bg gc", zap.Int("revoked", gcRev), zap.Int("keys", gcKey))
 			}
-			// 刷新 gauge 指标
 			if kp := ks.Active(); kp != nil {
 				metrics.ActiveKeyAgeSeconds.Set(time.Since(kp.CreatedAt).Seconds())
 			}
@@ -165,19 +209,17 @@ func bgTasks(log *zap.Logger, s store.Store, mem *store.MemoryStore, ks *jwks.Ke
 	}
 }
 
-// seedDevClients 开发环境种 3 个客户端 (生产环境删此函数)。
-// 仅当 OAUTH2_DEV_SEED=1 时启用。
-func seedDevClients(log *zap.Logger, m *store.MemoryStore) {
+func seedDevClientsIfRequested(s store.Store, log *zap.Logger) {
 	if os.Getenv("OAUTH2_DEV_SEED") != "1" {
 		return
 	}
+	mem, ok := s.(*store.MemoryStore)
+	if !ok {
+		log.Warn("OAUTH2_DEV_SEED=1 but store is not MemoryStore; skipping seed")
+		return
+	}
 	seeds := []struct {
-		clientID  string
-		secret    string
-		name      string
-		ownerType string
-		ownerID   string
-		scopes    string
+		clientID, secret, name, ownerType, ownerID, scopes string
 	}{
 		{"mer_demo_merchant_01", "dev_secret_merchant_001",
 			"Demo Merchant 01", "merchant", "merchant_001",
@@ -201,7 +243,7 @@ func seedDevClients(log *zap.Logger, m *store.MemoryStore) {
 			AllowedScopes: sd.scopes,
 			Status:        "active",
 		}
-		_ = m.PutClient(c)
+		_ = mem.PutClient(c)
 		log.Warn("DEV SEED: created client",
 			zap.String("client_id", sd.clientID),
 			zap.String("client_secret", sd.secret))
@@ -215,7 +257,6 @@ func envOr(k, def string) string {
 	return def
 }
 
-// withAccessLog 简易访问日志中间件。
 func withAccessLog(log *zap.Logger, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()

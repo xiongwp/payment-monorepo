@@ -1,7 +1,7 @@
-// refund-engine server 入口 — MVP 用 in-memory repo + log notifier + stub channel。
+// refund-engine server 入口 — uber/fx 装配, 跟 order-core / accounting-system 同款风格.
 //
-// 生产换: MySQL repo + HTTP/gRPC client 调通道 + 接 merchant-webhook + 接 billing fee_event。
-
+// MVP 用 in-memory repo + log notifier + stub channel.
+// 生产换: MySQL repo + HTTP/gRPC client 调通道 + 接 merchant-webhook + 接 billing fee_event.
 package main
 
 import (
@@ -10,13 +10,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 
 	"github.com/xiongwp/payment-util/obsbootstrap"
@@ -27,17 +27,72 @@ import (
 )
 
 func main() {
-	logger, _ := zap.NewProduction()
-	defer logger.Sync()
+	fx.New(
+		fx.Provide(
+			newLogger,
+			newLogLevel,
+			newMemoryRepo,
+			newWebhookClient,
+			newChannel,
+			newWorkflowService,
+			newBusinessHTTPServer,
+			newAdminHTTPServer,
+		),
+		fx.Invoke(
+			startBusinessHTTPServer,
+			startAdminHTTPServer,
+			startSubmitCron,
+		),
+		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
+			return &fxevent.ZapLogger{Logger: log.Named("fx")}
+		}),
+	).Run()
+}
+
+// busServer / adminServer 别名让 fx 区分两个 *http.Server.
+type busServer struct{ *http.Server }
+type adminServer struct{ Inner *obsbootstrap.AdminServer }
+
+func newLogger(lc fx.Lifecycle) (*zap.Logger, error) {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, fmt.Errorf("zap build: %w", err)
+	}
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { _ = logger.Sync(); return nil }})
+	return logger, nil
+}
+
+func newLogLevel() zap.AtomicLevel {
+	return zap.NewAtomicLevelAt(zap.InfoLevel)
+}
+
+func newMemoryRepo() *memoryRepo {
+	// P1-INMEM-1: prod 拒绝 in-memory repo. refund 是资金路径, 重启丢全 = 退款丢失.
+	if env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))); env == "prod" || env == "production" {
+		panic("refund-engine: in-memory repo 不能上 prod (APP_ENV=" + env +
+			"). 必须接 MySQL repo. 当前服务仍是 MVP, 上线前请决定真换 MySQL 或停服 (此服务的功能已部分在 order-core/refund 路径里).")
+	}
+	return newMemRepo()
+}
+
+func newWebhookClient() *clients.WebhookClient {
+	return clients.NewWebhookClient(envOr("MERCHANT_WEBHOOK_URL", "http://merchant-webhook:8080"))
+}
+
+func newChannel(log *zap.Logger) stubChannel {
+	// P1-INMEM-1: prod 拒绝 stubChannel — 它只 log + 返假 refund_id, 不真发 refund.
+	if env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))); env == "prod" || env == "production" {
+		panic("refund-engine: stubChannel 不能上 prod — 不真发 refund. 必须接真 HTTP channel client.")
+	}
+	return stubChannel{log: log}
+}
+
+func newWorkflowService(repo *memoryRepo, ch stubChannel, notif *clients.WebhookClient, log *zap.Logger) *workflow.Service {
+	return workflow.New(repo, ch, notif, log)
+}
+
+func newBusinessHTTPServer(svc *workflow.Service, repo *memoryRepo) busServer {
 	port := envOr("REFUND_HTTP_PORT", "8080")
-
-	repo := newMemoryRepo()
-	// 真实 client：refund 完成 → 调 merchant-webhook + billing
-	// 没设环境变量时走默认（容器内 service DNS），调不通就 log warn 但不阻塞
-	webhookURL := envOr("MERCHANT_WEBHOOK_URL", "http://merchant-webhook:8080")
-	notif := clients.NewWebhookClient(webhookURL)
-	svc := workflow.New(repo, stubChannel{log: logger}, notif, logger)
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/refunds", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -100,7 +155,9 @@ func main() {
 			if by == "" {
 				by = "ops"
 			}
-			var body struct{ Reason string `json:"reason"` }
+			var body struct {
+				Reason string `json:"reason"`
+			}
 			json.NewDecoder(r.Body).Decode(&body)
 			if err := svc.Reject(r.Context(), id, by, body.Reason); err != nil {
 				writeErr(w, http.StatusBadRequest, err)
@@ -110,61 +167,85 @@ func main() {
 		}
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
-
-	srv := &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	// 后台 cron: 每 5s 跑 Submit 推 approved → 通道
-	go func() {
-		t := time.NewTicker(5 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				rctx, c := context.WithTimeout(ctx, 30*time.Second)
-				if n, err := svc.Submit(rctx, 50); err == nil && n > 0 {
-					logger.Info("refunds submitted", zap.Int("count", n))
-				}
-				c()
-			}
-		}
-	}()
-
-	logger.Info("refund-engine listening", zap.String("addr", srv.Addr))
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("listen", zap.Error(err))
-		}
-	}()
-
-	// SP-AC-7 SHARED-3: admin HTTP (/metrics + /healthz + pprof + log-level).
-	adminPort := os.Getenv("REFUND_ADMIN_HTTP_PORT")
-	if adminPort == "" {
-		adminPort = "9099"
-	}
-	logLevel := zap.NewAtomicLevelAt(zap.InfoLevel)
-	admin := obsbootstrap.NewAdminServer(obsbootstrap.AdminConfig{
-		ServiceName: "refund-engine",
-		Port:        adminPort,
-		Logger:      logger,
-		LogLevel:    logLevel,
-	})
-	go func() {
-		if err := admin.Run(ctx); err != nil {
-			logger.Error("admin http exited", zap.Error(err))
-		}
-	}()
-
-	<-ctx.Done()
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutCancel()
-	srv.Shutdown(shutCtx)
+	return busServer{Server: &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 5 * time.Second}}
 }
 
-// ─── memory repo / stub channel / log notifier ────────────────────────
+func newAdminHTTPServer(log *zap.Logger, lvl zap.AtomicLevel) adminServer {
+	port := envOr("REFUND_ADMIN_HTTP_PORT", "9099")
+	return adminServer{Inner: obsbootstrap.NewAdminServer(obsbootstrap.AdminConfig{
+		ServiceName: "refund-engine",
+		Port:        port,
+		Logger:      log,
+		LogLevel:    lvl,
+	})}
+}
+
+func startBusinessHTTPServer(lc fx.Lifecycle, bs busServer, log *zap.Logger) {
+	srv := bs.Server
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			log.Info("refund-engine listening", zap.String("addr", srv.Addr))
+			go func() {
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Error("listen failed", zap.Error(err))
+				}
+			}()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			shutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			return srv.Shutdown(shutCtx)
+		},
+	})
+}
+
+func startAdminHTTPServer(lc fx.Lifecycle, as adminServer, log *zap.Logger) {
+	ctx, cancel := context.WithCancel(context.Background())
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go func() {
+				if err := as.Inner.Run(ctx); err != nil {
+					log.Error("admin http exited", zap.Error(err))
+				}
+			}()
+			return nil
+		},
+		OnStop: func(_ context.Context) error { cancel(); return nil },
+	})
+}
+
+// startSubmitCron 每 5s 跑 Submit 推 approved → 通道.
+func startSubmitCron(lc fx.Lifecycle, svc *workflow.Service, log *zap.Logger) {
+	ctx, cancel := context.WithCancel(context.Background())
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go func() {
+				t := time.NewTicker(5 * time.Second)
+				defer t.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-t.C:
+						rctx, c := context.WithTimeout(ctx, 30*time.Second)
+						if n, err := svc.Submit(rctx, 50); err == nil && n > 0 {
+							log.Info("refunds submitted", zap.Int("count", n))
+						} else if err != nil {
+							log.Warn("Submit failed", zap.Error(err))
+						}
+						c()
+					}
+				}
+			}()
+			log.Info("refund submit cron started")
+			return nil
+		},
+		OnStop: func(_ context.Context) error { cancel(); return nil },
+	})
+}
+
+// ─── memory repo / stub channel ────────────────────────────────────
 
 type memoryRepo struct {
 	mu      sync.RWMutex
@@ -174,16 +255,17 @@ type memoryRepo struct {
 	next    int64
 }
 
-func newMemoryRepo() *memoryRepo {
+func newMemRepo() *memoryRepo {
 	return &memoryRepo{
-		byID: map[int64]*domain.Refund{},
-		byRfID: map[string]*domain.Refund{},
+		byID:    map[int64]*domain.Refund{},
+		byRfID:  map[string]*domain.Refund{},
 		byIdemp: map[string]*domain.Refund{},
 	}
 }
 
 func (m *memoryRepo) Create(_ context.Context, r *domain.Refund) (int64, error) {
-	m.mu.Lock(); defer m.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.next++
 	r.ID = m.next
 	m.byID[r.ID] = r
@@ -193,71 +275,100 @@ func (m *memoryRepo) Create(_ context.Context, r *domain.Refund) (int64, error) 
 }
 
 func (m *memoryRepo) Get(_ context.Context, id int64) (*domain.Refund, error) {
-	m.mu.RLock(); defer m.mu.RUnlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.byID[id], nil
 }
 
 func (m *memoryRepo) GetByRefundID(_ context.Context, rfID string) (*domain.Refund, error) {
-	m.mu.RLock(); defer m.mu.RUnlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.byRfID[rfID], nil
 }
 
 func (m *memoryRepo) GetByIdempotency(_ context.Context, key string) (*domain.Refund, error) {
-	m.mu.RLock(); defer m.mu.RUnlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.byIdemp[key], nil
 }
 
 func (m *memoryRepo) UpdateStatus(_ context.Context, id int64, to domain.Status, fields map[string]any) error {
-	m.mu.Lock(); defer m.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	r := m.byID[id]
-	if r == nil { return nil }
+	if r == nil {
+		return nil
+	}
 	r.Status = to
 	for k, v := range fields {
 		switch k {
 		case "approved_by":
-			if s, ok := v.(string); ok { r.ApprovedBy = s }
+			if s, ok := v.(string); ok {
+				r.ApprovedBy = s
+			}
 		case "approved_at":
-			if t, ok := v.(*time.Time); ok { r.ApprovedAt = t }
+			if t, ok := v.(*time.Time); ok {
+				r.ApprovedAt = t
+			}
 		case "submitted_at":
-			if t, ok := v.(*time.Time); ok { r.SubmittedAt = t }
+			if t, ok := v.(*time.Time); ok {
+				r.SubmittedAt = t
+			}
 		case "completed_at":
-			if t, ok := v.(*time.Time); ok { r.CompletedAt = t }
+			if t, ok := v.(*time.Time); ok {
+				r.CompletedAt = t
+			}
 		case "channel_refund_id":
-			if s, ok := v.(string); ok { r.ChannelRefundID = s }
+			if s, ok := v.(string); ok {
+				r.ChannelRefundID = s
+			}
 		case "failure_code":
-			if s, ok := v.(string); ok { r.FailureCode = s }
+			if s, ok := v.(string); ok {
+				r.FailureCode = s
+			}
 		case "failure_message":
-			if s, ok := v.(string); ok { r.FailureMessage = s }
+			if s, ok := v.(string); ok {
+				r.FailureMessage = s
+			}
 		case "updated_at":
-			if t, ok := v.(time.Time); ok { r.UpdatedAt = t }
+			if t, ok := v.(time.Time); ok {
+				r.UpdatedAt = t
+			}
 		}
 	}
 	return nil
 }
 
 func (m *memoryRepo) ListByCharge(_ context.Context, chargeID string) ([]*domain.Refund, error) {
-	m.mu.RLock(); defer m.mu.RUnlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	out := []*domain.Refund{}
 	for _, r := range m.byID {
-		if r.ChargeID == chargeID { out = append(out, r) }
+		if r.ChargeID == chargeID {
+			out = append(out, r)
+		}
 	}
 	return out, nil
 }
 
 func (m *memoryRepo) ListByStatus(_ context.Context, st domain.Status, limit int) ([]*domain.Refund, error) {
-	m.mu.RLock(); defer m.mu.RUnlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	out := []*domain.Refund{}
 	for _, r := range m.byID {
 		if r.Status == st {
 			out = append(out, r)
-			if limit > 0 && len(out) >= limit { break }
+			if limit > 0 && len(out) >= limit {
+				break
+			}
 		}
 	}
 	return out, nil
 }
 
 func (m *memoryRepo) SumRefundedByCharge(_ context.Context, chargeID string) (int64, error) {
-	m.mu.RLock(); defer m.mu.RUnlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	var sum int64
 	for _, r := range m.byID {
 		if r.ChargeID == chargeID && (r.Status == domain.StatusCompleted || r.Status == domain.StatusSubmitted) {
@@ -275,16 +386,19 @@ func (s stubChannel) SubmitRefund(_ context.Context, r *domain.Refund) (string, 
 	return "ch_ref_" + r.RefundID, nil
 }
 
-
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(v)
 }
+
 func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]any{"error": err.Error()})
 }
+
 func envOr(k, d string) string {
-	if v := os.Getenv(k); v != "" { return v }
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
 	return d
 }

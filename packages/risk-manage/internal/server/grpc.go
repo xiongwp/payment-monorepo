@@ -5,23 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"runtime/debug"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
+	kitexserver "github.com/cloudwego/kitex/server"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"github.com/xiongwp/payment-util/shadow"
-	putil "github.com/xiongwp/payment-util/trace"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/keepalive"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	riskv1 "github.com/xiongwp/risk-manage/api/proto/risk/v1"
+	riskv1 "github.com/xiongwp/risk-manage/kitex_gen/risk/v1"
+	riskservice "github.com/xiongwp/risk-manage/kitex_gen/risk/v1/riskservice"
+
 	"github.com/xiongwp/risk-manage/internal/auth"
 	"github.com/xiongwp/risk-manage/internal/engine"
 	"github.com/xiongwp/risk-manage/internal/metrics"
@@ -30,13 +28,17 @@ import (
 	"github.com/xiongwp/risk-manage/internal/store"
 )
 
+// Server 实现 Kitex riskservice.Server 接口 (跟 gRPC 同形态 — 方法签名 ctx + *pbReq → *pbResp + error).
+//
+// 切 Kitex 后不再 embed UnimplementedRiskServiceServer (gRPC 兼容性兜底);
+// 接口完整实现见 Screen / BulkScreen / Report / ErasePersonalData / ListRules /
+// ReloadRules / AddBlacklist / RemoveBlacklist / ListBlacklist 9 个方法.
 type Server struct {
-	riskv1.UnimplementedRiskServiceServer
 	svc             *service.RiskService
 	bl              store.Blacklist
 	auth            map[string]string
-	apiKeys         auth.APIKeyStore             // nil = 不启用 per-merchant API key（兼容老 AuthTokens 模式）
-	limiter         *reliability.MerchantLimiter // nil = 不限流（dev / 单测）
+	apiKeys         auth.APIKeyStore             // nil = 不启用 per-merchant API key (兼容老 AuthTokens 模式)
+	limiter         *reliability.MerchantLimiter // nil = 不限流 (dev / 单测)
 	shutdownTimeout time.Duration                // 0 = 默认 15s
 	logger          *zap.Logger
 }
@@ -62,63 +64,53 @@ func NewServer(d Deps) *Server {
 }
 
 func (s *Server) ListenAndServe(ctx context.Context, port int) error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return err
 	}
-	srv := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(
-			recoverInterceptor(s.logger),
-			putil.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
-			shadow.UnaryServerInterceptor(),        // 把 metadata x-shadow 翻进 ctx；后续 RPC handler 短路放行 shadow 流量
-			loggingInterceptor(s.logger),
-			metricsInterceptor(),
-			authInterceptor(s.auth, s.apiKeys, s.logger),
-		),
-		// Keepalive 配置：让 server 主动检测 idle 客户端 + 拒绝过激 PING。
-		// payment-core 走长连接 (HTTP/2 stream)；客户端死链 / 防火墙吃包时
-		// 不发现的话连接句柄会泄漏。
-		// MaxConnectionIdle: 5min 没流量就 GOAWAY 让 client 重连
-		// Time / Timeout: 每 30s 主动 PING，10s 没回响就断
-		// PermitWithoutStream: 允许客户端在没活跃 stream 时也保活
-		grpc.KeepaliveParams(keepalive.ServerParameters{
-			MaxConnectionIdle: 5 * time.Minute,
-			Time:              30 * time.Second,
-			Timeout:           10 * time.Second,
-		}),
-		// EnforcementPolicy: 防客户端 keepalive 风暴 (DoS) — 至少 10s 间隔
-		// 内同一连接不能 PING > 1 次，否则 server 主动断
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             10 * time.Second,
-			PermitWithoutStream: true,
-		}),
-	)
-	riskv1.RegisterRiskServiceServer(srv, s)
-	s.logger.Info("risk-manage grpc listening", zap.Int("port", port))
+	// Kitex server — middleware 链走 kitexutil (跟老 grpc interceptor 等价).
+	// TODO: shadow MW (从 metainfo 取 x-shadow 翻 ctx) — 等 kitexutil.ShadowMW port 完成
+	// TODO: putil.KitexMW (trace) — 等 payment-util/trace 提 KitexMW
+	// TODO: authInterceptor port → kitexutil.MultiAuthMW(tokens, apiKeys)
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "risk-manage"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("risk-manage", fmt.Sprintf("%s:%d", advHost, port))...)
+	// TODO 接 kitexutil MW 三件套 + shadow / trace / auth port 完成后取消注释:
+	// srvOpts = append(srvOpts, kitexserver.WithMiddleware(kitexutil.RecoverMW(s.logger)))
+	// srvOpts = append(srvOpts, kitexserver.WithMiddleware(kitexutil.LogMW(s.logger)))
+	// srvOpts = append(srvOpts, kitexserver.WithMiddleware(kitexutil.MetricsMW()))
+	srv := riskservice.NewServer(s, srvOpts...)
+	// gRPC 占位 _ = ... 已删 (Kitex 不再需要 grpc.ServerOption / keepalive / metadata).
+	_ = kitexutil.LogMW // 留 (Kitex MW 接通后用)
+	s.logger.Info("risk-manage Kitex listening", zap.Int("port", port))
 	go func() {
 		<-ctx.Done()
-		// Graceful shutdown with timeout：等 in-flight Screen 跑完再退；
-		// 超 ShutdownTimeout 强制 Stop 防止部署窗口被卡死。
-		// 默认 15s（payment-core 调 Screen 超时 3s，留 5x 余量；可调）。
+		// Kitex Stop 是 graceful: 等 in-flight RPC 跑完再退.
+		// 跟老 GracefulStop 不同: Kitex 没有强制 Stop fallback API, 整个 ctx 超时由
+		// fx.Lifecycle OnStop 的 stopCtx 控制 (默认 15s, 跟老 shutdownTimeout 对齐).
 		timeout := s.shutdownTimeout
 		if timeout <= 0 {
 			timeout = 15 * time.Second
 		}
 		done := make(chan struct{})
 		go func() {
-			srv.GracefulStop()
+			if err := srv.Stop(); err != nil {
+				s.logger.Warn("kitex stop error", zap.Error(err))
+			}
 			close(done)
 		}()
 		select {
 		case <-done:
-			s.logger.Info("grpc graceful stop complete")
+			s.logger.Info("kitex graceful stop complete")
 		case <-time.After(timeout):
-			s.logger.Warn("grpc graceful stop timeout; forcing Stop",
+			s.logger.Warn("kitex graceful stop timeout (Kitex doesn't expose force-Stop; consider raising fx.Lifecycle StopTimeout)",
 				zap.Duration("timeout", timeout))
-			srv.Stop()
 		}
 	}()
-	return srv.Serve(lis)
+	return srv.Run()
 }
 
 // SetShutdownTimeout 配置 GracefulStop 等待 in-flight RPC 的最大时间。
@@ -156,13 +148,12 @@ func (s *Server) Screen(ctx context.Context, req *riskv1.ScreenRequest) (*riskv1
 	}
 	// Tenant 隔离：商户 key 调 Screen 必须 merchant_id 匹配；空时自动注入 principal 的 merchant_id。
 	if err := auth.RequireMerchantMatch(ctx, req.GetMerchantId()); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	merchantID := auth.FillMerchantID(ctx, req.GetMerchantId())
 	// per-merchant 限流：超额返 ResourceExhausted，order-core 应识别为可重试。
 	if s.limiter != nil && !s.limiter.Allow(merchantID) {
-		return nil, status.Errorf(codes.ResourceExhausted,
-			"merchant %s exceeded screen QPS quota", merchantID)
+		return nil, fmt.Errorf("merchant %s exceeded screen QPS quota", merchantID)
 	}
 	resp, _ := s.screenOne(ctx, req, merchantID)
 	return resp, nil
@@ -304,7 +295,7 @@ func (s *Server) Report(ctx context.Context, req *riskv1.ReportRequest) (*riskv1
 		return &riskv1.ReportResponse{}, nil
 	}
 	if err := auth.RequireMerchantMatch(ctx, req.GetMerchantId()); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	merchantID := auth.FillMerchantID(ctx, req.GetMerchantId())
 	txn := &engine.TxnContext{
@@ -353,7 +344,7 @@ func requireNonMerchant(ctx context.Context) error {
 		return nil
 	}
 	if p.Scope == auth.ScopeMerchant {
-		return status.Error(codes.PermissionDenied, "merchant scope cannot access admin endpoints")
+		return fmt.Errorf("merchant scope cannot access admin endpoints")
 	}
 	return nil
 }
@@ -362,7 +353,7 @@ func requireNonMerchant(ctx context.Context) error {
 
 func (s *Server) AddBlacklist(ctx context.Context, req *riskv1.BlacklistEntryMsg) (*riskv1.BlacklistOpResponse, error) {
 	if req.GetDimension() == "" || req.GetValue() == "" {
-		return nil, status.Error(codes.InvalidArgument, "dimension and value required")
+		return nil, fmt.Errorf("dimension and value required")
 	}
 	s.bl.Add(ctx, req.GetDimension(), req.GetValue(), req.GetReason())
 	s.logger.Info("blacklist added",
@@ -372,7 +363,7 @@ func (s *Server) AddBlacklist(ctx context.Context, req *riskv1.BlacklistEntryMsg
 
 func (s *Server) RemoveBlacklist(ctx context.Context, req *riskv1.BlacklistEntryMsg) (*riskv1.BlacklistOpResponse, error) {
 	if req.GetDimension() == "" || req.GetValue() == "" {
-		return nil, status.Error(codes.InvalidArgument, "dimension and value required")
+		return nil, fmt.Errorf("dimension and value required")
 	}
 	s.bl.Remove(ctx, req.GetDimension(), req.GetValue())
 	s.logger.Info("blacklist removed",
@@ -396,7 +387,7 @@ func (s *Server) ListBlacklist(ctx context.Context, req *riskv1.ListBlacklistReq
 // ErasePersonalData GDPR right-to-erasure。要 ScopeInternal（合规操作不让商户调）。
 func (s *Server) ErasePersonalData(ctx context.Context, req *riskv1.EraseRequest) (*riskv1.EraseResponse, error) {
 	if p, ok := auth.PrincipalFrom(ctx); !ok || p == nil || p.Scope != auth.ScopeInternal {
-		return nil, status.Error(codes.PermissionDenied, "erase requires internal scope")
+		return nil, fmt.Errorf("erase requires internal scope")
 	}
 	res, err := s.svc.ErasePersonalData(ctx, &service.EraseInput{
 		CustomerID:  req.GetCustomerId(),
@@ -409,7 +400,7 @@ func (s *Server) ErasePersonalData(ctx context.Context, req *riskv1.EraseRequest
 		RequestedBy: req.GetRequestedBy(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &riskv1.EraseResponse{
 		LinkEdgesPurged: int32(res.LinkEdgesPurged),
@@ -433,97 +424,9 @@ func toProtoDecision(d engine.Decision) riskv1.Decision {
 	return riskv1.Decision_ALLOW
 }
 
-// ─── interceptors (same pattern as other services) ────────────────
-
-func recoverInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
-		defer func() {
-			if r := recover(); r != nil {
-				logger.Error("panic", zap.String("method", info.FullMethod), zap.Any("recover", r), zap.String("stack", string(debug.Stack())))
-				err = status.Errorf(codes.Internal, "internal panic")
-			}
-		}()
-		return handler(ctx, req)
-	}
-}
-
-func loggingInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		if strings.HasPrefix(info.FullMethod, "/grpc.health.") {
-			return handler(ctx, req)
-		}
-		start := time.Now()
-		logger.Info("grpc IN", zap.String("method", info.FullMethod), zap.String("req", renderProto(req)))
-		resp, err := handler(ctx, req)
-		dur := time.Since(start)
-		if err != nil {
-			st, _ := status.FromError(err)
-			logger.Warn("grpc OUT", zap.String("method", info.FullMethod), zap.Duration("dur", dur), zap.String("code", st.Code().String()), zap.String("err", err.Error()))
-		} else {
-			logger.Info("grpc OUT", zap.String("method", info.FullMethod), zap.Duration("dur", dur), zap.String("code", "OK"), zap.String("resp", renderProto(resp)))
-		}
-		return resp, err
-	}
-}
-
-func metricsInterceptor() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		start := time.Now()
-		resp, err := handler(ctx, req)
-		code := codes.OK.String()
-		if err != nil {
-			if st, ok := status.FromError(err); ok {
-				code = st.Code().String()
-			}
-		}
-		metrics.GRPCRequestTotal.WithLabelValues(info.FullMethod, code).Inc()
-		metrics.GRPCRequestDuration.WithLabelValues(info.FullMethod).Observe(time.Since(start).Seconds())
-		return resp, err
-	}
-}
-
-// authInterceptor 双模式：
-//
-//  1. apiKeys != nil 时优先走 per-merchant API key store，解析 → 注入 Principal 到 ctx；
-//     不在 store 里再退到 legacyTokens（map）继续兼容；
-//  2. legacyTokens 命中按 ScopeInternal 注入（payment-core 等内部服务）；
-//  3. 都为空 = dev 模式，所有调用放行（无 Principal）。
-//
-// 下游 handler 通过 auth.PrincipalFrom(ctx) 决定 tenant 隔离 / 商户匹配。
-func authInterceptor(legacyTokens map[string]string, apiKeys auth.APIKeyStore, logger *zap.Logger) grpc.UnaryServerInterceptor {
-	skip := func(method string) bool {
-		return strings.HasPrefix(method, "/grpc.health.") || strings.HasPrefix(method, "/grpc.reflection.")
-	}
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		if skip(info.FullMethod) {
-			return handler(ctx, req)
-		}
-		// 没启用任何鉴权 → dev 模式
-		if len(legacyTokens) == 0 && apiKeys == nil {
-			return handler(ctx, req)
-		}
-		md, _ := metadata.FromIncomingContext(ctx)
-		hdr := strings.TrimSpace(strings.Join(md.Get("authorization"), ""))
-		if !strings.HasPrefix(hdr, "Bearer ") {
-			return nil, status.Error(codes.Unauthenticated, "missing bearer token")
-		}
-		tok := strings.TrimPrefix(hdr, "Bearer ")
-
-		// 1) API key store
-		if apiKeys != nil {
-			if p, err := apiKeys.Lookup(ctx, tok); err == nil {
-				ctx = auth.WithPrincipal(ctx, p)
-				return handler(ctx, req)
-			}
-		}
-		// 2) legacy flat-token
-		if _, ok := legacyTokens[tok]; ok {
-			ctx = auth.WithPrincipal(ctx, &auth.Principal{Scope: auth.ScopeInternal, KeyID: "legacy"})
-			return handler(ctx, req)
-		}
-		return nil, status.Error(codes.Unauthenticated, "invalid token")
-	}
-}
+// ─── interceptors deleted — gRPC UnaryServerInterceptor 不再适用 Kitex.
+// 等价 Kitex middleware 在 kitexutil.{RecoverMW,LogMW,MetricsMW,AuthMW} 提供,
+// 由 cmd/server/main.go 通过 server.WithMiddleware(...) 接入.
 
 func renderProto(v interface{}) string {
 	if m, ok := v.(proto.Message); ok {

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )

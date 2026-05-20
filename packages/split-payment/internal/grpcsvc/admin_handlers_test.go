@@ -18,8 +18,8 @@ import (
 	"sync"
 	"testing"
 
-	"reconcile-system/packages/split-payment/internal/domain"
-	"reconcile-system/packages/split-payment/internal/workflow"
+	"github.com/xiongwp/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/workflow"
 
 	"go.uber.org/zap"
 )

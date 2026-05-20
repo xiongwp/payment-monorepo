@@ -1,0 +1,181 @@
+// hostports.go — Kitex client 拨号 host:port 统一 helper.
+//
+// 解决问题: Kitex client 不接 etcd resolver + 不传 client.WithHostPorts → 报
+// "no resolver available". 全 monorepo 把 etcd resolver 真接通前, 所有 client
+// 调 NewClient 必须显式给 host:port.
+//
+// 调用方式:
+//
+//	cli, _ := accountingservice.NewClient("accounting-system",
+//	    kitexutil.DefaultHostPorts("accounting-system"),
+//	)
+//
+// 解析顺序:
+//   1. env var <SVC>_GRPC_ADDR (svc 大写, '-' / '.' → '_'). 例:
+//      ACCOUNTING_SYSTEM_GRPC_ADDR=10.0.0.5:50051
+//   2. 内置 docker 容器 DNS 默认 (svc-name:default-port).
+//
+// 任何新服务接入时只需补 defaultPorts 表即可.
+package kitexutil
+
+import (
+	"context"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/pkg/discovery"
+	"github.com/cloudwego/kitex/pkg/rpcinfo"
+	"github.com/cloudwego/kitex/transport"
+)
+
+// defaultHosts 各服务在 docker-compose 内部网络的 (DNS hostname, gRPC port).
+//
+// 注意: 包名 != docker DNS hostname. 历史包袱:
+//   - accounting-system 包内 docker-compose 把 service 命名为 "accounting-service"
+//   - kms-manage 包内 docker-compose 把 service 命名为 "kms"
+//   - id-generator 包内 docker-compose 把 service 命名为 "id-service"
+//
+// kitexutil.DefaultClientOptions(svcName) 用包名当 key, 解析后用真实 docker DNS
+// 名拨号. 这样调用方 (split-payment / order-core / accounting-admin-web ...) 用
+// 包名是 source-of-truth.
+//
+// 新增服务: 加一行 (包名 → {dockerDNS, grpcPort}).
+type hostPort struct {
+	host string
+	port string
+}
+
+var defaultHosts = map[string]hostPort{
+	// ETCD-NAME: 老入口用 Go 包名作 key, 新入口直接用 etcd 注册名 (= docker DNS) 作 key.
+	// 二者并列, 让 caller 不论用哪种名字都能 resolve 到正确 host:port.
+	"accounting-system":  {"accounting-service", "50051"}, // legacy: Go pkg name
+	"accounting-service": {"accounting-service", "50051"}, // canonical: etcd name
+	"user-merchant-core": {"user-merchant-core", "9191"},
+	"order-core":         {"order-core", "9091"},
+	"payment-core":       {"payment-core", "9091"},
+	"payment-channel":    {"payment-channel", "9091"},
+	"card-payment":       {"card-payment", "9091"},
+	"card-center":        {"card-center", "9443"},
+	"kms-manage":         {"kms", "9290"}, // docker DNS != pkg name
+	"risk-manage":        {"risk-manage", "9090"},
+	"split-payment":      {"split-payment", "9098"},
+	"config-center":      {"config-center", "9092"},
+	"id-generator":       {"id-service", "9090"}, // docker DNS != pkg name
+}
+
+// DefaultHostPorts 给 Kitex client 装上一个 host:port 解析:
+//
+//   - 先看 env var <SVC>_GRPC_ADDR (大写, '-' 转 '_')
+//   - 再回退到内置 docker 容器 DNS 默认 (服务名 + 端口表)
+//   - 都没命中时 → 走 "<svcName>:80" (一般跑不通, 但至少不会 "no resolver available" panic)
+//
+// 用法: kitexutil.DefaultHostPorts("accounting-system")
+//
+// 注意: 单 Option 只设 host:port, 不设 transport. 想避开 "dial unix host:port"
+// 那类网络栈混淆, 用 DefaultClientOptions(...)... (variadic spread) 把
+// transport.GRPC 一起带上.
+func DefaultHostPorts(svcName string) client.Option {
+	return client.WithHostPorts(resolveHostPort(svcName))
+}
+
+// resolveHostPort 把 svcName → host:port 字符串. DefaultHostPorts /
+// DefaultClientOptions 共用.
+func resolveHostPort(svcName string) string {
+	// env 显式覆盖最优先 (ops 排错时按 svc 改一个 env 就行)
+	if envKey := envVarFor(svcName); envKey != "" {
+		if v := strings.TrimSpace(os.Getenv(envKey)); v != "" {
+			return v
+		}
+	}
+	// 内置表用真实 docker DNS hostname, 不是包名
+	if hp, ok := defaultHosts[svcName]; ok {
+		return hp.host + ":" + hp.port
+	}
+	// 未注册的服务 fallback 到 svcName:80 (大概率跑不通, 但至少不会 panic)
+	return svcName + ":80"
+}
+
+// envVarFor 把 svc 名转成 ENV 变量 key. "accounting-system" → "ACCOUNTING_SYSTEM_GRPC_ADDR".
+func envVarFor(svcName string) string {
+	if svcName == "" {
+		return ""
+	}
+	r := strings.NewReplacer("-", "_", ".", "_")
+	return strings.ToUpper(r.Replace(svcName)) + "_GRPC_ADDR"
+}
+
+// DefaultClientOptions 返回 Kitex client 推荐的拨号 Options 组合.
+//
+// 拨号方式按 REGISTRY_ENDPOINTS env 自动切换:
+//   - REGISTRY_ENDPOINTS 非空 → etcd discovery (EtcdResolver). 服务名当 etcd key,
+//     server 端 EtcdRegistry 注册时用同名. 实例摘除 / 加入实时感知.
+//   - REGISTRY_ENDPOINTS 空    → fallback 静态 host:port (tcpStaticResolver).
+//     仅 dev / 单机调试使用; prod 必须配 REGISTRY_ENDPOINTS.
+//
+// 同时强制 transport.GRPC (HTTP/2 over TCP), 避免 Kitex netpoll 在某些 host
+// 字符串下把网络栈降级成 unix socket.
+//
+// 用法 (variadic spread):
+//
+//	cli, _ := accountingservice.NewClient("accounting-service",
+//	    kitexutil.DefaultClientOptions("accounting-service")...,
+//	)
+//
+// 注意: svcName 必须跟 server 端 EtcdRegistry 注册时用的同名 (即 docker DNS 名
+// 或 prod 注册的 service-name, 不一定是 Go 包名).
+func DefaultClientOptions(svcName string) []client.Option {
+	opts := []client.Option{
+		client.WithTransportProtocol(transport.GRPC),
+	}
+	if eps := RegistryEndpointsFromEnv(); len(eps) > 0 {
+		// 走 etcd 服务发现. 如果 etcd 拨号失败这里 panic, 让 ops 立刻发现
+		// "REGISTRY_ENDPOINTS 配错了" 而不是 dial 业务服务时报奇怪错.
+		cli, err := NewEtcdClient(eps, 5*time.Second)
+		if err != nil {
+			// log + fallback 静态; 启动期 etcd 不可达不应该把进程顶死
+			// (后续 etcd 起来时 Kitex 内部不会自动重试 — 这是 v0.16.x 限制).
+			opts = append(opts, client.WithResolver(newTCPStaticResolver(resolveHostPort(svcName))))
+			return opts
+		}
+		opts = append(opts, client.WithResolver(NewEtcdResolver(cli, "")))
+		return opts
+	}
+	// REGISTRY_ENDPOINTS 没配 — 走静态 host:port, 仅 dev.
+	opts = append(opts, client.WithResolver(newTCPStaticResolver(resolveHostPort(svcName))))
+	return opts
+}
+
+// tcpStaticResolver 静态 resolver, 每次 Resolve 都返同一个 instance, 强制
+// Network()="tcp". 是 Kitex WithHostPorts 的安全替代.
+type tcpStaticResolver struct {
+	addr     string
+	instance discovery.Instance
+}
+
+func newTCPStaticResolver(addr string) discovery.Resolver {
+	return &tcpStaticResolver{
+		addr:     addr,
+		instance: discovery.NewInstance("tcp", addr, 10, nil),
+	}
+}
+
+func (r *tcpStaticResolver) Target(_ context.Context, _ rpcinfo.EndpointInfo) string {
+	return r.addr
+}
+
+func (r *tcpStaticResolver) Resolve(_ context.Context, _ string) (discovery.Result, error) {
+	return discovery.Result{
+		Cacheable: true,
+		CacheKey:  r.addr,
+		Instances: []discovery.Instance{r.instance},
+	}, nil
+}
+
+func (r *tcpStaticResolver) Diff(cacheKey string, prev, next discovery.Result) (discovery.Change, bool) {
+	// 静态 resolver, 不变化.
+	return discovery.Change{}, false
+}
+
+func (r *tcpStaticResolver) Name() string { return "kitexutil-tcp-static" }

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/accounting-system/internal/domain/model"
-	"github.com/accounting-system/internal/infrastructure/database"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/database"
 )
 
 // ServiceInstanceRepository 管理服务实例注册表（account_meta.service_instance）。

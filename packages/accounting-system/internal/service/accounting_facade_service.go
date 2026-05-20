@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/accounting-system/internal/idgen"
-	"github.com/accounting-system/internal/infrastructure/kafka"
+	"github.com/xiongwp/accounting-system/internal/idgen"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/kafka"
 	"github.com/xiongwp/payment-util/shadow"
 	"go.uber.org/zap"
 )

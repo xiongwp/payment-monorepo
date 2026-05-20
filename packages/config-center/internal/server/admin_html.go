@@ -23,7 +23,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"html/template"
 	"net/http"
 	"os"
@@ -33,17 +32,27 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	"github.com/xiongwp/config-center/internal/service"
-	"github.com/xiongwp/payment-util/serviceregistry"
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
 )
+
+// IntrospectTokenResponse 占位类型 — 等 user-merchant-core kitex_gen 接通后, 改成
+// 真正的 import "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1".
+// 字段名跟 .proto 保持一致 (UserId / Permissions / ExpiresMs).
+type IntrospectTokenResponse struct {
+	Valid       bool
+	UserId      string
+	ExpiresMs   int64
+	Permissions []string
+}
+
+// IntrospectTokenRequest 同上占位.
+type IntrospectTokenRequest struct {
+	Jwt string
+}
 
 // cacheEntry 缓存条目：响应 + 过期时间。
 type cacheEntry struct {
-	resp    *usermerchantv1.IntrospectTokenResponse
+	resp    *IntrospectTokenResponse
 	expirAt time.Time
 }
 
@@ -70,7 +79,7 @@ func newTokenIntrospectorCache() *tokenIntrospectorCache {
 }
 
 // get 获取缓存（检查过期）。
-func (c *tokenIntrospectorCache) get(token string) (*usermerchantv1.IntrospectTokenResponse, bool) {
+func (c *tokenIntrospectorCache) get(token string) (*IntrospectTokenResponse, bool) {
 	elem, ok := c.items[token]
 	if !ok {
 		return nil, false
@@ -87,7 +96,7 @@ func (c *tokenIntrospectorCache) get(token string) (*usermerchantv1.IntrospectTo
 }
 
 // set 设置缓存（带 token 的过期时间）。
-func (c *tokenIntrospectorCache) set(token string, resp *usermerchantv1.IntrospectTokenResponse) {
+func (c *tokenIntrospectorCache) set(token string, resp *IntrospectTokenResponse) {
 	elem, ok := c.items[token]
 	if ok {
 		item := elem.Value.(lruItem)
@@ -115,51 +124,34 @@ func (c *tokenIntrospectorCache) set(token string, resp *usermerchantv1.Introspe
 	c.items[token] = elem
 }
 
-// tokenIntrospector 封装 user-merchant-core IntrospectToken 调用 + 缓存。
+// tokenIntrospector 封装 user-merchant-core IntrospectToken 调用 + 缓存.
+//
+// TODO: user-merchant-core 的 kitex_gen 生成完成后, 把 client 改成
+// userservice.Client (现在是 nil-only stub, introspect 永远返 valid=false
+// 表示 fail-closed denied — admin 路径会全部 403, 等真接通才能登).
 type tokenIntrospector struct {
-	client usermerchantv1.UserServiceClient
-	cache  *tokenIntrospectorCache
-	logger *zap.Logger
+	endpoint string
+	cache    *tokenIntrospectorCache
+	logger   *zap.Logger
 }
 
-// NewTokenIntrospector 创建 token introspector（调用方传入 endpoint）。
+// NewTokenIntrospector 创建 token introspector (调用方传入 endpoint).
+// 暂为 stub: 等 user-merchant-core/kitex_gen 生成后接通真实 Kitex client.
 func NewTokenIntrospector(endpoint string, logger *zap.Logger) (*tokenIntrospector, error) {
-	conn, err := serviceregistry.DialDirect(endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("dial user-merchant-core: %w", err)
+	if logger != nil {
+		logger.Warn("config-center: tokenIntrospector is a fail-closed STUB — admin path will 403 until user-merchant-core/kitex_gen wired",
+			zap.String("endpoint", endpoint))
 	}
-	client := usermerchantv1.NewUserServiceClient(conn)
 	return &tokenIntrospector{
-		client: client,
-		cache:  newTokenIntrospectorCache(),
-		logger: logger,
+		endpoint: endpoint,
+		cache:    newTokenIntrospectorCache(),
+		logger:   logger,
 	}, nil
 }
 
-// introspect 调用 IntrospectToken，带 LRU 缓存（10K 条，按 token 过期时间）。
-func (ti *tokenIntrospector) introspect(ctx context.Context, token string) (*usermerchantv1.IntrospectTokenResponse, error) {
-	// 检查缓存
-	ti.cache.mu.Lock()
-	if cached, ok := ti.cache.get(token); ok {
-		ti.cache.mu.Unlock()
-		return cached, nil
-	}
-	ti.cache.mu.Unlock()
-
-	// 调 gRPC
-	resp, err := ti.client.IntrospectToken(ctx, &usermerchantv1.IntrospectTokenRequest{Jwt: token})
-	if err != nil {
-		return nil, err
-	}
-
-	// 仅缓存有效的 token（避免缓存坏数据）
-	if resp.Valid {
-		ti.cache.mu.Lock()
-		ti.cache.set(token, resp)
-		ti.cache.mu.Unlock()
-	}
-
-	return resp, nil
+// introspect 暂为 stub: 永远返 valid=false (fail-closed). 等 kitex_gen 接通后改真调用.
+func (ti *tokenIntrospector) introspect(_ context.Context, _ string) (*IntrospectTokenResponse, error) {
+	return &IntrospectTokenResponse{Valid: false}, nil
 }
 
 // AdminHandler admin web UI handler set。
@@ -280,16 +272,12 @@ func (h *AdminHandler) adminActorMiddleware(next http.HandlerFunc) http.HandlerF
 			return
 		}
 
-		// 调 user-merchant-core IntrospectToken
+		// 调 user-merchant-core IntrospectToken (真实装 JWT verify + session 表二次
+		// 校验; 见 user-merchant-core/internal/service/user_service.go::IntrospectToken).
+		// 本地 dev 没真 token 时设 CONFIG_CENTER_DEV_BYPASS=1 跳过这一步.
 		resp, err := h.introspect.introspect(r.Context(), token)
 		if err != nil {
 			h.logger.Warn("admin: introspect failed", zap.Error(err))
-			// gRPC 不可达 → 503
-			if status.Code(err) == codes.Unavailable {
-				http.Error(w, "Service Unavailable: user-merchant-core unreachable", http.StatusServiceUnavailable)
-				return
-			}
-			// 其他错误（如网络）→ 503
 			http.Error(w, "Service Unavailable: introspection failed", http.StatusServiceUnavailable)
 			return
 		}

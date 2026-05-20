@@ -17,12 +17,10 @@ RUN apk add --no-cache git ca-certificates
 
 WORKDIR /src
 
-# 1) 先 COPY go.mod / go.sum, 单独缓存依赖层
-COPY go.mod go.sum* ./
-RUN go mod download
-
-# 2) COPY 全量源码 + build
+# 1) COPY 全量源码 + tidy + build
+# go.sum 历史漂移 (fx / dig 等新依赖未补), 用 go mod tidy 让 build 自己补齐再下载.
 COPY . .
+RUN go mod tidy && go mod download
 RUN go build -trimpath -ldflags="-s -w" -o /out/oauth2-server ./cmd/server
 
 FROM alpine:3.20

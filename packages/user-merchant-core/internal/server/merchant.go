@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 	"github.com/xiongwp/user-merchant-core/internal/service"
 	"github.com/xiongwp/user-merchant-core/pkg/validatex"
@@ -12,7 +12,6 @@ import (
 
 // MerchantServer adapts service.MerchantService onto the gRPC MerchantService.
 type MerchantServer struct {
-	usermerchantv1.UnimplementedMerchantServiceServer
 	svc service.MerchantService
 }
 

@@ -16,12 +16,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
 )
 
 const (
@@ -44,14 +41,10 @@ func WithTraceID(ctx context.Context, traceID string) context.Context {
 	return context.WithValue(ctx, ctxKey{}, traceID)
 }
 
-// Inject 把 ctx 里的 trace ID 写进 outgoing gRPC metadata（调下游前用）。
-func Inject(ctx context.Context) context.Context {
-	tid := FromContext(ctx)
-	if tid == "" {
-		return ctx
-	}
-	return metadata.AppendToOutgoingContext(ctx, MetadataKey, tid)
-}
+// Inject 已弃用 — 老 gRPC 时代把 trace ID 写进 outgoing metadata 的辅助.
+// Kitex 切换后由 kitexutil.TraceClientMW 自动透传 (TTHeader / metainfo).
+// 保留 0-cost 空实现避免 caller import cycle.
+func Inject(ctx context.Context) context.Context { return ctx }
 
 // Generate 生成 trace ID：<unix_ms_hex>-<random_8B_hex>
 func Generate() string {
@@ -64,37 +57,9 @@ func Generate() string {
 	}) + "-" + hex.EncodeToString(rb)
 }
 
-// UnaryServerInterceptor gRPC 服务端拦截器：提取或生成 trace ID，注入 ctx + logger。
-func UnaryServerInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		if strings.HasPrefix(info.FullMethod, "/grpc.health.") {
-			return handler(ctx, req)
-		}
-		tid := extractFromMD(ctx)
-		if tid == "" {
-			tid = Generate()
-		}
-		ctx = WithTraceID(ctx, tid)
-		// 也写进 outgoing metadata，方便服务内部再转发
-		ctx = metadata.AppendToOutgoingContext(ctx, MetadataKey, tid)
-		// 把 trace_id 加到后续所有 zap 日志里
-		l := logger.With(zap.String("trace_id", tid))
-		ctx = withLogger(ctx, l)
-		return handler(ctx, req)
-	}
-}
-
-func extractFromMD(ctx context.Context) string {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return ""
-	}
-	vals := md.Get(MetadataKey)
-	if len(vals) > 0 {
-		return vals[0]
-	}
-	return ""
-}
+// UnaryServerInterceptor / extractFromMD 已删 — gRPC interceptor 不再适用 Kitex.
+// 等价物在 kitexutil.TraceMW (Kitex middleware), 由 cmd/server/main.go 通过
+// server.WithMiddleware(...) 接入. Trace ID 从 TTHeader/metainfo 透传.
 
 // ─── ctx logger helper ────────────────────────────────────────────
 
@@ -116,10 +81,5 @@ func Logger(ctx context.Context, fallback *zap.Logger) *zap.Logger {
 	return fallback
 }
 
-// UnaryClientInterceptor gRPC 客户端拦截器：把 ctx 里的 trace ID 自动注入
-// outgoing metadata，让下游 server 能拿到同一条 trace。
-func UnaryClientInterceptor() grpc.UnaryClientInterceptor {
-	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		return invoker(Inject(ctx), method, req, reply, cc, opts...)
-	}
-}
+// UnaryClientInterceptor 已删 — gRPC interceptor 不适用 Kitex.
+// 等价物在 kitexutil.TraceClientMW, 通过 client.WithMiddleware(...) 接入.

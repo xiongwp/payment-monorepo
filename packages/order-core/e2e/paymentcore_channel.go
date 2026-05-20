@@ -11,25 +11,39 @@ import (
 	"strconv"
 	"time"
 
-	"google.golang.org/grpc"
-
-	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
+	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
+	paymentcorev1 "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1"
+	paymentcoreservice "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
 
 	"github.com/xiongwp/order-core/internal/channel"
+	"github.com/xiongwp/payment-util/kitexutil"
 )
 
-// PaymentCoreGRPCChannel 实现 order-core 的 channel.PaymentChannel，
-// 把调用翻译成 paymentcorev1 gRPC 请求发给 payment-core。
+// PaymentCoreGRPCChannel 实现 order-core 的 channel.PaymentChannel,
+// 把调用翻译成 paymentcorev1 Kitex 请求发给 payment-core.
+//
+// 文件名仍叫 *_grpc.go 是历史包袱; 内部已切 Kitex.
 type PaymentCoreGRPCChannel struct {
 	name string
-	cli  paymentcorev1.PaymentCoreServiceClient
+	cli  paymentcoreservice.Client
 }
 
-// NewPaymentCoreGRPCChannel 从一个已建好的 grpc.ClientConn 构造。
-func NewPaymentCoreGRPCChannel(name string, conn *grpc.ClientConn) *PaymentCoreGRPCChannel {
+// NewPaymentCoreGRPCChannel 用 payment-core 端点构造 (空 = 走 kitexutil helper 兜底
+// payment-core:9091, 或 PAYMENT_CORE_GRPC_ADDR env 覆盖). 显式 transport.GRPC 避开
+// Kitex netpoll "dial unix ...: no such file or directory" 陷阱.
+func NewPaymentCoreGRPCChannel(name, endpoint string) *PaymentCoreGRPCChannel {
+	opts := []client.Option{
+		client.WithTransportProtocol(transport.GRPC),
+	}
+	if endpoint != "" {
+		opts = append(opts, client.WithHostPorts(endpoint))
+	} else {
+		opts = append(opts, kitexutil.DefaultHostPorts("payment-core"))
+	}
 	return &PaymentCoreGRPCChannel{
 		name: name,
-		cli:  paymentcorev1.NewPaymentCoreServiceClient(conn),
+		cli:  kitexutil.MustKitexClient(paymentcoreservice.NewClient("payment-core", opts...)),
 	}
 }
 

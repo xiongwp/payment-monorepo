@@ -43,7 +43,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 )
 
 // rpcClient 抽象 gRPC stub 的最小接口；解开循环 import + 方便测试。
@@ -116,8 +115,8 @@ type Config struct {
 	// 拉初始 snapshot 的 timeout；默认 10s。
 	InitTimeout time.Duration
 
-	// mTLS（生产必填；dev insecure）。
-	GRPCDialOpts []grpc.DialOption
+	// 老 mTLS GRPCDialOpts 已删 (Kitex 切换后 configcenter 走 HTTP+SSE rpcClient,
+	// 无 gRPC 通道; mTLS 不再需要).
 
 	Logger *zap.Logger
 }

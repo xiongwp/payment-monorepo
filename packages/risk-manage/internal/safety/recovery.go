@@ -9,15 +9,11 @@
 package safety
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"runtime/debug"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // HTTPRecovery panic recovery middleware：捕获所有 handler panic，log stack
@@ -44,28 +40,8 @@ func HTTPRecovery(logger *zap.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// GRPCUnaryRecovery 同 HTTPRecovery 但走 gRPC unary interceptor。给
-// grpc.NewServer(grpc.UnaryInterceptor(GRPCUnaryRecovery(logger))) 挂上。
-//
-// 跟 gRPC 自带的 grpc_recovery.UnaryServerInterceptor 等价但带 zap log
-// + 不引入额外依赖。
-func GRPCUnaryRecovery(logger *zap.Logger) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				if logger != nil {
-					logger.Error("gRPC handler panic recovered",
-						zap.Any("recover", rec),
-						zap.String("method", info.FullMethod),
-						zap.ByteString("stack", debug.Stack()))
-				}
-				err = status.Errorf(codes.Internal, "internal server error: %v", rec)
-				resp = nil
-			}
-		}()
-		return handler(ctx, req)
-	}
-}
+// GRPCUnaryRecovery 已删 — gRPC interceptor 不适用 Kitex (0 caller).
+// 等价 Kitex middleware 走 kitexutil.RecoverMW.
 
 // PathScopedPprof 仅在 prefix-matched 路径下暴露 net/http/pprof handlers。
 // 生产部署必须挂在 admin 端口（带 token auth），千万不要暴露公网（CPU 吃满

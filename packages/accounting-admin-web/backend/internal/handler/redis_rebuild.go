@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 )
 
 // RedisRebuildHandler 调 accounting-system gRPC 触发热账户重建。
@@ -13,10 +14,10 @@ import (
 // 默认就是 gRPC 通道，鉴权/超时/可观测性已经统一过；admin HTTP 只留给
 // CLI（cmd/tools/redis-rebuild）等运维场景。
 type RedisRebuildHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewRedisRebuildHandler(client accountingv1.AccountingServiceClient) *RedisRebuildHandler {
+func NewRedisRebuildHandler(client accountingservice.Client) *RedisRebuildHandler {
 	return &RedisRebuildHandler{client: client}
 }
 
@@ -43,20 +44,21 @@ func (h *RedisRebuildHandler) Rebuild(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// RebuildHotAccounts RPC: server 端 handler 当前仍是 stub (TECH-DEBT-4),
+	// 但 BFF 这边已经把 Kitex 通道接好, 等 server 真实现完工自动生效.
 	resp, err := h.client.RebuildHotAccounts(r.Context(), &accountingv1.RebuildHotAccountsRequest{
 		AsOf:       req.AsOf,
 		AccountNos: req.AccountNos,
 		DryRun:     req.DryRun,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, 500, err.Error())
 		return
 	}
 	if resp.Code != 0 {
 		writeError(w, int(resp.Code), resp.Message)
 		return
 	}
-
 	type entryJSON struct {
 		AccountNo     string `json:"account_no"`
 		BalanceBefore string `json:"balance_before"`
@@ -66,9 +68,9 @@ func (h *RedisRebuildHandler) Rebuild(w http.ResponseWriter, r *http.Request) {
 		Skipped       bool   `json:"skipped"`
 		Reason        string `json:"reason,omitempty"`
 	}
-	entries := make([]entryJSON, 0, len(resp.Entries))
+	out := make([]entryJSON, 0, len(resp.Entries))
 	for _, e := range resp.Entries {
-		entries = append(entries, entryJSON{
+		out = append(out, entryJSON{
 			AccountNo:     e.AccountNo,
 			BalanceBefore: e.BalanceBefore,
 			BalanceAfter:  e.BalanceAfter,
@@ -86,6 +88,6 @@ func (h *RedisRebuildHandler) Rebuild(w http.ResponseWriter, r *http.Request) {
 		"skipped":  resp.Skipped,
 		"failed":   resp.Failed,
 		"duration": resp.Duration,
-		"entries":  entries,
+		"entries":  out,
 	})
 }

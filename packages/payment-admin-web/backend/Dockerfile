@@ -32,6 +32,8 @@ FROM alpine:3.19 AS user-merchant-core
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 FROM alpine:3.19 AS accounting-grpc-api
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS split-payment
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS build
 RUN apk add --no-cache git ca-certificates
@@ -51,6 +53,7 @@ ARG PAYMENT_CORE_REF=main
 ARG ORDER_CORE_REF=main
 ARG USER_MERCHANT_CORE_REF=main
 ARG ACCOUNTING_GRPC_API_REF=main
+ARG SPLIT_PAYMENT_REF=main
 
 COPY --from=payment-util         / /tmp/payment-util-staged/
 COPY --from=kms-manage           / /tmp/kms-manage-staged/
@@ -60,6 +63,7 @@ COPY --from=payment-core         / /tmp/payment-core-staged/
 COPY --from=order-core           / /tmp/order-core-staged/
 COPY --from=user-merchant-core   / /tmp/user-merchant-core-staged/
 COPY --from=accounting-grpc-api  / /tmp/accounting-grpc-api-staged/
+COPY --from=split-payment        / /tmp/split-payment-staged/
 
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
@@ -92,7 +96,8 @@ RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     promote payment-core         "$PAYMENT_CORE_REF"; \
     promote order-core           "$ORDER_CORE_REF"; \
     promote user-merchant-core   "$USER_MERCHANT_CORE_REF"; \
-    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"
+    promote accounting-grpc-api  "$ACCOUNTING_GRPC_API_REF"; \
+    promote split-payment        "$SPLIT_PAYMENT_REF"
 
 # build context 就是 backend 目录；把它完整拷到 /src/payment-admin-web/backend
 # 下，go.mod 里所有 `replace ../../<sibling>` 路径都能解到 /src/<sibling>。

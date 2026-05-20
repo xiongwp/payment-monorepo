@@ -37,6 +37,25 @@ type Server struct {
 	Audit      audit.Sink
 	AdminToken string
 	Log        *zap.Logger
+
+	// P0-DSAR-1: 真接 S3 + 加密 + 邮件. 三者都 nil 时 fulfill 走老 stub 路径 +
+	// log warn (dev / 本地测试); prod 应该全部注入实例.
+	Exporter   Exporter   // 真打包+加密+上传, 返 fulfilled URL + SHA256
+	Notifier   Notifier   // 邮件通知用户取数据
+}
+
+// Exporter 把 ServiceStatuses 里的数据捞出来打包成加密 zip 上传到 S3.
+// 完整实现见 internal/orchestrator/exporter.go (S3Exporter); dev 用 StubExporter.
+type Exporter interface {
+	// Export 把 request 的所有 service 导出包合并 → AES-256-GCM 加密 zip →
+	// S3 PutObject → 返回 (s3 URL, sha256, encryption key id 用于 audit).
+	// caller 应当 defer 删除本地 tmp 文件 (Exporter 自行清理).
+	Export(ctx context.Context, req *domain.Request) (url string, sha256 string, kmsKeyID string, err error)
+}
+
+// Notifier 给用户发"你的数据准备好了"邮件 (含一次性下载链接 + 7d 过期).
+type Notifier interface {
+	NotifyFulfilled(ctx context.Context, req *domain.Request, downloadURL string) error
 }
 
 func (s *Server) Routes() http.Handler {
@@ -193,14 +212,58 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 		_ = s.Store.UpdateState(id, domain.StateRejected, body.Reason)
 		s.emitAudit(r, body.Reviewer, "reject", id, map[string]interface{}{"reason": body.Reason})
 	case "fulfill":
-		// 真生产: 拼 zip + 加密 + S3 + 邮件发链接 → 这里 stub
+		// P0-DSAR-1: 真接 S3 + 加密 + 邮件 (GDPR/CCPA 合规要求).
+		// 老 stub 只写 "s3://exports/<id>.zip" 假字符串 + 不发邮件, prod 上线
+		// 审计时拿不到真文件.
+		// 新路径: Exporter 注入 → 打包 + AES-256 + S3 PutObject; Notifier 发邮件.
 		latest, _ := s.Store.GetRequest(id)
-		combinedSHA := orchestrator.CombineExports(latest.ServiceStatuses)
-		_ = s.Store.SetExport(id, "s3://exports/"+id+".zip", combinedSHA)
-		_ = s.Store.UpdateState(id, domain.StateFulfilled, body.Reviewer)
-		s.emitAudit(r, body.Reviewer, "fulfill", id, map[string]interface{}{
-			"export_sha256": combinedSHA,
-		})
+		if s.Exporter == nil || s.Notifier == nil {
+			// dev / 本地测试兜底: 没注入真实 Exporter 时仍按老 stub 行为, 但 log loud.
+			combinedSHA := orchestrator.CombineExports(latest.ServiceStatuses)
+			_ = s.Store.SetExport(id, "s3://exports/"+id+".zip", combinedSHA)
+			_ = s.Store.UpdateState(id, domain.StateFulfilled, body.Reviewer)
+			if s.Log != nil {
+				s.Log.Warn("DSAR fulfill: Exporter/Notifier 未注入, 走 stub URL "+
+					"(prod 必须注入 S3Exporter + SESNotifier; 当前不合规 GDPR/CCPA)",
+					zap.String("request_id", id), zap.String("export_sha256", combinedSHA))
+			}
+			s.emitAudit(r, body.Reviewer, "fulfill", id, map[string]interface{}{
+				"export_sha256": combinedSHA,
+				"_stub":         true,
+			})
+		} else {
+			// prod path — 真打包 + 加密 + S3 + 邮件.
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+			defer cancel()
+			url, sha, kmsKey, err := s.Exporter.Export(ctx, &latest)
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, "export_failed",
+					"export pack/encrypt/upload failed: "+err.Error())
+				return
+			}
+			_ = s.Store.SetExport(id, url, sha)
+			if err := s.Notifier.NotifyFulfilled(ctx, &latest, url); err != nil {
+				// 邮件失败不阻断 (link 已经在 store 里, 用户可以从 admin 查),
+				// 但 audit log 标 notify_failed 让 ops 跟进.
+				if s.Log != nil {
+					s.Log.Error("DSAR fulfill: notify email failed",
+						zap.String("request_id", id), zap.Error(err))
+				}
+				s.emitAudit(r, body.Reviewer, "fulfill", id, map[string]interface{}{
+					"export_sha256":  sha,
+					"export_url":     url,
+					"kms_key_id":     kmsKey,
+					"notify_failed":  err.Error(),
+				})
+			} else {
+				s.emitAudit(r, body.Reviewer, "fulfill", id, map[string]interface{}{
+					"export_sha256": sha,
+					"export_url":    url,
+					"kms_key_id":    kmsKey,
+				})
+			}
+			_ = s.Store.UpdateState(id, domain.StateFulfilled, body.Reviewer)
+		}
 	default:
 		writeErr(w, http.StatusBadRequest, "bad_action", "verify|approve|reject|fulfill")
 		return

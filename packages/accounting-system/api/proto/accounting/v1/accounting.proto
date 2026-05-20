@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package accounting.v1;
 
-option go_package = "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1;accountingv1";
+option go_package = "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1;accountingv1";
 
 import "google/protobuf/timestamp.proto";
 
@@ -97,9 +97,11 @@ message Account {
 // AccountingEntry 记账分录
 message AccountingEntry {
   string account_no    = 1; // 账户号
-  string debit_amount  = 2; // 借方金额
-  string credit_amount = 3; // 贷方金额
+  string debit_amount  = 2; // 借方金额 (legacy string decimal, 保留兼容)
+  string credit_amount = 3; // 贷方金额 (legacy string decimal, 保留兼容)
   string description   = 4; // 描述
+  Money  debit_money   = 5; // 高精度借方金额
+  Money  credit_money  = 6; // 高精度贷方金额
 }
 
 // Transaction 账户流水
@@ -118,6 +120,7 @@ message Transaction {
   google.protobuf.Timestamp transaction_time      = 12;
   string                    description           = 13;
   int32                     status                = 14;
+  int32                     booking_type          = 15; // 记账类型 (hot/cold path)
 }
 
 // BalanceSnapshot 账户余额快照
@@ -351,6 +354,7 @@ message GetBalanceSnapshotResponse {
 
 message TriggerDayCutRequest {
   string cut_date = 1; // 格式 "2006-01-02"
+  string currency = 2; // 日切按币种独立执行
 }
 
 message TriggerDayCutResponse {
@@ -358,14 +362,25 @@ message TriggerDayCutResponse {
   string message = 2;
 }
 
+// Money 高精度金额: currency + minor_units (整数 minor unit 表示, 避免浮点).
+message Money {
+  string currency    = 1; // ISO 4217, e.g. "USD"
+  int64  minor_units = 2; // 最小货币单位整数, e.g. cents (USD: 100 = $1.00)
+}
+
 message AdjustBalanceRequest {
-  string account_no      = 1;
-  string adjustment_type = 2; // 调账类型
-  string amount          = 3;
-  bool   is_increase     = 4;
-  string reason          = 5;
-  string operator        = 6;
-  string approval_no     = 7; // 审批单号
+  string account_no        = 1;
+  string adjustment_type   = 2; // 调账类型
+  string amount            = 3;
+  bool   is_increase       = 4;
+  string reason            = 5;
+  string operator          = 6;
+  string approval_no       = 7;  // 审批单号
+  string currency          = 8;
+  Money  amount_money      = 9;  // 高精度金额 (currency + minor_units)
+  string request_id        = 10; // 幂等 key
+  string offset_account_no = 11; // 对方账号 (双分录调账)
+  string related_tx_id     = 12; // 关联交易 ID
 }
 
 message AdjustBalanceResponse {
@@ -431,8 +446,8 @@ message CancelTccBranchResponse {
 
 // RunTrialBalanceRequest 试算平衡请求
 message RunTrialBalanceRequest {
-  // snapshot_date 日切日期（格式 "2006-01-02"），对应 account_balance_snapshot.snapshot_date
-  string snapshot_date = 1;
+  string snapshot_date = 1; // 日切日期 (2006-01-02)
+  string currency      = 2; // 币种 (日切按币种独立执行)
 }
 
 // RunTrialBalanceResponse 试算平衡响应
@@ -491,6 +506,11 @@ service AccountingService {
   // ── 查询操作 ────────────────────────────────────────────────────────────────
   rpc GetTransaction    (GetTransactionRequest)    returns (GetTransactionResponse);
   rpc GetBalanceSnapshot(GetBalanceSnapshotRequest) returns (GetBalanceSnapshotResponse);
+  // ── admin-web 用 4 个 (历史曾被砍, 现在还原) ──────────────────────────────
+  rpc ListAccountsByUserAndBusinessType (ListAccountsByUserAndBusinessTypeRequest) returns (ListAccountsByUserAndBusinessTypeResponse);
+  rpc ListDayCutHistory                 (ListDayCutHistoryRequest)                 returns (ListDayCutHistoryResponse);
+  rpc ListSnapshotDates                 (ListSnapshotDatesRequest)                 returns (ListSnapshotDatesResponse);
+  rpc RebuildHotAccounts                (RebuildHotAccountsRequest)                returns (RebuildHotAccountsResponse);
 
   // ── 管理操作 ────────────────────────────────────────────────────────────────
   rpc TriggerDayCut  (TriggerDayCutRequest)  returns (TriggerDayCutResponse);
@@ -504,4 +524,333 @@ service AccountingService {
 
   // ── 试算平衡（日切后触发，验证借贷平衡与会计恒等式） ──────────────────────────
   rpc RunTrialBalance (RunTrialBalanceRequest) returns (RunTrialBalanceResponse);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 以下 3 个 service + 它们的 message types 从 accounting-grpc-api/gen/.../*.go
+// 手写文件搬过来. Kitex 切换后这些 RPC 暴露走 kitex_gen.
+// ────────────────────────────────────────────────────────────────────────────
+
+// ─── Admin / batch-task RPCs (老 AccountingAdminService) ─────────────────
+
+message ProcessAsyncTasksRequest {
+  int32 batch_size = 1;
+}
+message ProcessAsyncTasksResponse {
+  int32  code      = 1;
+  string message   = 2;
+  int32  processed = 3;
+}
+
+message DayCutWatchdogRequest {
+  int32 stuck_threshold_seconds = 1;
+}
+message DayCutWatchdogResponse {
+  int32  code    = 1;
+  string message = 2;
+}
+
+message ManualTask {
+  string task_id       = 1;
+  string task_type     = 2;
+  string business_no   = 3;
+  string error_message = 4;
+  int32  retry_count   = 5;
+}
+
+message ListManualTasksRequest {
+  int32 limit = 1;
+}
+message ListManualTasksResponse {
+  int32              code    = 1;
+  string             message = 2;
+  repeated ManualTask tasks  = 3;
+}
+
+message RecoverStuckTasksRequest {
+  int32 stuck_threshold_seconds = 1;
+}
+message RecoverStuckTasksResponse {
+  int32  code      = 1;
+  string message   = 2;
+  int64  recovered = 3;
+}
+
+message ReloadBufferAccountConfigRequest {}
+message ReloadBufferAccountConfigResponse {
+  int32  code          = 1;
+  string message       = 2;
+  int32  account_count = 3;
+}
+
+message BufferAccountEntry {
+  int64  id                   = 1;
+  string account_no           = 2;
+  int32  flush_interval_level = 3;
+  bool   enabled              = 4;
+  string description          = 5;
+  string created_at           = 6;
+  string updated_at           = 7;
+}
+
+message ListBufferAccountsRequest {}
+message ListBufferAccountsResponse {
+  int32                       code    = 1;
+  string                      message = 2;
+  repeated BufferAccountEntry items   = 3;
+}
+
+message CreateBufferAccountRequest {
+  string account_no           = 1;
+  int32  flush_interval_level = 2;
+  string description          = 3;
+}
+message CreateBufferAccountResponse {
+  int32               code    = 1;
+  string              message = 2;
+  BufferAccountEntry  item    = 3;
+}
+
+message UpdateBufferAccountRequest {
+  int64  id                   = 1;
+  bool   enabled              = 2;
+  int32  flush_interval_level = 3;
+  string description          = 4;
+}
+message UpdateBufferAccountResponse {
+  int32  code    = 1;
+  string message = 2;
+}
+
+message DeleteBufferAccountRequest {
+  int64 id = 1;
+}
+message DeleteBufferAccountResponse {
+  int32  code    = 1;
+  string message = 2;
+}
+
+service AccountingAdminService {
+  rpc ProcessAsyncTasks         (ProcessAsyncTasksRequest)         returns (ProcessAsyncTasksResponse);
+  rpc DayCutWatchdog            (DayCutWatchdogRequest)            returns (DayCutWatchdogResponse);
+  rpc ListManualTasks           (ListManualTasksRequest)           returns (ListManualTasksResponse);
+  rpc RecoverStuckTasks         (RecoverStuckTasksRequest)         returns (RecoverStuckTasksResponse);
+  rpc ReloadBufferAccountConfig (ReloadBufferAccountConfigRequest) returns (ReloadBufferAccountConfigResponse);
+  rpc ListBufferAccounts        (ListBufferAccountsRequest)        returns (ListBufferAccountsResponse);
+  rpc CreateBufferAccount       (CreateBufferAccountRequest)       returns (CreateBufferAccountResponse);
+  rpc UpdateBufferAccount       (UpdateBufferAccountRequest)       returns (UpdateBufferAccountResponse);
+  rpc DeleteBufferAccount       (DeleteBufferAccountRequest)       returns (DeleteBufferAccountResponse);
+}
+
+// ─── Freeze RPCs (老 FreezeService) ──────────────────────────────────────
+
+message FreezeBalanceRequest {
+  string       order_no      = 1;
+  string       account_no    = 2;
+  string       business_no   = 3;
+  BusinessType business_type = 4;
+  int64        amount        = 5;
+  string       currency      = 6;
+  string       description   = 7;
+}
+message FreezeBalanceResponse {
+  int32  code     = 1;
+  string message  = 2;
+  string order_no = 3;
+}
+
+message UnfreezeEntry {
+  string account_no    = 1;
+  int64  debit_amount  = 2;
+  int64  credit_amount = 3;
+  string description   = 4;
+}
+
+message UnfreezeAndDebitRequest {
+  string                 freeze_order_no      = 1;
+  string                 freeze_account_no    = 2;
+  string                 freeze_business_no   = 3;
+  BusinessType           freeze_business_type = 4;
+  repeated UnfreezeEntry entries              = 5;
+  string                 currency             = 6;
+  string                 description          = 7;
+}
+message UnfreezeAndDebitResponse {
+  int32           code            = 1;
+  string          message         = 2;
+  string          voucher_no      = 3;
+  repeated string transaction_ids = 4;
+}
+
+message UnfreezeAndReturnRequest {
+  string       freeze_order_no      = 1;
+  string       freeze_account_no    = 2;
+  string       freeze_business_no   = 3;
+  BusinessType freeze_business_type = 4;
+}
+message UnfreezeAndReturnResponse {
+  int32  code    = 1;
+  string message = 2;
+}
+
+service FreezeService {
+  rpc FreezeBalance     (FreezeBalanceRequest)     returns (FreezeBalanceResponse);
+  rpc UnfreezeAndDebit  (UnfreezeAndDebitRequest)  returns (UnfreezeAndDebitResponse);
+  rpc UnfreezeAndReturn (UnfreezeAndReturnRequest) returns (UnfreezeAndReturnResponse);
+}
+
+// ─── Transaction RPCs (老 TransactionService) ────────────────────────────
+//
+// 注: 全部复用 AccountingService 已声明的 message types (BookingRequest 等).
+// 这里只声明 service, 由 *Server 同时实现 AccountingService + TransactionService.
+
+service TransactionService {
+  rpc DoubleEntryBooking       (DoubleEntryBookingRequest)       returns (DoubleEntryBookingResponse);
+  rpc BatchBooking             (BatchBookingRequest)             returns (BatchBookingResponse);
+  rpc HybridDoubleEntryBooking (HybridDoubleEntryBookingRequest) returns (HybridDoubleEntryBookingResponse);
+  rpc AtomicBatchBooking       (AtomicBatchBookingRequest)       returns (AtomicBatchBookingResponse);
+  rpc GetTransaction           (GetTransactionRequest)           returns (GetTransactionResponse);
+  // SP-AC-7 split-payment 用; rule-driven 多 leg 落账, request_id 兼任幂等.
+  rpc CreateTransaction        (CreateTransactionRequest)        returns (CreateTransactionResponse);
+  rpc ListAccountTypes         (ListAccountTypesRequest)         returns (ListAccountTypesResponse);
+  rpc ListTransactionRules     (ListTransactionRulesRequest)     returns (ListTransactionRulesResponse);
+}
+
+// ─── SP-AC-7 split-payment 用的 message ────────────────────────────────────
+
+// TxnLeg 一条资金流 (from_account_no → to_account_no, 一笔金额).
+// 同一个 CreateTransactionRequest 里的所有 leg 必须同一币种.
+message TxnLeg {
+  string from_account_no = 1; // 借方账户号 (split-payment translator 已解析)
+  string to_account_no   = 2; // 贷方账户号
+  int64  amount_minor    = 3; // minor units (cent / fen)
+  string currency        = 4;
+  string edge_from_node  = 5; // 用于审计 / 错误信息
+  string edge_to_node    = 6;
+  string description     = 7; // 单条 leg 的描述, 可空 (= 整笔 transaction 的 remark)
+}
+
+message CreateTransactionRequest {
+  string business_no      = 1;   // 业务侧唯一标识 (e.g. charge_id)
+  string product_code     = 2;   // scenario, e.g. "user_topup"
+  string event_code       = 3;   // 触发事件, e.g. "charge.succeeded"
+  string idempotency_key  = 4;   // 通常 = business_no
+  string remark           = 5;
+  // TECH-DEBT-3: split-payment translator 已经把 graph 派生为 Legs, 直接走 atomic
+  // batch booking; 不传 Legs 时 server 会按 (product_code, event_code) 查 rule 推断
+  // (留待 rule engine 实装).
+  repeated TxnLeg legs    = 6;
+  string business_type    = 7;   // 业务类型 string 形式 (e.g. user_topup), 透传到 transaction_order
+}
+
+message CreateTransactionResponse {
+  string order_no        = 1;
+  string status          = 2;    // posted / pending / failed
+  string voucher_no      = 3;
+  string error_message   = 4;
+}
+
+message AccountTypeItem {
+  string code        = 1;
+  string name        = 2;
+  string description = 3;
+}
+
+message ListAccountTypesRequest {}
+
+message ListAccountTypesResponse {
+  repeated AccountTypeItem items = 1;
+}
+
+message TransactionRuleItem {
+  int64  id                 = 1;
+  string product_code       = 2;
+  string event_code         = 3;
+  string debit_subject_id   = 4;
+  string credit_subject_id  = 5;
+  string from_direction     = 6;
+  string to_direction       = 7;
+  string description        = 8;
+}
+
+message ListTransactionRulesRequest {
+  string product_filter = 1;  // 空 = 全部
+}
+
+message ListTransactionRulesResponse {
+  repeated TransactionRuleItem items = 1;
+}
+
+// ─── admin-web 用的 4 个 RPC (历史曾被砍, 现在还原到 AccountingService) ──────
+
+message ListAccountsByUserAndBusinessTypeRequest {
+  int64               user_id               = 1;
+  AccountBusinessType account_business_type = 2;
+  string              currency              = 3;
+}
+
+message ListAccountsByUserAndBusinessTypeResponse {
+  int32             code     = 1;
+  string            message  = 2;
+  repeated Account  accounts = 3;
+}
+
+message DayCutHistoryEntry {
+  string cut_date     = 1;
+  int32  run_id       = 2;
+  string currency     = 3;
+  int32  total_shards = 4;
+  int32  pending      = 5;
+  int32  processing   = 6;
+  int32  completed    = 7;
+  int32  failed       = 8;
+}
+
+message ListDayCutHistoryRequest {
+  string from_date = 1;
+  string to_date   = 2;
+  int32  limit     = 3;
+}
+
+message ListDayCutHistoryResponse {
+  int32                       code    = 1;
+  string                      message = 2;
+  repeated DayCutHistoryEntry entries = 3;
+}
+
+message ListSnapshotDatesRequest {}
+
+message ListSnapshotDatesResponse {
+  int32           code    = 1;
+  string          message = 2;
+  repeated string dates   = 3;
+}
+
+message RebuildHotAccountsRequest {
+  string          as_of       = 1;   // YYYY-MM-DD; 空 = today
+  repeated string account_nos = 2;   // 空 = 全部
+  bool            dry_run     = 3;
+}
+
+message RebuildHotAccountEntry {
+  string account_no      = 1;
+  string balance_before  = 2;
+  string balance_after   = 3;
+  string source          = 4;   // journal / snapshot / live
+  string journal_cutoff  = 5;
+  bool   skipped         = 6;
+  string reason          = 7;
+}
+
+message RebuildHotAccountsResponse {
+  int32                            code     = 1;
+  string                           message  = 2;
+  string                           as_of    = 3;
+  bool                             dry_run  = 4;
+  int32                            total    = 5;
+  int32                            updated  = 6;
+  int32                            skipped  = 7;
+  int32                            failed   = 8;
+  string                           duration = 9;
+  repeated RebuildHotAccountEntry  entries  = 10;
 }

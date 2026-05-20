@@ -4,32 +4,28 @@ import (
 	"context"
 	"reflect"
 
-	"google.golang.org/grpc/metadata"
-
-	"github.com/xiongwp/user-merchant-core/pkg/grpcutil"
+	"github.com/cloudwego/kitex/pkg/rpcinfo"
 )
 
-// actorFromAuth 拦截器用：解析当前调用方的 actor 标识。
+// actorFromAuth 拦截器用: 解析当前调用方的 actor 标识.
 //
-// 优先级：
-//  1. metadata `x-admin-actor`：上游 admin-backend 在自己的 JWT/Cookie 验证后
-//     注入的真实操作员标识（user@domain）；最权威。
-//  2. AuthInterceptor 鉴权通过后 ctx 里携带的 caller label（svc-a / admin-web 等）
-//     ——指向调用方服务，不指向具体操作员。
-//  3. 都没有 → "anonymous"，由审计层决定是否拒绝。
+// 优先级:
+//  1. Kitex TTHeader/metainfo `x-admin-actor`: 上游 admin-backend 在自己的
+//     JWT/Cookie 验证后注入的真实操作员标识 (user@domain); 最权威.
+//  2. 老 gRPC AuthInterceptor 注入的 caller (已删, Kitex AuthMW port 后接).
+//  3. 都没有 → "anonymous", 由审计层决定是否拒绝.
 //
-// **不再回退到 Bearer token 前缀**。token 是凭据本身，截前缀写审计有两个风险：
+// **不再回退到 Bearer token 前缀** — token 是凭据本身, 截前缀写审计有两个风险:
 //   - 凭据片段写入持久化日志/审计表 → 泄露
-//   - 攻击者用任意 "Bearer admin___xxxx" 即可让审计记录显示成 admin___，可伪造
+//   - 攻击者用任意 "Bearer admin___xxxx" 即可让审计记录显示成 admin___, 可伪造
 func actorFromAuth(ctx context.Context) string {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if ok {
-		if vals := md.Get("x-admin-actor"); len(vals) > 0 && vals[0] != "" {
-			return vals[0]
+	// Kitex 从 RPCInfo.Invocation 拿 transient kv (TTHeader 入站 metainfo).
+	if ri := rpcinfo.GetRPCInfo(ctx); ri != nil {
+		if from := ri.From(); from != nil {
+			if actor, ok := from.Tag("x-admin-actor"); ok && actor != "" {
+				return actor
+			}
 		}
-	}
-	if c := grpcutil.CallerFromContext(ctx); c != "" {
-		return c
 	}
 	return "anonymous"
 }

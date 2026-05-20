@@ -4,15 +4,16 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 )
 
 // SnapshotHandler handles balance snapshot endpoints.
 type SnapshotHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewSnapshotHandler(client accountingv1.AccountingServiceClient) *SnapshotHandler {
+func NewSnapshotHandler(client accountingservice.Client) *SnapshotHandler {
 	return &SnapshotHandler{client: client}
 }
 

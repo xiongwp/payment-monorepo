@@ -17,6 +17,8 @@ FROM alpine:3.19 AS kms-manage
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 FROM alpine:3.19 AS risk-manage
 RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
+FROM alpine:3.19 AS card-payment
+RUN mkdir -p /sibling-placeholder && echo "no-go.mod-here" > /sibling-placeholder/.placeholder
 
 FROM golang:1.25-alpine AS build
 RUN apk add --no-cache git ca-certificates
@@ -28,10 +30,12 @@ ENV GOTOOLCHAIN=auto
 ARG PAYMENT_UTIL_REF=main
 ARG KMS_MANAGE_REF=main
 ARG RISK_MANAGE_REF=main
+ARG CARD_PAYMENT_REF=main
 
 COPY --from=payment-util / /tmp/payment-util-staged/
 COPY --from=kms-manage   / /tmp/kms-manage-staged/
 COPY --from=risk-manage  / /tmp/risk-manage-staged/
+COPY --from=card-payment / /tmp/card-payment-staged/
 
 RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     set -eu; \
@@ -59,7 +63,8 @@ RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
     }; \
     promote payment-util "$PAYMENT_UTIL_REF"; \
     promote kms-manage   "$KMS_MANAGE_REF"; \
-    promote risk-manage  "$RISK_MANAGE_REF"
+    promote risk-manage  "$RISK_MANAGE_REF"; \
+    promote card-payment "$CARD_PAYMENT_REF"
 
 # 这个仓自己的代码
 COPY . /src/payment-channel

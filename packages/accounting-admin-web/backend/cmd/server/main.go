@@ -9,11 +9,10 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
+	accountingadminservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
 	"github.com/xiongwp/accounting-admin-web/backend/internal/handler"
-	"github.com/xiongwp/payment-util/serviceregistry"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/xiongwp/payment-util/kitexutil"
 )
 
 func main() {
@@ -34,16 +33,20 @@ func main() {
 			}
 		}
 	}
-	conn, err := serviceregistry.DialWithFallback(registry, "accounting-service", grpcAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		log.Fatalf("failed to connect to gRPC server (registry=%v fallback=%s): %v", registry, grpcAddr, err)
-	}
-	defer conn.Close()
+	// Kitex client host:port 由 kitexutil.DefaultHostPorts 统一解析
+	// (env ACCOUNTING_SYSTEM_GRPC_ADDR > 默认 accounting-system:50051).
+	// grpcAddr / registry 旧 env 仅留 log; 实际拨号走 helper.
+	_ = registry
+	log.Printf("accounting-system gRPC target (legacy env hint): %s", grpcAddr)
 
-	client := accountingv1.NewAccountingServiceClient(conn)
-	adminClient := accountingv1.NewAccountingAdminServiceClient(conn)
+	// ETCD-5: accounting 在 etcd 注册名是 "accounting-service" (= docker DNS),
+	// 不是 Go 包名 "accounting-system". 二者必须一致, 否则 EtcdResolver 拉不到实例.
+	client := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-service",
+		kitexutil.DefaultClientOptions("accounting-service")...,
+	))
+	adminClient := kitexutil.MustKitexClient(accountingadminservice.NewClient("accounting-service",
+		kitexutil.DefaultClientOptions("accounting-service")...,
+	))
 
 	// Build handlers
 	accountH := handler.NewAccountHandler(client)

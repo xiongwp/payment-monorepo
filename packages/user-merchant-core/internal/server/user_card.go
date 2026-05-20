@@ -17,18 +17,16 @@ package server
 
 import (
 	"context"
+	"fmt"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
 	"github.com/xiongwp/user-merchant-core/internal/domain"
 	"github.com/xiongwp/user-merchant-core/internal/service"
 )
 
 // errInvalidArg gRPC InvalidArgument helper（本文件 local；errors.go 里 grpcErr 走通用 sentinel 映射）
 func errInvalidArg(msg string) error {
-	return status.Error(codes.InvalidArgument, msg)
+	return fmt.Errorf("%s", msg)
 }
 
 // mapDomainErr domain error → gRPC status；委托给 grpcErr（errors.go）
@@ -36,8 +34,6 @@ func mapDomainErr(err error) error { return grpcErr(err) }
 
 // UserCardServer adapts *service.UserCardService onto the gRPC UserCardService.
 type UserCardServer struct {
-	usermerchantv1.UnimplementedUserCardServiceServer
-	usermerchantv1.UnimplementedUserCardInternalServiceServer
 	svc *service.UserCardService
 }
 

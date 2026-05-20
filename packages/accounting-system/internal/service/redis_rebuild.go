@@ -24,9 +24,9 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
-	commonutil "github.com/accounting-system/internal/common"
-	"github.com/accounting-system/internal/domain/model"
-	"github.com/accounting-system/internal/infrastructure/cache"
+	commonutil "github.com/xiongwp/accounting-system/internal/common"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/cache"
 )
 
 // RebuildOptions 重建配置。

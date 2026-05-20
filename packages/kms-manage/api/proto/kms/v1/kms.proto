@@ -12,7 +12,7 @@
 syntax = "proto3";
 
 package kms.v1;
-option go_package = "github.com/xiongwp/kms-manage/api/proto/kms/v1;kmsv1";
+option go_package = "github.com/xiongwp/kms-manage/kitex_gen/kms/v1;kmsv1";
 
 service KMSService {
   rpc Encrypt(EncryptRequest) returns (EncryptResponse);

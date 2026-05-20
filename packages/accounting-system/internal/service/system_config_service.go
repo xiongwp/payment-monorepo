@@ -32,7 +32,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
 	"github.com/xiongwp/payment-util/configcenter"
 	"go.uber.org/zap"
 )

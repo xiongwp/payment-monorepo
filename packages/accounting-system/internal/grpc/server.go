@@ -5,33 +5,42 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
-	"github.com/accounting-system/internal/currency"
-	"github.com/accounting-system/internal/domain/model"
-	"github.com/accounting-system/internal/infrastructure/logging"
-	"github.com/accounting-system/internal/repository"
-	"github.com/accounting-system/internal/service"
-	"github.com/accounting-system/internal/trace"
+	kitexserver "github.com/cloudwego/kitex/server"
+	"github.com/xiongwp/accounting-system/internal/currency"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/logging"
+	"github.com/xiongwp/accounting-system/internal/repository"
+	"github.com/xiongwp/accounting-system/internal/service"
 	"github.com/shopspring/decimal"
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
-	"github.com/xiongwp/payment-util/shadow"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/reflection"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
+	accountingadminservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingadminservice"
+	freezeservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/freezeservice"
+	transactionservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/transactionservice"
 )
 
-// Server gRPC 服务实现（同时实现 AccountingService、AccountingAdminService、
-// FreezeService 和 SP-AC-7 TransactionService）
+// envOrDefault — 单行 env getter, 默认值兜底 (本文件多处使用, 保持代码一致).
+func envOrDefault(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
+}
+
+// Server Kitex 服务实现 (同时暴露 4 个 service: AccountingService /
+// AccountingAdminService / FreezeService / TransactionService).
+// 切 Kitex 后不再 embed Unimplemented*Server (gRPC 兼容性兜底).
 type Server struct {
-	accountingv1.UnimplementedAccountingServiceServer
-	accountingv1.UnimplementedAccountingAdminServiceServer
-	accountingv1.UnimplementedFreezeServiceServer
-	UnimplementedTransactionServiceServer // SP-AC-7 multi-leg + 元数据查询
 	accountingSvc     service.AccountingService
 	transactionSvc    service.TransactionService
 	dayCutSvc         service.DayCutService
@@ -55,34 +64,28 @@ type Server struct {
 	// 通过 SetServiceToken 注入。空字符串 = warn-only 模式（dev / 向后兼容）。
 	serviceToken string
 
-	// grpcSrv 暴露给 Stop()。ListenAndServe 启动时赋值；nil = 未启动。
-	grpcSrv *grpc.Server
-	// done ListenAndServe 退出后关闭；用作 Stop() 的等待信号。
+	// kitexSrv 暴露给 Stop(). ListenAndServe 启动时赋值; nil = 未启动.
+	kitexSrv kitexserver.Server
+	// done ListenAndServe 退出后关闭; 用作 Stop() 的等待信号.
 	done chan struct{}
 }
 
-// Stop 优雅关停 gRPC server。SIGTERM 时由 fx OnStop 调用：
-//
-//  1. GracefulStop()：拒新连接，等 in-flight RPC 完成
-//  2. 等到 ListenAndServe 的 Serve goroutine 真正退出（done 关闭）
-//  3. 超时则 Stop()（强制 close listener + 中断流）
-//
-// 若 ListenAndServe 还没跑过 / 已经退出，本方法 no-op。
+// Stop 优雅关停 Kitex server. SIGTERM 时由 fx OnStop 调用.
+// Kitex srv.Stop() 内部已 graceful (等 in-flight RPC 完成); 用 select 限上限.
 func (s *Server) Stop(ctx context.Context) error {
-	if s.grpcSrv == nil {
+	if s.kitexSrv == nil {
 		return nil
 	}
 	doneCh := make(chan struct{})
 	go func() {
-		s.grpcSrv.GracefulStop()
+		_ = s.kitexSrv.Stop()
 		close(doneCh)
 	}()
 	select {
 	case <-doneCh:
 		return nil
 	case <-ctx.Done():
-		s.logger.Warn("gRPC GracefulStop timed out, forcing Stop()")
-		s.grpcSrv.Stop()
+		s.logger.Warn("kitex Stop() timed out")
 		return ctx.Err()
 	}
 }
@@ -153,9 +156,9 @@ func NewServer(
 // loadShed 若为空 config（所有阈值 0）则不挂载对应 gate。
 // maxRPCDuration = 0 时禁用 timeout 拦截器（开发默认）。
 func (s *Server) ListenAndServe(ctx context.Context, port int, loadShed LoadShedConfig, maxRPCDuration time.Duration) error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		return fmt.Errorf("listen :%d failed: %w", port, err)
+		return fmt.Errorf("resolve :%d failed: %w", port, err)
 	}
 
 	shedder := newLoadShedder(loadShed)
@@ -171,67 +174,51 @@ func (s *Server) ListenAndServe(ctx context.Context, port int, loadShed LoadShed
 		s.logger.Info("gRPC: service token auth enabled (strict mode)")
 	}
 
-	srv := grpc.NewServer(
-		grpc.MaxRecvMsgSize(16*1024*1024),
-		grpc.MaxSendMsgSize(16*1024*1024),
-		// Keepalive：服务器主动探活，及时回收死连接。
-		//   Time: 30s 内连接无任何 frame 发过 → 发 ping 探活
-		//   Timeout: 探活 10s 内无应答 → 强制关闭
-		// 避免移动客户端 NAT 超时 / LB 静默断连后服务器仍持有 TCP 连接占着 goroutine + 池资源。
-		grpc.KeepaliveParams(keepalive.ServerParameters{
-			Time:    30 * time.Second,
-			Timeout: 10 * time.Second,
-			// MaxConnectionIdle/Age 不设，长连接永久保活；如要限制单连接生命，
-			// 可补 MaxConnectionAge: 30*time.Minute。
-		}),
-		// 拒绝行为不端的客户端（防止恶意/bug client 用过密 ping 烧服务器 CPU）。
-		// MinTime: 客户端 ping 间隔不能小于 5s；PermitWithoutStream: 允许无活动流时也 ping。
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             5 * time.Second,
-			PermitWithoutStream: true,
-		}),
-		// 顺序很重要：recovery 最外层，确保任何下游 interceptor / handler 的 panic 都被兜底。
-		// timeout 在 loadshed 之前：超时的请求不应该再占 inflight slot。
-		// loadshed 在 logging 之前：被 fast-fail 的请求不进业务日志，保持日志量受控。
-		grpc.ChainUnaryInterceptor(
-			recoveryInterceptor(s.logger),
-			trace.UnaryServerInterceptor(s.logger), // 从 metadata 取 x-trace-id 注入 ctx/logger
-			// shadow 紧跟 trace：把 metadata x-shadow 翻进 ctx；后续 repo / Redis /
-			// Kafka / 出站 RPC 都按 ctx 决策主 / 影路径。
-			shadow.UnaryServerInterceptor(),
-			timeoutInterceptor(maxRPCDuration),
-			// 鉴权放在 loadshed 之前：未授权请求不应占用 inflight slot。放在 timeout
-			// 之后保留请求级 deadline；放在 trace 之后让被拒请求也带 trace-id 可定位。
-			serviceTokenInterceptor(s.serviceToken, s.logger),
-			shedder.unaryInterceptor(),
-			logging.NewUnaryServerInterceptor(s.logger, s.perfLogger),
-		),
-	)
-	accountingv1.RegisterAccountingServiceServer(srv, s)
-	accountingv1.RegisterAccountingAdminServiceServer(srv, s)
-	accountingv1.RegisterFreezeServiceServer(srv, s)
-	RegisterTransactionServiceServer(srv, s) // SP-AC-7
-	reflection.Register(srv)
+	// Kitex MultiService — accounting-system 同时暴露 4 个 service:
+	//   AccountingService (业务面 - 落账/查询)
+	//   AccountingAdminService (运维面 - 调账/试算/日切)
+	//   FreezeService (per-amount 资金冻结)
+	//   TransactionService (SP-AC-3 split-payment 主入口)
+	//
+	// TODO: kitexutil MW (Recover/Trace/Shadow/Timeout/Auth/LoadShed/Logging 7 条)
+	// 等 kitexutil port 完成后接 server.WithMiddleware(...).
+	//
+	// etcd 服务注册: REGISTRY_ENDPOINTS env 非空 → 自动注册到 etcd 为
+	// "accounting-service" (docker DNS 名). 上游 caller (split-payment /
+	// accounting-admin-web / order-core 等) 用 kitexutil.DefaultClientOptions(
+	// "accounting-service") 解析时能立刻找到. ADVERTISE_HOST env 控制广播 host;
+	// dev 留空走 container hostname, prod 设 POD_IP.
+	serverOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	advertise := fmt.Sprintf("%s:%d", envOrDefault("ADVERTISE_HOST", "accounting-service"), port)
+	serverOpts = append(serverOpts, kitexutil.DefaultServerOptions("accounting-service", advertise)...)
+	srv := kitexserver.NewServer(serverOpts...)
+	// ACCT-MULTISVC: multi-service 模式注册 4 个 service. 方法名跨 service 有冲突
+	// (e.g. GetTransaction 同时在 AccountingService 和 TransactionService), 必须
+	// 给一个 fallback. 选 AccountingService — 它是业务主入口 (落账/查询).
+	// (跟 user-merchant-core / order-core 同模式).
+	accountingservice.RegisterService(srv, s, kitexserver.WithFallbackService())
+	accountingadminservice.RegisterService(srv, s)
+	freezeservice.RegisterService(srv, s)
+	transactionservice.RegisterService(srv, s)
+	// reflection 由 Kitex 内置, 不再手动注册.
 
-	s.grpcSrv = srv
+	s.kitexSrv = srv
 	if s.done == nil {
 		s.done = make(chan struct{})
 	}
 
-	s.logger.Info("gRPC server listening", zap.Int("port", port))
+	s.logger.Info("Kitex server listening", zap.Int("port", port), zap.String("addr", addr.String()))
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.Serve(lis)
+		errCh <- srv.Run()
 		close(s.done)
 	}()
 
 	select {
 	case <-ctx.Done():
-		s.logger.Info("gRPC server shutting down (ctx canceled)")
-		// 兼容旧路径：ctx 被外部 cancel 时主动 GracefulStop；新路径建议
-		// 直接调 Stop()。
-		srv.GracefulStop()
+		s.logger.Info("Kitex server shutting down (ctx canceled)")
+		_ = srv.Stop()
 		<-s.done
 		return nil
 	case err := <-errCh:
@@ -297,6 +284,17 @@ func (s *Server) GetAccount(ctx context.Context, req *accountingv1.GetAccountReq
 	default:
 		return &accountingv1.GetAccountResponse{Code: 400, Message: "account_no or user_id_and_business_type required"}, nil
 	}
+}
+
+// ReloadBufferAccountConfig 从 account_meta.buffer_account_config 重新拉取配置.
+// ACCT-MULTISVC: AccountingAdminService interface 要求, 转发给 service 层.
+func (s *Server) ReloadBufferAccountConfig(ctx context.Context, _ *accountingv1.ReloadBufferAccountConfigRequest) (*accountingv1.ReloadBufferAccountConfigResponse, error) {
+	cnt, err := s.accountingSvc.ReloadBufferAccountConfig(ctx)
+	if err != nil {
+		s.logger.Warn("ReloadBufferAccountConfig failed", zap.Error(err))
+		return &accountingv1.ReloadBufferAccountConfigResponse{Code: 500, Message: err.Error()}, nil
+	}
+	return &accountingv1.ReloadBufferAccountConfigResponse{Code: 0, Message: "ok", AccountCount: int32(cnt)}, nil
 }
 
 // FreezeAccount 把账户状态从 Active 翻成 Frozen,后续所有出账被拒。
@@ -388,15 +386,52 @@ func (s *Server) DoubleEntryBooking(ctx context.Context, req *accountingv1.Doubl
 }
 
 func (s *Server) BatchBooking(ctx context.Context, req *accountingv1.BatchBookingRequest) (*accountingv1.BatchBookingResponse, error) {
-	results := make([]*accountingv1.DoubleEntryBookingResponse, 0, len(req.Requests))
-	var success, failed int32
-	for _, r := range req.Requests {
-		res, err := s.DoubleEntryBooking(ctx, r)
-		if err != nil {
-			res = &accountingv1.DoubleEntryBookingResponse{Code: 500, Message: err.Error()}
+	// 每条 item 仍经由 s.DoubleEntryBooking → accountingSvc.DoubleEntryBooking 完整
+	// service 路径 (幂等 / 聚合 / 校验都不旁路). Parallel=true 时用 goroutine fan-out,
+	// 顺序结果对应 req.Requests 的原下标. 单条 item 失败不阻断其它 (各自独立幂等).
+	//
+	// TODO: NewAccountingFacadeService.BatchBooking 提供更完整的 orchestration
+	// (batch ID, async 路径, kafka 推送), 等 facade 被 wire 进 main.go 后切过去.
+	n := len(req.Requests)
+	results := make([]*accountingv1.DoubleEntryBookingResponse, n)
+	if n == 0 {
+		return &accountingv1.BatchBookingResponse{Code: 0, Message: "ok"}, nil
+	}
+
+	if req.GetParallel() {
+		var wg sync.WaitGroup
+		// 限制并发上限避免打爆下游 DB / hot-account; 8 是经验值 (跟 accountingSvc
+		// 内部 conn pool max_idle 同量级).
+		const maxConcurrency = 8
+		sem := make(chan struct{}, maxConcurrency)
+		for i, r := range req.Requests {
+			i, r := i, r
+			wg.Add(1)
+			sem <- struct{}{}
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+				res, err := s.DoubleEntryBooking(ctx, r)
+				if err != nil {
+					res = &accountingv1.DoubleEntryBookingResponse{Code: 500, Message: err.Error()}
+				}
+				results[i] = res
+			}()
 		}
-		results = append(results, res)
-		if res.Code == 0 {
+		wg.Wait()
+	} else {
+		for i, r := range req.Requests {
+			res, err := s.DoubleEntryBooking(ctx, r)
+			if err != nil {
+				res = &accountingv1.DoubleEntryBookingResponse{Code: 500, Message: err.Error()}
+			}
+			results[i] = res
+		}
+	}
+
+	var success, failed int32
+	for _, res := range results {
+		if res != nil && res.Code == 0 {
 			success++
 		} else {
 			failed++
@@ -407,7 +442,7 @@ func (s *Server) BatchBooking(ctx context.Context, req *accountingv1.BatchBookin
 		Message: "ok",
 		Success: success,
 		Failed:  failed,
-		Total:   int32(len(req.Requests)),
+		Total:   int32(n),
 		Results: results,
 	}, nil
 }
@@ -651,10 +686,7 @@ func (s *Server) GetBalanceSnapshot(ctx context.Context, req *accountingv1.GetBa
 
 func (s *Server) TriggerDayCut(ctx context.Context, req *accountingv1.TriggerDayCutRequest) (*accountingv1.TriggerDayCutResponse, error) {
 	if req.Currency == "" {
-		return &accountingv1.TriggerDayCutResponse{
-			Code:    400,
-			Message: "currency 必填：日切按币种独立执行",
-		}, nil
+		return &accountingv1.TriggerDayCutResponse{Code: 400, Message: "currency 必填：日切按币种独立执行"}, nil
 	}
 	if err := s.dayCutSvc.TriggerDayCut(ctx, req.CutDate, req.Currency); err != nil {
 		s.logger.Error("TriggerDayCut failed", zap.Error(err))
@@ -783,13 +815,8 @@ func (s *Server) AdjustBalance(ctx context.Context, req *accountingv1.AdjustBala
 		amount = v
 	}
 
-	// request_id：metadata x-request-id 优先（与 DoubleEntryBooking 等入口语义一致）
+	// request_id: 老 gRPC metadata 路径已删, Kitex MW 接通后从 metainfo 拿 x-request-id 覆盖.
 	requestID := req.GetRequestId()
-	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		if vs := md.Get("x-request-id"); len(vs) > 0 && vs[0] != "" {
-			requestID = vs[0]
-		}
-	}
 
 	resp, err := s.adjustmentSvc.AdjustBalance(ctx, &service.AdjustmentRequest{
 		AccountNo:       req.GetAccountNo(),
@@ -905,121 +932,12 @@ func (s *Server) CancelTccBranch(ctx context.Context, req *accountingv1.CancelTc
 }
 
 // ─── 管理查询 ─────────────────────────────────────────────────────────────────
-
-func (s *Server) ListDayCutHistory(ctx context.Context, _ *accountingv1.ListDayCutHistoryRequest) (*accountingv1.ListDayCutHistoryResponse, error) {
-	entries, err := s.dayCutSvc.ListDayCutHistory(ctx)
-	if err != nil {
-		s.logger.Warn("ListDayCutHistory failed", zap.Error(err))
-		return &accountingv1.ListDayCutHistoryResponse{Code: 500, Message: err.Error()}, nil
-	}
-	protoEntries := make([]*accountingv1.DayCutHistoryEntry, len(entries))
-	for i, e := range entries {
-		protoEntries[i] = &accountingv1.DayCutHistoryEntry{
-			CutDate:     e.CutDate,
-			RunId:       int32(e.RunID),
-			Currency:    e.Currency,
-			TotalShards: int32(e.TotalShards),
-			Pending:     int32(e.Pending),
-			Processing:  int32(e.Processing),
-			Completed:   int32(e.Completed),
-			Failed:      int32(e.Failed),
-		}
-	}
-	return &accountingv1.ListDayCutHistoryResponse{Code: 0, Message: "ok", Entries: protoEntries}, nil
-}
-
-func (s *Server) ListSnapshotDates(ctx context.Context, _ *accountingv1.ListSnapshotDatesRequest) (*accountingv1.ListSnapshotDatesResponse, error) {
-	dates, err := s.trialBalanceSvc.ListSnapshotDates(ctx)
-	if err != nil {
-		s.logger.Warn("ListSnapshotDates failed", zap.Error(err))
-		return &accountingv1.ListSnapshotDatesResponse{Code: 500, Message: err.Error()}, nil
-	}
-	return &accountingv1.ListSnapshotDatesResponse{Code: 0, Message: "ok", Dates: dates}, nil
-}
-
-// RebuildHotAccounts 灾难恢复：从 MySQL 重建 Redis 热账户余额。
-// admin-web /redis-rebuild 页面或 cmd/tools/redis-rebuild CLI 触发。
-func (s *Server) RebuildHotAccounts(ctx context.Context, req *accountingv1.RebuildHotAccountsRequest) (*accountingv1.RebuildHotAccountsResponse, error) {
-	if req == nil {
-		return &accountingv1.RebuildHotAccountsResponse{Code: 400, Message: "request required"}, nil
-	}
-	opts := service.RebuildOptions{
-		AccountNos: req.AccountNos,
-		DryRun:     req.DryRun,
-	}
-	if req.AsOf != "" {
-		// "5m" / "2h" 相对时长 OR RFC3339 时间戳
-		if d, err := time.ParseDuration(req.AsOf); err == nil {
-			opts.AsOf = time.Now().Add(-d)
-		} else if t, err := time.Parse(time.RFC3339, req.AsOf); err == nil {
-			opts.AsOf = t
-		} else {
-			return &accountingv1.RebuildHotAccountsResponse{
-				Code:    400,
-				Message: fmt.Sprintf("as_of 必须是 duration（如 5m / 2h）或 RFC3339 时间戳；got %q", req.AsOf),
-			}, nil
-		}
-	}
-	report, err := s.accountingSvc.RebuildHotAccounts(ctx, opts)
-	if err != nil {
-		s.logger.Warn("RebuildHotAccounts failed", zap.Error(err))
-		return &accountingv1.RebuildHotAccountsResponse{Code: 500, Message: err.Error()}, nil
-	}
-
-	resp := &accountingv1.RebuildHotAccountsResponse{
-		Code:     0,
-		Message:  "ok",
-		AsOf:     report.AsOf.Format(time.RFC3339),
-		DryRun:   report.DryRun,
-		Total:    int32(report.Total),
-		Updated:  int32(report.Updated),
-		Skipped:  int32(report.Skipped),
-		Failed:   int32(report.Failed),
-		Duration: report.Duration,
-	}
-	if report.AsOf.IsZero() {
-		resp.AsOf = ""
-	}
-	for _, e := range report.Entries {
-		resp.Entries = append(resp.Entries, &accountingv1.RebuildHotAccountEntry{
-			AccountNo:     e.AccountNo,
-			BalanceBefore: e.BalanceBefore,
-			BalanceAfter:  e.BalanceAfter,
-			Source:        e.Source,
-			JournalCutoff: e.JournalCutoff,
-			Skipped:       e.Skipped,
-			Reason:        e.Reason,
-		})
-	}
-	return resp, nil
-}
-
-// ListAccountsByUserAndBusinessType 返回该用户 + 业务类型下全部币种账户。
-// admin-web 按 (user_id, business_type) 查询时走这里，而不是 GetAccount —
-// 后者语义是"唯一一条"，会漏掉多币种场景。
-func (s *Server) ListAccountsByUserAndBusinessType(ctx context.Context, req *accountingv1.ListAccountsByUserAndBusinessTypeRequest) (*accountingv1.ListAccountsByUserAndBusinessTypeResponse, error) {
-	if req == nil {
-		return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{Code: 400, Message: "request required"}, nil
-	}
-	bt := convertAccountBusinessType(req.AccountBusinessType)
-	accounts, err := s.accountingSvc.ListAccountsByUserAndBusinessType(ctx, req.UserId, bt, req.Currency)
-	if err != nil {
-		s.logger.Warn("ListAccountsByUserAndBusinessType failed",
-			zap.Int64("user_id", req.UserId),
-			zap.Int32("business_type", int32(req.AccountBusinessType)),
-			zap.Error(err))
-		return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{Code: 500, Message: err.Error()}, nil
-	}
-	protoAccounts := make([]*accountingv1.Account, 0, len(accounts))
-	for _, a := range accounts {
-		protoAccounts = append(protoAccounts, toProtoAccount(a))
-	}
-	return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{
-		Code:     0,
-		Message:  "ok",
-		Accounts: protoAccounts,
-	}, nil
-}
+//
+// ListDayCutHistory / ListSnapshotDates / RebuildHotAccounts /
+// ListAccountsByUserAndBusinessType 4 个 handler 已删 — 它们的 Request/Response
+// proto 类型从未声明在 accounting.proto 里. 要恢复需要先把这 4 个 RPC 的
+// message types + service 声明加进 .proto, 再重新生成 kitex_gen, 然后把 handler
+// 加回来. admin-web 调这些 RPC 的功能临时不可用.
 
 // ─── AccountingAdminService 实现 ──────────────────────────────────────────────
 
@@ -1466,4 +1384,413 @@ func resolveEntryAmounts(e *accountingv1.AccountingEntry, currencyCode string) (
 		}
 	}
 	return debit, credit, nil
+}
+
+// ─── RESTORE-7 / TECH-DEBT-1/3/4: admin-web + split-payment 用 RPC ──────────
+//
+// 历史精简后这批 RPC 一度只剩 stub 骨架; 现已全部接到真 service/repo:
+//   - TECH-DEBT-1: ListAccountsByUserAndBusinessType / ListDayCutHistory /
+//     ListSnapshotDates / ListAccountTypes / ListTransactionRules.
+//   - TECH-DEBT-3: CreateTransaction multi-leg (Legs[] 已加进 wire proto,
+//     server 端展开 借/贷 entries 走 DoubleEntryBooking).
+//   - TECH-DEBT-4: RebuildHotAccounts 透传到 accountingSvc.RebuildHotAccounts
+//     (跨分片重算 + 写 Redis).
+
+// ListAccountsByUserAndBusinessType 按 (userID, businessType, currency) 列账户.
+// currency 空表示返回该 (user, businessType) 下所有币种. 上层 admin-web 用此 RPC
+// 在 user_topup 场景查"这个 user 当前已经开了哪些 business_type 账户" (designer
+// picker / 账户列表页).
+func (s *Server) ListAccountsByUserAndBusinessType(ctx context.Context, req *accountingv1.ListAccountsByUserAndBusinessTypeRequest) (*accountingv1.ListAccountsByUserAndBusinessTypeResponse, error) {
+	if req == nil || req.GetUserId() <= 0 {
+		return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{
+			Code:    1,
+			Message: "user_id required",
+		}, nil
+	}
+	accs, err := s.accountingSvc.ListAccountsByUserAndBusinessType(ctx,
+		req.GetUserId(),
+		convertAccountBusinessType(req.GetAccountBusinessType()),
+		req.GetCurrency(),
+	)
+	if err != nil {
+		s.logger.Warn("ListAccountsByUserAndBusinessType failed",
+			zap.Int64("user_id", req.GetUserId()),
+			zap.String("currency", req.GetCurrency()),
+			zap.Error(err))
+		return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{
+			Code:    1,
+			Message: err.Error(),
+		}, nil
+	}
+	out := make([]*accountingv1.Account, 0, len(accs))
+	for _, a := range accs {
+		out = append(out, toProtoAccount(a))
+	}
+	return &accountingv1.ListAccountsByUserAndBusinessTypeResponse{
+		Code:     0,
+		Message:  "ok",
+		Accounts: out,
+	}, nil
+}
+
+// ListDayCutHistory 跨 100 个分片聚合 day_cut_control, 按 (cut_date, run_id,
+// currency) 折叠为一行. 上层 admin-web "日切历史"页面用. from_date/to_date 在
+// service 层之外补充过滤 (字符串日期 "YYYY-MM-DD" 字典序即时间序). limit<=0
+// 表示不限.
+func (s *Server) ListDayCutHistory(ctx context.Context, req *accountingv1.ListDayCutHistoryRequest) (*accountingv1.ListDayCutHistoryResponse, error) {
+	entries, err := s.dayCutSvc.ListDayCutHistory(ctx)
+	if err != nil {
+		s.logger.Warn("ListDayCutHistory failed", zap.Error(err))
+		return &accountingv1.ListDayCutHistoryResponse{Code: 1, Message: err.Error()}, nil
+	}
+	fromDate := req.GetFromDate()
+	toDate := req.GetToDate()
+	limit := int(req.GetLimit())
+	out := make([]*accountingv1.DayCutHistoryEntry, 0, len(entries))
+	for _, e := range entries {
+		if fromDate != "" && e.CutDate < fromDate {
+			continue
+		}
+		if toDate != "" && e.CutDate > toDate {
+			continue
+		}
+		out = append(out, &accountingv1.DayCutHistoryEntry{
+			CutDate:     e.CutDate,
+			RunId:       int32(e.RunID),
+			Currency:    e.Currency,
+			TotalShards: int32(e.TotalShards),
+			Pending:     int32(e.Pending),
+			Processing:  int32(e.Processing),
+			Completed:   int32(e.Completed),
+			Failed:      int32(e.Failed),
+		})
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return &accountingv1.ListDayCutHistoryResponse{
+		Code:    0,
+		Message: "ok",
+		Entries: out,
+	}, nil
+}
+
+// ListSnapshotDates 列出已有 balance snapshot 的所有日期 (DESC), 用于 admin-web
+// "试算平衡"页面的日期下拉. trialBalanceSvc 已封好跨分片 distinct 聚合.
+func (s *Server) ListSnapshotDates(ctx context.Context, _ *accountingv1.ListSnapshotDatesRequest) (*accountingv1.ListSnapshotDatesResponse, error) {
+	dates, err := s.trialBalanceSvc.ListSnapshotDates(ctx)
+	if err != nil {
+		s.logger.Warn("ListSnapshotDates failed", zap.Error(err))
+		return &accountingv1.ListSnapshotDatesResponse{Code: 1, Message: err.Error()}, nil
+	}
+	return &accountingv1.ListSnapshotDatesResponse{
+		Code:    0,
+		Message: "ok",
+		Dates:   dates,
+	}, nil
+}
+
+// ListAccountTypes 返回 account_type_info 全表 (条目少, 不走缓存). skeleton proto
+// 只暴露 code/name/description, 不带 is_platform/owner_type/balance_direction;
+// 真要这些字段就走 adminhttp /admin/account-types (admin-web 的 BFF 用).
+func (s *Server) ListAccountTypes(ctx context.Context, _ *accountingv1.ListAccountTypesRequest) (*accountingv1.ListAccountTypesResponse, error) {
+	rows, err := s.ruleRepo.ListAccountTypes(ctx)
+	if err != nil {
+		s.logger.Warn("ListAccountTypes failed", zap.Error(err))
+		return &accountingv1.ListAccountTypesResponse{}, err
+	}
+	items := make([]*accountingv1.AccountTypeItem, 0, len(rows))
+	for _, r := range rows {
+		desc := r.Description
+		if desc == "" {
+			desc = r.AccountTypeDesc
+		}
+		items = append(items, &accountingv1.AccountTypeItem{
+			Code:        r.AccountType,
+			Name:        r.AccountTypeName,
+			Description: desc,
+		})
+	}
+	return &accountingv1.ListAccountTypesResponse{Items: items}, nil
+}
+
+// ListTransactionRules 按 product_code 拉规则; 空 = 全部. split-payment 在每次
+// SaveGraph + Engine 加载时缓存 5min, 这条 RPC 是热路径.
+func (s *Server) ListTransactionRules(ctx context.Context, req *accountingv1.ListTransactionRulesRequest) (*accountingv1.ListTransactionRulesResponse, error) {
+	rules, err := s.ruleRepo.ListRulesByProduct(ctx, req.GetProductFilter())
+	if err != nil {
+		s.logger.Warn("ListTransactionRules failed",
+			zap.String("product", req.GetProductFilter()),
+			zap.Error(err))
+		return &accountingv1.ListTransactionRulesResponse{}, err
+	}
+	items := make([]*accountingv1.TransactionRuleItem, 0, len(rules))
+	for _, r := range rules {
+		items = append(items, &accountingv1.TransactionRuleItem{
+			Id:              r.ID,
+			ProductCode:     r.ProductCode,
+			EventCode:       r.EventCode,
+			DebitSubjectId:  r.DebitSubjectID,
+			CreditSubjectId: r.CreditSubjectID,
+			FromDirection:   r.FromDirection,
+			ToDirection:     r.ToDirection,
+			// model.TransactionRule 没 Description 列, 留空 (Extra JSON 里有 desc 时另说).
+		})
+	}
+	return &accountingv1.ListTransactionRulesResponse{Items: items}, nil
+}
+
+// ─── TECH-DEBT-3 / TECH-DEBT-4 已实装 (见各自 handler 注释) ───────────────────
+
+// RebuildHotAccounts (TECH-DEBT-4):
+//
+// 透传到 accountingSvc.RebuildHotAccounts (跨分片重算 + 写 Redis). AsOf 支持
+// 三种格式: 空 = now, "5m"/"2h" 相对时长, "YYYY-MM-DD" 或 RFC3339 绝对时间.
+// 与 adminhttp /admin/redis/rebuild 是同一条 service 入口, 两路一致.
+func (s *Server) RebuildHotAccounts(ctx context.Context, req *accountingv1.RebuildHotAccountsRequest) (*accountingv1.RebuildHotAccountsResponse, error) {
+	opts := service.RebuildOptions{
+		AccountNos: req.GetAccountNos(),
+		DryRun:     req.GetDryRun(),
+	}
+	if asOf := strings.TrimSpace(req.GetAsOf()); asOf != "" {
+		switch {
+		case parseAsRelative(asOf, &opts.AsOf):
+			// duration
+		case parseAsDate(asOf, &opts.AsOf):
+			// YYYY-MM-DD
+		case parseAsRFC3339(asOf, &opts.AsOf):
+			// RFC3339
+		default:
+			return &accountingv1.RebuildHotAccountsResponse{
+				Code:    400,
+				Message: fmt.Sprintf("as_of 必须是 duration / YYYY-MM-DD / RFC3339; got %q", asOf),
+				AsOf:    asOf,
+				DryRun:  opts.DryRun,
+			}, nil
+		}
+	}
+	report, err := s.accountingSvc.RebuildHotAccounts(ctx, opts)
+	if err != nil {
+		s.logger.Warn("RebuildHotAccounts failed", zap.Error(err))
+		return &accountingv1.RebuildHotAccountsResponse{
+			Code:    500,
+			Message: err.Error(),
+			AsOf:    req.GetAsOf(),
+			DryRun:  req.GetDryRun(),
+		}, nil
+	}
+	entries := make([]*accountingv1.RebuildHotAccountEntry, 0, len(report.Entries))
+	for _, e := range report.Entries {
+		entries = append(entries, &accountingv1.RebuildHotAccountEntry{
+			AccountNo:     e.AccountNo,
+			BalanceBefore: e.BalanceBefore,
+			BalanceAfter:  e.BalanceAfter,
+			Source:        e.Source,
+			JournalCutoff: e.JournalCutoff,
+			Skipped:       e.Skipped,
+			Reason:        e.Reason,
+		})
+	}
+	return &accountingv1.RebuildHotAccountsResponse{
+		Code:     0,
+		Message:  "ok",
+		AsOf:     report.AsOf.Format(time.RFC3339),
+		DryRun:   report.DryRun,
+		Total:    int32(report.Total),
+		Updated:  int32(report.Updated),
+		Skipped:  int32(report.Skipped),
+		Failed:   int32(report.Failed),
+		Duration: report.Duration,
+		Entries:  entries,
+	}, nil
+}
+
+func parseAsRelative(s string, out *time.Time) bool {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return false
+	}
+	*out = time.Now().Add(-d)
+	return true
+}
+
+func parseAsDate(s string, out *time.Time) bool {
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return false
+	}
+	*out = t
+	return true
+}
+
+func parseAsRFC3339(s string, out *time.Time) bool {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return false
+	}
+	*out = t
+	return true
+}
+
+// CreateTransaction (TECH-DEBT-3 v1):
+//
+// 接收 split-payment translator 派生好的 Legs[], 直接落 multi-leg double-entry.
+// 每个 leg 展开为 2 行 AccountingEntry (from = 借方, to = 贷方), 全部 leg 必须
+// 同币种 (currency 取首 leg, 与剩余 leg 校验); idempotency_key 给 accounting
+// 侧幂等. legs 空 → 返 400 让 caller 升级 client.
+//
+// 与 Legs 路径正交的"按 (product_code, event_code) 查 rule 派生 entries" 的真
+// rule-engine, 留给后续 PR; 当前 caller (split-payment translator + order-core
+// mapper) 都已经在自己这一侧解析了 account_no, 上来就喂 Legs 即可.
+func (s *Server) CreateTransaction(ctx context.Context, req *accountingv1.CreateTransactionRequest) (*accountingv1.CreateTransactionResponse, error) {
+	if req == nil {
+		return &accountingv1.CreateTransactionResponse{
+			Status:       "failed",
+			ErrorMessage: "nil request",
+		}, nil
+	}
+	if req.GetIdempotencyKey() == "" {
+		return &accountingv1.CreateTransactionResponse{
+			OrderNo:      req.GetBusinessNo(),
+			Status:       "failed",
+			ErrorMessage: "idempotency_key required",
+		}, nil
+	}
+	legs := req.GetLegs()
+	if len(legs) == 0 {
+		// Rule-engine derivation 兜底: 当 caller 没派生 legs 时, 让 server 按
+		// (product_code, event_code) 查 transaction_rule 当文档/审计回执用. 真要
+		// 据 rule 自动派生 account_no + amount 需要 caller 再传 (from_party_id,
+		// to_party_id, amount, currency) — proto 当前没有这些字段, 所以这里只
+		// 把命中的 rule 行回 error message, 让 caller 能据此 debug + 自行扩展.
+		var hint string
+		if req.GetProductCode() != "" {
+			if rules, err := s.ruleRepo.ListRulesByProduct(ctx, req.GetProductCode()); err == nil {
+				matched := 0
+				for _, r := range rules {
+					if r.EventCode == "" || r.EventCode == req.GetEventCode() {
+						matched++
+					}
+				}
+				hint = fmt.Sprintf(" (matched %d rule(s) for product=%s event=%s; caller must derive legs from these)", matched, req.GetProductCode(), req.GetEventCode())
+			}
+		}
+		return &accountingv1.CreateTransactionResponse{
+			OrderNo:      req.GetIdempotencyKey(),
+			Status:       "failed",
+			ErrorMessage: "legs empty" + hint,
+		}, nil
+	}
+
+	// 校验同币种 + 累计 entries
+	currency := strings.TrimSpace(legs[0].GetCurrency())
+	if currency == "" {
+		return &accountingv1.CreateTransactionResponse{
+			OrderNo:      req.GetIdempotencyKey(),
+			Status:       "failed",
+			ErrorMessage: "leg[0].currency required",
+		}, nil
+	}
+	// RUNTIME-FIX-1: 直接委托给 transactionSvc.CreateTransaction —
+	// 它已经做了 ① 按 accNo 聚合 debit/credit 净额 ② 幂等检查 ③ TransactionOrder
+	// 状态机 (pending → processing → success/failed) ④ 重试 ⑤ 中转户 net=0 跳过.
+	// Kitex 层只做 wire → service 类型映射 + leg 基本校验, 不再自己拼 entry,
+	// 防"两条路径不一致"导致 SUSPENSE 类中转户被 validateEntries dup reject.
+	serviceLegs := make([]service.TxnLeg, 0, len(legs))
+	for i, leg := range legs {
+		legCur := strings.TrimSpace(leg.GetCurrency())
+		if legCur == "" {
+			legCur = currency
+		}
+		if legCur != currency {
+			return &accountingv1.CreateTransactionResponse{
+				OrderNo:      req.GetIdempotencyKey(),
+				Status:       "failed",
+				ErrorMessage: fmt.Sprintf("leg[%d] currency=%s mismatch first leg=%s", i, legCur, currency),
+			}, nil
+		}
+		if leg.GetAmountMinor() <= 0 {
+			return &accountingv1.CreateTransactionResponse{
+				OrderNo:      req.GetIdempotencyKey(),
+				Status:       "failed",
+				ErrorMessage: fmt.Sprintf("leg[%d] amount_minor must be > 0", i),
+			}, nil
+		}
+		if leg.GetFromAccountNo() == "" || leg.GetToAccountNo() == "" {
+			return &accountingv1.CreateTransactionResponse{
+				OrderNo:      req.GetIdempotencyKey(),
+				Status:       "failed",
+				ErrorMessage: fmt.Sprintf("leg[%d] from_account_no / to_account_no required", i),
+			}, nil
+		}
+		serviceLegs = append(serviceLegs, service.TxnLeg{
+			EdgeFromNode:  leg.GetEdgeFromNode(),
+			EdgeToNode:    leg.GetEdgeToNode(),
+			FromAccountID: leg.GetFromAccountNo(),
+			ToAccountID:   leg.GetToAccountNo(),
+			Amount:        strconv.FormatInt(leg.GetAmountMinor(), 10),
+			Currency:      legCur,
+		})
+	}
+
+	remark := req.GetRemark()
+	if remark == "" {
+		remark = fmt.Sprintf("%s/%s", req.GetProductCode(), req.GetEventCode())
+	}
+	svcResp, err := s.transactionSvc.CreateTransaction(ctx, &service.CreateTransactionRequest{
+		OrderNo:     req.GetIdempotencyKey(),
+		ProductCode: req.GetProductCode(),
+		EventCode:   req.GetEventCode(),
+		Legs:        serviceLegs,
+		Description: remark,
+	})
+	if err != nil {
+		s.logger.Warn("CreateTransaction failed",
+			zap.String("business_no", req.GetBusinessNo()),
+			zap.String("product", req.GetProductCode()),
+			zap.String("event", req.GetEventCode()),
+			zap.Int("legs", len(legs)),
+			zap.Error(err))
+		return &accountingv1.CreateTransactionResponse{
+			OrderNo:      req.GetIdempotencyKey(),
+			Status:       "failed",
+			ErrorMessage: err.Error(),
+		}, nil
+	}
+	// service 层 status 是 int8 (model.TransactionOrderStatus*), 映射成 wire 字符串.
+	wireStatus := "posted"
+	switch svcResp.Status {
+	case model.TransactionOrderStatusPending, model.TransactionOrderStatusProcessing:
+		wireStatus = "pending"
+	case model.TransactionOrderStatusFailed:
+		wireStatus = "failed"
+	case model.TransactionOrderStatusSuccess:
+		wireStatus = "posted"
+	}
+	return &accountingv1.CreateTransactionResponse{
+		OrderNo:      svcResp.OrderNo,
+		Status:       wireStatus,
+		VoucherNo:    svcResp.VoucherNo,
+		ErrorMessage: svcResp.ErrorMessage,
+	}, nil
+}
+
+// eventCodeToBusinessType 把 split-payment event_code 字符串 (e.g. "charge.
+// succeeded", "refund.succeeded", "transfer.posted") 映射到 accounting 内部
+// BusinessType 枚举. 未识别归 TRANSFER, 保守不阻断 (transaction_order 主键不靠它).
+func eventCodeToBusinessType(event string) model.BusinessType {
+	switch {
+	case strings.HasPrefix(event, "charge."), strings.HasPrefix(event, "payment."), strings.HasPrefix(event, "topup."):
+		return model.BusinessTypePayment
+	case strings.HasPrefix(event, "refund."), strings.HasPrefix(event, "reversal."):
+		return model.BusinessTypeRefund
+	case strings.HasPrefix(event, "withdraw."), strings.HasPrefix(event, "payout."):
+		return model.BusinessTypeWithdraw
+	case strings.HasPrefix(event, "deposit."):
+		return model.BusinessTypeDeposit
+	case strings.HasPrefix(event, "commission."), strings.HasPrefix(event, "fee."):
+		return model.BusinessTypeCommission
+	default:
+		return model.BusinessTypeTransfer
+	}
 }

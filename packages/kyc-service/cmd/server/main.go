@@ -1,5 +1,5 @@
-// kyc-service server — MVP 全部 in-memory + stub provider。
-
+// kyc-service server — uber/fx 装配, 跟 order-core / accounting-system 同款风格.
+// MVP 全部 in-memory + stub provider.
 package main
 
 import (
@@ -8,26 +8,48 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 
 	"reconcile-system/packages/kyc-service/internal/domain"
 )
 
 func main() {
-	logger, _ := zap.NewProduction()
-	defer logger.Sync()
+	fx.New(
+		fx.Provide(
+			newLogger,
+			newMemoryRepo,
+			newStubProvider,
+			newHTTPServer,
+		),
+		fx.Invoke(startHTTPServer),
+		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
+			return &fxevent.ZapLogger{Logger: log.Named("fx")}
+		}),
+	).Run()
+}
+
+func newLogger(lc fx.Lifecycle) (*zap.Logger, error) {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, fmt.Errorf("zap build: %w", err)
+	}
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { _ = logger.Sync(); return nil }})
+	return logger, nil
+}
+
+func newStubProvider(log *zap.Logger) stubProvider {
+	return stubProvider{log: log}
+}
+
+func newHTTPServer(repo *memoryRepo, prov stubProvider, logger *zap.Logger) *http.Server {
 	port := envOr("KYC_HTTP_PORT", "8080")
-
-	repo := newMemoryRepo()
-	prov := stubProvider{log: logger}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/kyc/cases", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -126,33 +148,44 @@ func main() {
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 
-	srv := &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
+	return &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+}
 
-	// 后台 monthly review — 简化版每 6h 扫一次
-	go func() {
-		t := time.NewTicker(6 * time.Hour)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				n := repo.monitoringRescan()
-				if n > 0 {
-					logger.Info("KYC monitoring rescan", zap.Int("flagged", n))
+func startHTTPServer(lc fx.Lifecycle, srv *http.Server, repo *memoryRepo, log *zap.Logger) {
+	ctx, cancel := context.WithCancel(context.Background())
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			// 后台 monthly review — 简化版每 6h 扫一次
+			go func() {
+				t := time.NewTicker(6 * time.Hour)
+				defer t.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-t.C:
+						n := repo.monitoringRescan()
+						if n > 0 {
+							log.Info("KYC monitoring rescan", zap.Int("flagged", n))
+						}
+					}
 				}
-			}
-		}
-	}()
-
-	logger.Info("kyc-service listening", zap.String("addr", srv.Addr))
-	go srv.ListenAndServe()
-	<-ctx.Done()
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutCancel()
-	srv.Shutdown(shutCtx)
+			}()
+			log.Info("kyc-service listening", zap.String("addr", srv.Addr))
+			go func() {
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Error("listen failed", zap.Error(err))
+				}
+			}()
+			return nil
+		},
+		OnStop: func(stopCtx context.Context) error {
+			cancel()
+			shutCtx, shc := context.WithTimeout(stopCtx, 10*time.Second)
+			defer shc()
+			return srv.Shutdown(shutCtx)
+		},
+	})
 }
 
 // runVerification 异步：调第三方 → 跑 PEP/sanctions → 算 risk_score → 更新 case。

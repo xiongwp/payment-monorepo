@@ -4,14 +4,13 @@ import (
 	"context"
 	"time"
 
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
+	orderv1 "github.com/xiongwp/order-core/kitex_gen/order/v1"
 	"github.com/xiongwp/order-core/internal/domain"
 	"github.com/xiongwp/order-core/internal/service"
 )
 
 // LedgerServer adapts service.LedgerService onto the gRPC surface.
 type LedgerServer struct {
-	orderv1.UnimplementedLedgerServiceServer
 	svc service.LedgerService
 }
 

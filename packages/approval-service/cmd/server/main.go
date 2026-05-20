@@ -1,40 +1,70 @@
-// approval-service 入口.
+// approval-service 入口 — uber/fx 装配, 跟 order-core / accounting-system 同款风格.
 package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 
 	"reconcile-system/packages/approval-service/internal/httpapi"
 )
 
 func main() {
-	log, _ := zap.NewProduction()
-	defer log.Sync()
+	fx.New(
+		fx.Provide(newLogger, newAPI, newHTTPServer),
+		fx.Invoke(startHTTPServer),
+		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
+			return &fxevent.ZapLogger{Logger: log.Named("fx")}
+		}),
+	).Run()
+}
 
-	srv := httpapi.New(log)
+func newLogger(lc fx.Lifecycle) (*zap.Logger, error) {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, fmt.Errorf("zap build: %w", err)
+	}
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { _ = logger.Sync(); return nil }})
+	return logger, nil
+}
 
+func newAPI(log *zap.Logger) *httpapi.Server {
+	return httpapi.New(log)
+}
+
+func newHTTPServer(api *httpapi.Server) *http.Server {
 	addr := os.Getenv("APPROVAL_ADDR")
 	if addr == "" {
 		addr = ":8092"
 	}
-	httpSrv := &http.Server{Addr: addr, Handler: srv.Routes(), ReadHeaderTimeout: 5 * time.Second}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	go func() {
-		log.Info("approval-service listening", zap.String("addr", addr))
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal("server", zap.Error(err))
-		}
-	}()
-	<-ctx.Done()
-	shCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
-	defer c()
-	_ = httpSrv.Shutdown(shCtx)
+	return &http.Server{Addr: addr, Handler: api.Routes(), ReadHeaderTimeout: 5 * time.Second}
+}
+
+func startHTTPServer(lc fx.Lifecycle, srv *http.Server, log *zap.Logger) {
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			log.Info("approval-service listening", zap.String("addr", srv.Addr))
+			go func() {
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Error("server failed", zap.String("addr", srv.Addr), zap.Error(err))
+				}
+			}()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			shCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(shCtx); err != nil {
+				log.Warn("shutdown error", zap.Error(err))
+				return err
+			}
+			return nil
+		},
+	})
 }

@@ -8,11 +8,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/accounting-system/internal/domain/model"
-	"github.com/accounting-system/internal/idgen"
-	"github.com/accounting-system/internal/infrastructure/logging"
-	"github.com/accounting-system/internal/infrastructure/sharding"
-	"github.com/accounting-system/internal/repository"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/idgen"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/logging"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/sharding"
+	"github.com/xiongwp/accounting-system/internal/repository"
 	"go.uber.org/zap"
 )
 

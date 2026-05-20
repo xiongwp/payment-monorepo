@@ -1,0 +1,119 @@
+// split-payment AdminService — Money Flow Designer 后端 RPC.
+//
+// 客户端: payment-admin-web BFF (moneyflow handler) + reconcileGraphRules cron.
+//
+// 数据流:
+//
+//   designer SPA → admin BFF /api/moneyflow/* → split-payment.AdminService
+//                                              → 本地 MySQL (graphs)
+//                                              → accounting-system rule sync
+//
+// 注: spec_json / event_json / plan_json 都是 domain.GraphSpec / TriggerContext /
+// TranslatePlan 的 JSON 字面量 (proto bytes), 不在 proto 层展开 — 保持与 admin
+// HTTP 接口字段一致, 避免重复定义 50+ 嵌套 message.
+syntax = "proto3";
+
+package split_payment.v1;
+
+option go_package = "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1;split_paymentv1";
+
+// ─── messages ────────────────────────────────────────────────────────────────
+
+// Graph 完整图. spec_json 是 domain.GraphSpec 的 JSON.
+message Graph {
+  string key        = 1;
+  string name       = 2;
+  string version    = 3;   // semver, 改图升版本不影响历史 plan
+  string status     = 4;   // draft / active / archived
+  string owner_type = 5;   // platform / merchant
+  string owner_id   = 6;
+  bytes  spec_json  = 7;   // domain.GraphSpec JSON 字面量
+}
+
+// GraphSummary 列表用 — 不带 spec_json (减负载).
+message GraphSummary {
+  string key        = 1;
+  string name       = 2;
+  string version    = 3;
+  string status     = 4;
+  string owner_type = 5;
+  string owner_id   = 6;
+}
+
+// TxnVoucher TriggerEvent 每笔 transaction 的结果摘要.
+// status 取值与 accounting.TransactionStatus 对齐: 1=Processing / 2=Success / 3=Failed.
+message TxnVoucher {
+  string event_code = 1;
+  string order_no   = 2;
+  string voucher_no = 3;
+  int32  status     = 4;
+  string error      = 5;
+}
+
+// ─── RPC request / response ──────────────────────────────────────────────────
+
+message ListGraphsRequest {
+  // 可选 filter (status=active/draft/archived/all). 当前 Server 一律按 "all" 查.
+  string status = 1;
+}
+
+message ListGraphsResponse {
+  repeated GraphSummary items = 1;
+}
+
+message GetGraphRequest {
+  string key = 1;
+}
+
+message GetGraphResponse {
+  Graph graph = 1;
+}
+
+message SaveGraphRequest {
+  Graph graph = 1;
+}
+
+message SaveGraphResponse {
+  string key     = 1;
+  string version = 2;
+}
+
+message DryRunRequest {
+  Graph graph      = 1;
+  bytes event_json = 2;   // workflow.TriggerContext JSON
+}
+
+message DryRunResponse {
+  bytes  plan_json = 1;   // workflow.TranslatePlan JSON
+  string error     = 2;
+}
+
+message TriggerEventRequest {
+  string graph_key  = 1;
+  bytes  event_json = 2;
+}
+
+message TriggerEventResponse {
+  repeated TxnVoucher vouchers  = 1;
+  bytes               plan_json = 2;
+  string              error     = 3;
+}
+
+message DeleteGraphRequest {
+  string key = 1;
+}
+
+message DeleteGraphResponse {
+  bool ok = 1;
+}
+
+// ─── service ─────────────────────────────────────────────────────────────────
+
+service AdminService {
+  rpc ListGraphs   (ListGraphsRequest)   returns (ListGraphsResponse);
+  rpc GetGraph     (GetGraphRequest)     returns (GetGraphResponse);
+  rpc SaveGraph    (SaveGraphRequest)    returns (SaveGraphResponse);
+  rpc DeleteGraph  (DeleteGraphRequest)  returns (DeleteGraphResponse);
+  rpc DryRun       (DryRunRequest)       returns (DryRunResponse);
+  rpc TriggerEvent (TriggerEventRequest) returns (TriggerEventResponse);
+}

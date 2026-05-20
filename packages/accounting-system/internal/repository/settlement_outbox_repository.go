@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/accounting-system/internal/domain/model"
-	"github.com/accounting-system/internal/infrastructure/database"
-	"github.com/accounting-system/internal/infrastructure/sharding"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/database"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/sharding"
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 )

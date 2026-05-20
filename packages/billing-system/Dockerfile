@@ -1,8 +1,10 @@
 FROM golang:1.22-alpine AS builder
+RUN apk add --no-cache git ca-certificates
+ENV GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org
 WORKDIR /src
-COPY go.mod go.sum* ./
-RUN go mod download
 COPY . .
+# go.sum 历史漂移 (fx 等新增依赖未补), tidy 自动同步.
+RUN go mod tidy && go mod download
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
     -o /out/billing-system ./cmd/server
 

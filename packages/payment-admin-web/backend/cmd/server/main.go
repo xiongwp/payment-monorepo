@@ -10,64 +10,48 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/xiongwp/payment-util/mtls"
-	"github.com/xiongwp/payment-util/serviceregistry"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/keepalive"
+	"github.com/xiongwp/payment-util/kitexutil"
 
-	kmsv1 "github.com/xiongwp/kms-manage/api/proto/kms/v1"
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
-	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
-	riskv1 "github.com/xiongwp/risk-manage/api/proto/risk/v1"
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	"github.com/xiongwp/kms-manage/kitex_gen/kms/v1/kmsservice"
+	"github.com/xiongwp/order-core/kitex_gen/order/v1/chargeservice"
+	"github.com/xiongwp/order-core/kitex_gen/order/v1/disputeservice"
+	"github.com/xiongwp/order-core/kitex_gen/order/v1/ledgerservice"
+	orderauditservice "github.com/xiongwp/order-core/kitex_gen/order/v1/auditservice"
+	"github.com/xiongwp/order-core/kitex_gen/order/v1/paymentintentservice"
+	"github.com/xiongwp/order-core/kitex_gen/order/v1/refundservice"
+	"github.com/xiongwp/order-core/kitex_gen/order/v1/webhookdeliveryservice"
+	"github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
+	"github.com/xiongwp/risk-manage/kitex_gen/risk/v1/riskservice"
+	"github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/merchantsecretservice"
+	"github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/merchantservice"
+	umauditservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/auditservice"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 	"github.com/xiongwp/payment-admin-web/backend/internal/handler"
 )
 
 func main() {
-	orderAddr := envOrDefault("ORDER_GRPC_ADDR", "127.0.0.1:9091")
-	paymentCoreAddr := envOrDefault("PAYMENT_CORE_GRPC_ADDR", "127.0.0.1:9090")
-	kmsAddr := envOrDefault("KMS_GRPC_ADDR", "127.0.0.1:9290")
-	riskAddr := envOrDefault("RISK_GRPC_ADDR", "127.0.0.1:9490")
-	userMerchantAddr := envOrDefault("USER_MERCHANT_GRPC_ADDR", "127.0.0.1:9191")
 	port := envOrDefault("PORT", "9190")
-
-	// REGISTRY_ENDPOINTS（逗号分隔 etcd:2379,...）：BFF 通过 etcd resolver
-	// 拨号到所有副本 + round_robin LB；空就退回直连各 *_GRPC_ADDR 环境变量。
-	registry := splitCSV(os.Getenv("REGISTRY_ENDPOINTS"))
-
-	orderConn := mustDial(registry, "order-core", orderAddr)
-	paymentConn := mustDial(registry, "payment-core", paymentCoreAddr)
-	kmsConn := mustDial(registry, "kms-manage", kmsAddr)
-	riskConn := mustDial(registry, "risk-manage", riskAddr)
-	userMerchantConn := mustDial(registry, "user-merchant-core", userMerchantAddr)
-	defer orderConn.Close()
-	defer paymentConn.Close()
-	defer kmsConn.Close()
-	defer riskConn.Close()
-	defer userMerchantConn.Close()
-
+	// Kitex client host:port 由 kitexutil.DefaultHostPorts 统一解析:
+	// env <SVC>_GRPC_ADDR 优先, 否则用 docker 容器 DNS + 默认端口表.
 	deps := clients.Deps{
-		PI:              orderv1.NewPaymentIntentServiceClient(orderConn),
-		Charge:          orderv1.NewChargeServiceClient(orderConn),
-		Refund:          orderv1.NewRefundServiceClient(orderConn),
-		Merchant:        usermerchantv1.NewMerchantServiceClient(userMerchantConn),
-		Audit:           orderv1.NewAuditServiceClient(orderConn),
-		WebhookDelivery: orderv1.NewWebhookDeliveryServiceClient(orderConn),
-		Ledger:          orderv1.NewLedgerServiceClient(orderConn),
-		Dispute:         orderv1.NewDisputeServiceClient(orderConn),
-		MerchantSecret:    usermerchantv1.NewMerchantSecretServiceClient(userMerchantConn),
-		UserMerchantAudit: usermerchantv1.NewAuditServiceClient(userMerchantConn),
-		PCore:           paymentcorev1.NewPaymentCoreServiceClient(paymentConn),
-		KMS:             kmsv1.NewKMSServiceClient(kmsConn),
-		Risk:            riskv1.NewRiskServiceClient(riskConn),
+		PI:              kitexutil.MustKitexClient(paymentintentservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		Charge:          kitexutil.MustKitexClient(chargeservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		Refund:          kitexutil.MustKitexClient(refundservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		Merchant:        kitexutil.MustKitexClient(merchantservice.NewClient("user-merchant-core", kitexutil.DefaultClientOptions("user-merchant-core")...)),
+		Audit:           kitexutil.MustKitexClient(orderauditservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		WebhookDelivery: kitexutil.MustKitexClient(webhookdeliveryservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		Ledger:          kitexutil.MustKitexClient(ledgerservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		Dispute:         kitexutil.MustKitexClient(disputeservice.NewClient("order-core", kitexutil.DefaultClientOptions("order-core")...)),
+		MerchantSecret:    kitexutil.MustKitexClient(merchantsecretservice.NewClient("user-merchant-core", kitexutil.DefaultClientOptions("user-merchant-core")...)),
+		UserMerchantAudit: kitexutil.MustKitexClient(umauditservice.NewClient("user-merchant-core", kitexutil.DefaultClientOptions("user-merchant-core")...)),
+		PCore:           kitexutil.MustKitexClient(paymentcoreservice.NewClient("payment-core", kitexutil.DefaultClientOptions("payment-core")...)),
+		KMS:             kitexutil.MustKitexClient(kmsservice.NewClient("kms-manage", kitexutil.DefaultClientOptions("kms-manage")...)),
+		Risk:            kitexutil.MustKitexClient(riskservice.NewClient("risk-manage", kitexutil.DefaultClientOptions("risk-manage")...)),
 	}
 
 	orderH := handler.NewOrderHandler(deps)
@@ -265,11 +249,7 @@ func main() {
 		MaxHeaderBytes:    1 << 14, // 16 KB — admin doesn't need more
 	}
 	log.Printf("payment-admin-web backend listening on %s", addr)
-	log.Printf("  order-core         → %s", orderAddr)
-	log.Printf("  payment-core       → %s", paymentCoreAddr)
-	log.Printf("  kms-manage         → %s", kmsAddr)
-	log.Printf("  risk-manage        → %s", riskAddr)
-	log.Printf("  user-merchant-core → %s", userMerchantAddr)
+	log.Printf("  upstream Kitex services resolved via etcd registry / Kitex client builtins")
 
 	// wave M: graceful shutdown. SIGINT/SIGTERM initiates a 15s drain; in-flight
 	// requests finish or get canceled by context. Prevents K8s rollouts from
@@ -293,16 +273,7 @@ func main() {
 		if err := srv.Shutdown(ctx); err != nil {
 			log.Printf("graceful shutdown: %v", err)
 		}
-		// Close gRPC conns so downstream balancers stop routing to us.
-		for name, c := range map[string]*grpc.ClientConn{
-			"order-core": orderConn, "payment-core": paymentConn,
-			"kms-manage": kmsConn, "risk-manage": riskConn,
-			"user-merchant-core": userMerchantConn,
-		} {
-			if err := c.Close(); err != nil {
-				log.Printf("close %s: %v", name, err)
-			}
-		}
+		// Kitex client 无显式 Close — resolver / 连接由 Kitex runtime 管.
 		log.Printf("shutdown complete")
 	}
 }
@@ -325,134 +296,8 @@ func envInt(name string, def int) int {
 	return n
 }
 
-// mustDial 优先走 etcd resolver（多副本场景）；endpoints 空就退回直连 fallbackAddr。
-// fallbackAddr 用于本地 dev / 单实例部署 / etcd 故障兜底。
-//
-// 启动期还会做一道**注册探测**：REGISTRY_ENDPOINTS 配了，但 etcd 上 0 个
-// <service>/* 注册条目时，自动降级到 fallbackAddr 直连，避免出现 round_robin
-// balancer "no children to pick from" 的红错（kms-manage / risk-manage 等
-// 容器还没起 / 起来但还没注册就常踩这个）。等 service 真注册了，下次 BFF
-// 重启会自动切回 etcd resolver 模式（也可挂热重载，目前先 boot-time 兜底）。
-//
-// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
-// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
-// 生产必须有证书，否则 panic。
-func mustDial(registry []string, service, fallbackAddr string) *grpc.ClientConn {
-	// Load mTLS config; fail-fast in production if certs missing
-	mtlsCfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		log.Fatalf("mtls config: %v", err)
-	}
-
-	var creds grpc.DialOption
-	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
-		// Dev/test mode: no mTLS certs configured
-		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else {
-		// mTLS mode: load credentials
-		tlsCreds, cerr := mtlsCfg.ClientCredentials()
-		if cerr != nil {
-			log.Fatalf("failed to load mTLS credentials for %s: %v", service, cerr)
-		}
-		creds = grpc.WithTransportCredentials(tlsCreds)
-	}
-
-	keepalive := grpc.WithKeepaliveParams(keepalive.ClientParameters{
-		Time:                30 * time.Second,
-		Timeout:             10 * time.Second,
-		PermitWithoutStream: true,
-	})
-
-	if len(registry) > 0 {
-		// 探测 etcd 上有没有 <service>/* 注册条目；2s 超时不挡 BFF 启动。
-		registered, err := serviceregistry.HasRegisteredInstances(registry, service, 2*time.Second)
-		if err != nil {
-			log.Printf("[bff] WARN probe etcd for %q failed: %v；继续按 fallback 直连", service, err)
-		}
-		if !registered {
-			log.Printf("[bff] WARN %q etcd 无注册条目，降级直连 %s（待该服务起来并注册到 etcd 后重启 BFF 会自动切回 etcd resolver）",
-				service, fallbackAddr)
-			target := fallbackAddr
-			if !strings.Contains(target, "://") {
-				target = "passthrough:///" + target
-			}
-			conn, derr := grpc.NewClient(target,
-				creds,
-				keepalive,
-				grpc.WithDefaultServiceConfig(`{
-					"loadBalancingConfig":[{"round_robin":{}}],
-					"healthCheckConfig":{"serviceName":""},
-					"methodConfig":[{
-						"name":[{}],
-						"retryPolicy":{
-							"maxAttempts":3,
-							"initialBackoff":"0.1s",
-							"maxBackoff":"1s",
-							"backoffMultiplier":2,
-							"retryableStatusCodes":["UNAVAILABLE"]
-						}
-					}]
-				}`),
-			)
-			if derr != nil {
-				log.Fatalf("dial %s fallback (%s): %v", service, target, derr)
-			}
-			return conn
-		}
-		conn, err := serviceregistry.DialFromEndpoints(registry, service,
-			creds,
-			keepalive,
-		)
-		if err != nil {
-			log.Fatalf("dial %s via etcd %v: %v", service, registry, err)
-		}
-		log.Printf("[bff] dialed %s via etcd %v", service, registry)
-		return conn
-	}
-	// dns 显式前缀触发 gRPC 内置 DNS resolver；不写默认是 passthrough（不 re-resolve），
-	// 后端容器重启 / 副本切换 / 启动顺序错时会卡在 "no children to pick from"。
-	target := fallbackAddr
-	if !strings.Contains(target, "://") {
-		target = "passthrough:///" + target
-	}
-	conn, err := grpc.NewClient(target,
-		creds,
-		keepalive,
-		// round_robin 多副本均衡 + 30s DNS re-resolve (resolveNowFreq is internal,
-		// 但 idle 连接重建会触发 re-resolve)。配 healthCheck 让 unhealthy backend 自动剔除。
-		grpc.WithDefaultServiceConfig(`{
-			"loadBalancingConfig":[{"round_robin":{}}],
-			"healthCheckConfig":{"serviceName":""},
-			"methodConfig":[{
-				"name":[{}],
-				"retryPolicy":{
-					"maxAttempts":3,
-					"initialBackoff":"0.1s",
-					"maxBackoff":"1s",
-					"backoffMultiplier":2,
-					"retryableStatusCodes":["UNAVAILABLE"]
-				}
-			}]
-		}`),
-	)
-	if err != nil {
-		log.Fatalf("dial %s (%s): %v", service, target, err)
-	}
-	return conn
-}
-
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	out := make([]string, 0, 4)
-	for _, p := range strings.Split(s, ",") {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
+// mustDial / splitCSV 已删 — Kitex 切换后 *_GRPC_ADDR + REGISTRY_ENDPOINTS 环境变量
+// 由 Kitex client 自己读取.
 
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {

@@ -1,0 +1,118 @@
+// split-payment AdminService — Kitex Protobuf IDL.
+//
+// 反向从 internal/grpcsvc/admin_service.go (手写 grpc service code, 无 .proto)
+// 提取出来. payment-admin-web BFF 通过这个端口调 Graph CRUD / DryRun / TriggerEvent.
+
+syntax = "proto3";
+
+package split_payment.v1;
+
+option go_package = "reconcile-system/packages/split-payment/kitex_gen/split_payment/v1;splitpaymentv1";
+
+service AdminService {
+  rpc ListGraphs(ListGraphsRequest) returns (ListGraphsResponse);
+  rpc GetGraph(GetGraphRequest) returns (GetGraphResponse);
+  rpc SaveGraph(SaveGraphRequest) returns (SaveGraphResponse);
+  rpc DeleteGraph(DeleteGraphRequest) returns (DeleteGraphResponse);
+  rpc DryRun(DryRunRequest) returns (DryRunResponse);
+  rpc TriggerEvent(TriggerEventRequest) returns (TriggerEventResponse);
+}
+
+// ─── Graph 模型 ─────────────────────────────────────────────────────
+
+// Graph: Money Flow 编排图 (节点/边/规则).
+//
+// 注: payload 用 string JSON (跟历史一致), 让 admin web 直接复制 JSON 进来 / 显示.
+// 后续可以拆 typed Node/Edge messages, 但当前优先保持 wire 兼容.
+message Graph {
+  string key = 1;
+  string name = 2;
+  string description = 3;
+  string status = 4; // draft / active / archived
+  int64 version = 5;
+  string payload_json = 6; // 序列化的 nodes/edges/rules
+  string updated_by = 7;
+  string updated_at = 8;
+  string created_at = 9;
+}
+
+// ─── ListGraphs ─────────────────────────────────────────────────────
+
+message ListGraphsRequest {
+  string status_filter = 1; // draft / active / archived / "" = all
+  int32 limit = 2;          // 0 → 100, max 500
+  string cursor = 3;        // 下一页 cursor
+}
+
+message ListGraphsResponse {
+  repeated Graph graphs = 1;
+  string next_cursor = 2;
+}
+
+// ─── GetGraph / SaveGraph / DeleteGraph ─────────────────────────────
+
+message GetGraphRequest {
+  string key = 1;
+  int64 version = 2; // 0 → active version
+}
+message GetGraphResponse {
+  Graph graph = 1;
+}
+
+message SaveGraphRequest {
+  Graph graph = 1;
+  string actor = 2;
+  string change_reason = 3;
+}
+message SaveGraphResponse {
+  int64 version = 1;
+  // saga 派生的规则数 (跟 accounting UpsertRules 同步的条数)
+  int32 rules_synced = 2;
+}
+
+message DeleteGraphRequest {
+  string key = 1;
+  string actor = 2;
+  string reason = 3;
+}
+message DeleteGraphResponse {
+  bool ok = 1;
+}
+
+// ─── DryRun (predicted moneyflow result, 不真落账) ───────────────────
+
+message DryRunRequest {
+  string graph_key = 1;
+  // 事件 payload (业务上下文): JSON, 由 admin web 自己拼.
+  string event_json = 2;
+}
+
+message DryRunResponse {
+  // 预演结果: 派生的 transfer/fee/payout 列表 (序列化 JSON).
+  string preview_json = 1;
+  // 命中规则数 / 派生 transfer 数 (展示用).
+  int32 hit_rule_count = 2;
+  int32 transfer_count = 3;
+}
+
+// ─── TriggerEvent (真落账, 走 accounting CreateTransaction) ──────────
+
+message TriggerEventRequest {
+  string graph_key = 1;
+  string idempotency_key = 2; // 防重放
+  string event_type = 3;
+  string event_payload_json = 4;
+  string actor = 5;
+}
+
+message TriggerEventResponse {
+  string run_id = 1;
+  repeated TxnVoucher vouchers = 2;
+  string saga_id = 3; // optional, 命中 saga 路径时填
+}
+
+message TxnVoucher {
+  string voucher_no = 1;
+  string status = 2;       // posted / pending / failed
+  string error_message = 3; // 仅 failed 时填
+}

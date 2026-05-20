@@ -1,30 +1,24 @@
-// biz-admin-web — 7 服务的统一 admin 控制台（CORS reverse proxy + 单页 HTML）。
+// biz-admin-web — 7 服务的统一 admin 控制台 (CORS reverse proxy + 单页 HTML).
 //
-// 浏览器只跟 :18080 通信，避免 CORS 在前端折腾。
-// 后端按路径前缀 proxy 到对应业务 service:
-//   /api/billing/*      → billing-system:8080
-//   /api/gateway/*      → payment-gateway:8080
-//   /api/dispute/*      → dispute-service:8080
-//   /api/webhook/*      → merchant-webhook:8080
-//   /api/refund/*       → refund-engine:8080
-//   /api/kyc/*          → kyc-service:8080
-//   /api/audit/*        → audit-log:8080
-//   /                   → embedded admin.html (Tailwind + Alpine.js CDN)
-
+// uber/fx 装配, 跟 order-core / accounting-system 同款风格.
+//
+// 浏览器只跟 :18080 通信, 避免 CORS 在前端折腾.
+// 后端按路径前缀 proxy 到对应业务 service.
 package main
 
 import (
 	"context"
 	_ "embed"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 )
 
@@ -43,11 +37,30 @@ type backend struct {
 }
 
 func main() {
-	logger, _ := zap.NewProduction()
-	defer logger.Sync()
-	port := envOr("BIZ_ADMIN_HTTP_PORT", "8080")
+	fx.New(
+		fx.Provide(
+			newLogger,
+			newBackends,
+			newHTTPServer,
+		),
+		fx.Invoke(startHTTPServer),
+		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
+			return &fxevent.ZapLogger{Logger: log.Named("fx")}
+		}),
+	).Run()
+}
 
-	backends := []backend{
+func newLogger(lc fx.Lifecycle) (*zap.Logger, error) {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, fmt.Errorf("zap build: %w", err)
+	}
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { _ = logger.Sync(); return nil }})
+	return logger, nil
+}
+
+func newBackends() []backend {
+	return []backend{
 		{"/api/billing/", envOr("BILLING_URL", "http://billing-system:8080")},
 		{"/api/gateway/", envOr("GATEWAY_URL", "http://payment-gateway:8080")},
 		{"/api/dispute/", envOr("DISPUTE_URL", "http://dispute-service:8080")},
@@ -56,22 +69,23 @@ func main() {
 		{"/api/kyc/", envOr("KYC_URL", "http://kyc-service:8080")},
 		{"/api/audit/", envOr("AUDIT_URL", "http://audit-log:8080")},
 		{"/api/recon/", envOr("RECON_URL", "http://reconplatform-admin:8080")},
-		// P0 4 个新服务
 		{"/api/aml/", envOr("AML_URL", "http://aml-screening:8088")},
 		{"/api/vault/", envOr("VAULT_URL", "http://tokenization-vault:8089")},
 		{"/api/tax/", envOr("TAX_URL", "http://tax-reporting:8090")},
 		{"/api/dr/", envOr("DR_URL", "http://data-rights:8091")},
 		{"/api/approval/", envOr("APPROVAL_URL", "http://approval-service:8092")},
 	}
+}
 
+func newHTTPServer(backends []backend, log *zap.Logger) *http.Server {
 	mux := http.NewServeMux()
 	for _, b := range backends {
 		b := b
 		mux.HandleFunc(b.prefix, func(w http.ResponseWriter, r *http.Request) {
-			proxy(w, r, b.prefix, b.target, logger)
+			proxy(w, r, b.prefix, b.target, log)
 		})
 	}
-	mux.HandleFunc("/health/all", healthAll(backends, logger))
+	mux.HandleFunc("/health/all", healthAll(backends, log))
 	mux.HandleFunc("/p0", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(p0HTML)
@@ -90,18 +104,30 @@ func main() {
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 
-	srv := &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-	logger.Info("biz-admin-web listening", zap.String("addr", srv.Addr))
-	go srv.ListenAndServe()
-	<-ctx.Done()
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutCancel()
-	srv.Shutdown(shutCtx)
+	port := envOr("BIZ_ADMIN_HTTP_PORT", "8080")
+	return &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 }
 
-// proxy 简单反代 — 把 /api/<svc>/foo 改写成 target/<foo>。
+func startHTTPServer(lc fx.Lifecycle, srv *http.Server, log *zap.Logger) {
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			log.Info("biz-admin-web listening", zap.String("addr", srv.Addr))
+			go func() {
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Error("server failed", zap.Error(err))
+				}
+			}()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			shutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			return srv.Shutdown(shutCtx)
+		},
+	})
+}
+
+// proxy 简单反代 — 把 /api/<svc>/foo 改写成 target/<foo>.
 func proxy(w http.ResponseWriter, r *http.Request, prefix, target string, log *zap.Logger) {
 	upstreamPath := "/" + strings.TrimPrefix(r.URL.Path, prefix)
 	u, _ := url.Parse(target + upstreamPath)
@@ -136,7 +162,6 @@ func proxy(w http.ResponseWriter, r *http.Request, prefix, target string, log *z
 	io.Copy(w, resp.Body)
 }
 
-// healthAll 一次性 probe 所有后端 — 给 admin 顶部状态条用。
 func healthAll(backends []backend, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		client := &http.Client{Timeout: 2 * time.Second}

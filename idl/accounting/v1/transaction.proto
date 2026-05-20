@@ -1,0 +1,83 @@
+// TransactionService — reverse-written from internal/grpc/transaction_service.go.
+//
+// 跟 AccountingService 的 DoubleEntryBooking 区分: 这个是 split-payment / order-core
+// 等业务侧调用的 "高级落账" 接口, 内部基于 transaction_rules 表选 debit/credit subject.
+//
+// SP-AC-3: split-payment 把派生的 TransactionRequest 推过来, accounting 自己 unfold
+// 成双分录 + journal entry. 业务侧不再关心会计科目映射.
+
+syntax = "proto3";
+
+package accounting.v1;
+
+option go_package = "reconcile-system/packages/accounting-system/kitex_gen/accounting/v1;accountingv1";
+
+service TransactionService {
+  // CreateTransaction — split-payment 主入口
+  rpc CreateTransaction(CreateTransactionRequest) returns (CreateTransactionResponse);
+
+  // ListAccountTypes — admin UI picker 用 (Designer 选 Node accounting type)
+  rpc ListAccountTypes(ListAccountTypesRequest) returns (ListAccountTypesResponse);
+
+  // ListTransactionRules — admin UI 列表 (transaction-rules 管理页)
+  rpc ListTransactionRules(ListTransactionRulesRequest) returns (ListTransactionRulesResponse);
+}
+
+message CreateTransactionRequest {
+  string business_no = 1;        // 业务 id (e.g. pi_id / refund_id / payout_id)
+  string product_code = 2;
+  string event_code = 3;
+  string from_account_type = 4;
+  string to_account_type = 5;
+  string from_subject_id = 6;
+  string to_subject_id = 7;
+  int64 amount_minor = 8;
+  string currency = 9;
+  string operator = 10;
+  string idempotency_key = 11;
+  string remark = 12;
+}
+
+message CreateTransactionResponse {
+  int32 code = 1;
+  string message = 2;
+  string voucher_no = 3;
+  string status = 4; // posted / pending / failed
+  string error_message = 5;
+}
+
+message ListAccountTypesRequest {
+  string product_filter = 1;
+}
+message AccountType {
+  string code = 1;
+  string name = 2;
+  string category = 3; // ASSET / LIABILITY / EQUITY / INCOME / EXPENSE
+  string description = 4;
+}
+message ListAccountTypesResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated AccountType items = 3;
+}
+
+message ListTransactionRulesRequest {
+  string product_filter = 1;
+  string event_filter = 2;
+}
+message TransactionRule {
+  string product_code = 1;
+  string event_code = 2;
+  string hash_key = 3;
+  string debit_subject_id = 4;
+  string credit_subject_id = 5;
+  string from_direction = 6;
+  string to_direction = 7;
+  int32 transaction_type = 8;
+  string bookkeeping_mode = 9;
+}
+message ListTransactionRulesResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated TransactionRule items = 3;
+}

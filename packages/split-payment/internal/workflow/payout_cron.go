@@ -28,7 +28,7 @@ import (
 	"context"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/domain"
 
 	"go.uber.org/zap"
 )

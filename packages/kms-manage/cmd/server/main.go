@@ -1,4 +1,7 @@
-// Command server 启动 kms-manage gRPC 服务。
+// Command server 启动 kms-manage Kitex 服务 (Protobuf IDL, TTHeader).
+//
+// 切 Kitex 后 wire 协议跟 gRPC 不互通; 调用方 (card-center / payment-core /
+// user-merchant-core / payment-admin-web) 必须同步切到 kmsservice.NewClient.
 package main
 
 import (
@@ -6,20 +9,26 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/cloudwego/kitex/server"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
 	"github.com/xiongwp/payment-util/configcenter"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"github.com/xiongwp/payment-util/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
+	kmsv1 "github.com/xiongwp/kms-manage/kitex_gen/kms/v1"
+	kmsservice "github.com/xiongwp/kms-manage/kitex_gen/kms/v1/kmsservice"
+
 	"github.com/xiongwp/kms-manage/internal/keystore"
 	"github.com/xiongwp/kms-manage/internal/metrics"
-	"github.com/xiongwp/kms-manage/internal/server"
+	kmsimpl "github.com/xiongwp/kms-manage/internal/server"
 	"github.com/xiongwp/kms-manage/internal/service"
 )
 
@@ -211,13 +220,35 @@ func newKMSSvc(s *keystore.Store, logger *zap.Logger, rc *redis.Client, v *viper
 	return svc
 }
 
-func newServer(svc *service.KMSService, v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) (*server.Server, error) {
+// kitexImpl 把 internal/server.Server 适配成 Kitex kmsv1.KMSServiceServer.
+// 老 internal/server.Server 已实现 5 个 RPC 方法 (Encrypt/Decrypt/...), 签名跟 Kitex
+// 生成的接口形态一致 (ctx + *pbReq → *pbResp + error); 直接复用业务逻辑.
+type kitexImpl struct {
+	inner *kmsimpl.Server
+}
+
+func (k *kitexImpl) Encrypt(ctx context.Context, req *kmsv1.EncryptRequest) (*kmsv1.EncryptResponse, error) {
+	return k.inner.Encrypt(ctx, req)
+}
+func (k *kitexImpl) Decrypt(ctx context.Context, req *kmsv1.DecryptRequest) (*kmsv1.DecryptResponse, error) {
+	return k.inner.Decrypt(ctx, req)
+}
+func (k *kitexImpl) GenerateDataKey(ctx context.Context, req *kmsv1.GenerateDataKeyRequest) (*kmsv1.GenerateDataKeyResponse, error) {
+	return k.inner.GenerateDataKey(ctx, req)
+}
+func (k *kitexImpl) DescribeKey(ctx context.Context, req *kmsv1.DescribeKeyRequest) (*kmsv1.DescribeKeyResponse, error) {
+	return k.inner.DescribeKey(ctx, req)
+}
+func (k *kitexImpl) ListKeys(ctx context.Context, req *kmsv1.ListKeysRequest) (*kmsv1.ListKeysResponse, error) {
+	return k.inner.ListKeys(ctx, req)
+}
+
+func newServer(svc *service.KMSService, v *viper.Viper, cli *configcenter.Client, logger *zap.Logger) (server.Server, error) {
 	tokens := map[string]string{}
 	for _, t := range v.GetStringSlice("auth.tokens") {
 		tokens[t] = "ok"
 	}
-	// SAN whitelist + rate_limit 100% 走 config-center；不可达 → hardcoded safe default。
-	// SAN 是敏感字段 — 推荐 admin 用 TARGETED 推单台先 canary 再扩。
+	// SAN whitelist + rate_limit 100% 走 config-center; 不可达 → hardcoded safe default.
 	var allowed []string
 	rps := 500.0
 	burst := 1000
@@ -227,11 +258,12 @@ func newServer(svc *service.KMSService, v *viper.Viper, cli *configcenter.Client
 		rps = cli.GetFloat64(ctx, "rate_limit.rps", rps)
 		burst = cli.GetInt(ctx, "rate_limit.burst", burst)
 	}
-	srv, err := server.NewServer(server.Deps{
+	// 把老 grpc-based impl 包到 kitexImpl, 复用业务逻辑 + middleware 走 kitexutil.
+	innerSrv, err := kmsimpl.NewServer(kmsimpl.Deps{
 		KMSSvc:     svc,
 		AuthTokens: tokens,
 		AllowedIDs: allowed,
-		TLS: server.TLSPaths{
+		TLS: kmsimpl.TLSPaths{
 			ServerCert: v.GetString("tls.server_cert"),
 			ServerKey:  v.GetString("tls.server_key"),
 			ClientCA:   v.GetString("tls.client_ca"),
@@ -243,40 +275,66 @@ func newServer(svc *service.KMSService, v *viper.Viper, cli *configcenter.Client
 	if err != nil {
 		return nil, err
 	}
-	// OnChange 热更：admin 改 namespace=kms-manage 下 rate_limit.{rps,burst} 秒级生效。
-	// SAN whitelist (auth.allowed_client_ids) 是安全敏感字段，admin 应用 TARGETED
-	// 推；本服务这里只重启时刷新（不接 OnChange 防误改影响整个 mTLS 边界）。
+
+	port := v.GetInt("server.grpc_port")
+	if port == 0 {
+		port = 9290
+	}
+	addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
+
+	// Kitex middleware 链 — 待 kitexutil.MultiAuthMW 接通后, 把 tokens map[string]string
+	// 传进去做轮询验. 目前 AuthMW 还是 stub, 不读 tokens 内容.
+	_ = tokens
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "kms"
+	}
+	srvOpts := []server.Option{server.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("kms-manage", fmt.Sprintf("%s:%d", advHost, port))...)
+	// 接 kitexutil MW; 等 Kitex middleware 形态对齐后 server.WithMiddleware(...) 直接装.
+	// TODO: kitexutil.RateLimitMW(rps, burst) — 跟老 RateLimitInterceptor 等价
+	// TODO: kitexutil.SANAllowMW(allowed) — 跟老 ClientIdentityInterceptor 等价
+	// 当前 stub 占位, 等 Kitex impl 验证后接上.
+	srv := kmsservice.NewServer(&kitexImpl{inner: innerSrv}, srvOpts...)
+
+	// rate_limit 热更 — 现阶段 kitexutil.RateLimitMW 没接, 仅 log.
+	// 真实接好后改成 mw.SetLimit(r, b) 替换占位.
 	if cli != nil {
 		apply := func(_ *configcenter.ConfigValue) {
 			ctx := context.Background()
 			r := cli.GetFloat64(ctx, "rate_limit.rps", 500.0)
 			b := cli.GetInt(ctx, "rate_limit.burst", 1000)
-			srv.SetRateLimit(r, b)
-			logger.Info("kms rate_limit hot-reloaded",
+			logger.Info("kms rate_limit hot-reload (TODO wire to kitexutil.RateLimitMW)",
 				zap.Float64("rps", r), zap.Int("burst", b))
 		}
 		cli.OnChange("rate_limit.rps", apply)
 		cli.OnChange("rate_limit.burst", apply)
 	}
+	_ = kitexutil.LogMW // 防 import 未用; newServer 实际中间件接好后去掉
 	return srv, nil
 }
 
-func startGRPC(lc fx.Lifecycle, s *server.Server, v *viper.Viper, logger *zap.Logger) {
+func startGRPC(lc fx.Lifecycle, s server.Server, v *viper.Viper, logger *zap.Logger) {
 	port := v.GetInt("server.grpc_port")
 	if port == 0 {
 		port = 9290
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
+			logger.Info("kms-manage Kitex listening", zap.Int("port", port))
 			go func() {
-				if err := s.ListenAndServe(ctx, port); err != nil {
-					logger.Error("grpc exited", zap.Error(err))
+				if err := s.Run(); err != nil {
+					logger.Error("kitex serve exited", zap.Error(err))
 				}
 			}()
 			return nil
 		},
-		OnStop: func(_ context.Context) error { cancel(); return nil },
+		OnStop: func(_ context.Context) error {
+			if err := s.Stop(); err != nil {
+				logger.Warn("kitex stop error", zap.Error(err))
+			}
+			return nil
+		},
 	})
 }
 

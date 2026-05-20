@@ -11,16 +11,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"html/template"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
+	userservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/status"
 )
 
 // CookieName JWT cookie 名。
@@ -30,7 +29,7 @@ const CookieName = "uauth"
 type Handler struct {
 	// pages 每页一棵独立模板树（layout + 该 page）；别名 see loadTemplates。
 	pages  map[string]*template.Template
-	uc     usermerchantv1.UserServiceClient
+	uc     userservice.Client
 	logger *zap.Logger
 	// CookieDomain / CookieSecure 由 main.go 按部署环境配置。
 	CookieDomain string
@@ -42,7 +41,7 @@ type Handler struct {
 }
 
 // NewHandler 装配模板 + gRPC client。
-func NewHandler(uc usermerchantv1.UserServiceClient, logger *zap.Logger) (*Handler, error) {
+func NewHandler(uc userservice.Client, logger *zap.Logger) (*Handler, error) {
 	pages, err := loadTemplates()
 	if err != nil {
 		return nil, err
@@ -371,17 +370,11 @@ func emailDomainOf(email string) string {
 	return ""
 }
 
+// grpcMsg Kitex 切换后 status.FromError 不再适用; opaque error 直接返 err.Error().
+// 老 gRPC 版本会从 status.Message() 抽取干净的 user-facing 文案, Kitex 暂用全 err.
 func grpcMsg(err error) string {
 	if err == nil {
 		return ""
-	}
-	if st, ok := status.FromError(err); ok {
-		// 不暴露内部 detail；只返回 message
-		return st.Message()
-	}
-	var ge interface{ GRPCStatus() *status.Status }
-	if errors.As(err, &ge) {
-		return ge.GRPCStatus().Message()
 	}
 	return err.Error()
 }

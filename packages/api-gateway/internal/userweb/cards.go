@@ -29,7 +29,7 @@ import (
 
 	"go.uber.org/zap"
 
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
 )
 
 // CardServiceClient 抽象 user-merchant-core 暴露的 user_card 子服务。

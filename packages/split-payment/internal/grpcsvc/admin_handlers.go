@@ -11,12 +11,12 @@ import (
 	"fmt"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/domain"
-	"reconcile-system/packages/split-payment/internal/observability"
-	"reconcile-system/packages/split-payment/internal/workflow"
+	"github.com/bytedance/gopkg/cloud/metainfo"
+	"github.com/xiongwp/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/observability"
+	"github.com/xiongwp/split-payment/internal/workflow"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc/metadata"
 )
 
 // GraphRepo 跟 adminhttp.GraphRepo 同形态接口, 复制一份避免 internal 包循环 import.
@@ -24,6 +24,9 @@ type GraphRepo interface {
 	Save(ctx context.Context, g *domain.Graph) (int64, error)
 	GetByKey(ctx context.Context, key string) (*domain.Graph, error)
 	List(ctx context.Context, status string) ([]*domain.Graph, error)
+	// Delete soft-delete: 把 graph 状态置为 "archived" (不物理删, 保留 run_plan
+	// 历史关联). 如果 key 不存在返 nil (idempotent).
+	Delete(ctx context.Context, key string) error
 }
 
 // AccountingMetaCaller — TriggerEvent 用来调 accounting.CreateTransaction 真落账.
@@ -69,9 +72,9 @@ type AccountingOrderResetter interface {
 	ResetOrder(ctx context.Context, orderNo, businessNo string, force bool) error
 }
 
-// Server 实现 AdminServiceServer.
+// Server 实现 Kitex AdminService (kitex_gen/.../adminservice.AdminService).
+// 老 grpc UnimplementedAdminServiceServer embed 已删 (Kitex 不需要).
 type Server struct {
-	UnimplementedAdminServiceServer
 	Graphs     GraphRepo
 	Accounting AccountingMetaCaller    // nil → TriggerEvent 返错; DryRun 不受影响
 	RuleSync   AccountingRuleSyncer    // nil → SaveGraph 跳过 rule 同步
@@ -93,10 +96,7 @@ func (s *Server) ListGraphs(ctx context.Context, _ *ListGraphsRequest) (*ListGra
 	}
 	items := make([]*GraphSummary, 0, len(list))
 	for _, g := range list {
-		items = append(items, &GraphSummary{
-			Key: g.Key, Name: g.Name, Version: g.Version, Status: g.Status,
-			OwnerType: g.OwnerType, OwnerID: g.OwnerID,
-		})
+		items = append(items, graphToWireSummary(g))
 	}
 	return &ListGraphsResponse{Items: items}, nil
 }
@@ -117,11 +117,7 @@ func (s *Server) GetGraph(ctx context.Context, req *GetGraphRequest) (*GetGraphR
 	if err != nil {
 		return nil, fmt.Errorf("marshal spec: %w", err)
 	}
-	return &GetGraphResponse{Graph: &Graph{
-		Key: g.Key, Name: g.Name, Version: g.Version, Status: g.Status,
-		OwnerType: g.OwnerType, OwnerID: g.OwnerID,
-		SpecJson: specBytes,
-	}}, nil
+	return &GetGraphResponse{Graph: graphToWire(g, specBytes)}, nil
 }
 
 // SaveGraph — upsert.
@@ -152,17 +148,35 @@ func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGra
 		outcome = "invalid"
 		return nil, errors.New("graph.key required")
 	}
-	g := &domain.Graph{
-		Key:       req.Graph.Key,
-		Name:      req.Graph.Name,
-		Version:   firstNonEmpty(req.Graph.Version, "1.0.0"),
-		Status:    firstNonEmpty(req.Graph.Status, "draft"),
-		OwnerType: req.Graph.OwnerType,
-		OwnerID:   req.Graph.OwnerID,
+	g := graphFromWire(req.Graph)
+	// SaveGraph 入参允许 Version/Status 留空 → 给默认; 这两个是上层 saga 行为,
+	// 不放进 graphFromWire (那是纯结构转换).
+	if g.Version == "" {
+		g.Version = "1.0.0"
+	}
+	if g.Status == "" {
+		g.Status = "draft"
 	}
 	if len(req.Graph.SpecJson) > 0 {
 		if err := json.Unmarshal(req.Graph.SpecJson, &g.Spec); err != nil {
 			return nil, fmt.Errorf("decode spec_json: %w", err)
+		}
+	}
+
+	// P2-STRAT-1: 入口拒绝未实现的 charge / reversal 策略,
+	// 防止商户配 direct/destination 或 fixed_from_platform 时引擎悄悄降级为
+	// separate/proportional 改资金路径. 真等 Phase 4 接通后改 domain.Validate* 放行.
+	if _, warn, csErr := domain.ValidateChargeStrategy(g.Spec.ChargeStrategy); csErr != nil {
+		outcome = "invalid_charge_strategy"
+		return nil, fmt.Errorf("graph %q: %w", g.Key, csErr)
+	} else if warn != "" && s.Log != nil {
+		s.Log.Warn("SaveGraph: charge_strategy warn",
+			zap.String("graph_key", g.Key), zap.String("strategy", g.Spec.ChargeStrategy), zap.String("warn", warn))
+	}
+	if g.Spec.Reversal != nil {
+		if rsErr := domain.ValidateReversalStrategy(g.Spec.Reversal.Strategy); rsErr != nil {
+			outcome = "invalid_reversal_strategy"
+			return nil, fmt.Errorf("graph %q: %w", g.Key, rsErr)
 		}
 	}
 
@@ -213,6 +227,27 @@ func (s *Server) SaveGraph(ctx context.Context, req *SaveGraphRequest) (*SaveGra
 		return nil, err
 	}
 	return &SaveGraphResponse{Key: g.Key, Version: g.Version}, nil
+}
+
+// DeleteGraph soft-delete: 把 graph 状态置 archived, 不物理删 (保留 run_plan
+// 历史关联). key 不存在 → 仍返 Ok=true (idempotent).
+//
+// 注意: 这里只删 graph 自己. accounting 侧的 transaction_rule 不自动清, 因为
+// rule 可能被其它 graph 共享; 真要清理走 admin /admin/transaction-rules DELETE.
+func (s *Server) DeleteGraph(ctx context.Context, req *DeleteGraphRequest) (*DeleteGraphResponse, error) {
+	if req == nil || req.Key == "" {
+		return nil, errors.New("key required")
+	}
+	if err := s.Graphs.Delete(ctx, req.Key); err != nil {
+		if s.Log != nil {
+			s.Log.Warn("DeleteGraph failed", zap.String("key", req.Key), zap.Error(err))
+		}
+		return &DeleteGraphResponse{Ok: false}, err
+	}
+	if s.Log != nil {
+		s.Log.Info("DeleteGraph: archived", zap.String("key", req.Key))
+	}
+	return &DeleteGraphResponse{Ok: true}, nil
 }
 
 // DeriveRulesFromGraph 公开包装, 启动期 reconcileGraphRules 用.
@@ -440,16 +475,23 @@ func firstNonEmpty(a, b string) string {
 //   - x-actor 优先 (BFF 应该传入业务侧用户身份)
 //   - x-admin-token 兜底, 不记原文 (脱敏: 只记前 8 字节 hash 用)
 //   - 都没有 → "unknown"
+// extractActor 从 Kitex 传输元数据里取 actor 标识 (audit log + 资金审计用).
+//
+//   - x-actor       优先 (BFF 把业务侧用户身份显式塞进来)
+//   - x-admin-token 兜底 (脱敏: 只记前 8 字节, 不落原文)
+//   - 都没有        "unknown" (不强求, 但 audit 表能区分链路)
+//
+// 走 metainfo.GetValue 是 Kitex 跨服务传 header 的标准 API; client 端用
+// metainfo.WithValue / metainfo.WithPersistentValue 注入, 走 TTHeader / gRPC
+// metadata 透传 (Kitex 自动处理).
 func extractActor(ctx context.Context) string {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return "unknown"
+	if v, ok := metainfo.GetValue(ctx, "x-actor"); ok && v != "" {
+		return v
 	}
-	if v := md.Get("x-actor"); len(v) > 0 && v[0] != "" {
-		return v[0]
+	if v, ok := metainfo.GetPersistentValue(ctx, "x-actor"); ok && v != "" {
+		return v
 	}
-	if v := md.Get("x-admin-token"); len(v) > 0 && v[0] != "" {
-		t := v[0]
+	if t, ok := metainfo.GetValue(ctx, "x-admin-token"); ok && t != "" {
 		if len(t) > 8 {
 			return "token-" + t[:8]
 		}

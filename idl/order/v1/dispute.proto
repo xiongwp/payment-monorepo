@@ -1,0 +1,148 @@
+syntax = "proto3";
+
+package order.v1;
+
+option go_package = "reconcile-system/packages/order-core/kitex_gen/order/v1;orderv1";
+
+enum DisputeStatus {
+  DISPUTE_STATUS_UNSPECIFIED    = 0;
+  DISPUTE_STATUS_NEEDS_RESPONSE = 1;
+  DISPUTE_STATUS_UNDER_REVIEW   = 2;
+  DISPUTE_STATUS_WON            = 3;
+  DISPUTE_STATUS_LOST           = 4;
+  DISPUTE_STATUS_WARNING_CLOSED = 5;
+  DISPUTE_STATUS_CHARGE_REFUNDED = 6;
+  DISPUTE_STATUS_CANCELED       = 7;
+}
+
+message Dispute {
+  string id                 = 1;
+  string payment_intent_id  = 2;
+  string charge_id          = 3;
+  string merchant_id        = 4;
+  string channel            = 5;
+  string channel_dispute_id = 6;
+  DisputeStatus status      = 7;
+  int64  amount             = 8;
+  string currency           = 9;
+  string reason             = 10;
+  string reason_detail      = 11;
+  int64  evidence_due_at_ms = 12;
+  map<string,string> evidence = 13;
+  int64  decided_at_ms      = 14;
+  int64  outcome_amount     = 15;
+  bool   auto_refund_charge = 16;
+  map<string,string> metadata = 17;
+  int64  created_ms         = 18;
+  int64  updated_ms         = 19;
+}
+
+message DisputeEvent {
+  int64  id                = 1;
+  string dispute_id        = 2;
+  string payment_intent_id = 3;
+  string from_status       = 4;
+  string to_status         = 5;
+  string source            = 6;
+  string actor             = 7;
+  string note              = 8;
+  map<string,string> payload = 9;
+  int64  created_ms        = 10;
+}
+
+// ─── RPCs ───────────────────────────────────────────────────────────────────
+
+message OpenDisputeRequest {
+  string payment_intent_id  = 1;
+  string charge_id          = 2;
+  string merchant_id        = 3;
+  string channel            = 4;
+  string channel_dispute_id = 5;
+  int64  amount             = 6;
+  string currency           = 7;
+  string reason             = 8;
+  string reason_detail      = 9;
+  int64  evidence_due_at_ms = 10;
+  bool   auto_refund_charge = 11;
+  map<string,string> metadata = 12;
+  string source             = 13;
+}
+message OpenDisputeResponse { Dispute dispute = 1; }
+
+message GetDisputeRequest {
+  string payment_intent_id = 1;
+  string id                = 2;
+}
+message GetDisputeResponse { Dispute dispute = 1; }
+
+message ListDisputesByPIRequest { string payment_intent_id = 1; }
+message ListDisputesByPIResponse { repeated Dispute disputes = 1; }
+
+message ListDisputesByMerchantRequest {
+  string merchant_id = 1;
+  DisputeStatus status = 2;
+  int32  limit       = 3;
+  int32  offset      = 4;
+}
+message ListDisputesByMerchantResponse {
+  repeated Dispute disputes = 1;
+  int64            total    = 2;
+}
+
+message ListDisputeEventsRequest {
+  string payment_intent_id = 1;
+  string dispute_id        = 2;
+  int32  limit             = 3;
+}
+message ListDisputeEventsResponse { repeated DisputeEvent events = 1; }
+
+// Admin actions
+message SubmitEvidenceRequest {
+  string payment_intent_id = 1;
+  string id                = 2;
+  string actor             = 3;
+  map<string,string> evidence = 4;
+}
+message SubmitEvidenceResponse { Dispute dispute = 1; }
+
+message ConcedeDisputeRequest {
+  string payment_intent_id = 1;
+  string id                = 2;
+  string actor             = 3;
+  string note              = 4;
+}
+message ConcedeDisputeResponse { Dispute dispute = 1; }
+
+message CancelDisputeRequest {
+  string payment_intent_id = 1;
+  string id                = 2;
+  string actor             = 3;
+  string note              = 4;
+}
+message CancelDisputeResponse { Dispute dispute = 1; }
+
+// Channel-webhook driven transitions
+message MarkDisputeRequest {
+  string payment_intent_id = 1;
+  string id                = 2;
+  int64  outcome_amount    = 3; // used by Lost
+  map<string,string> payload = 4;
+}
+message MarkDisputeResponse { Dispute dispute = 1; }
+
+service DisputeService {
+  rpc Open             (OpenDisputeRequest)            returns (OpenDisputeResponse);
+  rpc Get              (GetDisputeRequest)             returns (GetDisputeResponse);
+  rpc ListByPI         (ListDisputesByPIRequest)       returns (ListDisputesByPIResponse);
+  rpc ListByMerchant   (ListDisputesByMerchantRequest) returns (ListDisputesByMerchantResponse);
+  rpc ListEvents       (ListDisputeEventsRequest)      returns (ListDisputeEventsResponse);
+
+  rpc SubmitEvidence   (SubmitEvidenceRequest)         returns (SubmitEvidenceResponse);
+  rpc Concede          (ConcedeDisputeRequest)         returns (ConcedeDisputeResponse);
+  rpc Cancel           (CancelDisputeRequest)          returns (CancelDisputeResponse);
+
+  rpc MarkUnderReview    (MarkDisputeRequest) returns (MarkDisputeResponse);
+  rpc MarkWon            (MarkDisputeRequest) returns (MarkDisputeResponse);
+  rpc MarkLost           (MarkDisputeRequest) returns (MarkDisputeResponse);
+  rpc MarkWarningClosed  (MarkDisputeRequest) returns (MarkDisputeResponse);
+}

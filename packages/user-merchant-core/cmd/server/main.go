@@ -12,15 +12,13 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/keepalive"
 
-	"github.com/xiongwp/payment-util/mtls"
+	accv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
+	riskv1 "github.com/xiongwp/risk-manage/kitex_gen/risk/v1"
+	riskservice "github.com/xiongwp/risk-manage/kitex_gen/risk/v1/riskservice"
+	"github.com/xiongwp/payment-util/kitexutil"
 
-	accv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
-	"github.com/xiongwp/payment-util/serviceregistry"
-	riskv1 "github.com/xiongwp/risk-manage/api/proto/risk/v1"
 	"github.com/xiongwp/user-merchant-core/internal/authpkg"
 	"github.com/xiongwp/user-merchant-core/internal/cache"
 	"github.com/xiongwp/user-merchant-core/internal/healthz"
@@ -38,7 +36,7 @@ import (
 
 	"github.com/xiongwp/user-merchant-core/pkg/configx"
 	"github.com/xiongwp/user-merchant-core/pkg/dbx"
-	"github.com/xiongwp/user-merchant-core/pkg/grpcutil"
+	"github.com/xiongwp/user-merchant-core/internal/auditstore"
 	"github.com/xiongwp/user-merchant-core/pkg/tracex"
 )
 
@@ -331,23 +329,23 @@ func repoUserCard(mgr *repo.Manager, router *sharding.Router) repo.UserCardRepos
 // 只是 card-center 那边不知道 token 已撤销）。
 func newCardCenterClient(v *viper.Viper, logger *zap.Logger) *cardcenterclient.Client {
 	endpoint := v.GetString("card_center.endpoint")
-	if endpoint == "" {
+	registry := v.GetStringSlice("registry.endpoints")
+	if endpoint == "" && len(registry) == 0 {
 		logger.Info("card_center.endpoint not set; UserCardService DeleteCard 不会通知 card-center revoke (dev OK)")
 		return nil
 	}
 	cli, err := cardcenterclient.New(cardcenterclient.Config{
-		Endpoint:   endpoint,
-		ClientCert: v.GetString("card_center.client_cert"),
-		ClientKey:  v.GetString("card_center.client_key"),
-		ServerCA:   v.GetString("card_center.server_ca"),
-		Insecure:   v.GetBool("card_center.insecure"),
-		RPCTimeout: v.GetDuration("card_center.rpc_timeout"),
+		Endpoint:          endpoint,
+		RegistryEndpoints: registry,
+		BearerToken:       v.GetString("card_center.bearer_token"),
+		RPCTimeout:        v.GetDuration("card_center.rpc_timeout"),
 	})
 	if err != nil {
 		logger.Warn("card-center client init failed; degrading to nil", zap.Error(err))
 		return nil
 	}
-	logger.Info("card-center client connected", zap.String("endpoint", endpoint))
+	logger.Info("card-center client connected",
+		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
 	return cli
 }
 
@@ -360,11 +358,11 @@ func svcUserCard(
 	return service.NewUserCardService(r, cc, logger)
 }
 
-func newIdempotencyStore(r repo.IdempotencyRepository) grpcutil.IdempotencyStore {
+func newIdempotencyStore(r repo.IdempotencyRepository) auditstore.IdempotencyStore {
 	return server.NewIdempotencyStore(r)
 }
 
-func newAuditStore(r repo.AuditRepository) grpcutil.AuditStore {
+func newAuditStore(r repo.AuditRepository) auditstore.AuditStore {
 	return server.NewAuditStore(r)
 }
 
@@ -430,40 +428,15 @@ func newServer(
 	user *service.UserService,
 	userCard *service.UserCardService,
 	mchCache *cache.MerchantCache,
-	idemStore grpcutil.IdempotencyStore,
-	auditStore grpcutil.AuditStore,
+	idemStore auditstore.IdempotencyStore,
+	auditStr auditstore.AuditStore,
 	auditRepo repo.AuditRepository,
 	v *viper.Viper,
 	logger *zap.Logger,
 ) *server.Server {
-	tokens := map[string]string{}
-	for _, t := range v.GetStringSlice("auth.tokens") {
-		tokens[t] = "ok"
-	}
-
-	// Per-key rate limit（按 metadata header 分桶）。rps<=0 自动 no-op。
-	perKey := grpcutil.PerKeyLimitOptions{
-		RPS:      v.GetFloat64("rate_limit.per_key.rps"),
-		Burst:    v.GetInt("rate_limit.per_key.burst"),
-		Capacity: v.GetInt("rate_limit.per_key.capacity"),
-		TTL:      v.GetDuration("rate_limit.per_key.ttl"),
-	}
-	if header := v.GetString("rate_limit.per_key.header"); header != "" {
-		perKey.KeyFn = grpcutil.KeyFromMetadata(header)
-	}
-
-	// Per-method timeout：所有方法一个默认，热路径可单独调小。
-	timeouts := grpcutil.TimeoutConfig{
-		Default: v.GetDuration("timeouts.default"),
-	}
-	if byMethod := v.GetStringMapString("timeouts.by_method"); len(byMethod) > 0 {
-		timeouts.ByMethod = make(map[string]time.Duration, len(byMethod))
-		for m, val := range byMethod {
-			if d, err := time.ParseDuration(val); err == nil {
-				timeouts.ByMethod[m] = d
-			}
-		}
-	}
+	// AuthTokens / RateLimit / PerKey / Timeouts 等老 gRPC interceptor 配置已删 —
+	// Kitex 切换后这些走 server.WithMiddleware (kitexutil.* MW) 配置, 不再由
+	// Server 结构体持有.
 
 	// Mutation method 白名单：幂等键 + 审计只对这些方法开启。
 	// AuthenticateByAPIKey / Get / List / BatchGet 是纯读，不在内。
@@ -493,14 +466,9 @@ func newServer(
 		AuditRepo:          auditRepo,
 		MerchantCache:      mchCache,
 		MerchantDefaultRPS: v.GetFloat64("rate_limit.per_merchant.default_rps"),
-		AuthTokens:         tokens,
-		RateLimitRPS:       v.GetFloat64("rate_limit.rps"),
-		RateBurst:          v.GetInt("rate_limit.burst"),
-		PerKey:             perKey,
-		Timeouts:           timeouts,
 		IdempotencyStore:   idemStore,
 		MutationMethods:    mutations,
-		AuditStore:         auditStore,
+		AuditStore:         auditStr,
 		Logger:             logger,
 	})
 }
@@ -676,60 +644,27 @@ func newMailer(logger *zap.Logger) service.Mailer {
 	return &service.LogMailer{Logger: logger}
 }
 
-// newRiskClient 拨号 risk-manage gRPC；endpoint 与 registry.endpoints 都空 →
-// NoopRiskClient（dev 友好）。registry 非空走 etcd resolver（联栈多 pod 必走），
-// 否则走 endpoint 直连 fallback。两条路都自动 round_robin LB。
-//
-// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
-// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
-func newRiskClient(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.RiskClient {
+// newRiskClient 构造 risk-manage Kitex client.
+// endpoint / registry 都空 → NoopRiskClient (Screen 全 ALLOW, Report no-op).
+// registry 非空走 etcd resolver; 否则用 endpoint 直连.
+func newRiskClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.RiskClient {
 	endpoint := v.GetString("risk.endpoint")
 	registry := v.GetStringSlice("registry.endpoints")
 	if endpoint == "" && len(registry) == 0 {
 		logger.Info("risk.endpoint and registry.endpoints both unset; using NoopRiskClient (all-allow, no graph writes)")
 		return service.NoopRiskClient{}
 	}
-
-	// Load mTLS config; fail-fast in production if certs missing
-	mtlsCfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		logger.Error("mtls config failed; falling back to noop risk client", zap.Error(err))
-		return service.NoopRiskClient{}
-	}
-
-	var creds grpc.DialOption
-	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
-		// Dev/test mode: no mTLS certs configured
-		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else {
-		// mTLS mode: load credentials
-		tlsCreds, cerr := mtlsCfg.ClientCredentials()
-		if cerr != nil {
-			logger.Warn("failed to load mTLS credentials for risk-manage; falling back to noop", zap.Error(cerr))
-			return service.NoopRiskClient{}
-		}
-		creds = grpc.WithTransportCredentials(tlsCreds)
-	}
-
-	conn, err := serviceregistry.DialWithFallback(registry, "risk-manage", endpoint,
-		creds,
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
-		}),
-	)
-	if err != nil {
-		logger.Warn("risk dial failed; falling back to noop", zap.Error(err))
-		return service.NoopRiskClient{}
-	}
-	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
-	logger.Info("risk client dialed",
-		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
-	api := riskv1.NewRiskServiceClient(conn)
+	api := kitexutil.MustKitexClient(riskservice.NewClient("risk-manage",
+		kitexutil.DefaultClientOptions("risk-manage")...,
+	))
+	logger.Info("risk client constructed (Kitex)",
+		zap.String("endpoint_hint", endpoint), zap.Strings("registry", registry))
 	return &grpcRiskAdapter{api: api, timeout: v.GetDuration("risk.rpc_timeout")}
 }
 
+// grpcRiskAdapter 把 Kitex riskservice.Client 适配到 service.RiskClient 接口.
 type grpcRiskAdapter struct {
-	api     riskv1.RiskServiceClient
+	api     riskservice.Client
 	timeout time.Duration
 }
 
@@ -801,60 +736,29 @@ func (promIntrospectCacheHook) Lookup(hit bool) {
 	metrics.IntrospectCacheLookupTotal.WithLabelValues(result).Inc()
 }
 
-// newAccountingClient 拨号 accounting-system gRPC；endpoint 与 registry 都空 → Noop。
-// registry 非空走 etcd resolver（联栈多 pod 必走，因为 "accounting-service" 跨
-// compose 项目 DNS 不可解析）；否则走 endpoint 直连。两条路都自动 round_robin LB。
-//
-// mTLS 模式：MTLS_SERVER_CERT/KEY/CA 配了 → 使用 mTLS credentials；
-// 缺配或 INSECURE_DIAL=1（dev only）→ insecure mode。
-func newAccountingClient(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.AccountingClient {
+// newAccountingClient 构造 accounting-system Kitex client.
+// endpoint / registry 都空 → NoopAccountingClient (Register 流程拿不到 account_no,
+// 绑定步骤被 service 层 skip, 首次支付兜底重试).
+// registry 非空走 etcd resolver; 否则用 endpoint 直连.
+func newAccountingClient(_ fx.Lifecycle, v *viper.Viper, logger *zap.Logger) service.AccountingClient {
 	endpoint := v.GetString("accounting.endpoint")
 	registry := v.GetStringSlice("registry.endpoints")
 	if endpoint == "" && len(registry) == 0 {
-		logger.Info("accounting.endpoint and registry.endpoints both unset; using NoopAccountingClient (no balance accounts opened)")
+		logger.Info("accounting.endpoint and registry.endpoints both unset; using NoopAccountingClient (no account binding on Register)")
 		return service.NoopAccountingClient{}
 	}
-
-	// Load mTLS config; fail-fast in production if certs missing
-	mtlsCfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		logger.Error("mtls config failed; falling back to noop accounting client", zap.Error(err))
-		return service.NoopAccountingClient{}
-	}
-
-	var creds grpc.DialOption
-	if mtlsCfg.InsecureDev || (mtlsCfg.ServerCertPath == "" && mtlsCfg.ServerKeyPath == "" && mtlsCfg.CACertPath == "") {
-		// Dev/test mode: no mTLS certs configured
-		creds = grpc.WithTransportCredentials(insecure.NewCredentials())
-	} else {
-		// mTLS mode: load credentials
-		tlsCreds, cerr := mtlsCfg.ClientCredentials()
-		if cerr != nil {
-			logger.Warn("failed to load mTLS credentials for accounting-system; falling back to noop", zap.Error(cerr))
-			return service.NoopAccountingClient{}
-		}
-		creds = grpc.WithTransportCredentials(tlsCreds)
-	}
-
-	conn, err := serviceregistry.DialWithFallback(registry, "accounting-service", endpoint,
-		creds,
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true,
-		}),
-	)
-	if err != nil {
-		logger.Warn("accounting dial failed; falling back to noop", zap.Error(err))
-		return service.NoopAccountingClient{}
-	}
-	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { return conn.Close() }})
-	logger.Info("accounting client dialed",
-		zap.String("endpoint", endpoint), zap.Strings("registry", registry))
-	api := accv1.NewAccountingServiceClient(conn)
+	// ETCD-5: accounting 在 etcd 注册名是 "accounting-service" (= docker DNS).
+	api := kitexutil.MustKitexClient(accountingservice.NewClient("accounting-service",
+		kitexutil.DefaultClientOptions("accounting-service")...,
+	))
+	logger.Info("accounting client constructed (Kitex)",
+		zap.String("endpoint_hint", endpoint), zap.Strings("registry", registry))
 	return &grpcAccountingAdapter{api: api, timeout: v.GetDuration("accounting.rpc_timeout")}
 }
 
+// grpcAccountingAdapter 适配 Kitex accountingservice.Client 到 service.AccountingClient.
 type grpcAccountingAdapter struct {
-	api     accv1.AccountingServiceClient
+	api     accountingservice.Client
 	timeout time.Duration
 }
 

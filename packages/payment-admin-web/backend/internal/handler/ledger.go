@@ -8,17 +8,18 @@ import (
 
 	"github.com/gorilla/mux"
 
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
+	orderv1 "github.com/xiongwp/order-core/kitex_gen/order/v1"
+	ledgerservice "github.com/xiongwp/order-core/kitex_gen/order/v1/ledgerservice"
 
 	"github.com/xiongwp/payment-admin-web/backend/internal/clients"
 )
 
 type LedgerHandler struct {
 	deps clients.Deps
-	cli  orderv1.LedgerServiceClient
+	cli  ledgerservice.Client
 }
 
-func NewLedgerHandler(d clients.Deps, cli orderv1.LedgerServiceClient) *LedgerHandler {
+func NewLedgerHandler(d clients.Deps, cli ledgerservice.Client) *LedgerHandler {
 	return &LedgerHandler{deps: d, cli: cli}
 }
 

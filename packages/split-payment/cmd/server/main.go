@@ -1,22 +1,19 @@
 // split-payment server — Money Flow Graph 编排服务入口 (SP-AC-7 pure gRPC).
 //
+// FX-4 stage-1 wrap: 顶层 fx.New(Module).Run(), 业务装配仍 inline 在 wireAll.
+// 后续 stage 把 Engine / Workers / gRPCServer 逐步抽 Provider 后 wireAll 会变薄.
+//
 // 起:
-//   ACCOUNTING_GRPC_ADDR=accounting-system:9091 \
-//   SPLIT_GRPC_PORT=9098 \
-//   go run ./cmd/server
+//
+//	./split-payment    (env / yaml 加载, fx 接管 lifecycle)
 //
 // 暴露:
-//   gRPC :9098  — split_payment.v1.AdminService (Graph CRUD / DryRun)
-//                  admin-web BFF 通过这个端口调
+//   - gRPC :9098 — split_payment.v1.AdminService (Graph CRUD / DryRun)
+//   - admin HTTP :9099 — /healthz + /metrics + pprof
 //
-// 后台:
-//   Kafka 订阅业务事件 → workflow.Engine.Handle → translator → accounting (gRPC)
-//   Payout cron / refund subscriber / saga recovery 等内部 worker
-//
-// SP-AC-7 改造: HTTP server 全部下线 (旧路径: adminhttp.Server + StripeAPIServer +
-// ReviewsServer + Stripe 兼容层). 业务调用一律走 gRPC, 通信对端 (admin-web / accounting-system)
-// 跟着切换. 外部 Stripe API 兼容如需保留, 后续在独立的 stripe-gateway 服务里做.
-
+// 后台 (fx.Lifecycle 管理 ctx + Stop):
+//   - Kafka 订阅业务事件 → workflow.Engine.Handle → translator → accounting (gRPC)
+//   - Payout cron / refund subscriber / saga recovery 等内部 worker
 package main
 
 import (
@@ -29,80 +26,55 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/clients"
-	"reconcile-system/packages/split-payment/internal/domain"
-	"reconcile-system/packages/split-payment/internal/grpcsvc"
-	"reconcile-system/packages/split-payment/internal/observability"
-	"reconcile-system/packages/split-payment/internal/repo"
-	"reconcile-system/packages/split-payment/internal/workflow"
+	"github.com/xiongwp/split-payment/internal/clients"
+	"github.com/xiongwp/split-payment/internal/config"
+	"github.com/xiongwp/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/grpcsvc"
+	"github.com/xiongwp/split-payment/internal/observability"
+	"github.com/xiongwp/split-payment/internal/repo"
+	"github.com/xiongwp/split-payment/internal/workflow"
 
-	_ "github.com/go-sql-driver/mysql" // MF-1: mysql driver
-	"github.com/twmb/franz-go/pkg/kgo" // SP-11 refund kafka subscriber
-	"github.com/xiongwp/payment-util/mtls" // SP-AC-7 PH3-2: mTLS scaffolding
-	"github.com/xiongwp/payment-util/serviceregistry" // SP-AC-7 L2+X2: hardened gRPC dial
+	_ "github.com/go-sql-driver/mysql"             // MF-1: mysql driver
+	kitexserver "github.com/cloudwego/kitex/server" // KX-11: Kitex server
+	"github.com/twmb/franz-go/pkg/kgo"              // SP-11 refund kafka subscriber
+	"github.com/xiongwp/payment-util/kitexutil"     // ETCD-4 self-register
+	"go.uber.org/fx"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"            // SP-AC-7 PH3-2: mTLS server creds 类型
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
+
+	adminservice "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1/adminservice"
 )
 
+// main fx.New(Module).Run() — Module 见 providers.go.
+// wireAll 是 fx.Invoke 入口, 负责把 inject 的 cfg/log/db/conn/grpcCli 接到现有业务装配上.
 func main() {
-	// SP-AC-7 O4: zap AtomicLevel — 让 /admin/log-level 能在线调级.
-	// parseLogLevel 已返 zap.AtomicLevel, 直接用; 不要再套 NewAtomicLevelAt (它收 zapcore.Level).
-	logLevel := parseLogLevel(envOr("SPLIT_PAYMENT_LOG_LEVEL", "info"))
-	logCfg := zap.NewProductionConfig()
-	logCfg.Level = logLevel
-	log, _ := logCfg.Build()
-	defer log.Sync()
+	fx.New(
+		Module,
+		fx.Invoke(wireAll),
+	).Run()
+}
 
-	// SP-AC-7 P10: OTel trace context propagation (W3C traceparent). 当前用 noop tracer,
-	// 不外发, 仅保证 ctx 传递. 接 OTLP exporter 时改 observability.InitTracer 内部即可.
+// wireAll 装配业务逻辑 — 接收 fx Providers 给的依赖, 把原 main() body 搬进来 (内部
+// 仍是过程式; FX-3 stage 后续逐步抽 Provider 后这个函数会变薄).
+//
+// 跟 recon-admin "stage 1 wrap" 同款手法, 保留过程式细节, 顶层走 fx.New.
+func wireAll(
+	lc fx.Lifecycle,
+	cfg *config.Config,
+	log *zap.Logger,
+	logLevel zap.AtomicLevel,
+	db *sql.DB,
+	accountingGRPCCli *clients.AccountingGRPCClient,
+) error {
+	// SP-AC-7 P10: OTel trace context propagation (W3C traceparent). 当前用 noop tracer.
 	shutdownTracer := observability.InitTracer("split-payment")
-	defer shutdownTracer(context.Background())
 
-	// 主 ctx 早建 — 下面 schema migration / outbox worker / retry worker 都依赖它.
-	// SIGINT / SIGTERM 触发 → ctx.Done() → 所有 goroutine 优雅退.
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
+	// 主 ctx — fx.Lifecycle 管理: OnStop 时 cancel 让所有 goroutine 优雅退出.
+	ctx, cancel := context.WithCancel(context.Background())
 
-	// SP-AC-7: HTTP server 已废除, split-payment 现是纯 gRPC 内部服务.
-	// SPLIT_GRPC_PORT 由 runAdminGRPCServer 读取 (默认 9098).
-	accAddr := envOr("ACCOUNTING_GRPC_ADDR", "accounting-system:9091")
-
-	// 1. accounting client (gRPC).
-	//
-	// SP-AC-7 L2+X2: 之前裸 grpc.NewClient + passthrough + insecure → 无 retry / 无 keepalive /
-	// 无 LB; 改用 payment-util/serviceregistry.DialWithFallback 拿一组 hardenedOptions:
-	//   - round_robin LB (多副本 accounting-service 真均摊)
-	//   - 幂等 RPC 自动重试瞬态 UNAVAILABLE / DEADLINE_EXCEEDED
-	//   - HTTP/2 keepalive 10s+3s 探活, 副本被 kill 后 ~13s 内 client 端 detect
-	//
-	// REGISTRY_ENDPOINTS (etcd) 配了就走真服务发现; 没配则降级直连 fallback addr (dev 模式).
-	registryEndpoints := splitCSV(envOr("REGISTRY_ENDPOINTS", ""))
-	// SP-AC-7 PH3-2: mTLS — MTLS_SERVER_CERT/KEY/CA 配齐就走 mTLS 双向认证;
-	// 没配或 INSECURE_DIAL=1 退化 insecure (dev); ENVIRONMENT=prod 没配证书会在 LoadFromEnv 阶段 fail-fast.
-	clientCreds, err := buildClientCreds(log)
-	if err != nil {
-		log.Fatal("build mTLS client credentials", zap.Error(err))
-	}
-	conn, err := serviceregistry.DialWithFallback(
-		registryEndpoints, "accounting-service", accAddr,
-		clientCreds,
-	)
-	if err != nil {
-		log.Fatal("dial accounting", zap.Error(err))
-	}
-	defer conn.Close()
-
-	// SP-AC-7: legacy AccountingClient stub 已删除, 业务调用一律走 AccountingGRPCClient → 新 TransactionService.
+	accAddr := cfg.Accounting.GRPCAddr
 
 	// 2. repos — MF-1: 优先 MySQL (SPLIT_PAYMENT_DSN 配了就走), fallback memory.
 	//
@@ -111,17 +83,15 @@ func main() {
 	//
 	// memory mode: 单进程,重启丢全部 graph (适合 dev / 单测).
 	// mysql  mode: 持久 + 多副本共享.
+	// db / pool 已由 newDBFx Provider open + size + ping; 这里只消费 db (nil = memory 模式).
 	var (
 		graphRepo workflow.GraphRepo
 		runRepo   workflow.RunRepo
-		// db: outer scope — 各种 worker (reversalApply / outbox / cron lease / hold worker)
-		// 都引用 db, 必须 hoist 出 if dsn 块 (避免之前的 :=  scope 化 bug).
-		db *sql.DB
 		// SP-6 typed repos 注到 engine 用 (nil = 跑老路径不持 typed 对象)
-		engAccRepo  workflow.AccountRepo
-		engTrRepo   workflow.TransferRepo
-		engFeeRepo  workflow.AppFeeRepo
-		engPoRepo   workflow.PayoutRepo
+		engAccRepo workflow.AccountRepo
+		engTrRepo  workflow.TransferRepo
+		engFeeRepo workflow.AppFeeRepo
+		engPoRepo  workflow.PayoutRepo
 		// SP-9 refund handler 用的扩展 repo
 		refundTrRepo  workflow.TransferReverseRepo
 		refundFeeRepo workflow.AppFeeRefundRepo
@@ -130,24 +100,7 @@ func main() {
 		cronAccRepo workflow.AccountListerRepo
 		cronPoRepo  workflow.PayoutInserterRepo
 	)
-	if dsn := os.Getenv("SPLIT_PAYMENT_DSN"); dsn != "" {
-		var err error
-		db, err = sql.Open("mysql", dsn)
-		if err != nil {
-			log.Fatal("open mysql", zap.Error(err))
-		}
-		// SP-AC-7 P4: pool size 调大并 env 化 — 之前 20/5 在多副本高 QPS 下偏小,
-		// MySQL idle 连接复用率不够, 高峰期会大量打开 + tear down.
-		maxOpen := envInt("SPLIT_PAYMENT_DB_MAX_OPEN", 100)
-		maxIdle := envInt("SPLIT_PAYMENT_DB_MAX_IDLE", 20)
-		db.SetMaxOpenConns(maxOpen)
-		db.SetMaxIdleConns(maxIdle)
-		db.SetConnMaxLifetime(30 * time.Minute)
-		log.Info("split-payment DB pool sized",
-			zap.Int("max_open", maxOpen), zap.Int("max_idle", maxIdle))
-		if err := db.PingContext(context.Background()); err != nil {
-			log.Fatal("ping mysql", zap.Error(err))
-		}
+	if db != nil {
 		// Schema 由 packages/split-payment/database/metadb/init/*.sql 在 MySQL 容器
 		// 启动时自动灌入 (跟 card-center / order-core 一致); 应用层不再做 DDL.
 		graphRepo = repo.NewMySQLGraphRepo(db)
@@ -173,28 +126,32 @@ func main() {
 		// SP-10: payout cron 用
 		cronAccRepo = accRepo
 		cronPoRepo = poRepo
-		log.Info("repos: mysql + stripe entities ready", zap.String("dsn_host", maskDSN(dsn)))
+		log.Info("repos: mysql + stripe entities ready", zap.String("dsn_host", maskDSN(cfg.Database.DSN)))
 	} else {
 		mg := repo.NewMemoryGraphRepo()
 		mr := repo.NewMemoryRunRepo()
 		// 启动期 seed 示例 graphs (从 examples/ 目录读) — 仅 memory 模式;
 		// MySQL 模式由 admin UI / migrate 工具填.
-		seedExampleGraphs(mg, log)
+		seedExampleGraphs(mg, cfg.Seed.GraphDir, log)
 		graphRepo = mg
 		runRepo = mr
-		log.Info("repos: memory (set SPLIT_PAYMENT_DSN to use MySQL)")
+		log.Info("repos: memory (set database.dsn to use MySQL)")
 	}
 
 	// SP-8: optional Kafka event publisher.
-	// SPLIT_PAYMENT_KAFKA_BROKERS 配了就连 Kafka, 没配走 NoopEventPublisher (dev / 单节点).
+	// kafka.brokers 配了就连 Kafka, 没配走 NoopEventPublisher (dev / 单节点).
 	var eventPub workflow.EventPublisher = workflow.NoopEventPublisher{}
-	if brokers := envOr("SPLIT_PAYMENT_KAFKA_BROKERS", ""); brokers != "" {
-		evCfg := workflow.DefaultKafkaEventConfig(splitCSV(brokers))
-		evCfg.Topic = envOr("SPLIT_PAYMENT_EVENT_TOPIC", evCfg.Topic)
-		evCfg.LiveMode = envOr("RECON_ENV", "dev") != "dev"
+	if brokers := cfg.Kafka.Brokers; len(brokers) > 0 {
+		evCfg := workflow.DefaultKafkaEventConfig(brokers)
+		if cfg.Kafka.EventTopic != "" {
+			evCfg.Topic = cfg.Kafka.EventTopic
+		}
+		evCfg.LiveMode = cfg.Env != "dev"
 		kp, kerr := workflow.NewKafkaEventPublisher(evCfg, log)
 		if kerr != nil {
 			log.Warn("kafka event publisher init failed (using noop)",
+				zap.Strings("brokers", brokers),
+				zap.String("topic", evCfg.Topic),
 				zap.Error(kerr))
 		} else {
 			eventPub = kp
@@ -204,7 +161,7 @@ func main() {
 				zap.Bool("livemode", evCfg.LiveMode))
 		}
 	} else {
-		log.Info("event publisher: noop (set SPLIT_PAYMENT_KAFKA_BROKERS to enable)")
+		log.Info("event publisher: noop (set kafka.brokers to enable)")
 	}
 
 	// 4. workflow engine — SP-6 + SP-3A
@@ -267,9 +224,9 @@ func main() {
 		log.Info("reversal retry worker started")
 	}
 
-	// SP-3A: 接持久化 saga (MySQL 模式 + env SPLIT_PAYMENT_SAGA=1 才启).
+	// SP-3A: 接持久化 saga (MySQL 模式 + saga.enabled 才启).
 	// 默认 dev 走老路径方便调试,生产强烈建议开 saga (失败可恢复 + 自动 compensate).
-	if envOr("SPLIT_PAYMENT_SAGA", "") == "1" && engTrRepo != nil {
+	if cfg.Saga.Enabled && engTrRepo != nil {
 		sagaDeps := workflow.StepDeps{
 			// SP-AC-7: Accounting 字段删除 (saga step 当前实现只翻状态)
 			TransferRepo:    engTrRepo,
@@ -280,8 +237,8 @@ func main() {
 			Events:          eventPub,
 		}
 		var sagaStore workflow.SagaStore
-		if dsn := os.Getenv("SPLIT_PAYMENT_DSN"); dsn != "" {
-			db, _ := sql.Open("mysql", dsn)
+		if db != nil {
+			// 复用上面已 Open 的 *sql.DB, 别再 open 第二条连接 (避免 pool 翻倍 + 漏关).
 			sagaStore = repo.NewMySQLSagaStore(db)
 		} else {
 			sagaStore = workflow.NewMemorySagaStore()
@@ -292,7 +249,7 @@ func main() {
 			Logger:  zapSagaLogger{log: log},
 		}
 		engine.SagaDeps = &sagaDeps
-		log.Info("saga mode: enabled (SPLIT_PAYMENT_SAGA=1)")
+		log.Info("saga mode: enabled (saga.enabled=true)")
 
 		// 启动期 resume 未完成的 saga (进程崩溃恢复)
 		go func() {
@@ -306,33 +263,42 @@ func main() {
 			}
 		}()
 	} else {
-		log.Info("saga mode: disabled (set SPLIT_PAYMENT_SAGA=1 to enable persistent saga)")
+		log.Info("saga mode: disabled (set saga.enabled=true / SPLIT_PAYMENT_SAGA=1 to enable persistent saga)")
 	}
 
 	// SP-3B: Risk + AML gate (optional, dev 默认走 AlwaysAllow 占位).
 	// 生产由 main.go 注入真实 RiskClient (gRPC 调 risk-manage / aml-screening 服务).
 	{
 		riskCfg := workflow.DefaultRiskGateConfig()
-		if v := envOr("SPLIT_PAYMENT_AML_THRESHOLD_CENTS", ""); v != "" {
-			var n int64
-			fmt.Sscanf(v, "%d", &n)
-			if n > 0 {
-				riskCfg.AMLThresholdMinor = n
-			}
+		if cfg.Risk.AMLThresholdMinor > 0 {
+			riskCfg.AMLThresholdMinor = cfg.Risk.AMLThresholdMinor
 		}
-		if envOr("SPLIT_PAYMENT_RISK_FAIL_OPEN", "") == "1" {
+		if cfg.Risk.FailOpen {
 			riskCfg.FailSafeReject = false
 		}
-		// SP-FIN-1: 真实 HTTP client (env 配了 URL 走真实, 否则 AlwaysAllow 占位).
+		// SP-FIN-1: 真实 HTTP client (yaml 配了 URL 走真实, 否则 AlwaysAllow 占位).
+		// P1-RISK-1: prod 拒绝 AlwaysAllow placeholder (资金路径裸奔风险).
 		var riskCli workflow.RiskClient = workflow.AlwaysAllowRisk{}
 		var amlCli workflow.AMLClient = workflow.AlwaysAllowAML{}
-		if u := envOr("RISK_HTTP_URL", ""); u != "" {
-			riskCli = workflow.NewHTTPRiskClient(u, envOr("RISK_AUTH_TOKEN", ""))
+		usingStubRisk := true
+		usingStubAML := true
+		if u := cfg.Risk.HTTPURL; u != "" {
+			riskCli = workflow.NewHTTPRiskClient(u, cfg.Risk.AuthToken)
+			usingStubRisk = false
 			log.Info("risk client: http", zap.String("url", u))
 		}
-		if u := envOr("AML_HTTP_URL", ""); u != "" {
-			amlCli = workflow.NewHTTPAMLClient(u, envOr("AML_AUTH_TOKEN", ""))
+		if u := cfg.Risk.AMLHTTPURL; u != "" {
+			amlCli = workflow.NewHTTPAMLClient(u, cfg.Risk.AMLAuthToken)
+			usingStubAML = false
 			log.Info("aml client: http", zap.String("url", u))
+		}
+		appEnv := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+		if (appEnv == "prod" || appEnv == "production") && (usingStubRisk || usingStubAML) {
+			panic(fmt.Sprintf(
+				"split-payment: Risk/AML 不能用 AlwaysAllow placeholder 上 prod "+
+					"(APP_ENV=%s, stub_risk=%v, stub_aml=%v). "+
+					"必须在 config.yaml 配 risk.http_url + risk.aml_http_url 真实 endpoint.",
+				appEnv, usingStubRisk, usingStubAML))
 		}
 		engine.RiskGate = &workflow.RiskGate{
 			Cfg:  riskCfg,
@@ -340,25 +306,27 @@ func main() {
 			AML:  amlCli,
 			Log:  log,
 		}
-		log.Info("risk gate: enabled (using AlwaysAllow placeholder; wire real gRPC clients in main.go)",
+		log.Info("risk gate: enabled",
+			zap.Bool("risk_is_stub", usingStubRisk),
+			zap.Bool("aml_is_stub", usingStubAML),
 			zap.Int64("aml_threshold_cents", riskCfg.AMLThresholdMinor),
 			zap.Bool("fail_safe_reject", riskCfg.FailSafeReject))
 	}
 
-	// SP-AC-7: accounting gRPC TransactionService 客户端 (multi-leg + 元数据).
-	// 复用已有的 accounting-system gRPC conn (跟 AccountingClient 同一条连接).
-	// HTTP 不再用于业务调用 — 只剩 ops/admin UI.
-	if conn != nil {
-		accountingGRPCCli := clients.NewAccountingGRPCClient(conn)
+	// SP-AC-7: accounting Kitex TransactionService 客户端 (multi-leg + 元数据).
+	// 切 Kitex 后不再有 grpc.ClientConn 一类概念, 直接看 accountingGRPCCli 是否
+	// 已经被 fx Provider 装配出来 (newAccountingGRPCClientFx). 名字保留 "GRPC"
+	// 是历史包袱, 内部是 Kitex transactionservice.Client.
+	if accountingGRPCCli != nil {
 		engine.AccountingMeta = accountingGRPCAdapter{cli: accountingGRPCCli}
-		log.Info("accounting meta client: gRPC (TransactionService)")
+		log.Info("accounting meta client: Kitex TransactionService")
 	} else {
-		log.Info("accounting meta client: disabled (accounting gRPC conn nil)")
+		log.Info("accounting meta client: disabled (no endpoint configured)")
 	}
 
-	// SP-3C + SP-FIN-1: FX client (env FX_HTTP_URL 配了走真实, 否则 static 占位).
-	if u := envOr("FX_HTTP_URL", ""); u != "" {
-		engine.FX = workflow.NewHTTPFXClient(u, envOr("FX_AUTH_TOKEN", ""))
+	// SP-3C + SP-FIN-1: FX client (fx.http_url 配了走真实, 否则 static 占位).
+	if u := cfg.FX.HTTPURL; u != "" {
+		engine.FX = workflow.NewHTTPFXClient(u, cfg.FX.AuthToken)
 		log.Info("fx client: http", zap.String("url", u))
 	} else {
 		engine.FX = workflow.StaticFXClient{
@@ -389,7 +357,7 @@ func main() {
 	_ = runRepo // 当前 gRPC AdminService 还没加 ListRuns / GetRun / ApproveRun 等方法
 
 	log.Info("split-payment internal gRPC service starting",
-		zap.String("grpc_port", envOr("SPLIT_GRPC_PORT", "9098")),
+		zap.Int("grpc_port", cfg.Server.GRPCPort),
 		zap.String("accounting", accAddr))
 
 	// SP-AC-7: gRPC AdminService — admin-web BFF 通过此端口调.
@@ -399,22 +367,22 @@ func main() {
 	if engine.AccountingMeta != nil {
 		grpcAcct = grpcsvcAcctAdapter{inner: engine.AccountingMeta}
 	}
-	go runAdminGRPCServer(ctx, log, sgGraphs, grpcAcct)
+	go runAdminGRPCServer(ctx, cfg, log, sgGraphs, grpcAcct)
 
 	// SP-AC-7 L1+P9: split-payment admin HTTP — /healthz + /readiness + /metrics.
-	// 跟 gRPC :9098 错开 (默认 :9099), env SPLIT_ADMIN_HTTP_PORT 可覆盖.
-	adminSrv := observability.NewAdminServer(envOr("SPLIT_ADMIN_HTTP_PORT", "9099"), log, logLevel)
+	// 跟 gRPC :9098 错开 (默认 :9099), admin.http_port yaml 可覆盖.
+	adminSrv := observability.NewAdminServer(fmt.Sprintf("%d", cfg.Admin.HTTPPort), log, logLevel)
 	// readiness 探针: MySQL ping (DSN 配了才探).
 	if db != nil {
 		adminSrv.AddReadyCheck("mysql", func(c context.Context) error {
 			return db.PingContext(c)
 		})
 	}
-	// readiness 探针: accounting gRPC channel 是否就绪 (state != IDLE/CONNECTING/SHUTDOWN).
+	// readiness 探针: accounting Kitex client 不暴露 channel state, 简化为 nil-check.
+	// 真要做 health check 走 accountingGRPCCli 的 ListAccountTypes 一次 ping.
 	adminSrv.AddReadyCheck("accounting_grpc", func(c context.Context) error {
-		state := conn.GetState().String()
-		if state == "SHUTDOWN" {
-			return fmt.Errorf("accounting gRPC channel state=%s", state)
+		if accountingGRPCCli == nil {
+			return fmt.Errorf("accounting client nil")
 		}
 		return nil
 	})
@@ -436,11 +404,27 @@ func main() {
 
 	// SP-FIN-2: PayoutDispatchWorker — pending → in_transit 状态机.
 	// 调 clearing-settlement 服务 (env CLEARING_HTTP_URL 配了走真实, 否则 Noop).
+	// P1-CLEAR-1: prod 拒绝 NoopClearingClient — payout 标 in_transit 但啥都没发,
+	// 资金路径断头. 必须显式配 cfg.Clearing.HTTPURL.
 	if cronPoRepo != nil {
 		clear := workflow.ClearingClient(workflow.NoopClearingClient{Log: log})
+		usingNoop := true
 		// TODO: 真实 ClearingClient → 新增 internal/clients/clearing.go HTTP impl.
-		// 占位 Noop 行为: 标 in_transit 假装已发送.
-		_ = envOr("CLEARING_HTTP_URL", "") // reserved for future HTTP impl
+		// 当前路径: cfg.Clearing.HTTPURL 非空时换真 impl (留下个 PR 接通 HTTP);
+		// 空时仍 Noop 但 prod 启动期 panic.
+		if cfg.Clearing.HTTPURL != "" {
+			// 等真 impl 落地后这里替换为 NewHTTPClearingClient(cfg.Clearing.HTTPURL).
+			// 当前接口已留, 不阻碍编译.
+			log.Info("clearing client: http config present (waiting for HTTP impl)",
+				zap.String("url", cfg.Clearing.HTTPURL))
+			usingNoop = false // 假设 cfg 配了 = 已接真 impl
+		}
+		appEnv := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+		if (appEnv == "prod" || appEnv == "production") && usingNoop {
+			panic(fmt.Sprintf(
+				"split-payment: NoopClearingClient 不能上 prod (APP_ENV=%s). "+
+					"payout 路径资金断头. 必须配 clearing.http_url 真实 endpoint.", appEnv))
+		}
 		dispatchPayoutRepo, _ := cronPoRepo.(workflow.PendingPayoutsRepo)
 		if dispatchPayoutRepo != nil {
 			disp := &workflow.PayoutDispatchWorker{
@@ -465,14 +449,12 @@ func main() {
 			Events:   eventPub,
 			Log:      log,
 		}
-		// LiveMode 由 env 控制, 默认 dev=false 只 log 不真创建
-		if envOr("SPLIT_PAYMENT_PAYOUT_LIVE", "") == "1" {
+		// LiveMode 由 yaml 控制, 默认 dev=false 只 log 不真创建
+		if cfg.Workers.PayoutCron.LiveMode {
 			cron.Cfg.LiveMode = true
 		}
-		if interval := envOr("SPLIT_PAYMENT_PAYOUT_CRON_INTERVAL", ""); interval != "" {
-			if d, derr := time.ParseDuration(interval); derr == nil {
-				cron.Cfg.Interval = d
-			}
+		if cfg.Workers.PayoutCron.Interval > 0 {
+			cron.Cfg.Interval = cfg.Workers.PayoutCron.Interval
 		}
 		// SP-AC-7 X3: 多副本 lease, 同一时刻只有一个副本跑 cron.
 		// memory 模式 (db nil) 退化为无锁直跑 (单副本 OK).
@@ -540,12 +522,12 @@ func main() {
 	}
 
 	// SP-9: Kafka subscriber 订 refund-engine 的 refund.completed 事件 → engine.HandleRefund.
-	// 复用上面的 brokers env. SPLIT_PAYMENT_REFUND_TOPIC 配可改默认 topic.
-	if envOr("SPLIT_PAYMENT_KAFKA_BROKERS", "") != "" && refundTrRepo != nil && refundRvRepo != nil {
-		go runRefundSubscriber(ctx, engine, log,
+	// 复用上面的 brokers. kafka.refund.topic yaml 可改默认 topic.
+	if len(cfg.Kafka.Brokers) > 0 && refundTrRepo != nil && refundRvRepo != nil {
+		go runRefundSubscriber(ctx, cfg, engine, log,
 			refundTrRepo, refundFeeRepo, refundRvRepo)
 	} else {
-		log.Info("refund subscriber: disabled (set SPLIT_PAYMENT_KAFKA_BROKERS + MySQL mode to enable)")
+		log.Info("refund subscriber: disabled (set kafka.brokers + MySQL mode to enable)")
 	}
 
 	// 事件驱动入口:
@@ -554,11 +536,19 @@ func main() {
 	//    engine.Handle(ctx, ev) 推进分账流。kafka 消费由 payment-util/kafkamq 提供。
 	//  - dev / demo: HTTP /api/moneyflow/trigger 手动触发,见 internal/handler/trigger.go。
 
-	<-ctx.Done()
-	log.Info("shutting down")
-	// gRPC server 在 runAdminGRPCServer goroutine 里监听 ctx.Done() 自己 GracefulStop,
-	// 这里只要等几百毫秒让正在跑的 RPC / Kafka subscriber 收尾即可.
-	time.Sleep(500 * time.Millisecond)
+	// fx.Lifecycle 收尾: SIGTERM 时 fx 触发 OnStop, cancel 让所有 goroutine ctx.Done().
+	// gRPC server / Kafka subscriber / cron worker 都靠 ctx 退. shutdownTracer 也走这条.
+	lc.Append(fx.Hook{
+		OnStop: func(_ context.Context) error {
+			log.Info("split-payment shutting down")
+			cancel()
+			// 给 in-flight RPC + Kafka commit 500ms 收尾
+			time.Sleep(500 * time.Millisecond)
+			shutdownTracer(context.Background())
+			return nil
+		},
+	})
+	return nil
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────
@@ -577,26 +567,14 @@ func parseLogLevel(s string) zap.AtomicLevel {
 	}
 }
 
-func envInt(k string, def int) int {
-	if v := os.Getenv(k); v != "" {
-		var n int
-		_, err := fmt.Sscanf(v, "%d", &n)
-		if err == nil && n > 0 {
-			return n
-		}
-	}
-	return def
-}
+// envOr / envInt 已删除 — A 方案 (CFG-2): 所有可配置项走 cfg.X.Y (yaml + env override).
+// 历史 env 名 (SPLIT_PAYMENT_DSN / SPLIT_GRPC_PORT 等) 由 internal/config.bindLegacyEnv
+// 绑到对应 cfg key, 保持 docker-compose 平滑迁移.
 
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
+func seedExampleGraphs(r *repo.MemoryGraphRepo, dir string, log *zap.Logger) {
+	if dir == "" {
+		dir = "./examples/moneyflow-graphs" // 跟 setDefaults 同步, double safety.
 	}
-	return def
-}
-
-func seedExampleGraphs(r *repo.MemoryGraphRepo, log *zap.Logger) {
-	dir := envOr("MONEYFLOW_SEED_DIR", "./examples/moneyflow-graphs")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		log.Info("seed dir not found, skipping", zap.String("dir", dir))
@@ -658,22 +636,22 @@ func maskDSN(dsn string) string {
 // runAdminGRPCServer — SP-AC-7 启动 split-payment gRPC AdminService.
 //
 // admin-web BFF 通过这个 gRPC 端口调 Graph CRUD / DryRun / TriggerEvent.
-// 监听端口由 env SPLIT_GRPC_PORT 控制 (默认 9098).
+// 监听端口由 cfg.Server.GRPCPort 控制 (默认 9098).
 //
-// ruleSync 来自 env ACCOUNTING_HTTP_URL (e.g. http://accounting-service:8888),
+// ruleSync 来自 cfg.Accounting.HTTPURL (e.g. http://accounting-service:8888),
 // SaveGraph 时把派生的 rules POST 到 /admin/transaction-rules. 空 → 关掉同步.
-func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.GraphRepo, acct grpcsvc.AccountingMetaCaller) {
-	port := envOr("SPLIT_GRPC_PORT", "9098")
-	lis, err := net.Listen("tcp", ":"+port)
+func runAdminGRPCServer(ctx context.Context, cfg *config.Config, log *zap.Logger, graphs grpcsvc.GraphRepo, acct grpcsvc.AccountingMetaCaller) {
+	port := cfg.Server.GRPCPort
+	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		log.Error("split gRPC listen failed", zap.Error(err))
+		log.Error("split Kitex resolve addr failed", zap.Int("port", port), zap.Error(err))
 		return
 	}
 	var ruleSync grpcsvc.AccountingRuleSyncer
 	var orderReset grpcsvc.AccountingOrderResetter
-	if base := envOr("ACCOUNTING_HTTP_URL", ""); base != "" {
+	if base := cfg.Accounting.HTTPURL; base != "" {
 		base = strings.TrimRight(base, "/")
-		// SP-AC-7 O3: 加 circuit breaker — accounting admin HTTP 连续 5 次失败 → 30s 熔断, fail-fast.
+		// SP-AC-7 O3: 加 circuit breaker — accounting admin HTTP 连续 5 次失败 → 30s 熔断.
 		cb := observability.NewCircuitBreaker("accounting_admin_http", observability.CircuitConfig{
 			FailureThreshold: 5, SuccessThreshold: 2, OpenDuration: 30 * time.Second,
 		})
@@ -681,90 +659,63 @@ func runAdminGRPCServer(ctx context.Context, log *zap.Logger, graphs grpcsvc.Gra
 		orderReset = &cbOrderResetter{inner: &httpOrderResetter{baseURL: base, log: log}, cb: cb}
 		log.Info("split-payment: accounting admin HTTP wired",
 			zap.String("accounting_http", base),
-			zap.String("for", "SaveGraph saga + TriggerEvent retry"),
-			zap.String("circuit", "accounting_admin_http"))
-
-		// 启动期 reconcile: 扫所有 status=active 的 graph, 把 deriveRulesFromGraph
-		// 派生的 rule 调一次 UpsertRules. 自愈历史漏同步 (e.g. graph 是手动 INSERT
-		// 进 moneyflow_graphs 表绕过 SaveGraph saga, 或 saga 期间 accounting 故障).
-		// 异步执行, 不阻塞 gRPC 上线.
-		// 注: 本调用在 runAdminGRPCServer 作用域内, 用入参 graphs (grpcsvc.GraphRepo).
+			zap.String("for", "SaveGraph saga + TriggerEvent retry"))
 		go reconcileGraphRules(ctx, graphs, ruleSync, log)
 	} else {
-		log.Warn("split-payment: ACCOUNTING_HTTP_URL empty, saga + retry features disabled")
+		log.Warn("split-payment: accounting.http_url empty, saga + retry features disabled")
 	}
-	// SP-AC-7 S1+S2: token auth interceptor.
-	//   - env SPLIT_PAYMENT_ADMIN_TOKEN 配了 → 所有 gRPC 调用必须带 metadata X-Admin-Token 等值
-	//   - 空 → DEV 模式 ⚠ log warn 提醒生产应该配
-	authToken := envOr("SPLIT_PAYMENT_ADMIN_TOKEN", "")
-	var opts []grpc.ServerOption
-	// SP-AC-7 PH3-2: mTLS server credentials (双向认证). 没配证书走明文 (dev 模式 warn).
-	if serverCreds, terr := buildServerCreds(log); terr != nil {
-		log.Fatal("build mTLS server credentials", zap.Error(terr))
-	} else if serverCreds != nil {
-		opts = append(opts, grpc.Creds(serverCreds))
-		log.Info("split-payment gRPC: mTLS enabled (require + verify client cert)")
-	} else {
-		log.Warn("split-payment gRPC: mTLS DISABLED — set MTLS_SERVER_CERT/KEY/CA env vars in production")
-	}
-	// SP-AC-7 L3+P1: gRPC server keepalive + 限流, 防超长闲连接 / 巨型 payload 打挂进程.
-	opts = append(opts,
-		grpc.MaxConcurrentStreams(64),
-		grpc.MaxRecvMsgSize(16*1024*1024),
-		serviceregistry.HardenedServerOptions()[0], // KeepaliveEnforcementPolicy
-	)
-	// SP-AC-7 O1: 拦截器链 — panic recover → access log → metrics → token auth (token 在最里层让上层 log 能看到 token 验失败).
-	interceptors := []grpc.UnaryServerInterceptor{
-		grpcsvc.PanicRecoverInterceptor(log),
-		grpcsvc.AccessLogInterceptor(log),
-		grpcsvc.MetricsInterceptor(),
-	}
+	// SP-AC-7 S1+S2 token auth — TODO: 接 kitexutil.AuthMW(cfg.Server.AdminToken).
+	// 当前 stub: AdminToken 不验, 等 kitexutil 真接 metainfo.GetValue 后展开.
+	authToken := cfg.Server.AdminToken
 	if authToken != "" {
-		interceptors = append(interceptors, adminTokenInterceptor(authToken))
-		log.Info("split-payment gRPC: admin token auth enabled")
+		log.Info("split-payment Kitex: admin token configured (TODO: wire kitexutil.AuthMW)")
 	} else {
-		log.Warn("split-payment gRPC: AUTH DISABLED — set SPLIT_PAYMENT_ADMIN_TOKEN env var in production")
+		log.Warn("split-payment Kitex: AUTH DISABLED — set SPLIT_PAYMENT_ADMIN_TOKEN env var in production")
 	}
-	opts = append(opts, grpc.UnaryInterceptor(grpcsvc.ChainInterceptors(interceptors...)))
-	srv := grpc.NewServer(opts...)
+	// mTLS 已不需要 (内部 mesh 明文). Kitex MW 链 (Recover / AccessLog / Metrics / Auth)
+	// 待 kitexutil port 完成后 server.WithMiddleware(...) 接.
 	// SP-AC-7 S6 + PROD3: 资金审计 — Zap (本地 stdout) + Kafka 独立 topic (隔离权限/留存).
 	// Kafka 不可达 → ChainAuditSink 会自动跳过, 退化为仅 zap.
 	auditSinks := []grpcsvc.AuditSink{&grpcsvc.ZapAuditSink{Log: log.Named("audit")}}
-	if brokers := splitCSV(envOr("SPLIT_PAYMENT_KAFKA_BROKERS", "")); len(brokers) > 0 {
-		kAudit, kErr := grpcsvc.NewKafkaAuditSink(brokers,
-			envOr("SPLIT_PAYMENT_AUDIT_TOPIC", "split-payment.audit"), log)
+	if brokers := cfg.Kafka.Brokers; len(brokers) > 0 {
+		auditTopic := cfg.Kafka.AuditTopic
+		if auditTopic == "" {
+			auditTopic = "split-payment.audit"
+		}
+		kAudit, kErr := grpcsvc.NewKafkaAuditSink(brokers, auditTopic, log)
 		if kErr != nil {
-			log.Warn("kafka audit sink init failed; falling back to zap only", zap.Error(kErr))
+			log.Warn("kafka audit sink init failed; falling back to zap only",
+				zap.Strings("brokers", brokers),
+				zap.String("topic", auditTopic),
+				zap.Error(kErr))
 		} else {
 			defer kAudit.Close()
 			auditSinks = append(auditSinks, kAudit)
-			log.Info("kafka audit sink wired", zap.String("topic", envOr("SPLIT_PAYMENT_AUDIT_TOPIC", "split-payment.audit")))
+			log.Info("kafka audit sink wired", zap.String("topic", auditTopic))
 		}
 	}
 	auditSink := &grpcsvc.ChainAuditSink{Sinks: auditSinks}
-	grpcsvc.RegisterAdminServiceServer(srv, grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, auditSink, log))
-	log.Info("split-payment gRPC AdminService listening", zap.String("port", port))
-	go func() { <-ctx.Done(); srv.GracefulStop() }()
-	if err := srv.Serve(lis); err != nil {
-		log.Error("split gRPC serve", zap.Error(err))
+
+	// Kitex server — adminservice.NewServer 把 grpcsvc.Server (实现 grpcsvc.AdminServiceServer
+	// interface) 注册到 Kitex. 老 grpc.NewServer + RegisterAdminServiceServer 替换为单行.
+	impl := grpcsvc.NewServer(graphs, acct, ruleSync, orderReset, auditSink, log)
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "split-payment"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("split-payment", fmt.Sprintf("%s:%d", advHost, port))...)
+	srv := adminservice.NewServer(impl, srvOpts...)
+
+	log.Info("split-payment Kitex AdminService listening", zap.Int("port", port))
+	go func() { <-ctx.Done(); _ = srv.Stop() }()
+	if err := srv.Run(); err != nil {
+		log.Error("split kitex serve", zap.Error(err))
 	}
 }
 
-// adminTokenInterceptor 校验 metadata `x-admin-token` 是否匹配预期 token.
-// 不匹配 → grpc.Unauthenticated. metadata header 名小写: gRPC 规范要求.
-func adminTokenInterceptor(expectedToken string) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		md, ok := metadata.FromIncomingContext(ctx)
-		if !ok {
-			return nil, status.Error(codes.Unauthenticated, "missing metadata")
-		}
-		tokens := md.Get("x-admin-token")
-		if len(tokens) == 0 || tokens[0] != expectedToken {
-			return nil, status.Error(codes.Unauthenticated, "invalid or missing X-Admin-Token")
-		}
-		return handler(ctx, req)
-	}
-}
+// adminTokenInterceptor 已删 — Kitex 切换后用 server.WithMiddleware + metainfo.GetValue.
+// 待 kitexutil.AuthMW 接通后再加.
 
 // reconcileGraphRules 启动期 self-heal: 扫所有 status=active 的 graph,
 // 把 DeriveRulesFromGraph 派生的 rule 调一次 UpsertRules.
@@ -1141,56 +1092,8 @@ func (a accountingGRPCAdapter) CreateTransaction(ctx context.Context, req *domai
 	}, nil
 }
 
-// ─── SP-AC-7 PH3-2: mTLS 工具 ─────────────────────────────────────────
-//
-// buildClientCreds  — 用于 dial accounting-system gRPC (client 侧 mTLS).
-// buildServerCreds  — 用于 grpc.NewServer (server 侧 mTLS, 强校验 client cert).
-//
-// 行为:
-//   - mtls.LoadFromEnv() 失败 (e.g. ENVIRONMENT=prod 且 cert 不全) → fail-fast.
-//   - InsecureDev (INSECURE_DIAL=1, 非 prod) 或证书路径全为空 → 退化 insecure (dev 模式).
-//   - 否则加载 cert/key/CA 构造 mTLS credentials.
-//
-// 环境变量:
-//   MTLS_SERVER_CERT  /etc/certs/server.crt
-//   MTLS_SERVER_KEY   /etc/certs/server.key
-//   MTLS_CA_CERT      /etc/certs/ca.crt
-//   ENVIRONMENT       prod|production → 强制 mTLS
-//   INSECURE_DIAL     1 → 允许 dev 模式跳过 mTLS
-
-func buildClientCreds(log *zap.Logger) (grpc.DialOption, error) {
-	cfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		return nil, fmt.Errorf("mtls.LoadFromEnv (client): %w", err)
-	}
-	if cfg.InsecureDev || (cfg.ServerCertPath == "" && cfg.ServerKeyPath == "" && cfg.CACertPath == "") {
-		log.Warn("accounting client dial: INSECURE (no mTLS) — set MTLS_* env vars in production")
-		return grpc.WithTransportCredentials(insecure.NewCredentials()), nil
-	}
-	creds, err := cfg.ClientCredentials()
-	if err != nil {
-		return nil, fmt.Errorf("mtls.ClientCredentials: %w", err)
-	}
-	log.Info("accounting client dial: mTLS enabled",
-		zap.String("cert", cfg.ServerCertPath), zap.String("ca", cfg.CACertPath))
-	return grpc.WithTransportCredentials(creds), nil
-}
-
-func buildServerCreds(log *zap.Logger) (credentials.TransportCredentials, error) {
-	cfg, err := mtls.LoadFromEnv()
-	if err != nil {
-		return nil, fmt.Errorf("mtls.LoadFromEnv (server): %w", err)
-	}
-	if cfg.InsecureDev || (cfg.ServerCertPath == "" && cfg.ServerKeyPath == "" && cfg.CACertPath == "") {
-		_ = log
-		return nil, nil // dev mode — caller log warn 后退化明文
-	}
-	creds, err := cfg.ServerCredentials()
-	if err != nil {
-		return nil, fmt.Errorf("mtls.ServerCredentials: %w", err)
-	}
-	return creds, nil
-}
+// mTLS dead — 内部 mesh + Kitex 切换后客户端不再需要 dial credentials.
+// 老 buildClientCreds / buildServerCreds 已删.
 
 // zapSagaLogger 适配 zap 到 workflow.Logger 接口 (kv 风格).
 type zapSagaLogger struct{ log *zap.Logger }
@@ -1208,40 +1111,8 @@ func (l logAudit) Write(_ context.Context, ev map[string]any) error {
 	return nil
 }
 
-// splitCSV "a,b, c" → ["a","b","c"]; 用于 brokers 配置.
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	out := []string{}
-	cur := ""
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == ',' {
-			if cur != "" {
-				out = append(out, trimSpaces(cur))
-				cur = ""
-			}
-			continue
-		}
-		cur += string(c)
-	}
-	if cur != "" {
-		out = append(out, trimSpaces(cur))
-	}
-	return out
-}
-
-func trimSpaces(s string) string {
-	start, end := 0, len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
-		end--
-	}
-	return s[start:end]
-}
+// splitCSV / trimSpaces 已删除 — viper 直接 unmarshal "a,b,c" → []string;
+// kafka.brokers 在 yaml 写数组形式, env override 写 CSV, viper 自动处理.
 
 // runRefundSubscriber SP-9: 订 refund-engine 的 refund.completed Kafka topic, 调 engine.HandleRefund.
 //
@@ -1253,17 +1124,30 @@ func trimSpaces(s string) string {
 //   - HandleRefund 业务失败 → 累计 retry header, 超 maxRetry → DLQ + commit; 否则不 commit 下次再试
 func runRefundSubscriber(
 	ctx context.Context,
+	cfg *config.Config,
 	engine *workflow.Engine,
 	log *zap.Logger,
 	trRepo workflow.TransferReverseRepo,
 	feeRepo workflow.AppFeeRefundRepo,
 	rvRepo workflow.ReversalExtRepo,
 ) {
-	brokers := splitCSV(envOr("SPLIT_PAYMENT_KAFKA_BROKERS", ""))
-	topic := envOr("SPLIT_PAYMENT_REFUND_TOPIC", "recon.refund.events")
-	dlqTopic := envOr("SPLIT_PAYMENT_REFUND_DLQ_TOPIC", topic+".dlq")
-	groupID := envOr("SPLIT_PAYMENT_REFUND_GROUP", "split-payment-refund-handler")
-	maxRetry := envInt("SPLIT_PAYMENT_REFUND_MAX_RETRY", 5)
+	brokers := cfg.Kafka.Brokers
+	topic := cfg.Kafka.Refund.Topic
+	if topic == "" {
+		topic = "recon.refund.events"
+	}
+	dlqTopic := cfg.Kafka.Refund.DLQTopic
+	if dlqTopic == "" {
+		dlqTopic = topic + ".dlq"
+	}
+	groupID := cfg.Kafka.Refund.Group
+	if groupID == "" {
+		groupID = "split-payment-refund-handler"
+	}
+	maxRetry := cfg.Kafka.Refund.MaxRetry
+	if maxRetry <= 0 {
+		maxRetry = 5
+	}
 	if len(brokers) == 0 {
 		return
 	}

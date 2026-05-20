@@ -1,0 +1,152 @@
+syntax = "proto3";
+
+package order.v1;
+
+option go_package = "reconcile-system/packages/order-core/kitex_gen/order/v1;orderv1";
+
+message GLAccount {
+  string id             = 1;
+  string name           = 2;
+  string type           = 3; // asset/liability/revenue/expense/equity
+  string owner_type     = 4; // platform/merchant/channel
+  string owner_id       = 5;
+  string currency       = 6;
+  int64  debit_balance  = 7;
+  int64  credit_balance = 8;
+  int64  net_balance    = 9; // signed, "natural direction" balance
+  int64  version        = 10;
+  string status         = 11;
+  int64  created_ms     = 12;
+  int64  updated_ms     = 13;
+}
+
+message GLEntry {
+  int64  id             = 1;
+  string txn_id         = 2;
+  string account_id     = 3;
+  int64  debit_amount   = 4;
+  int64  credit_amount  = 5;
+  string currency       = 6;
+  string memo           = 7;
+  int64  created_ms     = 8;
+}
+
+message GLTransaction {
+  string id            = 1;
+  string event_type    = 2;
+  string ref_type      = 3;
+  string ref_id        = 4;
+  int64  total_debit   = 5;
+  int64  total_credit  = 6;
+  string memo          = 7;
+  string reverses      = 8;
+  int64  created_ms    = 9;
+  repeated GLEntry entries = 10; // optional — populated by GetTransaction
+}
+
+message PostingLine {
+  string account_id = 1;
+  int64  debit      = 2;
+  int64  credit     = 3;
+  string memo       = 4;
+}
+
+// ─── Read RPCs ──────────────────────────────────────────────────────────────
+
+message GetLedgerAccountRequest { string id = 1; }
+message GetLedgerAccountResponse { GLAccount account = 1; }
+
+message ListLedgerAccountsRequest {
+  string owner_type = 1; // "" = any
+  string owner_id   = 2;
+  int32  limit      = 3;
+  int32  offset     = 4;
+}
+message ListLedgerAccountsResponse {
+  repeated GLAccount accounts = 1;
+  int64              total    = 2;
+}
+
+message ListLedgerEntriesRequest {
+  string account_id = 1;
+  int64  since_ms   = 2;
+  int64  until_ms   = 3;
+  int32  limit      = 4;
+  int32  offset     = 5;
+}
+message ListLedgerEntriesResponse {
+  repeated GLEntry entries = 1;
+  int64            total   = 2;
+}
+
+message ListLedgerTransactionsRequest {
+  string event_type = 1;
+  string ref_type   = 2;
+  string ref_id     = 3;
+  int32  limit      = 4;
+  int32  offset     = 5;
+}
+message ListLedgerTransactionsResponse {
+  repeated GLTransaction transactions = 1;
+  int64                  total        = 2;
+}
+
+message GetLedgerTransactionRequest { string id = 1; }
+message GetLedgerTransactionResponse { GLTransaction transaction = 1; }
+
+// ─── Write RPCs (business-event helpers + manual adjustment) ─────────────────
+
+message PostChargeRequest {
+  string merchant_id = 1;
+  string channel     = 2;
+  string ref_type    = 3;
+  string ref_id      = 4;
+  int64  gross_minor = 5;
+  int64  fee_minor   = 6;
+}
+message PostChargeResponse { GLTransaction transaction = 1; }
+
+message PostRefundRequest {
+  string merchant_id = 1;
+  string channel     = 2;
+  string ref_type    = 3;
+  string ref_id      = 4;
+  int64  gross_minor = 5;
+  int64  fee_rebate_minor = 6;
+}
+message PostRefundResponse { GLTransaction transaction = 1; }
+
+message PostSettlementPayoutRequest {
+  string merchant_id = 1;
+  string ref_id      = 2;
+  int64  amount_minor = 3;
+}
+message PostSettlementPayoutResponse { GLTransaction transaction = 1; }
+
+message PostChannelSettlementRequest {
+  string channel     = 1;
+  string ref_id      = 2;
+  int64  amount_minor = 3;
+}
+message PostChannelSettlementResponse { GLTransaction transaction = 1; }
+
+message PostAdjustmentRequest {
+  string memo  = 1;
+  string actor = 2;
+  repeated PostingLine lines = 3;
+}
+message PostAdjustmentResponse { GLTransaction transaction = 1; }
+
+service LedgerService {
+  rpc GetAccount          (GetLedgerAccountRequest)        returns (GetLedgerAccountResponse);
+  rpc ListAccounts        (ListLedgerAccountsRequest)      returns (ListLedgerAccountsResponse);
+  rpc ListEntries         (ListLedgerEntriesRequest)       returns (ListLedgerEntriesResponse);
+  rpc ListTransactions    (ListLedgerTransactionsRequest)  returns (ListLedgerTransactionsResponse);
+  rpc GetTransaction      (GetLedgerTransactionRequest)    returns (GetLedgerTransactionResponse);
+
+  rpc PostCharge            (PostChargeRequest)            returns (PostChargeResponse);
+  rpc PostRefund            (PostRefundRequest)            returns (PostRefundResponse);
+  rpc PostSettlementPayout  (PostSettlementPayoutRequest)  returns (PostSettlementPayoutResponse);
+  rpc PostChannelSettlement (PostChannelSettlementRequest) returns (PostChannelSettlementResponse);
+  rpc PostAdjustment        (PostAdjustmentRequest)        returns (PostAdjustmentResponse);
+}

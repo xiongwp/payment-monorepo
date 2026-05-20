@@ -38,7 +38,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/domain"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"

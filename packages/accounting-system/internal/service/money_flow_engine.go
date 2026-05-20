@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
 	"go.uber.org/zap"
 )
 

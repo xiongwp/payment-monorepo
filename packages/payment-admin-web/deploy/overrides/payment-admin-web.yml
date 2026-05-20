@@ -16,6 +16,9 @@ services:
       # SP-AC-7: split-payment / accounting-service 同网容器, 走 DNS
       SPLIT_PAYMENT_GRPC_ADDR: "split-payment:9098"
       ACCOUNTING_GRPC_ADDR:    "accounting-service:50051"
+      # MF-SERVE: 联栈下 accounting admin HTTP 在容器 8888 (host range 8888-8898).
+      ACCOUNTING_ADMIN_HTTP_ADDR: "http://accounting-service:8888"
+      ACCOUNTING_HTTP_URL:       "http://accounting-service:8888"
       REGISTRY_ENDPOINTS: "etcd:2379"
       PORT: "9190"
       ADMIN_BEARER_TOKEN: ""

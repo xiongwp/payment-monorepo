@@ -136,6 +136,8 @@ services:
         kms-manage:          ../kms-manage
         risk-manage:         ../risk-manage
         accounting-grpc-api: ../accounting-grpc-api
+        accounting-system:   ../accounting-system
+        card-center:         ../card-center
       secrets:
         - GITHUB_TOKEN
     image: user-merchant-core:latest
@@ -170,7 +172,10 @@ services:
       USERMERCHANTCORE_DATABASE_SHARD_8_DSN: "root:password@tcp(shard-8:3306)/user_merchant_db_8?charset=utf8mb4&parseTime=True&loc=Local"
       USERMERCHANTCORE_DATABASE_SHARD_9_DSN: "root:password@tcp(shard-9:3306)/user_merchant_db_9?charset=utf8mb4&parseTime=True&loc=Local"
       # ── 服务发现 + 下游 endpoint（payment-stack 内 DNS）──
+      # kitexutil 读 REGISTRY_ENDPOINTS, viper 兼容读 USERMERCHANTCORE_*.
       USERMERCHANTCORE_REGISTRY_ENDPOINTS: "etcd:2379"
+      REGISTRY_ENDPOINTS: "etcd:2379"
+      ADVERTISE_HOST: "user-merchant-core"
       USERMERCHANTCORE_KMS_ENDPOINT: "kms-manage:9390"
       USERMERCHANTCORE_ACCOUNTING_ENDPOINT: "accounting-system:50051"
       USERMERCHANTCORE_RISK_ENDPOINT: "risk-manage:9590"

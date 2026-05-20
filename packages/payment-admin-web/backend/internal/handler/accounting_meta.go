@@ -1,9 +1,13 @@
-// accounting_meta.go — SP-AC-4 BFF reverse proxy 到 accounting-system admin API.
+// accounting_meta.go — SP-AC-4 BFF reverse proxy 到 accounting-service admin HTTP.
+//
+// MF-SERVE: 上游 host 改 accounting-service:8888 (docker DNS 名 + admin HTTP 端口).
+// 老 "accounting-system:8080" 是错的: docker DNS 是 accounting-service, admin
+// HTTP 端口是 8888 (compose ports "8888-8898:8888").
 //
 // 路径:
-//   /api/accounting/account_types       → accounting/admin/account_types
-//   /api/accounting/transaction_rules   → accounting/admin/transaction_rules
-//   /api/accounting/transactions        → accounting/admin/transactions
+//   /api/accounting/account_types       → /admin/account_types
+//   /api/accounting/transaction_rules   → /admin/transaction_rules
+//   /api/accounting/transactions        → /admin/transactions
 //
 // Designer 节点 picker 调本端点拉账户类型 / 规则列表.
 package handler
@@ -23,7 +27,7 @@ type AccountingMetaHandler struct {
 
 // NewAccountingMetaHandler.
 func NewAccountingMetaHandler() *AccountingMetaHandler {
-	up := envOrDef("ACCOUNTING_HTTP_URL", "http://accounting-system:8080")
+	up := envOrDef("ACCOUNTING_HTTP_URL", "http://accounting-service:8888")
 	u, err := url.Parse(up)
 	if err != nil || u.Scheme == "" {
 		u, _ = url.Parse("http://localhost:8080")

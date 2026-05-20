@@ -1,49 +1,39 @@
-// Package cardcenterclient mTLS gRPC 调 card-center 服务（专用于派生支付 token）。
+// Package cardcenterclient — Kitex client to card-center.CreatePaymentToken.
 //
-// order-core 在 PI Confirm 路径调 CreatePaymentToken：把 user_card 的 stored_token
-// 转成绑定 pi_id 的一次性支付 token（TTL 30min），传给 payment-channel.adapter[card]
-// → card-payment → card-center.Detokenize → PAN → 卡组织。
-//
-// 注:cardcenterv1 proto stub 不在本模块直接 import (避免跨服务仓库 build context
-// 耦合); 调用方走通用 gRPC ClientConn。要切到强类型,把 cardcenter.pb.go +
-// cardcenter_grpc.pb.go vendor 进 packages/order-core/api/proto/cardcenter/v1/
-// 并把 import 切回 generated stub 即可。
-//
-// 当前实现:prod 配置 mTLS 后报"需要 vendor proto stub"显式错误,
-// dev / 测试用 NewStub() 路径不受影响 (调用方用 NewStub 注入)。
+// order-core 在 PaymentIntent.Confirm 时, 卡支付路径会先调 card-center.
+// CreatePaymentToken 把 stored_token 兑换成单笔 payment_token (绑定 pi_id),
+// 然后把 payment_token 转给 card-payment 真扣款.
 package cardcenterclient
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
+	cardcenterv1 "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1"
+	cardcenterservice "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1/cardcenter"
+	"github.com/xiongwp/payment-util/kitexutil"
 )
 
-// Client 调 card-center 的 gRPC 客户端
-type Client struct {
-	conn    *grpc.ClientConn
-	timeout time.Duration
-}
+// ErrNotConfigured Endpoint 为空时构造返此 sentinel.
+var ErrNotConfigured = errors.New("cardcenterclient: endpoint required")
 
-// Config
+// Config 拨号配置.
 type Config struct {
 	Endpoint   string
 	RPCTimeout time.Duration
-	ClientCert string
-	ClientKey  string
-	ServerCA   string
-	Insecure   bool
 }
 
-// CreatePaymentTokenRequest 业务层请求
+// Client wraps cardcenterservice.Client.
+type Client struct {
+	cli     cardcenterservice.Client
+	timeout time.Duration
+}
+
+// CreatePaymentTokenRequest 业务侧入参 (本仓 domain layer 形态, 不直接是 proto).
 type CreatePaymentTokenRequest struct {
 	StoredToken string
 	UserID      int64
@@ -54,7 +44,7 @@ type CreatePaymentTokenRequest struct {
 	TraceID     string
 }
 
-// CreatePaymentTokenResponse
+// CreatePaymentTokenResponse 业务侧响应.
 type CreatePaymentTokenResponse struct {
 	PaymentToken string
 	ExpiresAt    time.Time
@@ -62,74 +52,56 @@ type CreatePaymentTokenResponse struct {
 	Network      string
 }
 
-// New
+// New 构造 Kitex client. cfg.Endpoint 为空 → 走 etcd discovery.
 func New(cfg Config) (*Client, error) {
-	if cfg.Endpoint == "" {
-		return nil, errors.New("cardcenterclient: endpoint required")
-	}
-	var creds credentials.TransportCredentials
-	if cfg.Insecure {
-		creds = insecure.NewCredentials()
-	} else {
-		tc, err := buildTLS(cfg)
-		if err != nil {
-			return nil, err
-		}
-		creds = credentials.NewTLS(tc)
-	}
-	conn, err := grpc.NewClient(cfg.Endpoint, grpc.WithTransportCredentials(creds))
-	if err != nil {
-		return nil, fmt.Errorf("dial: %w", err)
-	}
 	t := cfg.RPCTimeout
 	if t <= 0 {
 		t = 5 * time.Second
 	}
-	return &Client{conn: conn, timeout: t}, nil
-}
-
-// Close
-func (c *Client) Close() error { return c.conn.Close() }
-
-// errProtoNotVendored 显式错误:启用真实 card-center 调用前必须把 cardcenterv1
-// proto stub vendor 进本模块。绝不静默成功。
-var errProtoNotVendored = errors.New(
-	"cardcenterclient: cardcenterv1 proto stubs not vendored into order-core " +
-		"— see package doc for vendoring instructions")
-
-// CreatePaymentToken 调 card-center.CreatePaymentToken
-//
-// 当前实现:返回 errProtoNotVendored 强制 prod 部署前 vendor 进 stub;
-// dev / 测试由调用方走 mock / stub 注入路径,不经过本函数。
-func (c *Client) CreatePaymentToken(ctx context.Context, req *CreatePaymentTokenRequest) (*CreatePaymentTokenResponse, error) {
-	if req == nil {
-		return nil, errors.New("cardcenterclient: request required")
+	// ETCD-5: kitexutil.DefaultClientOptions 自动按 REGISTRY_ENDPOINTS 切 etcd / 静态.
+	opts := kitexutil.DefaultClientOptions("card-center")
+	opts = append(opts,
+		client.WithTransportProtocol(transport.GRPC),
+		client.WithRPCTimeout(t),
+	)
+	if cfg.Endpoint != "" {
+		opts = append(opts, client.WithHostPorts(cfg.Endpoint))
 	}
-	if req.StoredToken == "" || req.PIID == "" {
-		return nil, errors.New("cardcenterclient: stored_token / pi_id required")
-	}
-	return nil, errProtoNotVendored
-}
-
-func buildTLS(cfg Config) (*tls.Config, error) {
-	if cfg.ClientCert == "" || cfg.ClientKey == "" {
-		return nil, errors.New("client_cert / client_key required")
-	}
-	cert, err := tls.LoadX509KeyPair(cfg.ClientCert, cfg.ClientKey)
+	cli, err := cardcenterservice.NewClient("card-center", opts...)
 	if err != nil {
-		return nil, fmt.Errorf("client keypair: %w", err)
+		return nil, fmt.Errorf("dial card-center: %w", err)
 	}
-	out := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
-	if cfg.ServerCA != "" {
-		pool := x509.NewCertPool()
-		caBytes, err := os.ReadFile(cfg.ServerCA)
-		if err != nil {
-			return nil, fmt.Errorf("server CA: %w", err)
-		}
-		if !pool.AppendCertsFromPEM(caBytes) {
-			return nil, fmt.Errorf("server CA PEM parse failed")
-		}
-		out.RootCAs = pool
+	return &Client{cli: cli, timeout: t}, nil
+}
+
+// Close — Kitex 自带 connection pool, no-op.
+func (c *Client) Close() error { return nil }
+
+// CreatePaymentToken 拨号 card-center.CreatePaymentToken; 返回业务侧 response 结构.
+func (c *Client) CreatePaymentToken(ctx context.Context, in *CreatePaymentTokenRequest) (*CreatePaymentTokenResponse, error) {
+	if in == nil || in.StoredToken == "" {
+		return nil, errors.New("stored_token required")
 	}
-	return out, nil
+	ttlSec := int32(in.TTL / time.Second)
+	if ttlSec <= 0 || ttlSec > 1800 {
+		ttlSec = 1800
+	}
+	resp, err := c.cli.CreatePaymentToken(ctx, &cardcenterv1.CreatePaymentTokenRequest{
+		StoredToken: in.StoredToken,
+		UserId:      fmt.Sprintf("%d", in.UserID),
+		PiId:        in.PIID,
+		Amount:      in.Amount,
+		Currency:    in.Currency,
+		TtlSeconds:  ttlSec,
+		TraceId:     in.TraceID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &CreatePaymentTokenResponse{
+		PaymentToken: resp.GetPaymentToken(),
+		ExpiresAt:    time.Unix(resp.GetExpiresAt(), 0),
+		MaskedPAN:    resp.GetMaskedPan(),
+		Network:      resp.GetNetwork(),
+	}, nil
 }

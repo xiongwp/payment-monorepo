@@ -3,7 +3,7 @@ package service
 import (
 	"testing"
 
-	"github.com/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/domain/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

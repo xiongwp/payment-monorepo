@@ -5,15 +5,16 @@ import (
 	"strconv"
 
 	"github.com/gorilla/mux"
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 )
 
 // TccHandler handles TCC maintenance endpoints.
 type TccHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewTccHandler(client accountingv1.AccountingServiceClient) *TccHandler {
+func NewTccHandler(client accountingservice.Client) *TccHandler {
 	return &TccHandler{client: client}
 }
 

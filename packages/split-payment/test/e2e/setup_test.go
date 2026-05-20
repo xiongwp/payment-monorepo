@@ -28,9 +28,9 @@ import (
 
 	"go.uber.org/zap"
 
-	"reconcile-system/packages/split-payment/internal/domain"
-	"reconcile-system/packages/split-payment/internal/repo"
-	"reconcile-system/packages/split-payment/internal/workflow"
+	"github.com/xiongwp/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/repo"
+	"github.com/xiongwp/split-payment/internal/workflow"
 
 	_ "github.com/go-sql-driver/mysql"
 )

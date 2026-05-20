@@ -1,30 +1,31 @@
-// Package server 提供 gRPC handler，把 cardcenter.v1 proto 转到 service.Service。
+// Package server 提供 Kitex handler, 把 cardcenter.v1 proto 转到 service.Service.
 //
-// 注意：本 handler **不**直接接触 PAN（仅在 DetokenizeResponse 内回传，调用方
-// 接到后必须立即用、立即清栈，本服务自己不能 log）。
+// 注意: 本 handler **不**直接接触 PAN (仅在 DetokenizeResponse 内回传, 调用方
+// 接到后必须立即用、立即清栈, 本服务自己不能 log).
 package server
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	cardcenterv1 "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1"
 
-	cardcenterv1 "github.com/xiongwp/card-center/api/proto/cardcenter/v1"
 	"github.com/xiongwp/card-center/internal/repo"
 	"github.com/xiongwp/card-center/internal/service"
-	"github.com/xiongwp/payment-util/trace"
 )
 
-// Server 实现 cardcenterv1.CardCenterServer
-type Server struct {
-	cardcenterv1.UnimplementedCardCenterServer
+// PeerCN STUB: gRPC mTLS 切 Kitex 后 peer.FromContext / credentials.TLSInfo
+// 已废, 本函数返回空 cn + 空 ip — 业务路径(audit / Tokenize 等)用空值表示
+// "未识别 caller", 接通 Kitex MTLSClientCNMW 后改回真值.
+func PeerCN(_ context.Context) (cn, ip string) { return "", "" }
 
+// Server 实现 Kitex cardcenterservice.Server 接口 (跟 gRPC 同方法签名).
+// 切 Kitex 后不再 embed UnimplementedCardCenterServer.
+type Server struct {
 	svc    *service.Service
 	logger *zap.Logger
 }
@@ -34,20 +35,19 @@ func NewServer(svc *service.Service, logger *zap.Logger) *Server {
 	return &Server{svc: svc, logger: logger}
 }
 
-// Register 把 server 挂到 grpc.Server
-func (s *Server) Register(g *grpc.Server) {
-	cardcenterv1.RegisterCardCenterServer(g, s)
-}
+// Register Kitex 不用后置 Register, 这里保留 no-op 兼容老接口. cmd/server/main.go
+// 直接用 cardcenterservice.NewServer(impl, opts...) 在构造时完成 service 注册.
+func (s *Server) Register() {}
 
 // ─── Tokenize ──────────────────────────────────────────────────────────────
 
 func (s *Server) Tokenize(ctx context.Context, req *cardcenterv1.TokenizeRequest) (*cardcenterv1.TokenizeResponse, error) {
 	if req.GetPan() == "" || req.GetUserId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "pan / user_id required")
+		return nil, fmt.Errorf("pan / user_id required")
 	}
 	uid, err := strconv.ParseInt(req.GetUserId(), 10, 64)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, "user_id must be numeric")
+		return nil, fmt.Errorf("user_id must be numeric")
 	}
 	cn, ip := PeerCN(ctx)
 	out, err := s.svc.Tokenize(ctx, &service.TokenizeInput{
@@ -75,11 +75,11 @@ func (s *Server) Tokenize(ctx context.Context, req *cardcenterv1.TokenizeRequest
 
 func (s *Server) CreatePaymentToken(ctx context.Context, req *cardcenterv1.CreatePaymentTokenRequest) (*cardcenterv1.CreatePaymentTokenResponse, error) {
 	if req.GetStoredToken() == "" || req.GetUserId() == "" || req.GetPiId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "stored_token / user_id / pi_id required")
+		return nil, fmt.Errorf("stored_token / user_id / pi_id required")
 	}
 	uid, err := strconv.ParseInt(req.GetUserId(), 10, 64)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, "user_id must be numeric")
+		return nil, fmt.Errorf("user_id must be numeric")
 	}
 	cn, ip := PeerCN(ctx)
 	ttl := time.Duration(req.GetTtlSeconds()) * time.Second
@@ -109,7 +109,7 @@ func (s *Server) CreatePaymentToken(ctx context.Context, req *cardcenterv1.Creat
 
 func (s *Server) Detokenize(ctx context.Context, req *cardcenterv1.DetokenizeRequest) (*cardcenterv1.DetokenizeResponse, error) {
 	if req.GetPaymentToken() == "" || req.GetPiId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "payment_token / pi_id required")
+		return nil, fmt.Errorf("payment_token / pi_id required")
 	}
 	cn, ip := PeerCN(ctx)
 	out, err := s.svc.Detokenize(ctx, &service.DetokenizeInput{
@@ -140,7 +140,7 @@ func (s *Server) Detokenize(ctx context.Context, req *cardcenterv1.DetokenizeReq
 func (s *Server) DeleteCard(ctx context.Context, req *cardcenterv1.DeleteCardRequest) (*cardcenterv1.DeleteCardResponse, error) {
 	uid, err := strconv.ParseInt(req.GetUserId(), 10, 64)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, "user_id must be numeric")
+		return nil, fmt.Errorf("user_id must be numeric")
 	}
 	cn, ip := PeerCN(ctx)
 	if err := s.svc.DeleteCard(ctx, uid, req.GetStoredToken(), req.GetReason(), cn, ip, req.GetTraceId()); err != nil {
@@ -161,12 +161,10 @@ func mapErr(err error) error {
 	}
 	switch {
 	case errors.Is(err, repo.ErrStoredCardNotFound):
-		return status.Error(codes.NotFound, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	case errors.Is(err, repo.ErrPaymentTokenAlreadyUsed):
-		return status.Error(codes.FailedPrecondition, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	}
-	return status.Error(codes.Internal, "internal error")
+	return fmt.Errorf("internal error")
 }
 
-// 保持 trace import 不被裁；server 里实际由 grpc interceptor 接 trace
-var _ = trace.UnaryServerInterceptor

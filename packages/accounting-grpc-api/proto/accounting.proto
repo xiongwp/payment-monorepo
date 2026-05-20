@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package accounting.v1;
 
-option go_package = "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1;accountingv1";
+option go_package = "github.com/xiongwp/accounting-grpc-api/kitex_gen/accounting/v1;accountingv1";
 
 import "google/protobuf/timestamp.proto";
 

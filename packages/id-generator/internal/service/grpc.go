@@ -13,12 +13,11 @@ import (
 	"github.com/xiongwp/payment-util/shadow"
 
 	"github.com/xiongwp/id-generator/internal/generator"
-	pb "github.com/xiongwp/id-generator/internal/proto"
+	pb "github.com/xiongwp/id-generator/kitex_gen/idgen/v1"
 	"github.com/xiongwp/id-generator/internal/segment"
 )
 
 type Server struct {
-	pb.UnimplementedIDServiceServer
 	Sf        *generator.Node
 	SegMain   *segment.Buffer // 主流量号段
 	SegShadow *segment.Buffer // 影子号段；nil 时 shadow 流量回退到 Sf 兜底

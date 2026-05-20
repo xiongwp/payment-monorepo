@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package cardcenter.v1;
 
-option go_package = "github.com/xiongwp/card-center/api/proto/cardcenter/v1;cardcenterv1";
+option go_package = "github.com/xiongwp/card-center/kitex_gen/cardcenter/v1;cardcenterv1";
 
 // CardCenter 卡 token vault。无数据库，token 本身即是 KMS-encrypted PAN。
 //

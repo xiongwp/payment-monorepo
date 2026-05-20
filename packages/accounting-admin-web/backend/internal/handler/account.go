@@ -5,7 +5,8 @@ import (
 	"strconv"
 
 	"github.com/gorilla/mux"
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 )
 
 // accountJSON matches the frontend Account interface
@@ -58,10 +59,10 @@ func protoAccountToJSON(a *accountingv1.Account) *accountJSON {
 
 // AccountHandler handles account-related endpoints.
 type AccountHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewAccountHandler(client accountingv1.AccountingServiceClient) *AccountHandler {
+func NewAccountHandler(client accountingservice.Client) *AccountHandler {
 	return &AccountHandler{client: client}
 }
 
@@ -154,24 +155,38 @@ func (h *AccountHandler) GetAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "account_no or (user_id + account_business_type) required")
 		return
 	}
-	userID, _ := strconv.ParseInt(userIDStr, 10, 64)
-	businessType, _ := strconv.Atoi(businessTypeStr)
-	listResp, err := h.client.ListAccountsByUserAndBusinessType(r.Context(), &accountingv1.ListAccountsByUserAndBusinessTypeRequest{
+	// ListAccountsByUserAndBusinessType RPC (TECH-DEBT-1 已接真 service):
+	// 按 (user_id, business_type [, currency]) 跨币种枚举该用户的账户.
+	// currencyFilter 为空 → 返回所有币种行; 非空 → 服务端过滤到单币种.
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil || userID <= 0 {
+		writeError(w, 400, "invalid user_id")
+		return
+	}
+	bt, err := strconv.Atoi(businessTypeStr)
+	if err != nil || bt < 0 {
+		writeError(w, 400, "invalid account_business_type")
+		return
+	}
+	resp, err := h.client.ListAccountsByUserAndBusinessType(r.Context(), &accountingv1.ListAccountsByUserAndBusinessTypeRequest{
 		UserId:              userID,
-		AccountBusinessType: accountingv1.AccountBusinessType(businessType),
+		AccountBusinessType: accountingv1.AccountBusinessType(bt),
 		Currency:            currencyFilter,
 	})
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return
 	}
-	if listResp.Code != 0 {
-		writeError(w, int(listResp.Code), listResp.Message)
+	if resp.Code != 0 {
+		writeError(w, int(resp.Code), resp.Message)
 		return
 	}
-	out := make([]*accountJSON, 0, len(listResp.Accounts))
-	for _, a := range listResp.Accounts {
-		out = append(out, protoAccountToJSON(a))
+	accs := make([]*accountJSON, 0, len(resp.Accounts))
+	for _, a := range resp.Accounts {
+		accs = append(accs, protoAccountToJSON(a))
 	}
-	writeJSON(w, map[string]interface{}{"accounts": out, "count": len(out)})
+	writeJSON(w, map[string]interface{}{
+		"accounts": accs,
+		"count":    len(accs),
+	})
 }

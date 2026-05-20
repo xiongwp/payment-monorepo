@@ -46,7 +46,15 @@ services:
       # 挂联栈版本的 config，覆盖镜像内 baked 的 config.yaml。
       - ./accounting-config.shared.yaml:/app/config/config.yaml:ro
     environment:
+      # REG-FIX: list 形式 env override **替换**而非合并 base, 必须在这里
+      # 完整列出所有 env (包括 REGISTRY_ENDPOINTS / ADVERTISE_HOST), 否则 base
+      # 里的 etcd 注册 env 会被吞 → accounting-service 不会注册到 etcd.
       - TZ=Asia/Shanghai
+      - ETCD_ENDPOINTS=etcd:2379
+      - REGISTRY_ENDPOINTS=etcd:2379
+      - ADVERTISE_HOST=accounting-service
+      - CFG_ENDPOINT=http://config-center:9691
+      - CFG_NAMESPACE=accounting-system
     networks:
       - payment-stack
 

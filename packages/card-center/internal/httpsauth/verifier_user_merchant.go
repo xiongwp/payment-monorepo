@@ -1,4 +1,4 @@
-// verifier_user_merchant.go: 唯一生产 Verifier 实现 — mTLS gRPC 直连 user-merchant-core.IntrospectToken。
+// verifier_user_merchant.go: 唯一生产 Verifier 实现 — Kitex 直连 user-merchant-core.IntrospectToken。
 //
 // 在 card-center HTTPS 入口的 3 道防线里，本组件**实现防线 2**（用户登录态校验）：
 //
@@ -10,13 +10,7 @@
 // 调用路径：
 //
 //	浏览器 cookie/Bearer jwt → card-center HTTPS → user-merchant-core
-//	   IntrospectToken (mTLS gRPC, internal listener) → 返 user_id
-//
-// 选这条路而不是经 api-gateway 的原因：
-//   - 一跳；user-merchant-core 本来就是登录态权威
-//   - api-gateway 是公网边界，让它再做内部认证代理是不必要的耦合
-//   - mTLS 客户端 cert CN = "card-center"，user-merchant-core 在 internal listener
-//     上只白名单含 "card-center" 的 CN，跨服务调用边界清晰
+//	   IntrospectToken (Kitex, internal listener) → 返 user_id
 package httpsauth
 
 import (
@@ -27,7 +21,8 @@ import (
 
 	"go.uber.org/zap"
 
-	usermerchantv1 "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1"
+	usermerchantv1 "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1"
+	userservice "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1/userservice"
 )
 
 // cacheEntry 短期缓存 jwt → user_id 校验结果
@@ -37,20 +32,20 @@ type cacheEntry struct {
 	expiresAt time.Time
 }
 
-// UserMerchantVerifier 通过 mTLS gRPC 调 user-merchant-core.UserService.IntrospectToken。
+// UserMerchantVerifier 通过 Kitex 调 user-merchant-core.UserService.IntrospectToken。
 //
 // 60s 短期缓存避免每个 HTTPS 请求都打 RPC（每秒可能数百绑卡 / 列卡请求）。
 // 登出后最多 60s 仍能用旧 jwt — 业务可接受；不可接受时把 cacheTTL 调到 0 即可。
 type UserMerchantVerifier struct {
-	uc       usermerchantv1.UserServiceClient
+	uc       userservice.Client
 	timeout  time.Duration
 	cacheTTL time.Duration
 	cache    sync.Map // map[sha256(jwt)]cacheEntry
 	logger   *zap.Logger
 }
 
-// NewUserMerchantVerifier 构造
-func NewUserMerchantVerifier(uc usermerchantv1.UserServiceClient, logger *zap.Logger) *UserMerchantVerifier {
+// NewUserMerchantVerifier 构造. uc 是已建好的 Kitex client.
+func NewUserMerchantVerifier(uc userservice.Client, logger *zap.Logger) *UserMerchantVerifier {
 	return &UserMerchantVerifier{
 		uc:       uc,
 		timeout:  3 * time.Second,
@@ -78,7 +73,9 @@ func (v *UserMerchantVerifier) Verify(parent context.Context, jwt string) (int64
 	defer cancel()
 	resp, err := v.uc.IntrospectToken(ctx, &usermerchantv1.IntrospectTokenRequest{Jwt: jwt})
 	if err != nil {
-		v.logger.Debug("IntrospectToken rpc error", zap.Error(err))
+		if v.logger != nil {
+			v.logger.Debug("IntrospectToken rpc error", zap.Error(err))
+		}
 		return 0, false, fmt.Errorf("user-merchant-core IntrospectToken: %w", err)
 	}
 	if !resp.GetValid() {

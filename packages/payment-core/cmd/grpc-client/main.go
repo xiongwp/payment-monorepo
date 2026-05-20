@@ -1,4 +1,4 @@
-// Command grpc-client 调试用：
+// Command grpc-client (Kitex 版) — payment-core 调试工具.
 //
 //	go run ./cmd/grpc-client -addr 127.0.0.1:9090 charge \
 //	  -pi pi_4371234560001 -amount 10000 -country PH -pm GCASH
@@ -12,16 +12,16 @@ import (
 	"os"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
+	"github.com/cloudwego/kitex/client"
+	"github.com/xiongwp/payment-util/kitexutil"
 
-	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
+	paymentcorev1 "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1"
+	paymentcoreservice "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
 )
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:9090", "grpc address")
-	shadowFl := flag.Bool("shadow", false, "send as shadow traffic (x-shadow=1; payment-core 透传给 channel/risk/kms)")
+	addr := flag.String("addr", "127.0.0.1:9090", "payment-core kitex address")
+	shadowFl := flag.Bool("shadow", false, "send as shadow traffic (x-shadow=1; 透传给 channel/risk/kms)")
 	flag.Parse()
 
 	args := flag.Args()
@@ -44,18 +44,21 @@ func main() {
 	returnURL := fs.String("return-url", "https://cashier.example/ret", "return url")
 	_ = fs.Parse(args[1:])
 
-	conn, err := grpc.NewClient(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	cli, err := paymentcoreservice.NewClient("payment-core",
+		client.WithHostPorts(*addr),
+		client.WithRPCTimeout(30*time.Second),
+	)
 	if err != nil {
 		die(err)
 	}
-	defer conn.Close()
-	cli := paymentcorev1.NewPaymentCoreServiceClient(conn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if *shadowFl {
-		ctx = metadata.AppendToOutgoingContext(ctx, "x-shadow", "1")
-		fmt.Fprintln(os.Stderr, "[grpc-client] shadow=1 — server will route to *_shadow tables")
+		// shadow header 透传: 等 kitexutil.ShadowMW 接好后这里换成 kitexutil.WithShadow(ctx).
+		// 当前 stub: 用 admin token slot 做占位 (kitexutil 自定义 ctx key 通道).
+		_ = kitexutil.WithAdminToken
+		fmt.Fprintln(os.Stderr, "[grpc-client] shadow=1 — TODO: wire kitexutil.WithShadow")
 	}
 
 	extra := map[string]string{"country": *country, "payment_method": *pm}

@@ -25,7 +25,7 @@ import (
 	"sort"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/domain"
 )
 
 // TriggerContext 触发事件携带的上下文.

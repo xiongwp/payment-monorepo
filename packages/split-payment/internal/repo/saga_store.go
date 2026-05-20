@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"time"
 
-	"reconcile-system/packages/split-payment/internal/workflow"
+	"github.com/xiongwp/split-payment/internal/workflow"
 )
 
 // EnsureSagaSchema 启动期建表.

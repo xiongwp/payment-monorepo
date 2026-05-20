@@ -3,15 +3,16 @@ package handler
 import (
 	"net/http"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 )
 
 // BookingHandler handles double-entry booking endpoints.
 type BookingHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewBookingHandler(client accountingv1.AccountingServiceClient) *BookingHandler {
+func NewBookingHandler(client accountingservice.Client) *BookingHandler {
 	return &BookingHandler{client: client}
 }
 

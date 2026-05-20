@@ -40,7 +40,10 @@ services:
     environment:
       RISK_LOG_DEV: "false"
       # ── 服务发现（自注册到 etcd 让 payment-core 发现）──
+      # kitexutil 读 REGISTRY_ENDPOINTS, viper 兼容读 RISK_*.
       RISK_REGISTRY_ENDPOINTS: "etcd:2379"
+      REGISTRY_ENDPOINTS: "etcd:2379"
+      ADVERTISE_HOST: "risk-manage"
       # ── config-center：rule thresholds / fail-policy / circuit breaker 阈值动态推送
       RISK_CONFIGCENTER_ENDPOINT: "http://config-center:9691"
       RISK_CONFIGCENTER_NAMESPACE: "risk-manage"

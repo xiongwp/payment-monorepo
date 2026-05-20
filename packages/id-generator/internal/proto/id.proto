@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package id;
 
-option go_package = "id-generator/internal/proto";
+option go_package = "github.com/xiongwp/id-generator/kitex_gen/idgen/v1;idgenv1";
 
 service IDService {
   rpc GetID (IDRequest) returns (IDResponse);

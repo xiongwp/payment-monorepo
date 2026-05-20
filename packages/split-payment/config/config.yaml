@@ -1,0 +1,109 @@
+# split-payment dev 默认配置。生产用 config.docker.yaml 或 env override.
+#
+# 加载顺序 (后面覆盖前面):
+#   1. 本文件 (代码内编译好的默认值)
+#   2. SPLIT_PAYMENT_CONFIG=/path/to/yaml 指定的文件
+#   3. 环境变量 (SPLIT_PAYMENT_xxx)
+#
+# 跟 card-center / accounting-system 风格一致, viper bindEnv.
+
+env: "dev"
+
+# ─── log ────────────────────────────────────────────────────────────────
+log:
+  level: "info"          # debug / info / warn / error; /admin/log-level 可在线调
+
+# ─── gRPC server ────────────────────────────────────────────────────────
+server:
+  grpc_port: 9098
+  admin_token: ""        # 非空 → 强制 metadata X-Admin-Token; 空 → DEV 模式
+
+# ─── admin HTTP (metrics / healthz / pprof / log-level) ─────────────────
+admin:
+  http_port: 9099
+
+# ─── mTLS (PH3-2) ───────────────────────────────────────────────────────
+# 留空走明文 (dev); prod 必填 (ENVIRONMENT=prod 缺证书 fail-fast).
+mtls:
+  server_cert: ""
+  server_key: ""
+  ca_cert: ""
+
+# ─── DB (MySQL) ─────────────────────────────────────────────────────────
+# DSN 留空 → 走 memory 模式 (单测 / dev fallback).
+database:
+  dsn: ""
+  max_open_conns: 100
+  max_idle_conns: 20
+  conn_max_lifetime: 30m
+
+# ─── accounting-system ──────────────────────────────────────────────────
+accounting:
+  grpc_addr: "accounting-system:9091"
+  http_url: ""           # 空 → SaveGraph saga + reconcile + TriggerEvent retry 全部禁用
+
+# ─── 服务发现 (etcd) ────────────────────────────────────────────────────
+registry:
+  endpoints: []          # 空 → 走 fallback addr (dev); 配了走 round_robin + retry
+
+# ─── Kafka (events + audit + refund subscriber) ─────────────────────────
+kafka:
+  brokers: []            # 空 → 退化 NoopEventPublisher (dev / 单节点)
+  # engine 发出去的事件
+  event_topic: "split-payment.events"
+  # 资金审计独立 topic (跟主事件 topic 隔离权限)
+  audit_topic: "split-payment.audit"
+  # refund-engine 推过来的事件
+  refund:
+    topic: "recon.refund.events"
+    dlq_topic: ""        # 空 → topic + ".dlq"
+    group: "split-payment-refund-handler"
+    max_retry: 5
+
+# ─── Risk + AML gate (SP-FIN-1) ─────────────────────────────────────────
+risk:
+  http_url: ""
+  auth_token: ""
+  aml_http_url: ""
+  aml_auth_token: ""
+  aml_threshold_minor: 0   # > 0 才生效, ¥10000=1000000 (4 位精度)
+  fail_open: false         # 上游不可达时, false=拒绝 / true=放行
+
+# ─── FX (SP-3C/SP-FIN-1) ────────────────────────────────────────────────
+fx:
+  http_url: ""             # 空 → static rates fallback
+  auth_token: ""
+
+# ─── Clearing settlement (SP-FIN-2) ─────────────────────────────────────
+clearing:
+  http_url: ""             # 空 → memory worker only
+
+# ─── Saga (持久化 saga 状态, SP-3A) ─────────────────────────────────────
+saga:
+  enabled: false           # true → 用 MySQL SagaStore; false → 老路径
+
+# ─── Workers ────────────────────────────────────────────────────────────
+workers:
+  payout_cron:
+    live_mode: false       # true → 真创建 Payout; false → log 模拟
+    interval: 1h
+  hold_unstick:
+    interval: 1h
+  reconcile:
+    interval: 24h
+  retry:
+    interval: 30s
+
+# ─── Seed (启动期 dev seed graphs) ──────────────────────────────────────
+seed:
+  graph_dir: "./examples/moneyflow-graphs"
+
+# ─── OTel (PH3-1) ───────────────────────────────────────────────────────
+otel:
+  exporter_otlp_endpoint: ""   # 空 → noop tracer; 配了 → OTLP gRPC
+
+# ─── Cache (CACHE-2: idempotency L2 redis) ──────────────────────────────
+cache:
+  redis_addr: ""               # 空 → 仅 L1 进程内 LRU
+  redis_password: ""
+  redis_db: 0

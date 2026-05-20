@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/prometheus/client_golang v1.19.0
+	go.uber.org/fx v1.20.1
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.27.0
 )

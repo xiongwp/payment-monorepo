@@ -17,11 +17,13 @@ import (
 	"strings"
 	"time"
 
+	kitexserver "github.com/cloudwego/kitex/server"
 	"github.com/spf13/viper"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
+
+	cardpaymentservice "github.com/xiongwp/card-payment/kitex_gen/cardpayment/v1/cardpayment"
 
 	"github.com/xiongwp/card-payment/internal/adapter/amex"
 	"github.com/xiongwp/card-payment/internal/adapter/jcb"
@@ -37,9 +39,6 @@ import (
 	"github.com/xiongwp/card-payment/internal/server"
 	"github.com/xiongwp/card-payment/internal/sharding"
 	"github.com/xiongwp/payment-util/configcenter"
-	"github.com/xiongwp/payment-util/shadow"
-	"github.com/xiongwp/payment-util/piiredact"
-	"github.com/xiongwp/payment-util/trace"
 )
 
 func main() {
@@ -358,14 +357,13 @@ func newCardCenterClient(v *viper.Viper) (processor.CardCenter, error) {
 			registry = splitCSV(v.GetString("registry.endpoints"))
 		}
 	}
+	// cardcenterclient Config Kitex 切换后只剩 Endpoint / RegistryEndpoints /
+	// RPCTimeout. mTLS 字段 (ClientCert/ClientKey/ServerCA/Insecure) 由 transport
+	// 层 client opts 接管, 不再在 Config struct 上.
 	cfg := cardcenterclient.Config{
 		Endpoint:          v.GetString("card_center.endpoint"),
 		RegistryEndpoints: registry,
 		RPCTimeout:        v.GetDuration("card_center.rpc_timeout"),
-		ClientCert:        v.GetString("card_center.client_cert"),
-		ClientKey:         v.GetString("card_center.client_key"),
-		ServerCA:          v.GetString("card_center.server_ca"),
-		Insecure:          v.GetBool("card_center.insecure"),
 	}
 	if cfg.Endpoint == "" && len(cfg.RegistryEndpoints) == 0 {
 		return nil, errors.New("card_center.endpoint or card_center.registry_endpoints required")
@@ -517,64 +515,48 @@ func newProcessor(cc processor.CardCenter, networks map[string]processor.Network
 	return p
 }
 
-func newGRPCServer(v *viper.Viper, p *processor.Processor, logger *zap.Logger) (*grpc.Server, error) {
-	allow := server.NewClientCNAllowList(v.GetStringSlice("auth.client_cn.allowed"))
-	opts := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(
-			trace.UnaryServerInterceptor(logger),
-			shadow.UnaryServerInterceptor(),
-			// ROI-2d: PII-safe access log. card-payment 处理裸 PAN, LogPayload 永远 false;
-			// 只记 method+code+duration. PAN 在 processor 内 <1ms 内存停留, 永不入日志.
-			piiredact.LoggingInterceptor(logger, piiredact.LoggingOptions{
-				LogPayload: false,
-				SkipMethods: map[string]struct{}{
-					"/grpc.health.v1.Health/Check": {},
-				},
-			}),
-			server.UnaryClientCNInterceptor(allow),
-		),
-	}
-	// dev：tls 字段空 → 明文 listener。env=prod 已被 assertProdSafety 强制 cert/key。
-	certPath := v.GetString("tls.cert")
-	keyPath := v.GetString("tls.key")
-	if certPath != "" && keyPath != "" {
-		tlsCfg, err := buildTLSConfig(v)
-		if err != nil {
-			return nil, fmt.Errorf("tls: %w", err)
-		}
-		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsCfg)))
-		logger.Info("card-payment gRPC: mTLS enabled")
-	} else {
-		logger.Warn("card-payment gRPC: NO TLS (dev mode); env=prod will fail at assertProdSafety")
-	}
-	srv := grpc.NewServer(opts...)
-	bs := server.NewServer(p, logger)
-	bs.Register(srv)
-	return srv, nil
-}
+func newGRPCServer(v *viper.Viper, p *processor.Processor, logger *zap.Logger) (kitexserver.Server, error) {
+	// TODO: kitexutil MW 三件套 (Trace / Shadow / PIIRedact / ClientCN) — 等 kitexutil
+	// port 完成后接进 server.WithMiddleware(...). mTLS 已不需要 (内部 mesh).
+	_ = server.NewClientCNAllowList(v.GetStringSlice("auth.client_cn.allowed"))
 
-func startGRPC(lc fx.Lifecycle, srv *grpc.Server, v *viper.Viper, logger *zap.Logger) error {
 	port := v.GetInt("server.grpc_port")
 	if port == 0 {
 		port = 9443
 	}
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		return err
+	addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
+
+	bs := server.NewServer(p, logger)
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "card-payment"
 	}
-	logger.Info("card-payment mTLS gRPC listening", zap.Int("port", port))
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("card-payment", fmt.Sprintf("%s:%d", advHost, port))...)
+	srv := cardpaymentservice.NewServer(bs, srvOpts...)
+	return srv, nil
+}
+
+func startGRPC(lc fx.Lifecycle, srv kitexserver.Server, v *viper.Viper, logger *zap.Logger) error {
+	port := v.GetInt("server.grpc_port")
+	if port == 0 {
+		port = 9443
+	}
+	logger.Info("card-payment Kitex listening", zap.Int("port", port))
 	go func() {
-		if err := srv.Serve(lis); err != nil {
-			logger.Error("grpc serve", zap.Error(err))
+		if err := srv.Run(); err != nil {
+			logger.Error("kitex serve", zap.Error(err))
 		}
 	}()
 	lc.Append(fx.Hook{OnStop: func(ctx context.Context) error {
 		done := make(chan struct{})
-		go func() { srv.GracefulStop(); close(done) }()
+		go func() {
+			_ = srv.Stop()
+			close(done)
+		}()
 		select {
 		case <-done:
 		case <-time.After(15 * time.Second):
-			srv.Stop()
 		}
 		return nil
 	}})

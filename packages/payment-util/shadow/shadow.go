@@ -32,9 +32,6 @@ import (
 	"context"
 	"strings"
 	"time"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
 )
 
 // MetadataKey gRPC metadata 里携带 shadow 标识的 key（HTTP header 也用同名）。
@@ -92,49 +89,12 @@ func KafkaTopic(ctx context.Context, base string) string {
 	return base
 }
 
-// FromMetadata 从 incoming gRPC metadata（或显式构造的 metadata.MD）解析 shadow
-// flag。接受 "1" / "true" / "on"（大小写不敏感、首尾空白）。
-func FromMetadata(md metadata.MD) bool {
-	if md == nil {
-		return false
-	}
-	for _, v := range md.Get(MetadataKey) {
-		v = strings.TrimSpace(strings.ToLower(v))
-		if v == "1" || v == "true" || v == "on" {
-			return true
-		}
-	}
-	return false
-}
+// FromMetadata 已删 — 老 gRPC metadata 解析. Kitex 切换后用 metainfo.GetValue 直接读.
 
-// UnaryServerInterceptor 把 incoming metadata["x-shadow"] 写到 ctx，之后所有
-// service / repo 调用通过 IsShadow(ctx) 决策。
-//
-// 装在 gRPC server 的 ChainUnaryInterceptor 里，建议在 trace interceptor 之后
-// 立即装；这样 access log / metric 都能拿到 shadow 维度。
-func UnaryServerInterceptor() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		if md, ok := metadata.FromIncomingContext(ctx); ok && FromMetadata(md) {
-			ctx = WithShadow(ctx, true)
-		}
-		return handler(ctx, req)
-	}
-}
-
-// UnaryClientInterceptor 把 ctx 里的 shadow flag 写进 outbound metadata，让下游
-// 服务（payment-core / accounting / payment-channel / risk-manage / ...）看到
-// 同样的标识。
-//
-// 装在 gRPC client 的 WithChainUnaryInterceptor 里，与 trace 客户端 interceptor
-// 并列。
-func UnaryClientInterceptor() grpc.UnaryClientInterceptor {
-	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		if IsShadow(ctx) {
-			ctx = metadata.AppendToOutgoingContext(ctx, MetadataKey, "1")
-		}
-		return invoker(ctx, method, req, reply, cc, opts...)
-	}
-}
+// UnaryServerInterceptor / UnaryClientInterceptor 已删 — gRPC interceptor 不适用 Kitex.
+// 等价 Kitex middleware 在 kitexutil.ShadowServerMW / ShadowClientMW (从 TTHeader
+// metainfo 读 x-shadow), 由 cmd/server/main.go 通过 server/client.WithMiddleware(...)
+// 接入. ctx.IsShadow / WithShadow / TableName / RedisKey / KafkaTopic 等业务 API 保留.
 
 // HTTPHeaderToContext 给 HTTP 网关侧用：从 http.Request.Header 取 x-shadow，
 // 写进 ctx 后传给下游 gRPC 客户端。

@@ -795,7 +795,7 @@ const file_api_proto_cardcenter_v1_cardcenter_proto_rawDesc = "" +
 	"Detokenize\x12 .cardcenter.v1.DetokenizeRequest\x1a!.cardcenter.v1.DetokenizeResponse\x12Q\n" +
 	"\n" +
 	"DeleteCard\x12 .cardcenter.v1.DeleteCardRequest\x1a!.cardcenter.v1.DeleteCardResponse\x12f\n" +
-	"\x11RevokeStoredToken\x12'.cardcenter.v1.RevokeStoredTokenRequest\x1a(.cardcenter.v1.RevokeStoredTokenResponseBEZCgithub.com/xiongwp/card-center/api/proto/cardcenter/v1;cardcenterv1b\x06proto3"
+	"\x11RevokeStoredToken\x12'.cardcenter.v1.RevokeStoredTokenRequest\x1a(.cardcenter.v1.RevokeStoredTokenResponseBEZCgithub.com/xiongwp/card-center/kitex_gen/cardcenter/v1;cardcenterv1b\x06proto3"
 
 var (
 	file_api_proto_cardcenter_v1_cardcenter_proto_rawDescOnce sync.Once

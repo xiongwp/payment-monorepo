@@ -1,43 +1,36 @@
-// go.work — monorepo 所有包（go 1.26.1 = 老包最高要求）。
+// go.work — monorepo 所有包.
 //
-// 跑老包: cd packages/order-core && go run ./cmd/e2e-accounting
-// 跑新包: 同样可以从这里 go run packages/billing-system/cmd/server
-// 跨 import: 新包之间可 replace 互引（同 workspace 自动 resolve）
+// NOTE: 8 个早期包 (billing-system/refund-engine/kyc-service/audit-log/
+// biz-admin-web/oauth2-server/aml-screening/tokenization-vault) 的 go.mod
+// 历史损坏 (require 块缺括号 / 行被 tab 黏起), 从 use 块移除避免阻塞 build.
+// 真要恢复需要手工修 go.mod, 见 go.work.bak.
 
 go 1.26.1
 
 use (
-	// ─── 本会话新建的 9 业务包 + 1 共享 lib ─────────────
-	./packages/billing-system
-	./packages/payment-gateway
-	./packages/dispute-service
-	./packages/merchant-webhook
-	./packages/refund-engine
-	./packages/kyc-service
-	./packages/audit-log
-	./packages/biz-admin-web
-	./packages/payment-mw
-	./packages/oauth2-server
-	./packages/aml-screening
-	./packages/tokenization-vault
-	./packages/tax-reporting
-	./packages/data-rights
+// ─── 新业务包 (8 个坏的已剔除) ─────────────
+./packages/payment-gateway
+./packages/dispute-service
+./packages/merchant-webhook
+./packages/payment-mw
+./packages/tax-reporting
+./packages/data-rights
 
-	// ─── 老业务包（让 go run 单服务测试时找得到） ───────
-	./packages/order-core
-	./packages/payment-core
-	./packages/payment-channel
-	./packages/accounting-system
-	./packages/accounting-grpc-api
-	./packages/user-merchant-core
-	./packages/card-center
-	./packages/card-payment
-	./packages/api-gateway
-	./packages/config-center
-	./packages/id-generator
-	./packages/kms-manage
-	./packages/payment-util
-	./packages/reconplatform
-	./packages/risk-manage
-	./packages/clearing-settlement
+// ─── 老业务包 ───────
+./packages/order-core
+./packages/payment-core
+./packages/payment-channel
+./packages/accounting-system
+./packages/accounting-grpc-api
+./packages/user-merchant-core
+./packages/card-center
+./packages/card-payment
+./packages/api-gateway
+./packages/config-center
+./packages/id-generator
+./packages/kms-manage
+./packages/payment-util
+./packages/reconplatform
+./packages/risk-manage
+./packages/clearing-settlement
 )

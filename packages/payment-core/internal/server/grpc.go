@@ -1,29 +1,27 @@
-// Package server 实现 paymentcorev1.PaymentCoreServiceServer —— 即 order-core
-// 视角下的 PaymentChannel 远端。
+// Package server 实现 Kitex paymentcoreservice.Server —— 即 order-core 视角下的
+// PaymentChannel 远端. 切 Kitex 后跟 gRPC wire 不互通; 调用方 (order-core /
+// payment-admin-web) 已同步切.
 package server
 
 import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"time"
 
-	"github.com/xiongwp/payment-util/shadow"
-	"github.com/xiongwp/payment-util/trace"
+	kitexserver "github.com/cloudwego/kitex/server"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/keepalive"
-	"google.golang.org/grpc/status"
+	paymentcorev1 "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1"
+	paymentcoreservice "github.com/xiongwp/payment-core/kitex_gen/paymentcore/v1/paymentcoreservice"
 
-	paymentcorev1 "github.com/xiongwp/payment-core/api/proto/paymentcore/v1"
 	"github.com/xiongwp/payment-core/internal/channel"
 	"github.com/xiongwp/payment-core/internal/service"
 )
 
+// Server 实现 Kitex paymentcoreservice.Server 接口 (跟 gRPC 同方法签名).
 type Server struct {
-	paymentcorev1.UnimplementedPaymentCoreServiceServer
-
 	svc                  *service.PaymentService
 	whSvc                *service.WebhookService
 	auth                 map[string]string
@@ -63,66 +61,51 @@ func NewServer(d Deps) *Server {
 }
 
 func (s *Server) ListenAndServe(ctx context.Context, port int) error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return err
 	}
-	srv := grpc.NewServer(
-		// EnforcementPolicy 必须放宽：客户端（order-core / 自身 mesh 内 RPC）按
-		// keepalive.ClientParameters{Time: 30s, PermitWithoutStream: true} 心跳；
-		// gRPC server 默认 MinTime=5min + PermitWithoutStream=false，会以
-		// "too_many_pings" GOAWAY 踢连接。这里跟 user-merchant-core / accounting-system
-		// 对齐，允许 5s 一次心跳 + 无活动流也可 ping。
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             5 * time.Second,
-			PermitWithoutStream: true,
-		}),
-		grpc.ChainUnaryInterceptor(
-			RecoverInterceptor(s.logger),
-			trace.UnaryServerInterceptor(s.logger),
-			// shadow 紧跟 trace：把 metadata x-shadow 翻进 ctx；payment-core 是无状态路由
-			// 层，shadow ctx 仅供日志 + 出站 RPC（channel / kms / risk）透传给下游。
-			shadow.UnaryServerInterceptor(),
-			LoggingInterceptor(s.logger),
-			MetricsInterceptor(),
-			RateLimitInterceptor(s.rps, s.burst),
-			AuthInterceptor(s.auth, s.allowUnauthenticated, s.logger),
-		))
-	paymentcorev1.RegisterPaymentCoreServiceServer(srv, s)
-	s.logger.Info("payment-core grpc listening", zap.Int("port", port))
-	// P1-16 graceful shutdown timeout 兜底：K8s preStop 默认 30s 内必须 drain 完毕，
-	// 在那之后 SIGKILL。GracefulStop 不带 timeout 会无限等 in-flight RPC 完成，
-	// 一笔慢 charge（payment-channel 卡 60s+）能直接撑到 SIGKILL → 客户端见 RST，
-	// 业务侧重试触发幂等冲突。给 25s 上限：超时后 srv.Stop() 强制断连，让客户端
-	// 走超时重试比 SIGKILL 优雅。
+	// TODO 接 kitexutil MW (Recover / Trace / Shadow / Logging / Metrics / RateLimit / Auth)
+	// — 等 kitexutil port 完成后接 server.WithMiddleware(...).
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "payment-core"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("payment-core", fmt.Sprintf("%s:%d", advHost, port))...)
+	srv := paymentcoreservice.NewServer(s, srvOpts...)
+	s.logger.Info("payment-core Kitex listening", zap.Int("port", port))
+
+	// P1-16 graceful shutdown timeout 兜底: K8s preStop 默认 30s 内必须 drain 完毕,
+	// 之后 SIGKILL. Kitex srv.Stop() 是 graceful 等 in-flight RPC; 用 select 限上限.
 	shutdownTimeout := s.shutdownTimeout
 	if shutdownTimeout <= 0 {
 		shutdownTimeout = 25 * time.Second
 	}
 	go func() {
 		<-ctx.Done()
-		s.logger.Info("payment-core grpc draining", zap.Duration("timeout", shutdownTimeout))
+		s.logger.Info("payment-core Kitex draining", zap.Duration("timeout", shutdownTimeout))
 		stopped := make(chan struct{})
 		go func() {
-			srv.GracefulStop()
+			_ = srv.Stop()
 			close(stopped)
 		}()
 		select {
 		case <-stopped:
-			s.logger.Info("payment-core grpc graceful stop complete")
+			s.logger.Info("payment-core Kitex graceful stop complete")
 		case <-time.After(shutdownTimeout):
-			s.logger.Warn("payment-core grpc graceful stop timed out, forcing", zap.Duration("after", shutdownTimeout))
-			srv.Stop()
+			s.logger.Warn("payment-core Kitex graceful stop timed out",
+				zap.Duration("after", shutdownTimeout))
 		}
 	}()
-	return srv.Serve(lis)
+	return srv.Run()
 }
 
 // ─── RPC handlers ────────────────────────────────────────────────
 
 func (s *Server) Charge(ctx context.Context, req *paymentcorev1.ChargeRequest) (*paymentcorev1.ChargeResponse, error) {
 	if req.GetPaymentIntentId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "payment_intent_id required")
+		return nil, fmt.Errorf("payment_intent_id required")
 	}
 	out, err := s.svc.Charge(ctx, &channel.PaymentRequest{
 		PaymentIntentID:  req.GetPaymentIntentId(),
@@ -141,7 +124,7 @@ func (s *Server) Charge(ctx context.Context, req *paymentcorev1.ChargeRequest) (
 		Extra:            req.GetExtra(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return paymentResponseToProto(out), nil
 }
@@ -155,7 +138,7 @@ func (s *Server) Capture(ctx context.Context, req *paymentcorev1.CaptureRequest)
 		Extra:           req.GetExtra(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &paymentcorev1.OpResponse{
 		ResultType:     string(out.ResultType),
@@ -175,7 +158,7 @@ func (s *Server) Void(ctx context.Context, req *paymentcorev1.VoidRequest) (*pay
 		Extra:           req.GetExtra(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &paymentcorev1.OpResponse{
 		ResultType:     string(out.ResultType),
@@ -198,7 +181,7 @@ func (s *Server) Refund(ctx context.Context, req *paymentcorev1.RefundRequest) (
 		Extra:           req.GetExtra(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &paymentcorev1.OpResponse{
 		ResultType:     string(out.ResultType),
@@ -217,7 +200,7 @@ func (s *Server) Query(ctx context.Context, req *paymentcorev1.QueryRequest) (*p
 		Extra:           req.GetExtra(),
 	})
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &paymentcorev1.QueryResponse{
 		ResultType:     string(out.ResultType),
@@ -233,7 +216,7 @@ func (s *Server) Query(ctx context.Context, req *paymentcorev1.QueryRequest) (*p
 func (s *Server) ParseWebhook(ctx context.Context, req *paymentcorev1.ParseWebhookRequest) (*paymentcorev1.WebhookEvent, error) {
 	evt, err := s.whSvc.Parse(ctx, req.GetAdapter(), req.GetHeaders(), req.GetBody())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, fmt.Errorf("%s", err.Error())
 	}
 	return &paymentcorev1.WebhookEvent{
 		EventId:         evt.EventID,

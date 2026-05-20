@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
+	orderv1 "github.com/xiongwp/order-core/kitex_gen/order/v1"
 	"github.com/xiongwp/order-core/internal/domain"
 	"github.com/xiongwp/order-core/internal/repo"
 )
@@ -13,7 +13,6 @@ import (
 // No business logic here: audit is structurally simple (INSERT / SELECT), and
 // introducing a service layer would just add a pass-through.
 type AuditServer struct {
-	orderv1.UnimplementedAuditServiceServer
 	repo repo.AdminAuditRepository
 }
 

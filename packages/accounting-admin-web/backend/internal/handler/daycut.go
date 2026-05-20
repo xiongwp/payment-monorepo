@@ -2,16 +2,18 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 )
 
 // DayCutHandler handles day-cut endpoints.
 type DayCutHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewDayCutHandler(client accountingv1.AccountingServiceClient) *DayCutHandler {
+func NewDayCutHandler(client accountingservice.Client) *DayCutHandler {
 	return &DayCutHandler{client: client}
 }
 
@@ -50,9 +52,25 @@ func (h *DayCutHandler) TriggerDayCut(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetDayCutHistory GET /v1/day-cut/history
+// GetDayCutHistory GET /v1/day-cut/history?from=YYYY-MM-DD&to=YYYY-MM-DD&limit=N
+//
+// TECH-DEBT-1 已把 server 端 RPC 接到 dayCutSvc.ListDayCutHistory; 这里走 Kitex
+// 调真后端, 失败 → 5xx, 不再静默返空.
 func (h *DayCutHandler) GetDayCutHistory(w http.ResponseWriter, r *http.Request) {
-	resp, err := h.client.ListDayCutHistory(r.Context(), &accountingv1.ListDayCutHistoryRequest{})
+	q := r.URL.Query()
+	from := q.Get("from")
+	to := q.Get("to")
+	limit := int32(0)
+	if s := q.Get("limit"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+			limit = int32(v)
+		}
+	}
+	resp, err := h.client.ListDayCutHistory(r.Context(), &accountingv1.ListDayCutHistoryRequest{
+		FromDate: from,
+		ToDate:   to,
+		Limit:    limit,
+	})
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return
@@ -61,8 +79,7 @@ func (h *DayCutHandler) GetDayCutHistory(w http.ResponseWriter, r *http.Request)
 		writeError(w, int(resp.Code), resp.Message)
 		return
 	}
-
-	type entrySer struct {
+	type entryJSON struct {
 		CutDate     string `json:"cut_date"`
 		RunID       int32  `json:"run_id"`
 		Currency    string `json:"currency"`
@@ -72,10 +89,9 @@ func (h *DayCutHandler) GetDayCutHistory(w http.ResponseWriter, r *http.Request)
 		Completed   int32  `json:"completed"`
 		Failed      int32  `json:"failed"`
 	}
-
-	entries := make([]entrySer, 0, len(resp.Entries))
+	out := make([]entryJSON, 0, len(resp.Entries))
 	for _, e := range resp.Entries {
-		entries = append(entries, entrySer{
+		out = append(out, entryJSON{
 			CutDate:     e.CutDate,
 			RunID:       e.RunId,
 			Currency:    e.Currency,
@@ -86,5 +102,5 @@ func (h *DayCutHandler) GetDayCutHistory(w http.ResponseWriter, r *http.Request)
 			Failed:      e.Failed,
 		})
 	}
-	writeJSON(w, map[string]interface{}{"entries": entries})
+	writeJSON(w, map[string]interface{}{"entries": out, "count": len(out)})
 }

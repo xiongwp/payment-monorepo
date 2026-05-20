@@ -36,17 +36,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql" // meta.Syncer 用 sql.Open("mysql", ...)
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"github.com/xiongwp/payment-util/configcenter"
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 
 	"reconcile-system/internal/anomaly"
@@ -67,10 +68,36 @@ import (
 	"reconcile-system/internal/tracing"
 )
 
+// recon-admin 装配 — uber/fx 跟 order-core / accounting-system 同款风格.
+//
+// 当前 stage 1 wrap: 顶层用 fx.New + Logger Provider; 业务装配仍走 wireAll().
+// 后续 stage 把 redis / cdc.Manager / api.Server / scheduler / dispatcher 等
+// 逐个抽成独立 Provider, 走 fx.Lifecycle 管理.
 func main() {
-	logger, _ := zap.NewProduction()
-	defer logger.Sync()
+	fx.New(
+		fx.Provide(newLogger),
+		fx.Invoke(wireAll),
+		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
+			return &fxevent.ZapLogger{Logger: log.Named("fx")}
+		}),
+	).Run()
+}
 
+// newLogger zap.NewProduction, lifecycle Sync.
+func newLogger(lc fx.Lifecycle) (*zap.Logger, error) {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return nil, fmt.Errorf("zap build: %w", err)
+	}
+	lc.Append(fx.Hook{OnStop: func(_ context.Context) error { _ = logger.Sync(); return nil }})
+	return logger, nil
+}
+
+// wireAll 把原 main() 的命令式装配 inline 进 fx.Invoke; ctx 走 fx.Lifecycle 管理.
+//
+// 跟 split-payment cmd/server/providers.go 同款"渐进式"切换策略 (FX-1 stage 1):
+// 顶层进 fx, 但内部 wiring 暂保原状, 各组件逐步抽 Provider 后这函数会变薄.
+func wireAll(lc fx.Lifecycle, logger *zap.Logger) error {
 	redisAddr := envOr("RECON_REDIS_ADDR", "localhost:6379")
 	httpPort := envOr("RECON_HTTP_PORT", "8080")
 
@@ -78,10 +105,11 @@ func main() {
 	rdb := redis.NewUniversalClient(&redis.UniversalOptions{
 		Addrs: []string{redisAddr},
 	})
-	defer rdb.Close()
 
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
-		logger.Fatal("redis unreachable", zap.String("addr", redisAddr), zap.Error(err))
+		logger.Error("redis unreachable", zap.String("addr", redisAddr), zap.Error(err))
+		_ = rdb.Close()
+		return fmt.Errorf("redis ping: %w", err)
 	}
 
 	searcher := store.NewSearcher(rdb)
@@ -97,13 +125,9 @@ func main() {
 
 	// ─── config-center client（prod fail-fast；dev 不可达 → nil 走 yaml fallback）──
 	ccCli := newConfigCenterClient(logger)
-	if ccCli != nil {
-		defer ccCli.Close()
-	}
 
-	// ─── ctx ────────────────────────────────────────────────
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
+	// ─── ctx — 由 fx.Lifecycle 管理: OnStop 时 cancel 让所有 goroutine 退出 ───
+	ctx, cancel := context.WithCancel(context.Background())
 
 	// ─── 拉 sources + ttl 初始快照（config-center 优先；不可达走 yaml）──
 	cfg, src := loadCDCConfig(ctx, ccCli, logger)
@@ -512,13 +536,27 @@ func main() {
 		logger.Info("config-center OnChange wired (cdc.sources / cdc.ttl)")
 	}
 
-	<-ctx.Done()
-	logger.Info("shutting down")
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutCancel()
-	_ = srv.Shutdown(shutCtx)
-	cdcMgr.Stop()
-	logger.Info("shutdown complete")
+	// ─── lifecycle 收尾 — 跟原 <-ctx.Done() 等价, 但 cancel/shutdown 走 fx OnStop ───
+	lc.Append(fx.Hook{
+		OnStop: func(stopCtx context.Context) error {
+			logger.Info("shutting down")
+			cancel() // 触发所有 goroutine ctx.Done()
+			shutCtx, shutCancel := context.WithTimeout(stopCtx, 10*time.Second)
+			defer shutCancel()
+			if err := srv.Shutdown(shutCtx); err != nil {
+				logger.Warn("http shutdown error", zap.Error(err))
+			}
+			cdcMgr.Stop()
+			if ccCli != nil {
+				// Kitex client.Close 不返 error, 直接调
+				ccCli.Close()
+			}
+			_ = rdb.Close()
+			logger.Info("shutdown complete")
+			return nil
+		},
+	})
+	return nil
 }
 
 // newConfigCenterClient prod fail-fast；其它 env 不可达返 nil（本地用 yaml fallback）。

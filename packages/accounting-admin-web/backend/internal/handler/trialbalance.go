@@ -3,15 +3,16 @@ package handler
 import (
 	"net/http"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
+	accountingservice "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
 )
 
 // TrialBalanceHandler handles trial balance endpoints.
 type TrialBalanceHandler struct {
-	client accountingv1.AccountingServiceClient
+	client accountingservice.Client
 }
 
-func NewTrialBalanceHandler(client accountingv1.AccountingServiceClient) *TrialBalanceHandler {
+func NewTrialBalanceHandler(client accountingservice.Client) *TrialBalanceHandler {
 	return &TrialBalanceHandler{client: client}
 }
 
@@ -91,6 +92,9 @@ func (h *TrialBalanceHandler) RunTrialBalance(w http.ResponseWriter, r *http.Req
 }
 
 // ListSnapshotDates GET /v1/trial-balance/dates
+//
+// TECH-DEBT-1 已把 server 端 RPC 接到 trialBalanceSvc.ListSnapshotDates; 这里走
+// Kitex 调真后端 (跨 100 个分片 DISTINCT snapshot_date), 拿到日期下拉源.
 func (h *TrialBalanceHandler) ListSnapshotDates(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.client.ListSnapshotDates(r.Context(), &accountingv1.ListSnapshotDatesRequest{})
 	if err != nil {
@@ -101,5 +105,9 @@ func (h *TrialBalanceHandler) ListSnapshotDates(w http.ResponseWriter, r *http.R
 		writeError(w, int(resp.Code), resp.Message)
 		return
 	}
-	writeJSON(w, map[string]interface{}{"dates": resp.Dates})
+	dates := resp.Dates
+	if dates == nil {
+		dates = []string{}
+	}
+	writeJSON(w, map[string]interface{}{"dates": dates, "count": len(dates)})
 }

@@ -17,11 +17,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
-
-	channelv1 "github.com/xiongwp/payment-channel/api/proto/channel/v1"
+	channelv1 "github.com/xiongwp/payment-channel/kitex_gen/channel/v1"
 	"github.com/xiongwp/payment-core/internal/channel"
 	"github.com/xiongwp/payment-core/internal/channelclient"
 	"github.com/xiongwp/payment-core/internal/channelops"
@@ -41,20 +37,9 @@ import (
 // 普通商户调用方拿不到这套 metadata（gateway 层会清洗自定义 header），
 // 故能拿到 probe 权限的只可能是受信内部组件。
 func callerIsProbeAuthorized(ctx context.Context) bool {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return false
-	}
-	if v := strings.ToLower(strings.Join(md.Get("x-source"), ",")); v != "" {
-		if strings.Contains(v, "qa") || strings.Contains(v, "admin") {
-			return true
-		}
-	}
-	if v := strings.ToLower(strings.Join(md.Get("x-role"), ",")); v != "" {
-		if strings.Contains(v, "admin") || strings.Contains(v, "qa") {
-			return true
-		}
-	}
+	// Kitex metainfo MW 接通前临时返 false (= 任何 caller 都拿不到 probe 权限).
+	// 真接通后这里读 metainfo.GetValue(ctx, "x-source") / "x-role" 即可恢复原语义.
+	_ = ctx
 	return false
 }
 
@@ -76,11 +61,15 @@ func isUnknownResultErr(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true
 	}
-	if st, ok := status.FromError(err); ok {
-		switch st.Code() {
-		case codes.DeadlineExceeded, codes.Unavailable, codes.Canceled:
-			return true
-		}
+	// Kitex 切换后 status.FromError / codes.X 已删, 用 err string 关键字兜底
+	// 匹配 (timeout / unavailable / canceled / context deadline).
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "unavailable") ||
+		strings.Contains(msg, "canceled") {
+		return true
 	}
 	return false
 }
@@ -708,7 +697,7 @@ func (s *PaymentService) Refund(ctx context.Context, req *channel.RefundChannelR
 	// P0-3: refund_id 必须非空——否则同一 pi 的多次部分退款会因 idempotency_key 一致
 	// 在 payment-channel 侧被合并/丢弃，造成"少退"。
 	if req.RefundID == "" {
-		return nil, status.Error(codes.InvalidArgument, "refund_id required")
+		return nil, fmt.Errorf("refund_id required")
 	}
 	adapter, err := s.adapterForOp(ctx, req.PaymentIntentID, req.ExternalRefNo, req.Extra)
 	if err != nil {
@@ -790,8 +779,7 @@ func (s *PaymentService) adapterForOp(_ context.Context, piID, _ string, extra m
 	if a := extra["adapter"]; a != "" {
 		return a, nil
 	}
-	return "", status.Errorf(codes.InvalidArgument,
-		"adapterForOp: extra[adapter] is required for refund/query/capture/void (pi=%s); "+
+	return "", fmt.Errorf("adapterForOp: extra[adapter] is required for refund/query/capture/void (pi=%s); "+
 			"router-based fallback removed to avoid mis-routing after routing rule hot reload", piID)
 }
 

@@ -1,4 +1,4 @@
-// Package server gRPC 适配层（Stripe-API 风格）。
+// Package server Kitex 适配层 (Stripe-API 风格, multi-service).
 package server
 
 import (
@@ -6,29 +6,32 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 
-	"github.com/xiongwp/payment-util/trace"
+	kitexserver "github.com/cloudwego/kitex/server"
+	"github.com/xiongwp/payment-util/kitexutil"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/health"
-	"google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/reflection"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	orderv1 "github.com/xiongwp/order-core/api/proto/order/v1"
+	orderv1 "github.com/xiongwp/order-core/kitex_gen/order/v1"
+	auditservice "github.com/xiongwp/order-core/kitex_gen/order/v1/auditservice"
+	chargeservice "github.com/xiongwp/order-core/kitex_gen/order/v1/chargeservice"
+	disputeservice "github.com/xiongwp/order-core/kitex_gen/order/v1/disputeservice"
+	ledgerservice "github.com/xiongwp/order-core/kitex_gen/order/v1/ledgerservice"
+	paymentintentservice "github.com/xiongwp/order-core/kitex_gen/order/v1/paymentintentservice"
+	refundservice "github.com/xiongwp/order-core/kitex_gen/order/v1/refundservice"
+	webhookdeliveryservice "github.com/xiongwp/order-core/kitex_gen/order/v1/webhookdeliveryservice"
+	webhookservice "github.com/xiongwp/order-core/kitex_gen/order/v1/webhookservice"
+
 	"github.com/xiongwp/order-core/internal/domain"
 	"github.com/xiongwp/order-core/internal/repo"
 	"github.com/xiongwp/order-core/internal/service"
-	"github.com/xiongwp/order-core/internal/shadow"
 	"github.com/xiongwp/order-core/internal/webhook"
 )
 
-// Server 实现 PaymentIntentService。Charge / Refund / Webhook 走独立 forwarder 以避免方法名冲突。
+// Server 实现 PaymentIntentService. Charge / Refund / Webhook 走独立 forwarder 以避免方法名冲突.
+// 切 Kitex 后不再 embed UnimplementedPaymentIntentServiceServer.
 type Server struct {
-	orderv1.UnimplementedPaymentIntentServiceServer
-
 	piSvc       service.PaymentIntentService
 	chargeSvc   service.ChargeService
 	refundSvc   service.RefundService
@@ -45,31 +48,27 @@ type Server struct {
 	rateBurst            int
 	logger               *zap.Logger
 
-	// grpcSrv ListenAndServe 期间持有；Stop() 用来 GracefulStop。
-	grpcSrv *grpc.Server
-	done    chan struct{}
+	// kitexSrv ListenAndServe 期间持有; Stop() 用来 graceful Stop.
+	kitexSrv kitexserver.Server
+	done     chan struct{}
 }
 
-// Stop 优雅关停 gRPC server。SIGTERM 时由 fx OnStop 调用：
-//
-//  1. GracefulStop 拒新连接 + 等 in-flight RPC 完成
-//  2. 等 ListenAndServe 的 Serve goroutine 退出（done 关闭）
-//  3. 超时 → Stop() 强制
+// Stop 优雅关停 Kitex server. SIGTERM 时由 fx OnStop 调用.
+// Kitex Stop() 内部已 graceful (等 in-flight RPC); 用 select 限上限.
 func (s *Server) Stop(ctx context.Context) error {
-	if s.grpcSrv == nil {
+	if s.kitexSrv == nil {
 		return nil
 	}
 	doneCh := make(chan struct{})
 	go func() {
-		s.grpcSrv.GracefulStop()
+		_ = s.kitexSrv.Stop()
 		close(doneCh)
 	}()
 	select {
 	case <-doneCh:
 		return nil
 	case <-ctx.Done():
-		s.logger.Warn("grpc GracefulStop timed out, forcing Stop()")
-		s.grpcSrv.Stop()
+		s.logger.Warn("kitex Stop() timed out")
 		return ctx.Err()
 	}
 }
@@ -123,58 +122,63 @@ func NewServer(d Deps) (*Server, error) {
 	}, nil
 }
 
-// ListenAndServe 启动 gRPC（阻塞）
+// ListenAndServe 启动 Kitex multi-service server (阻塞).
+//
+// 注册 8 个 service 到同一个端口 (Kitex 0.10+ MultiService):
+//   PaymentIntent / Charge / Refund / Webhook (主链路)
+//   Audit / WebhookDelivery / Ledger / Dispute (可选, 依赖配置)
+//
+// TODO: kitexutil MW (Recover / Trace / Shadow / Logging / Metrics / RateLimit / Auth)
+// — 等 kitexutil port 完成后接 server.WithMiddleware(...).
 func (s *Server) ListenAndServe(ctx context.Context, port int) error {
-	addr := fmt.Sprintf(":%d", port)
-	lis, err := net.Listen("tcp", addr)
+	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		return fmt.Errorf("listen %s: %w", addr, err)
+		return fmt.Errorf("resolve addr :%d: %w", port, err)
 	}
-	gs := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(
-			RecoverInterceptor(s.logger),
-			trace.UnaryServerInterceptor(s.logger),
-			// shadow 在 trace 之后立即装：x-shadow metadata → ctx，后续所有 handler /
-			// repo / 出站 RPC 都能 IsShadow(ctx) 决策。比 Auth 更外层是为了 dev 流量
-			// 即便鉴权关掉也能 shadow 标识落表（如压测期常关 auth）。
-			shadow.UnaryServerInterceptor(),
-			LoggingInterceptor(s.logger),
-			MetricsInterceptor(),
-			RateLimitInterceptor(s.rateLimit, s.rateBurst),
-			AuthInterceptor(s.authTokens, s.authAllowUnauthenticated, s.logger),
-		),
-	)
-	orderv1.RegisterPaymentIntentServiceServer(gs, s)
-	orderv1.RegisterChargeServiceServer(gs, NewChargeForwarder(s))
-	orderv1.RegisterRefundServiceServer(gs, NewRefundForwarder(s))
-	orderv1.RegisterWebhookServiceServer(gs, NewWebhookForwarder(s))
+	// etcd 自注册 — REGISTRY_ENDPOINTS env 非空时生效, 注册到 "order-core" 名下;
+	// ADVERTISE_HOST env 覆盖广播 host (prod 用 POD_IP).
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "order-core"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("order-core", fmt.Sprintf("%s:%d", advHost, port))...)
+	gs := kitexserver.NewServer(srvOpts...)
+
+	// 主链路 4 个 service — 一定注册.
+	// MULTISVC: paymentintent / refund / webhookdelivery 都有 List 方法, Kitex
+	// multi-service 启动期会 "method name [List] is conflicted between services
+	// but no fallback service is specified" 直接 ERROR exit.
+	// 选 paymentintentservice 当 fallback (最常被调用的主 service).
+	paymentintentservice.RegisterService(gs, s, kitexserver.WithFallbackService())
+	chargeservice.RegisterService(gs, NewChargeForwarder(s))
+	refundservice.RegisterService(gs, NewRefundForwarder(s))
+	webhookservice.RegisterService(gs, NewWebhookForwarder(s))
+
+	// 可选 service — 依赖配置注入
 	if s.auditRepo != nil {
-		orderv1.RegisterAuditServiceServer(gs, NewAuditServer(s.auditRepo))
+		auditservice.RegisterService(gs, NewAuditServer(s.auditRepo))
 	}
 	if s.dbMgr != nil && s.webhookDisp != nil {
-		orderv1.RegisterWebhookDeliveryServiceServer(gs,
+		webhookdeliveryservice.RegisterService(gs,
 			NewWebhookDeliveryServer(s.dbMgr, s.webhookDisp))
 	}
 	if s.ledgerSvc != nil {
-		orderv1.RegisterLedgerServiceServer(gs, NewLedgerServer(s.ledgerSvc))
+		ledgerservice.RegisterService(gs, NewLedgerServer(s.ledgerSvc))
 	}
 	if s.disputeSvc != nil {
-		orderv1.RegisterDisputeServiceServer(gs, NewDisputeServer(s.disputeSvc))
+		disputeservice.RegisterService(gs, NewDisputeServer(s.disputeSvc))
 	}
 
-	h := health.NewServer()
-	h.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
-	grpc_health_v1.RegisterHealthServer(gs, h)
-	reflection.Register(gs)
+	// 健康检查 / reflection 由 Kitex 框架自带, 不再手动注册.
 
-	s.grpcSrv = gs
+	s.kitexSrv = gs
 	if s.done == nil {
 		s.done = make(chan struct{})
 	}
-	// 兼容旧路径：调用方还在用 ctx cancel 的方式；新路径 main.go 直接调 Stop()。
-	go func() { <-ctx.Done(); gs.GracefulStop() }()
-	s.logger.Info("grpc listening", zap.String("addr", addr))
-	err = gs.Serve(lis)
+	go func() { <-ctx.Done(); _ = gs.Stop() }()
+	s.logger.Info("order-core Kitex listening", zap.String("addr", addr.String()))
+	err = gs.Run()
 	close(s.done)
 	return err
 }
@@ -183,13 +187,13 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 
 func (s *Server) Create(ctx context.Context, req *orderv1.CreatePaymentIntentRequest) (*orderv1.CreatePaymentIntentResponse, error) {
 	if req.GetAmount() <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "amount must be > 0")
+		return nil, fmt.Errorf("amount must be > 0")
 	}
 	if req.GetCurrency() == "" {
-		return nil, status.Error(codes.InvalidArgument, "currency required")
+		return nil, fmt.Errorf("currency required")
 	}
 	if req.GetMchId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "mch_id required")
+		return nil, fmt.Errorf("mch_id required")
 	}
 	pi, err := s.piSvc.Create(ctx, &service.CreatePaymentIntentInput{
 		Amount:              req.GetAmount(),
@@ -217,7 +221,7 @@ func (s *Server) Create(ctx context.Context, req *orderv1.CreatePaymentIntentReq
 
 func (s *Server) Retrieve(ctx context.Context, req *orderv1.RetrievePaymentIntentRequest) (*orderv1.RetrievePaymentIntentResponse, error) {
 	if req.GetId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "id required")
+		return nil, fmt.Errorf("id required")
 	}
 	pi, err := s.piSvc.Retrieve(ctx, req.GetId())
 	if err != nil {
@@ -236,7 +240,7 @@ func (s *Server) Update(ctx context.Context, req *orderv1.UpdatePaymentIntentReq
 
 func (s *Server) Confirm(ctx context.Context, req *orderv1.ConfirmPaymentIntentRequest) (*orderv1.ConfirmPaymentIntentResponse, error) {
 	if req.GetId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "id required")
+		return nil, fmt.Errorf("id required")
 	}
 	if splits := req.GetPaymentMethods(); len(splits) > 0 {
 		in := make([]service.PaymentSplit, 0, len(splits))
@@ -329,7 +333,6 @@ func (s *Server) List(ctx context.Context, req *orderv1.ListPaymentIntentsReques
 // ─── forwarder: ChargeService ────────────────────────────────────────────────
 
 type ChargeForwarder struct {
-	orderv1.UnimplementedChargeServiceServer
 	s *Server
 }
 
@@ -354,7 +357,6 @@ func (c *ChargeForwarder) List(ctx context.Context, req *orderv1.ListChargesRequ
 // ─── forwarder: RefundService ────────────────────────────────────────────────
 
 type RefundForwarder struct {
-	orderv1.UnimplementedRefundServiceServer
 	s *Server
 }
 
@@ -402,7 +404,6 @@ func (f *RefundForwarder) List(ctx context.Context, req *orderv1.ListRefundsRequ
 // ─── forwarder: WebhookService ───────────────────────────────────────────────
 
 type WebhookForwarder struct {
-	orderv1.UnimplementedWebhookServiceServer
 	s *Server
 }
 
@@ -691,16 +692,16 @@ func mapError(err error) error {
 		errors.Is(err, domain.ErrChargeNotFound),
 		errors.Is(err, domain.ErrRefundNotFound),
 		errors.Is(err, domain.ErrPayActionNotFound):
-		return status.Error(codes.NotFound, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	case errors.Is(err, domain.ErrValidation):
-		return status.Error(codes.InvalidArgument, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	case errors.Is(err, domain.ErrInvalidTransition),
 		errors.Is(err, domain.ErrPayActionNotPending):
-		return status.Error(codes.FailedPrecondition, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	case errors.Is(err, domain.ErrRefundAmountExceeded),
 		errors.Is(err, domain.ErrPayActionTooManyAttempts):
-		return status.Error(codes.AlreadyExists, err.Error())
+		return fmt.Errorf("%s", err.Error())
 	default:
-		return status.Error(codes.Internal, "internal error")
+		return fmt.Errorf("internal error")
 	}
 }

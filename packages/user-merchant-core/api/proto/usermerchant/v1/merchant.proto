@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package usermerchant.v1;
 
-option go_package = "github.com/xiongwp/user-merchant-core/api/proto/usermerchant/v1;usermerchantv1";
+option go_package = "github.com/xiongwp/user-merchant-core/kitex_gen/usermerchant/v1;usermerchantv1";
 
 // ─── Merchants + KYC ────────────────────────────────────────────────────────
 

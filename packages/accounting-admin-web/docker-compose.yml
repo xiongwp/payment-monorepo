@@ -19,6 +19,7 @@ services:
       additional_contexts:
         payment-util:        ../payment-util
         accounting-grpc-api: ../accounting-grpc-api
+        accounting-system:   ../accounting-system
       secrets:
         - GITHUB_TOKEN
     image: accounting-admin-web:latest
