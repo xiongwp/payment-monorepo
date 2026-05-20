@@ -74,7 +74,9 @@ func (r *EtcdResolver) Resolve(ctx context.Context, desc string) (discovery.Resu
 		return discovery.Result{}, fmt.Errorf("etcd Get %s: %w", prefix, err)
 	}
 	if len(resp.Kvs) == 0 {
-		return discovery.Result{CacheKey: desc, Cacheable: true}, ErrNoEndpoints
+		// REG-REDESIGN: 错误信息带 svc 名 + endpoints, 让 ops 一眼看见是哪个服务没注册.
+		return discovery.Result{CacheKey: desc, Cacheable: true},
+			fmt.Errorf("%w: svc=%q (检查该服务有没有起 + REGISTRY_ENDPOINTS env)", ErrNoEndpoints, desc)
 	}
 	out := make([]discovery.Instance, 0, len(resp.Kvs))
 	for _, kv := range resp.Kvs {
@@ -92,7 +94,8 @@ func (r *EtcdResolver) Resolve(ctx context.Context, desc string) (discovery.Resu
 		out = append(out, discovery.NewInstance("tcp", addr, 10, tags))
 	}
 	if len(out) == 0 {
-		return discovery.Result{CacheKey: desc, Cacheable: true}, ErrNoEndpoints
+		return discovery.Result{CacheKey: desc, Cacheable: true},
+			fmt.Errorf("%w: svc=%q (etcd 有 key 但 addr 解析全空)", ErrNoEndpoints, desc)
 	}
 	r.mu.Lock()
 	r.cache[desc] = out
