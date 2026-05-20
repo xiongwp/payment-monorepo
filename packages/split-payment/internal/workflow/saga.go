@@ -226,7 +226,7 @@ func (c *SagaCoordinator) Start(ctx context.Context, inst *SagaInstance) error {
 		step := &inst.Steps[i]
 		step.Status = StepRunning
 		step.StartedAt = time.Now().UTC()
-		_ = c.Store.Save(ctx, inst)
+		c.saveInst(ctx, inst, false) // MED-FIX-5: intermediate
 
 		err := c.runStep(ctx, *step)
 		step.FinishedAt = time.Now().UTC()
@@ -238,26 +238,48 @@ func (c *SagaCoordinator) Start(ctx context.Context, inst *SagaInstance) error {
 
 			// 触发补偿
 			inst.State = SagaStateCompensating
-			_ = c.Store.Save(ctx, inst)
+			c.saveInst(ctx, inst, false) // 进入补偿过程, 还会再写终态
 			if cerr := c.compensate(ctx, inst, i-1); cerr != nil {
 				inst.State = SagaStateFailed
-				_ = c.Store.Save(ctx, inst)
+				c.saveInst(ctx, inst, true) // terminal
 				return fmt.Errorf("saga %s failed, compensation also failed: %w",
 					inst.SagaID, cerr)
 			}
 			inst.CompletedAt = time.Now().UTC()
-			_ = c.Store.Save(ctx, inst)
+			c.saveInst(ctx, inst, true) // 补偿完成 = terminal
 			return err
 		}
 		step.Status = StepCompleted
-		_ = c.Store.Save(ctx, inst)
+		c.saveInst(ctx, inst, false)
 	}
 
 	inst.State = SagaStateCompleted
 	inst.CompletedAt = time.Now().UTC()
-	_ = c.Store.Save(ctx, inst)
+	c.saveInst(ctx, inst, true) // terminal
 	c.Logger.Info("saga completed", "saga", inst.SagaID, "steps", len(inst.Steps))
 	return nil
+}
+
+// saveInst MED-FIX-5: 跟 payment-util/outbox/saga.go 同款 — 持久化失败时 ResumeUnfinished
+// 看到的 state 是旧的, 重启后可能 step 重跑 / 漏 compensate. log critical(terminal) / warn(intermediate).
+// 不阻断主路径 (进程内 state 是权威, store 为重启恢复用; Step 设计上要求幂等).
+func (c *SagaCoordinator) saveInst(ctx context.Context, inst *SagaInstance, terminal bool) {
+	if err := c.Store.Save(ctx, inst); err != nil {
+		if terminal {
+			c.Logger.Error("CRITICAL: saga terminal-state Save failed; "+
+				"ResumeUnfinished 可能漏掉本 saga 真实结果, 需 ops 查 log + 手工核对补偿",
+				"saga", inst.SagaID,
+				"state", inst.State,
+				"current_step", inst.CurrentStep,
+				"err", err)
+		} else {
+			c.Logger.Warn("saga intermediate-state Save failed (下一步会重写; ResumeUnfinished 会从旧 step 重跑 — 要求 Step 幂等)",
+				"saga", inst.SagaID,
+				"state", inst.State,
+				"current_step", inst.CurrentStep,
+				"err", err)
+		}
+	}
 }
 
 // runStep 跑一步 (含 timeout).

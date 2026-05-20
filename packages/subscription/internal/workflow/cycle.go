@@ -174,7 +174,14 @@ func (s *Service) processCycle(ctx context.Context, sub *domain.Subscription) er
 	now := s.now()
 	inv.Status = domain.InvoicePaid
 	inv.PaidAt = &now
-	_ = s.Invoices.Save(ctx, inv)
+	// MED-FIX-4: charge 已成功 (gateway 已扣款); invoice/sub Save 失败之前吞错
+	// → 下轮 DunningTick 看 invoice 仍 open + sub 仍 past_due → 用 invoice_id 做
+	// idempotency 兜底 charge 不会重扣, 但 cycle_count / current_period_start 错位.
+	// Save 失败 propagate, caller (cron) log error 让 ops 跟进 reconcile.
+	if err := s.Invoices.Save(ctx, inv); err != nil {
+		return fmt.Errorf("CRITICAL: charge succeeded (chargeID=%s) but invoice save failed; "+
+			"manual reconciliation required: %w", chargeID, err)
+	}
 
 	sub.Status = domain.StatusActive
 	sub.CurrentPeriodStart = sub.CurrentPeriodEnd
@@ -182,7 +189,10 @@ func (s *Service) processCycle(ctx context.Context, sub *domain.Subscription) er
 	sub.CycleCount++
 	sub.DunningRetryCount = 0
 	sub.UpdatedAt = now
-	_ = s.Subs.Save(ctx, sub)
+	if err := s.Subs.Save(ctx, sub); err != nil {
+		return fmt.Errorf("CRITICAL: invoice paid (inv=%s) but subscription save failed; "+
+			"cycle/period state drift, manual reconciliation required: %w", inv.InvoiceID, err)
+	}
 
 	// 发事件 → moneyflow engine 自动按 graph 分账
 	if s.Events != nil {
@@ -258,13 +268,18 @@ func (s *Service) retryDunning(ctx context.Context, sub *domain.Subscription) er
 		now := s.now()
 		inv.Status = domain.InvoicePaid
 		inv.PaidAt = &now
-		_ = s.Invoices.Save(ctx, inv)
+		// MED-FIX-4: 同上 — dunning 路径 charge 成功后 Save 失败 propagate.
+		if err := s.Invoices.Save(ctx, inv); err != nil {
+			return fmt.Errorf("CRITICAL: dunning charge succeeded but invoice save failed; manual reconciliation required: %w", err)
+		}
 		sub.Status = domain.StatusActive
 		sub.CurrentPeriodStart = sub.CurrentPeriodEnd
 		sub.CurrentPeriodEnd = advance(sub.CurrentPeriodEnd, plan.IntervalUnit, plan.IntervalCount)
 		sub.CycleCount++
 		sub.DunningRetryCount = 0
-		_ = s.Subs.Save(ctx, sub)
+		if err := s.Subs.Save(ctx, sub); err != nil {
+			return fmt.Errorf("CRITICAL: dunning invoice paid (inv=%s) but subscription save failed; cycle drift, manual reconciliation: %w", inv.InvoiceID, err)
+		}
 		// 同样发事件给 moneyflow
 		if s.Events != nil {
 			_ = s.Events.Publish(ctx, "subscription.cycle", map[string]any{
