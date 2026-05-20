@@ -251,28 +251,13 @@ services:
       retries: 10
       start_period: 30s
 
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.10
-    container_name: accounting-etcd
-    environment:
-      ETCD_NAME: etcd0
-      ETCD_ADVERTISE_CLIENT_URLS: http://etcd:2379
-      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd:2380
-      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
-      ETCD_INITIAL_CLUSTER: etcd0=http://etcd:2380
-      ETCD_DATA_DIR: /etcd-data
-    ports:
-      - "2379:2379"
-      - "2380:2380"
-    volumes:
-      - etcd-data:/etcd-data
-    healthcheck:
-      test: ["CMD", "sh", "-c", "ETCDCTL_API=3 etcdctl --endpoints=http://localhost:2379 endpoint health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+  # ETCD-CLEAN: 老的 accounting-etcd 已删. 全 monorepo 收敛到 risk-stack.yml 的
+  # 唯一 etcd (它在 payment-stack network 上, network alias=[etcd, accounting-etcd],
+  # 服务们的 REGISTRY_ENDPOINTS=etcd:2379 直接命中 risk-stack-etcd-1).
+  # 历史: 这里曾定义独立 etcd container_name=accounting-etcd 端口 2379:2379, 跟
+  # risk-stack 的 etcd / 早期 packages/etcd 互相抢, 导致 service discovery 间歇性
+  # 拉不到实例. 已统一到 risk-stack.
+  # 如果你需要独立跑 accounting-system stack (不带 risk-stack), 把这块取消注释即可.
 
   accounting-service:
     build:
@@ -392,5 +377,5 @@ volumes:
   kafka-data:
   zookeeper-data:
   zookeeper-log:
-  etcd-data:
+  # etcd-data:  # ETCD-CLEAN: 已删, 用 risk-stack 的 etcd
   app-logs:
