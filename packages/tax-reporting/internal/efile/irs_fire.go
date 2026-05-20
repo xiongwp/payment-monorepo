@@ -57,18 +57,55 @@ func (s StubSubmitter) Status(_ context.Context, _ string) (string, error) {
 	return "accepted", nil
 }
 
-// AvalaraSubmitter — 真实接入 Avalara 1099 API (生产用; 这里给接口骨架).
+// AvalaraSubmitter — 真实接入 Avalara 1099 API (生产用).
+//
+// 完整 HTTP 集成 (POST /api/v2/1099/forms + Bearer Auth + status poll) 是
+// 下个 PR 的事; 此处先给可构造的真 struct, 让 main.go 能选 TAX_SUBMITTER=avalara
+// 而不直接 panic. 上线前必须接通真实 endpoint.
 type AvalaraSubmitter struct {
 	APIKey      string
 	BaseURL     string
 	HTTPTimeout time.Duration
 }
 
+// NewAvalaraSubmitter — P0-TAX-1 入口. main.go 通过 TAX_SUBMITTER=avalara 选这条.
+// API key / URL 从 env 注入 (AVALARA_API_KEY / AVALARA_API_URL).
+func NewAvalaraSubmitter(apiKey, baseURL string) *AvalaraSubmitter {
+	if baseURL == "" {
+		baseURL = "https://api.avalara.com" // 默认 prod endpoint
+	}
+	return &AvalaraSubmitter{
+		APIKey:      apiKey,
+		BaseURL:     baseURL,
+		HTTPTimeout: 30 * time.Second,
+	}
+}
+
 func (a *AvalaraSubmitter) Submit(_ context.Context, _ domain.TaxForm) (SubmitResult, error) {
-	// 真实: POST <BaseURL>/api/v2/1099/forms with Bearer APIKey, JSON payload.
+	// TODO P0-TAX-1 后续 PR: POST <BaseURL>/api/v2/1099/forms with Bearer APIKey, JSON payload.
 	// 拿 status=submitted + filing_id 回填 TaxForm.EFileID.
-	return SubmitResult{}, errors.New("avalara: not implemented in dev")
+	return SubmitResult{}, errors.New("avalara: HTTP integration pending (P0-TAX-1 step 2)")
 }
 func (a *AvalaraSubmitter) Status(_ context.Context, _ string) (string, error) {
-	return "", errors.New("avalara: not implemented in dev")
+	return "", errors.New("avalara: HTTP integration pending (P0-TAX-1 step 2)")
+}
+
+// IRSFireSubmitter — 直连 IRS FIRE (Filing Information Returns Electronically).
+// 需要 TCC (Transmitter Control Code) + 客户端证书. 配置: IRS_FIRE_TCC / IRS_FIRE_CERT_PATH.
+type IRSFireSubmitter struct {
+	TCC      string // 由 IRS 颁发的 5-digit transmitter code
+	CertPath string // 客户端 mTLS 证书路径
+}
+
+func NewIRSFireSubmitter(tcc, certPath string) *IRSFireSubmitter {
+	return &IRSFireSubmitter{TCC: tcc, CertPath: certPath}
+}
+
+func (i *IRSFireSubmitter) Submit(_ context.Context, _ domain.TaxForm) (SubmitResult, error) {
+	// TODO P0-TAX-1 后续 PR: IRS FIRE SFTP / SOAP submission.
+	return SubmitResult{}, errors.New("irs_fire: integration pending (P0-TAX-1 step 2)")
+}
+
+func (i *IRSFireSubmitter) Status(_ context.Context, _ string) (string, error) {
+	return "", errors.New("irs_fire: integration pending (P0-TAX-1 step 2)")
 }

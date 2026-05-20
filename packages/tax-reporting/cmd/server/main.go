@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -81,14 +82,55 @@ func newFiler() forms.Filer {
 }
 
 func newAdminServer(s *store.MemStore, agg *aggregator.Aggregator, filer forms.Filer, log *zap.Logger) *adminhttp.Server {
+	submitter := pickSubmitter(log)
 	return &adminhttp.Server{
 		Store:      s,
 		Agg:        agg,
 		Filer:      filer,
-		Submitter:  efile.StubSubmitter{},
+		Submitter:  submitter,
 		Thresholds: domain.DefaultThresholds(),
 		AdminToken: os.Getenv("TAX_ADMIN_TOKEN"),
 		Log:        log,
+	}
+}
+
+// pickSubmitter — P0-TAX-1: prod 拒绝 stub submitter.
+//
+// 选择优先级:
+//   TAX_SUBMITTER=avalara → AvalaraSubmitter (生产推荐, 走 Avalara API)
+//   TAX_SUBMITTER=irs_fire → IRSFireSubmitter (直连 IRS FIRE, 需 TCC + cert)
+//   TAX_SUBMITTER=stub OR 未设  → StubSubmitter
+//
+// 启动期校验:
+//   ENV=prod && submitter is stub → **panic**.
+//   合规要求: IRS 1099-K 法定上报, prod 上线绝不能用 stub.
+func pickSubmitter(log *zap.Logger) efile.Submitter {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("TAX_SUBMITTER")))
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	switch mode {
+	case "avalara":
+		// AvalaraSubmitter 真接 HTTP 在 internal/efile/avalara.go (P0-TAX-1 后续 PR 接通)
+		log.Info("tax-reporting: using Avalara submitter (real)", zap.String("env", env))
+		return efile.NewAvalaraSubmitter(
+			os.Getenv("AVALARA_API_KEY"),
+			os.Getenv("AVALARA_API_URL"),
+		)
+	case "irs_fire", "irs":
+		log.Info("tax-reporting: using IRS FIRE submitter (real)", zap.String("env", env))
+		return efile.NewIRSFireSubmitter(
+			os.Getenv("IRS_FIRE_TCC"),
+			os.Getenv("IRS_FIRE_CERT_PATH"),
+		)
+	default:
+		// stub 路径.
+		if env == "prod" || env == "production" {
+			panic("tax-reporting: STUB submitter forbidden in prod " +
+				"(APP_ENV=" + env + "). Set TAX_SUBMITTER=avalara 或 irs_fire " +
+				"+ 对应 API key/cert env. 这是 IRS 1099-K 法定合规要求, 绝不能 stub 上线.")
+		}
+		log.Warn("tax-reporting: using STUB submitter (dev / staging only) — TAX_SUBMITTER not set",
+			zap.String("env", env))
+		return efile.StubSubmitter{}
 	}
 }
 

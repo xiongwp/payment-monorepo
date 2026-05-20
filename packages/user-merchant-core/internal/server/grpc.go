@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 
 	kitexserver "github.com/cloudwego/kitex/server"
 	"github.com/xiongwp/payment-util/kitexutil"
@@ -123,17 +124,63 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 		userservice.RegisterService(gs, NewUserServer(s.userSvc))
 	}
 	// PAN 单跳后: UserCardService Kitex 暴露给 api-gateway / order-core 内部调用.
+	// P0-PCI-1: UserCardInternalService 拆到独立 internal-only listener,
+	// 不跟公开 service 共端口 (防横向越权: GetStoredTokenForPayment 返存储 token,
+	// 只能让 order-core / api-gateway 在内部网络调).
+	var ucInternal usercardinternalservice.Server
 	if s.userCardSvc != nil {
 		ucServer := NewUserCardServer(s.userCardSvc)
 		usercardservice.RegisterService(gs, ucServer)
-		// UserCardInternalService (GetStoredTokenForPayment) 同一 listener;
-		// 生产应该通过另一个 internal-only 端口暴露 (TODO).
-		usercardinternalservice.RegisterService(gs, ucServer)
+		ucInternal = ucServer // 内部 service 用同 handler, 但不在公开端口注册
 	}
 
 	// 健康检查 / reflection 由 Kitex 自带, 不再手动注册.
 
+	// 启动 internal-only listener (P0-PCI-1): 默认 :9192, env INTERNAL_GRPC_PORT 可改.
+	// 仅 UserCardInternalService 暴露在这个端口; etcd 注册名 "user-merchant-core-internal"
+	// 让 caller 显式区分 — order-core 拨号 stored token 用 internal 名,
+	// 其他公开 RPC 拨 user-merchant-core. clientCN 白名单 / mTLS 在 ingress 层做.
+	if ucInternal != nil {
+		go s.serveInternal(ctx, ucInternal)
+	}
+
 	go func() { <-ctx.Done(); _ = gs.Stop() }()
 	s.logger.Info("user-merchant-core Kitex listening", zap.String("addr", addr.String()))
 	return gs.Run()
+}
+
+// serveInternal 启动 internal-only Kitex listener (UserCardInternalService 独占).
+// 拆出来防止跟公开 6 个 service 共用端口 → PCI 横向越权.
+func (s *Server) serveInternal(ctx context.Context, ucInternal usercardinternalservice.Server) {
+	intPort := 9192
+	if v := os.Getenv("INTERNAL_GRPC_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			intPort = p
+		}
+	}
+	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", intPort))
+	if err != nil {
+		s.logger.Error("internal listener resolve failed", zap.Error(err))
+		return
+	}
+	advHost := os.Getenv("ADVERTISE_HOST")
+	if advHost == "" {
+		advHost = "user-merchant-core"
+	}
+	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
+	// 单独 etcd 注册名: 让 caller 显式选 internal endpoint, 公开 caller 拨不到.
+	srvOpts = append(srvOpts,
+		kitexutil.DefaultServerOptions("user-merchant-core-internal",
+			fmt.Sprintf("%s:%d", advHost, intPort))...)
+	gs := kitexserver.NewServer(srvOpts...)
+	usercardinternalservice.RegisterService(gs, ucInternal)
+
+	go func() { <-ctx.Done(); _ = gs.Stop() }()
+	s.logger.Info("user-merchant-core INTERNAL Kitex listening (PCI restricted)",
+		zap.String("addr", addr.String()),
+		zap.Int("port", intPort),
+		zap.String("etcd_name", "user-merchant-core-internal"))
+	if err := gs.Run(); err != nil {
+		s.logger.Error("internal Kitex Run exited", zap.Error(err))
+	}
 }

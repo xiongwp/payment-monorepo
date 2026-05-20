@@ -277,15 +277,28 @@ func wireAll(
 			riskCfg.FailSafeReject = false
 		}
 		// SP-FIN-1: 真实 HTTP client (yaml 配了 URL 走真实, 否则 AlwaysAllow 占位).
+		// P1-RISK-1: prod 拒绝 AlwaysAllow placeholder (资金路径裸奔风险).
 		var riskCli workflow.RiskClient = workflow.AlwaysAllowRisk{}
 		var amlCli workflow.AMLClient = workflow.AlwaysAllowAML{}
+		usingStubRisk := true
+		usingStubAML := true
 		if u := cfg.Risk.HTTPURL; u != "" {
 			riskCli = workflow.NewHTTPRiskClient(u, cfg.Risk.AuthToken)
+			usingStubRisk = false
 			log.Info("risk client: http", zap.String("url", u))
 		}
 		if u := cfg.Risk.AMLHTTPURL; u != "" {
 			amlCli = workflow.NewHTTPAMLClient(u, cfg.Risk.AMLAuthToken)
+			usingStubAML = false
 			log.Info("aml client: http", zap.String("url", u))
+		}
+		appEnv := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+		if (appEnv == "prod" || appEnv == "production") && (usingStubRisk || usingStubAML) {
+			panic(fmt.Sprintf(
+				"split-payment: Risk/AML 不能用 AlwaysAllow placeholder 上 prod "+
+					"(APP_ENV=%s, stub_risk=%v, stub_aml=%v). "+
+					"必须在 config.yaml 配 risk.http_url + risk.aml_http_url 真实 endpoint.",
+				appEnv, usingStubRisk, usingStubAML))
 		}
 		engine.RiskGate = &workflow.RiskGate{
 			Cfg:  riskCfg,
@@ -293,7 +306,9 @@ func wireAll(
 			AML:  amlCli,
 			Log:  log,
 		}
-		log.Info("risk gate: enabled (using AlwaysAllow placeholder; wire real gRPC clients in main.go)",
+		log.Info("risk gate: enabled",
+			zap.Bool("risk_is_stub", usingStubRisk),
+			zap.Bool("aml_is_stub", usingStubAML),
 			zap.Int64("aml_threshold_cents", riskCfg.AMLThresholdMinor),
 			zap.Bool("fail_safe_reject", riskCfg.FailSafeReject))
 	}
