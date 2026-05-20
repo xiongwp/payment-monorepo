@@ -69,12 +69,16 @@ const (
 	ChargeStrategySeparate    = "separate"    // 平台收, 按 edge 规则分多个 Transfer (默认 + 唯一真实实现).
 )
 
-// ValidateChargeStrategy 检查 ChargeStrategy 合法性, 并对未实现的模式提示警告.
+// ValidateChargeStrategy 检查 ChargeStrategy 合法性.
+//
+// P2-STRAT-1: direct / destination 之前静默降级 separate, 现在改成**拒绝**
+// (返 err), 避免商户/管理员配了未实现策略时引擎悄悄改路径. 真要支持等
+// Phase 4 Stripe Connect 接通, 把这两条 case 改成 return s, "", nil.
 //
 // 返回:
 //   - normalized: 规整后的 strategy (空→Separate; 已知值原样返).
-//   - warn: 非空 → 调用方应 log warn (e.g. SaveGraph / Engine.Handle 入口).
-//   - err:  非空 → 拒绝该 graph (未知 strategy).
+//   - warn: 非空 → 调用方应 log warn.
+//   - err:  非空 → 拒绝该 graph (未知或未实现 strategy).
 func ValidateChargeStrategy(s string) (normalized string, warn string, err error) {
 	switch s {
 	case "":
@@ -82,11 +86,13 @@ func ValidateChargeStrategy(s string) (normalized string, warn string, err error
 	case ChargeStrategySeparate:
 		return s, "", nil
 	case ChargeStrategyDirect:
-		return s, "charge_strategy=direct is reserved/not-implemented; engine falls back to separate routing", nil
+		return "", "", fmt.Errorf("charge_strategy=%q 未实现 (Phase 4 Stripe Connect 才接), "+
+			"当前不允许用 — 防引擎静默降级 separate 改资金路径", s)
 	case ChargeStrategyDestination:
-		return s, "charge_strategy=destination is reserved/not-implemented; engine falls back to separate routing", nil
+		return "", "", fmt.Errorf("charge_strategy=%q 未实现 (Phase 4 Stripe Connect 才接), "+
+			"当前不允许用 — 防引擎静默降级 separate 改资金路径", s)
 	default:
-		return "", "", fmt.Errorf("unknown charge_strategy %q (allowed: direct|destination|separate)", s)
+		return "", "", fmt.Errorf("unknown charge_strategy %q (allowed: separate; direct/destination 尚未实现)", s)
 	}
 }
 

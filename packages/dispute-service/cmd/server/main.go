@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"go.uber.org/fx"
@@ -46,10 +47,20 @@ func newLogger(lc fx.Lifecycle) (*zap.Logger, error) {
 }
 
 func newRepo() *repository.MemoryRepo {
+	// P1-INMEM-1: prod 拒绝 in-memory repo (dispute 重启丢全 — 合规风险).
+	if env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))); env == "prod" || env == "production" {
+		panic("dispute-service: in-memory MemoryRepo 不能上 prod (APP_ENV=" + env +
+			"). dispute 是合规/审计资产, 重启丢全 = 客诉 + 仲裁失败. 必须接 MySQL repo (新增 internal/repository/mysql_repo.go).")
+	}
 	return repository.NewMemoryRepo()
 }
 
 func newWorkflow(repo *repository.MemoryRepo, log *zap.Logger) *workflow.Service {
+	// P1-INMEM-1: prod 拒绝 LogNotifier (商户从来收不到 webhook).
+	if env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))); env == "prod" || env == "production" {
+		panic("dispute-service: LogNotifier 不能上 prod — 商户拿不到 dispute webhook. " +
+			"必须接 merchant-webhook dispatcher (新增 internal/repository/webhook_notifier.go).")
+	}
 	return workflow.New(repo, repository.LogNotifier{}, log)
 }
 

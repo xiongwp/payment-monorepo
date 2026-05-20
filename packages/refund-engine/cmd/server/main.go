@@ -66,13 +66,24 @@ func newLogLevel() zap.AtomicLevel {
 	return zap.NewAtomicLevelAt(zap.InfoLevel)
 }
 
-func newMemoryRepo() *memoryRepo { return newMemRepo() }
+func newMemoryRepo() *memoryRepo {
+	// P1-INMEM-1: prod 拒绝 in-memory repo. refund 是资金路径, 重启丢全 = 退款丢失.
+	if env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))); env == "prod" || env == "production" {
+		panic("refund-engine: in-memory repo 不能上 prod (APP_ENV=" + env +
+			"). 必须接 MySQL repo. 当前服务仍是 MVP, 上线前请决定真换 MySQL 或停服 (此服务的功能已部分在 order-core/refund 路径里).")
+	}
+	return newMemRepo()
+}
 
 func newWebhookClient() *clients.WebhookClient {
 	return clients.NewWebhookClient(envOr("MERCHANT_WEBHOOK_URL", "http://merchant-webhook:8080"))
 }
 
 func newChannel(log *zap.Logger) stubChannel {
+	// P1-INMEM-1: prod 拒绝 stubChannel — 它只 log + 返假 refund_id, 不真发 refund.
+	if env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))); env == "prod" || env == "production" {
+		panic("refund-engine: stubChannel 不能上 prod — 不真发 refund. 必须接真 HTTP channel client.")
+	}
 	return stubChannel{log: log}
 }
 

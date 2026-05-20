@@ -120,9 +120,26 @@ func (e *Engine) HandleRefund(
 		return nil // 没东西可 reverse
 	}
 
-	// 3) Reversal strategy. 目前只实现 proportional (按比例退);
-	// fixed_from_platform / fail_if_imbalance 是占位, 留 Phase 3 接.
-	// Graph 反查暂略 (RunPlan.GraphID 拿到 → GraphRepo.GetByID 是另一个 trip), 默认走 proportional.
+	// 3) Reversal strategy.
+	// P2-STRAT-1: 之前不论 graph 配什么 strategy, 都默认走 proportional → 商户配
+	// fixed_from_platform / fail_if_imbalance 时引擎悄悄改路径 (= 资金错配风险).
+	// 现在: 真去 GraphRepo 读 spec.reversal.strategy, 命中未实现的策略 → 直接 err.
+	// 触发 caller 显式更新 graph (改成 proportional) 或者等真实现.
+	if graphRepo != nil && plan.GraphID > 0 {
+		g, err := graphRepo.GetByID(ctx, plan.GraphID)
+		if err == nil && g != nil && g.Spec.Reversal != nil {
+			switch g.Spec.Reversal.Strategy {
+			case "", ReversalSpecStrategyProportional:
+				// OK, fall through to proportional 计算
+			case ReversalSpecStrategyFixedFromPlatform, ReversalSpecStrategyFailIfImbalance:
+				return fmt.Errorf("reversal strategy %q 未实现 (Phase 3 才接); "+
+					"当前只支持 proportional. 请在 designer 把 spec.reversal.strategy 改成 'proportional' "+
+					"或留空 (= 默认 proportional)", g.Spec.Reversal.Strategy)
+			default:
+				return fmt.Errorf("reversal strategy %q 未知 (allowed: proportional)", g.Spec.Reversal.Strategy)
+			}
+		}
+	}
 
 	// 4) 按 proportional 算每条 transfer reverse 多少
 	totalCharge := int64(0)

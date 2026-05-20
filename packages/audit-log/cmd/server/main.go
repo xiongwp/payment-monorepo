@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sort"
 	"strconv"
 	"sync"
@@ -232,7 +233,15 @@ type memoryRepo struct {
 	nextSeq int64
 }
 
-func newMemoryRepo() *memoryRepo { return &memoryRepo{} }
+func newMemoryRepo() *memoryRepo {
+	// P1-INMEM-1: prod 拒绝 in-memory hash-chain audit log (SOX/PCI 不合规).
+	// audit log 法定要求**不可变 + 长期保留 + 可链式校验**, 内存重启就清 = 严重违规.
+	if env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))); env == "prod" || env == "production" {
+		panic("audit-log: in-memory hash-chain 不能上 prod (APP_ENV=" + env +
+			"). SOX/PCI 要求 audit 不可变 + 长期保留. 必须接 append-only 持久存储 (MySQL ledger / S3 immutable / Kafka compact topic).")
+	}
+	return &memoryRepo{}
+}
 
 func (m *memoryRepo) append(e *domain.AuditEntry) {
 	m.mu.Lock()

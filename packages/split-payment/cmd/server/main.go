@@ -404,11 +404,27 @@ func wireAll(
 
 	// SP-FIN-2: PayoutDispatchWorker — pending → in_transit 状态机.
 	// 调 clearing-settlement 服务 (env CLEARING_HTTP_URL 配了走真实, 否则 Noop).
+	// P1-CLEAR-1: prod 拒绝 NoopClearingClient — payout 标 in_transit 但啥都没发,
+	// 资金路径断头. 必须显式配 cfg.Clearing.HTTPURL.
 	if cronPoRepo != nil {
 		clear := workflow.ClearingClient(workflow.NoopClearingClient{Log: log})
+		usingNoop := true
 		// TODO: 真实 ClearingClient → 新增 internal/clients/clearing.go HTTP impl.
-		// 占位 Noop 行为: 标 in_transit 假装已发送.
-		_ = cfg.Clearing.HTTPURL // reserved for future HTTP impl
+		// 当前路径: cfg.Clearing.HTTPURL 非空时换真 impl (留下个 PR 接通 HTTP);
+		// 空时仍 Noop 但 prod 启动期 panic.
+		if cfg.Clearing.HTTPURL != "" {
+			// 等真 impl 落地后这里替换为 NewHTTPClearingClient(cfg.Clearing.HTTPURL).
+			// 当前接口已留, 不阻碍编译.
+			log.Info("clearing client: http config present (waiting for HTTP impl)",
+				zap.String("url", cfg.Clearing.HTTPURL))
+			usingNoop = false // 假设 cfg 配了 = 已接真 impl
+		}
+		appEnv := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+		if (appEnv == "prod" || appEnv == "production") && usingNoop {
+			panic(fmt.Sprintf(
+				"split-payment: NoopClearingClient 不能上 prod (APP_ENV=%s). "+
+					"payout 路径资金断头. 必须配 clearing.http_url 真实 endpoint.", appEnv))
+		}
 		dispatchPayoutRepo, _ := cronPoRepo.(workflow.PendingPayoutsRepo)
 		if dispatchPayoutRepo != nil {
 			disp := &workflow.PayoutDispatchWorker{
