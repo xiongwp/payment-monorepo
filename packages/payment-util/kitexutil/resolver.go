@@ -123,6 +123,10 @@ func (r *EtcdResolver) CachedInstances(service string) []discovery.Instance {
 // ErrNoEndpoints — etcd 里没找到任何实例.
 var ErrNoEndpoints = errors.New("kitexutil: no etcd endpoints for service")
 
+// 编译期接口断言: EtcdResolver 必须实现 discovery.Resolver, 否则 Kitex client
+// 装载时会爆 "cannot use ... as discovery.Resolver value" — 提前在 build 期暴露.
+var _ discovery.Resolver = (*EtcdResolver)(nil)
+
 func parseTags(value string) map[string]string {
 	out := map[string]string{}
 	for _, pair := range strings.Split(value, ",") {

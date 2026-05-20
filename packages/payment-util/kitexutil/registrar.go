@@ -192,3 +192,8 @@ func guessHost() string {
 var osHostname = func() (string, error) {
 	return os.Hostname()
 }
+
+// 编译期接口断言: EtcdRegistry 必须实现 registry.Registry, 否则
+// kitexserver.WithRegistry(...) 装载时会爆 "cannot use ... as registry.Registry
+// value" — 提前在 build 期暴露, 别等到运行时.
+var _ registry.Registry = (*EtcdRegistry)(nil)

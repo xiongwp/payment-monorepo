@@ -29,6 +29,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 
 	"github.com/xiongwp/config-center/internal/metrics"
 	"github.com/xiongwp/config-center/internal/repo"
@@ -98,7 +99,18 @@ func newDB(v *viper.Viper, logger *zap.Logger) (*gorm.DB, error) {
 		}
 		dsn = fmt.Sprintf("root:@tcp(%s)/config_center_meta?charset=utf8mb4&parseTime=True&loc=Local", host)
 	}
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	// upsert 路径 (repo.upsertItemForUpdate) 用 First() 探活, 行不存在是预期路径,
+	// IgnoreRecordNotFoundError=true 让 GORM logger 不把 ErrRecordNotFound 当 warn 刷屏.
+	gormLog := gormlogger.New(
+		gormStdLogger{},
+		gormlogger.Config{
+			SlowThreshold:             200 * time.Millisecond,
+			LogLevel:                  gormlogger.Warn,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  false,
+		},
+	)
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: gormLog})
 	if err != nil {
 		return nil, fmt.Errorf("open meta db: %w", err)
 	}
@@ -276,6 +288,16 @@ func registerAdminUI(mux *http.ServeMux, ui *AdminUI, v *viper.Viper) {
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────
+
+// gormStdLogger 给 gormlogger.New 的 Writer 入参. gormlogger.Writer 接口要求:
+//   Printf(string, ...interface{})
+// 标准库 log.Default() 也满足, 但每行带时间戳; 这里用 fmt.Printf 直出, 跟现有
+// zap logger 风格统一 (zap 自己加时间戳 + json/console encoder).
+type gormStdLogger struct{}
+
+func (gormStdLogger) Printf(format string, args ...interface{}) {
+	fmt.Printf(format+"\n", args...)
+}
 
 func maskDSN(s string) string {
 	// 脱敏密码：root:xxx@tcp → root:***@tcp
