@@ -16,7 +16,7 @@ database:
     max_open_conns: 50
     max_idle_conns: 20
     conn_max_lifetime: 3600
-  # 10 库分片：shared-shard-0..9 节点上的 user_merchant_db_0..9（与
+  # 10 库分片：shard-0..9 节点上的 user_merchant_db_0..9（与
   # accounting-system / order-core / payment-channel layout 对齐）。
   # 任一 shard_N.dsn 缺失 → 应用 fallback 单 meta 模式（仅 dev），merchants
   # 表已挪到分片库，fallback 必报 1146。
@@ -44,7 +44,7 @@ risk:
 
 # accounting-system gRPC（联栈，注册时建 USER_BALANCE 主账户）
 accounting:
-  endpoint: "accounting-system:50051"
+  endpoint: "accounting-service:50051"
   rpc_timeout: 5s
 
 cache:
