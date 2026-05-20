@@ -235,14 +235,14 @@ func (s *Server) handleAdminAction(w http.ResponseWriter, r *http.Request) {
 			// prod path — 真打包 + 加密 + S3 + 邮件.
 			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 			defer cancel()
-			url, sha, kmsKey, err := s.Exporter.Export(ctx, latest)
+			url, sha, kmsKey, err := s.Exporter.Export(ctx, &latest)
 			if err != nil {
 				writeErr(w, http.StatusInternalServerError, "export_failed",
 					"export pack/encrypt/upload failed: "+err.Error())
 				return
 			}
 			_ = s.Store.SetExport(id, url, sha)
-			if err := s.Notifier.NotifyFulfilled(ctx, latest, url); err != nil {
+			if err := s.Notifier.NotifyFulfilled(ctx, &latest, url); err != nil {
 				// 邮件失败不阻断 (link 已经在 store 里, 用户可以从 admin 查),
 				// 但 audit log 标 notify_failed 让 ops 跟进.
 				if s.Log != nil {
