@@ -1653,7 +1653,16 @@ func (s *Server) CreateTransaction(ctx context.Context, req *accountingv1.Create
 			ErrorMessage: "leg[0].currency required",
 		}, nil
 	}
-	entries := make([]service.AccountingEntry, 0, len(legs)*2)
+	// RUNTIME-FIX-1: 按 account_no 聚合 debit/credit 净额, 同账户多次出现只生成
+	// 一条 entry (DoubleEntryBooking.validateEntries 强制每笔 booking 内 account_no
+	// 唯一). 中转户进出相抵 net=0 直接跳过. 跟 transactionService.executeBookkeeping
+	// 同款逻辑, 之前 Kitex handler 没复用导致 raw 2-per-leg entry 提交被 reject.
+	type accSummary struct {
+		debit, credit int64
+		description   string
+	}
+	agg := map[string]*accSummary{}
+	defaultDesc := req.GetRemark()
 	for i, leg := range legs {
 		legCur := strings.TrimSpace(leg.GetCurrency())
 		if legCur == "" {
@@ -1680,25 +1689,56 @@ func (s *Server) CreateTransaction(ctx context.Context, req *accountingv1.Create
 				ErrorMessage: fmt.Sprintf("leg[%d] from_account_no / to_account_no required", i),
 			}, nil
 		}
+		if leg.GetFromAccountNo() == leg.GetToAccountNo() {
+			return &accountingv1.CreateTransactionResponse{
+				OrderNo:      req.GetIdempotencyKey(),
+				Status:       "failed",
+				ErrorMessage: fmt.Sprintf("leg[%d] from == to (%s); self-transfer not allowed", i, leg.GetFromAccountNo()),
+			}, nil
+		}
 		desc := leg.GetDescription()
 		if desc == "" {
-			desc = req.GetRemark()
+			desc = defaultDesc
 		}
 		amount := leg.GetAmountMinor()
-		// 借方 (from)
-		entries = append(entries, service.AccountingEntry{
-			AccountNo:    leg.GetFromAccountNo(),
-			DebitAmount:  amount,
-			CreditAmount: 0,
-			Description:  desc,
-		})
-		// 贷方 (to)
-		entries = append(entries, service.AccountingEntry{
-			AccountNo:    leg.GetToAccountNo(),
-			DebitAmount:  0,
-			CreditAmount: amount,
-			Description:  desc,
-		})
+		fromAcc := leg.GetFromAccountNo()
+		toAcc := leg.GetToAccountNo()
+		if agg[fromAcc] == nil {
+			agg[fromAcc] = &accSummary{description: desc}
+		}
+		agg[fromAcc].debit += amount
+		if agg[toAcc] == nil {
+			agg[toAcc] = &accSummary{description: desc}
+		}
+		agg[toAcc].credit += amount
+	}
+	entries := make([]service.AccountingEntry, 0, len(agg))
+	for accNo, sum := range agg {
+		net := sum.debit - sum.credit
+		switch {
+		case net > 0:
+			entries = append(entries, service.AccountingEntry{
+				AccountNo:    accNo,
+				DebitAmount:  net,
+				CreditAmount: 0,
+				Description:  sum.description,
+			})
+		case net < 0:
+			entries = append(entries, service.AccountingEntry{
+				AccountNo:    accNo,
+				DebitAmount:  0,
+				CreditAmount: -net,
+				Description:  sum.description,
+			})
+			// net == 0: 中转户进出相抵, 不影响余额, 跳过 entry.
+		}
+	}
+	if len(entries) == 0 {
+		return &accountingv1.CreateTransactionResponse{
+			OrderNo:      req.GetIdempotencyKey(),
+			Status:       "failed",
+			ErrorMessage: "all legs aggregated to net 0 (no real money movement)",
+		}, nil
 	}
 
 	businessNo := req.GetBusinessNo()
