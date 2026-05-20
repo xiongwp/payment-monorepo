@@ -339,7 +339,7 @@ func (e *Engine) runAccountingTransactions(ctx context.Context, plan *domain.Run
 			plan.VoucherNo += "+" + fmt.Sprintf("%d", len(vouchers)-1) // 标记还有 N 张
 		}
 	}
-	_ = e.RunRepo.Update(ctx, plan)
+	e.updatePlanState(ctx, plan, true)
 	return nil
 }
 
@@ -420,7 +420,7 @@ func (e *Engine) ExecuteApproved(ctx context.Context, plan *domain.RunPlan) erro
 	// SP-AC-7: 已删除老 *clients.AccountingClient 直调路径.
 	plan.Status = PlanStatusFailed
 	plan.ErrorMsg = "ExecuteApproved: no execution backend wired"
-	_ = e.RunRepo.Update(ctx, plan)
+	e.updatePlanState(ctx, plan, true)
 	return errors.New("ExecuteApproved: no execution backend wired (need AccountingMeta or Saga)")
 }
 
@@ -436,7 +436,7 @@ func (e *Engine) runSaga(ctx context.Context, plan *domain.RunPlan) error {
 	if len(steps) == 0 {
 		// 没事干, 直接完成
 		plan.Status = "completed"
-		_ = e.RunRepo.Update(ctx, plan)
+		e.updatePlanState(ctx, plan, true)
 		return nil
 	}
 	inst := &SagaInstance{
@@ -446,16 +446,16 @@ func (e *Engine) runSaga(ctx context.Context, plan *domain.RunPlan) error {
 		Steps:         steps,
 	}
 	plan.Status = "executing"
-	_ = e.RunRepo.Update(ctx, plan)
+	e.updatePlanState(ctx, plan, false)
 	err := e.Saga.Start(ctx, inst)
 	if err != nil {
 		plan.Status = "failed"
 		plan.ErrorMsg = err.Error()
-		_ = e.RunRepo.Update(ctx, plan)
+		e.updatePlanState(ctx, plan, true)
 		return err
 	}
 	plan.Status = "completed"
-	_ = e.RunRepo.Update(ctx, plan)
+	e.updatePlanState(ctx, plan, true)
 	return nil
 }
 
