@@ -351,28 +351,87 @@ func requireNonMerchant(ctx context.Context) error {
 
 // ─── Blacklist 管理 ──────────────────────────────
 
+// validBlacklistDimensions MED-FIX-2: blacklist rule (rules/blacklist.go pickDimension)
+// 只识别 merchant/customer/ip/device 这 4 个 dimension; 之前 handler 不校验, 写进 "garbage_dim"
+// 也成功 → 占内存但永远不会被 Contains() 命中 = 隐性故障. 入口拒绝.
+var validBlacklistDimensions = map[string]struct{}{
+	"merchant": {}, "customer": {}, "ip": {}, "device": {},
+}
+
+// requireAdminOrInternal blacklist 写操作不让商户调; admin / internal 放行.
+func requireAdminOrInternal(ctx context.Context) error {
+	p, ok := auth.PrincipalFrom(ctx)
+	if !ok {
+		return nil // dev / 未鉴权模式放行
+	}
+	if p.Scope == auth.ScopeMerchant {
+		return fmt.Errorf("merchant scope cannot manage blacklist")
+	}
+	return nil
+}
+
+// operatorID 取 caller KeyID 做 audit log 关联. 没鉴权时返 "anonymous".
+func operatorID(ctx context.Context) string {
+	if p, ok := auth.PrincipalFrom(ctx); ok && p != nil {
+		return p.KeyID
+	}
+	return "anonymous"
+}
+
 func (s *Server) AddBlacklist(ctx context.Context, req *riskv1.BlacklistEntryMsg) (*riskv1.BlacklistOpResponse, error) {
-	if req.GetDimension() == "" || req.GetValue() == "" {
+	if err := requireAdminOrInternal(ctx); err != nil {
+		return nil, err
+	}
+	dim := req.GetDimension()
+	val := req.GetValue()
+	if dim == "" || val == "" {
 		return nil, fmt.Errorf("dimension and value required")
 	}
-	s.bl.Add(ctx, req.GetDimension(), req.GetValue(), req.GetReason())
-	s.logger.Info("blacklist added",
-		zap.String("dim", req.GetDimension()), zap.String("val", req.GetValue()))
+	if _, ok := validBlacklistDimensions[dim]; !ok {
+		return nil, fmt.Errorf("invalid dimension %q (allowed: merchant / customer / ip / device)", dim)
+	}
+	s.bl.Add(ctx, dim, val, req.GetReason())
+	s.logger.Info("blacklist_admin_add",
+		zap.String("audit_event", "blacklist_add"),
+		zap.String("operator", operatorID(ctx)),
+		zap.String("dim", dim),
+		zap.String("val", val),
+		zap.String("reason", req.GetReason()))
 	return &riskv1.BlacklistOpResponse{Ok: true}, nil
 }
 
 func (s *Server) RemoveBlacklist(ctx context.Context, req *riskv1.BlacklistEntryMsg) (*riskv1.BlacklistOpResponse, error) {
-	if req.GetDimension() == "" || req.GetValue() == "" {
+	if err := requireAdminOrInternal(ctx); err != nil {
+		return nil, err
+	}
+	dim := req.GetDimension()
+	val := req.GetValue()
+	if dim == "" || val == "" {
 		return nil, fmt.Errorf("dimension and value required")
 	}
-	s.bl.Remove(ctx, req.GetDimension(), req.GetValue())
-	s.logger.Info("blacklist removed",
-		zap.String("dim", req.GetDimension()), zap.String("val", req.GetValue()))
+	if _, ok := validBlacklistDimensions[dim]; !ok {
+		return nil, fmt.Errorf("invalid dimension %q (allowed: merchant / customer / ip / device)", dim)
+	}
+	s.bl.Remove(ctx, dim, val)
+	s.logger.Info("blacklist_admin_remove",
+		zap.String("audit_event", "blacklist_remove"),
+		zap.String("operator", operatorID(ctx)),
+		zap.String("dim", dim),
+		zap.String("val", val))
 	return &riskv1.BlacklistOpResponse{Ok: true}, nil
 }
 
 func (s *Server) ListBlacklist(ctx context.Context, req *riskv1.ListBlacklistRequest) (*riskv1.ListBlacklistResponse, error) {
-	entries := s.bl.List(ctx, req.GetDimension())
+	if err := requireAdminOrInternal(ctx); err != nil {
+		return nil, err
+	}
+	dim := req.GetDimension()
+	if dim != "" {
+		if _, ok := validBlacklistDimensions[dim]; !ok {
+			return nil, fmt.Errorf("invalid dimension %q (allowed: merchant / customer / ip / device; or empty for all)", dim)
+		}
+	}
+	entries := s.bl.List(ctx, dim)
 	resp := &riskv1.ListBlacklistResponse{}
 	for _, e := range entries {
 		resp.Entries = append(resp.Entries, &riskv1.BlacklistEntryMsg{

@@ -228,13 +228,13 @@ func (c *SagaCoordinator) Start(
 	}
 
 	inst.State = SagaStateForwarding
-	_ = c.store.Save(ctx, inst)
+	c.saveInst(ctx, inst, false) // MED-FIX-5: intermediate, log warn 不阻断
 
 	for i, step := range c.def.Steps {
 		inst.CurrentStep = i
 		inst.StepResults[i].Status = StepRunning
 		inst.StepResults[i].StartedAt = time.Now().UTC()
-		_ = c.store.Save(ctx, inst)
+		c.saveInst(ctx, inst, false)
 
 		err := c.runWithTimeout(ctx, step, inst.Payload)
 		inst.StepResults[i].FinishedAt = time.Now().UTC()
@@ -247,23 +247,46 @@ func (c *SagaCoordinator) Start(
 			// 触发逆序补偿
 			if compErr := c.compensate(ctx, inst, i-1); compErr != nil {
 				inst.State = SagaStateFailed
-				_ = c.store.Save(ctx, inst)
+				c.saveInst(ctx, inst, true) // terminal, log critical
 				return inst, fmt.Errorf("saga %s failed, compensation also failed: %w", sagaID, compErr)
 			}
 			inst.State = SagaStateCompensating
 			inst.CompletedAt = time.Now().UTC()
-			_ = c.store.Save(ctx, inst)
+			c.saveInst(ctx, inst, true) // semi-terminal: 补偿完, ResumeUnfinished 不会重跑
 			return inst, err
 		}
 		inst.StepResults[i].Status = StepCompleted
-		_ = c.store.Save(ctx, inst)
+		c.saveInst(ctx, inst, false)
 	}
 
 	inst.State = SagaStateCompleted
 	inst.CompletedAt = time.Now().UTC()
-	_ = c.store.Save(ctx, inst)
+	c.saveInst(ctx, inst, true) // terminal
 	c.logger.Info("saga completed", "saga", sagaID, "steps", len(c.def.Steps))
 	return inst, nil
+}
+
+// saveInst MED-FIX-5: 统一 saga state 持久化错误日志.
+// 之前所有 _ = store.Save 吞错, 持久化失败时 ResumeUnfinished 看到的 state 是旧值 →
+// 重启后可能 step 重跑 / 漏 compensate. 改成 log critical (terminal) / warn (intermediate)
+// 让 ops 知道. 不阻断主路径返回, 因为 saga 行为是: 进程内 state 才是权威, store 为重启恢复用.
+func (c *SagaCoordinator) saveInst(ctx context.Context, inst *SagaInstance, terminal bool) {
+	if err := c.store.Save(ctx, inst); err != nil {
+		if terminal {
+			c.logger.Error("CRITICAL: saga terminal-state Save failed; "+
+				"ResumeUnfinished 可能漏掉本 saga 真实结果, 需 ops 查 log + 手工核对补偿",
+				"saga", inst.SagaID,
+				"state", inst.State,
+				"current_step", inst.CurrentStep,
+				"err", err)
+		} else {
+			c.logger.Warn("saga intermediate-state Save failed (下一步会重写, ResumeUnfinished 会从旧 step 重跑 — 要求 Step 幂等)",
+				"saga", inst.SagaID,
+				"state", inst.State,
+				"current_step", inst.CurrentStep,
+				"err", err)
+		}
+	}
 }
 
 // runWithTimeout 跑一步 (含 timeout)

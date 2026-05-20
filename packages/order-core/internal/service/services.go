@@ -1317,27 +1317,56 @@ func (s *refundService) MarkSucceeded(ctx context.Context, piID, refundID string
 	// 用 SQL 原子递增 Charge.amount_refunded，避免并发退款 read-then-write 竞态。
 	// gorm.Expr 生成 `amount_refunded = amount_refunded + ?`，DB 端原子执行。
 	// CAS 兜底已保证本块只跑一次。
+	//
+	// HIGH-FIX-5: 之前这 4 处 _, _ = UpdateFields 全吞错; CAS 已赢家无法重跑,
+	// amount_refunded / refund_phase 任一吞错 → charge 上 amount_refunded 永久少加
+	// → 后续合法 refund 被 SumActiveByCharge 错误放行 → 实际退超原 charge 金额.
+	// 修复: 任一关键 update 失败 → log critical + 不阻止返回 (CAS 已赢已不可回滚),
+	// 但 enqueue accounting outbox 也走同款 RequestID, 让对账 / reconcile 兜底.
 	if rf.ChargeID != "" {
-		_, _ = s.chargeRepo.UpdateFields(ctx, piID, rf.ChargeID, map[string]any{
+		if _, uerr := s.chargeRepo.UpdateFields(ctx, piID, rf.ChargeID, map[string]any{
 			"amount_refunded": gorm.Expr("amount_refunded + ?", rf.Amount),
-		})
+		}); uerr != nil {
+			s.logger.Error("CRITICAL: refund MarkSucceeded won CAS but amount_refunded inc failed; "+
+				"charge.amount_refunded 少加, 后续 refund 余额校验会放行超额退款, 必须手动 reconcile",
+				zap.String("pi_id", piID),
+				zap.String("refund_id", refundID),
+				zap.String("charge_id", rf.ChargeID),
+				zap.Int64("delta", rf.Amount),
+				zap.Error(uerr))
+		}
 		// 单独 update refunded flag（需要读最新 amount_refunded 才能判断）
 		if ch, err := s.chargeRepo.Get(ctx, piID, rf.ChargeID); err == nil {
 			if ch.AmountRefunded >= ch.Amount {
-				_, _ = s.chargeRepo.UpdateFields(ctx, piID, rf.ChargeID, map[string]any{
+				if _, uerr := s.chargeRepo.UpdateFields(ctx, piID, rf.ChargeID, map[string]any{
 					"refunded": true,
-				})
+				}); uerr != nil {
+					s.logger.Error("refund MarkSucceeded: refunded=true flag update failed (cosmetic)",
+						zap.String("pi_id", piID), zap.String("refund_id", refundID), zap.Error(uerr))
+				}
 			}
+		} else {
+			s.logger.Warn("refund MarkSucceeded: re-read charge to set refunded flag failed",
+				zap.String("pi_id", piID), zap.String("charge_id", rf.ChargeID), zap.Error(err))
 		}
 	}
 	// P1-1: 更新 RefundPhase（按 Charge 状态判断全额/部分）
 	if rf.ChargeID != "" {
 		if ch, err := s.chargeRepo.Get(ctx, piID, rf.ChargeID); err == nil {
+			var phase domain.RefundPhase
 			if ch.AmountRefunded >= ch.AmountCaptured || ch.AmountRefunded >= ch.Amount {
-				_, _ = s.piRepo.UpdateFields(ctx, piID, map[string]any{"refund_phase": domain.RefundPhaseFullyRefunded})
+				phase = domain.RefundPhaseFullyRefunded
 			} else {
-				_, _ = s.piRepo.UpdateFields(ctx, piID, map[string]any{"refund_phase": domain.RefundPhasePartiallyRefunded})
+				phase = domain.RefundPhasePartiallyRefunded
 			}
+			if _, uerr := s.piRepo.UpdateFields(ctx, piID, map[string]any{"refund_phase": phase}); uerr != nil {
+				// refund_phase 是 UI/查询用字段, 不影响余额校验, 失败 log warn 不阻断.
+				s.logger.Warn("refund MarkSucceeded: refund_phase update failed",
+					zap.String("pi_id", piID), zap.String("phase", string(phase)), zap.Error(uerr))
+			}
+		} else {
+			s.logger.Warn("refund MarkSucceeded: re-read charge for refund_phase failed",
+				zap.String("pi_id", piID), zap.String("charge_id", rf.ChargeID), zap.Error(err))
 		}
 	}
 	// **资金安全关键**：MarkSucceeded 内聚 enqueue accounting outbox。

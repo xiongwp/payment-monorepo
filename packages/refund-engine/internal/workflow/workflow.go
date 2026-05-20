@@ -214,11 +214,25 @@ func (s *Service) Submit(ctx context.Context, limit int) (int, error) {
 			continue
 		}
 		now := time.Now().UTC()
-		s.repo.UpdateStatus(ctx, r.ID, domain.StatusSubmitted, map[string]any{
+		// HIGH-FIX-2: 通道已 SubmitRefund 成功; 这步 UpdateStatus 之前吞错,
+		// 下轮 cron 看 status 仍 Approved 又重提通道 → 重复退款.
+		// DB 写败立刻 markFailed 防止重投递 (manual_review 让 ops 跟进对账).
+		if err := s.repo.UpdateStatus(ctx, r.ID, domain.StatusSubmitted, map[string]any{
 			"channel_refund_id": channelRef,
 			"submitted_at":      &now,
 			"updated_at":        now,
-		})
+		}); err != nil {
+			s.log.Error("CRITICAL: channel SubmitRefund succeeded but UpdateStatus failed; "+
+				"manual reconciliation required (channel 已收单, DB 仍 approved, 下轮 cron 会重提)",
+				zap.Int64("refund_id", r.ID),
+				zap.String("channel_refund_id", channelRef),
+				zap.Error(err))
+			// 立刻把 status 推 failed 防重投; channel_refund_id 写不进 → 留在 log/error_code.
+			_ = s.markFailed(ctx, r.ID,
+				"db_update_failed_after_channel_submit",
+				"channel_ref="+channelRef+" db_err="+err.Error())
+			continue
+		}
 		sent++
 	}
 	return sent, nil

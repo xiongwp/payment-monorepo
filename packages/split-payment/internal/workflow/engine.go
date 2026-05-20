@@ -236,7 +236,7 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 		case RiskDeny:
 			plan.Status = PlanStatusRejected
 			plan.ErrorMsg = "risk gate denied: " + reason
-			_ = e.RunRepo.Update(ctx, plan)
+			e.updatePlanState(ctx, plan, true)
 			e.publishEvent(ctx, EventFlowRejected, plan)
 			e.Log.Warn("plan rejected by risk gate",
 				zap.Int64("plan_id", plan.ID),
@@ -245,7 +245,7 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 		case RiskReview:
 			plan.Status = PlanStatusAwaitingReview
 			plan.ErrorMsg = "awaiting manual review: " + reason
-			_ = e.RunRepo.Update(ctx, plan)
+			e.updatePlanState(ctx, plan, true)
 			e.publishEvent(ctx, EventFlowAwaitingReview, plan)
 			e.Log.Info("plan awaiting review",
 				zap.Int64("plan_id", plan.ID),
@@ -289,7 +289,7 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 	// 走到这意味着 AccountingMeta 和 Saga 都没 wire — 配置错, 不允许跑下去 (资金安全).
 	plan.Status = PlanStatusFailed
 	plan.ErrorMsg = "no execution backend wired (AccountingMeta and Saga both nil)"
-	_ = e.RunRepo.Update(ctx, plan)
+	e.updatePlanState(ctx, plan, true)
 	return errors.New("engine: no execution backend wired (need AccountingMeta or Saga)")
 }
 
@@ -303,7 +303,7 @@ func (e *Engine) executeOne(ctx context.Context, g *domain.Graph, ev BusinessEve
 // 跟 saga 路径互斥 (engine 优先走 AccountingMeta != nil 这条).
 func (e *Engine) runAccountingTransactions(ctx context.Context, plan *domain.RunPlan) error {
 	plan.Status = PlanStatusExecuting
-	_ = e.RunRepo.Update(ctx, plan)
+	e.updatePlanState(ctx, plan, false)
 
 	vouchers := []string{}
 	for i := range plan.Transactions {
@@ -315,7 +315,7 @@ func (e *Engine) runAccountingTransactions(ctx context.Context, plan *domain.Run
 			plan.Status = PlanStatusFailed
 			plan.ErrorMsg = fmt.Sprintf("tx %s (%s/%s) failed: %s",
 				tx.OrderNo, tx.ProductCode, tx.EventCode, err.Error())
-			_ = e.RunRepo.Update(ctx, plan)
+			e.updatePlanState(ctx, plan, true)
 			e.Log.Error("accounting CreateTransaction failed",
 				zap.String("order_no", tx.OrderNo),
 				zap.String("event", tx.EventCode),
@@ -339,7 +339,7 @@ func (e *Engine) runAccountingTransactions(ctx context.Context, plan *domain.Run
 			plan.VoucherNo += "+" + fmt.Sprintf("%d", len(vouchers)-1) // 标记还有 N 张
 		}
 	}
-	_ = e.RunRepo.Update(ctx, plan)
+	e.updatePlanState(ctx, plan, true)
 	return nil
 }
 
@@ -420,7 +420,7 @@ func (e *Engine) ExecuteApproved(ctx context.Context, plan *domain.RunPlan) erro
 	// SP-AC-7: 已删除老 *clients.AccountingClient 直调路径.
 	plan.Status = PlanStatusFailed
 	plan.ErrorMsg = "ExecuteApproved: no execution backend wired"
-	_ = e.RunRepo.Update(ctx, plan)
+	e.updatePlanState(ctx, plan, true)
 	return errors.New("ExecuteApproved: no execution backend wired (need AccountingMeta or Saga)")
 }
 
@@ -436,7 +436,7 @@ func (e *Engine) runSaga(ctx context.Context, plan *domain.RunPlan) error {
 	if len(steps) == 0 {
 		// 没事干, 直接完成
 		plan.Status = "completed"
-		_ = e.RunRepo.Update(ctx, plan)
+		e.updatePlanState(ctx, plan, true)
 		return nil
 	}
 	inst := &SagaInstance{
@@ -446,16 +446,16 @@ func (e *Engine) runSaga(ctx context.Context, plan *domain.RunPlan) error {
 		Steps:         steps,
 	}
 	plan.Status = "executing"
-	_ = e.RunRepo.Update(ctx, plan)
+	e.updatePlanState(ctx, plan, false)
 	err := e.Saga.Start(ctx, inst)
 	if err != nil {
 		plan.Status = "failed"
 		plan.ErrorMsg = err.Error()
-		_ = e.RunRepo.Update(ctx, plan)
+		e.updatePlanState(ctx, plan, true)
 		return err
 	}
 	plan.Status = "completed"
-	_ = e.RunRepo.Update(ctx, plan)
+	e.updatePlanState(ctx, plan, true)
 	return nil
 }
 
@@ -543,6 +543,34 @@ func (e *Engine) persistTypedObjects(ctx context.Context, plan *domain.RunPlan) 
 // publishEvent SP-8 把状态机迁移 fan-out 到 webhook dispatcher (kafka).
 //
 // EventPublisher nil → 静默跳过 (Phase 1 没接 Kafka 时不报错).
+// updatePlanState MED-FIX-3: 之前 12 处 _ = RunRepo.Update(ctx, plan) 全吞错;
+// terminal state (Completed/Failed/Rejected/AwaitingReview) 写败让 plan 卡中间态,
+// 后续 resume/audit 查不到真实结果. 这里统一 log critical (terminal) / warn (intermediate)
+// 但不阻断主路径返回 — caller 依赖 plan.Status 内存值, DB 不一致由 ResumeUnfinished 兜底.
+//
+// terminal=true → 写败是资金安全相关, 必须 critical log + ops 跟进.
+// terminal=false → 中间态 (Executing), 写败下一步会再写, log warn 即可.
+func (e *Engine) updatePlanState(ctx context.Context, plan *domain.RunPlan, terminal bool) {
+	if e.RunRepo == nil || plan == nil {
+		return
+	}
+	if err := e.RunRepo.Update(ctx, plan); err != nil {
+		if terminal {
+			e.Log.Error("CRITICAL: RunPlan terminal-state update failed; "+
+				"DB 状态滞后 (内存 status / VoucherNo 已是 final), 需 ResumeUnfinished worker / 对账兜底",
+				zap.Int64("plan_id", plan.ID),
+				zap.String("status", string(plan.Status)),
+				zap.String("voucher_no", plan.VoucherNo),
+				zap.Error(err))
+		} else {
+			e.Log.Warn("RunPlan intermediate-state update failed (下步会重写, 不阻断)",
+				zap.Int64("plan_id", plan.ID),
+				zap.String("status", string(plan.Status)),
+				zap.Error(err))
+		}
+	}
+}
+
 func (e *Engine) publishEvent(ctx context.Context, evtType string, payload any) {
 	if e.Events == nil {
 		return
