@@ -112,10 +112,45 @@ func (h *MoneyflowHandler) handleGraphs(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, resp)
 	case r.Method == http.MethodPost && !hasKey:
 		body, _ := io.ReadAll(r.Body)
-		var g splitv1.Graph
-		if err := json.Unmarshal(body, &g); err != nil {
+		// MF-SAVE-FIX: 前端发 {key, name, version, status, spec:{scenario,triggers,nodes,edges,...}}.
+		// splitv1.Graph proto 只有 SpecJson []byte 字段 (没嵌套 Spec), 直接 Unmarshal 会
+		// 把整个 spec 子对象丢了 → DB 里只剩 nil arrays. 拆两步:
+		//   1. 解到松散 map, 把 spec 单独 marshal 进 SpecJson bytes
+		//   2. 其余顶层字段 (key/name/version/status/owner_*) 复制到 Graph proto
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(body, &raw); err != nil {
 			h.fail(w, http.StatusBadRequest, "decode graph: "+err.Error())
 			return
+		}
+		var g splitv1.Graph
+		// 顶层 string 字段
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{
+			{"key", &g.Key},
+			{"name", &g.Name},
+			{"version", &g.Version},
+			{"status", &g.Status},
+			{"owner_type", &g.OwnerType},
+			{"owner_id", &g.OwnerId},
+		} {
+			if v, ok := raw[f.key]; ok {
+				_ = json.Unmarshal(v, f.dst)
+			}
+		}
+		// spec 子对象 → SpecJson []byte (split-payment server 端再 json.Unmarshal 还原成 domain.GraphSpec)
+		if specRaw, ok := raw["spec"]; ok && len(specRaw) > 0 {
+			g.SpecJson = []byte(specRaw)
+		}
+		// 兼容: 如果前端直接发 "spec_json" 字段 (base64 或 string), 也接受.
+		if sj, ok := raw["spec_json"]; ok && len(g.SpecJson) == 0 {
+			var s string
+			if json.Unmarshal(sj, &s) == nil && s != "" {
+				g.SpecJson = []byte(s)
+			} else {
+				g.SpecJson = []byte(sj)
+			}
 		}
 		resp, err := h.cli.SaveGraph(r.Context(), &splitv1.SaveGraphRequest{Graph: &g})
 		if err != nil {
