@@ -97,6 +97,11 @@ func main() {
 				service.NewAdjustmentService,
 				service.NewCutDateProvider,
 				service.NewDayCutScheduler,
+				// FACADE-WIRE: AccountingFacadeService 给 Kitex BatchBooking handler 用
+				// (parallel/sequential 编排 + per-item RequestID + 复用 accountingSvc 完整路径).
+				// kafkaProducer 来自 newFacadeKafkaProducer (kafka.brokers 没配 → nil-safe, 仅 sync 路径不需要).
+				newFacadeKafkaProducer,
+				service.NewAccountingFacadeService,
 			),
 		),
 		fx.Provide(service.NewTccRecoveryWorker),
@@ -707,6 +712,40 @@ func hostnameOrUnknown() string {
 		return h
 	}
 	return "unknown"
+}
+
+// newFacadeKafkaProducer FACADE-WIRE: 给 AccountingFacadeService 用的 kafka 生产者.
+//
+// 当前 Kitex BatchBooking handler 只用 facade 的 sync 路径 (ProcessBatchBooking →
+// ProcessBooking → SyncBooking → accountingService.DoubleEntryBooking), 不触发
+// AsyncBooking, 所以 kafka 不发消息. 但 facade ctor 要求 *kafka.Producer 非 nil
+// 字段 (内部 SendMessage 会 NPE 如果调到 async 路径), 这里给一个 best-effort:
+//   - kafka.brokers 配了 → 用 booking topic (kafka.topics.booking, 缺省 accounting.booking)
+//   - kafka.brokers 空 → 返 nil (dev / 测试), facade SyncBooking 路径不读 producer 不影响
+//
+// 真要走 async 路径必须配 kafka, 否则 panic — facade.AsyncBooking 现状就是这样.
+func newFacadeKafkaProducer(v *viper.Viper, logger *zap.Logger) *kafkamq.Producer {
+	brokers := v.GetStringSlice("kafka.brokers")
+	if len(brokers) == 0 {
+		logger.Info("facade kafka producer not configured (kafka.brokers empty); async booking path will fail if called")
+		return nil
+	}
+	topic := v.GetString("kafka.topics.booking")
+	if topic == "" {
+		topic = "accounting.booking"
+	}
+	batchTimeout := v.GetDuration("kafka.producer.batch_timeout")
+	if batchTimeout == 0 {
+		batchTimeout = 5 * time.Millisecond
+	}
+	logger.Info("facade kafka producer wired", zap.Strings("brokers", brokers), zap.String("topic", topic))
+	return kafkamq.NewProducer(kafkamq.ProducerConfig{
+		Brokers:      brokers,
+		Topic:        topic,
+		BatchSize:    v.GetInt("kafka.producer.batch_size"),
+		BatchTimeout: batchTimeout,
+		MaxAttempts:  v.GetInt("kafka.producer.max_attempts"),
+	}, logger)
 }
 
 func NewTccArchiveWorkerFromConfig(v *viper.Viper, router *sharding.Router, tccRepo repository.TccRepository, logger *zap.Logger) *service.TccArchiveWorker {

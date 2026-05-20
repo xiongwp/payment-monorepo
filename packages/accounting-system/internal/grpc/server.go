@@ -8,7 +8,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	kitexserver "github.com/cloudwego/kitex/server"
@@ -42,6 +41,7 @@ func envOrDefault(key, def string) string {
 // 切 Kitex 后不再 embed Unimplemented*Server (gRPC 兼容性兜底).
 type Server struct {
 	accountingSvc     service.AccountingService
+	facadeSvc         service.AccountingFacadeService // RUNTIME-FIX-2: BatchBooking 委托给它做 parallel 编排
 	transactionSvc    service.TransactionService
 	dayCutSvc         service.DayCutService
 	tccSvc            service.TccService
@@ -113,6 +113,7 @@ func (s *Server) CurrentMaxInflight() int64 {
 //   - loggers.Performance → performance.log（耗时数字，供监控告警）
 func NewServer(
 	accountingSvc service.AccountingService,
+	facadeSvc service.AccountingFacadeService,
 	transactionSvc service.TransactionService,
 	dayCutSvc service.DayCutService,
 	tccSvc service.TccService,
@@ -128,6 +129,7 @@ func NewServer(
 ) *Server {
 	return &Server{
 		accountingSvc:     accountingSvc,
+		facadeSvc:         facadeSvc,
 		transactionSvc:    transactionSvc,
 		dayCutSvc:         dayCutSvc,
 		tccSvc:            tccSvc,
@@ -386,52 +388,120 @@ func (s *Server) DoubleEntryBooking(ctx context.Context, req *accountingv1.Doubl
 }
 
 func (s *Server) BatchBooking(ctx context.Context, req *accountingv1.BatchBookingRequest) (*accountingv1.BatchBookingResponse, error) {
-	// 每条 item 仍经由 s.DoubleEntryBooking → accountingSvc.DoubleEntryBooking 完整
-	// service 路径 (幂等 / 聚合 / 校验都不旁路). Parallel=true 时用 goroutine fan-out,
-	// 顺序结果对应 req.Requests 的原下标. 单条 item 失败不阻断其它 (各自独立幂等).
-	//
-	// TODO: NewAccountingFacadeService.BatchBooking 提供更完整的 orchestration
-	// (batch ID, async 路径, kafka 推送), 等 facade 被 wire 进 main.go 后切过去.
+	// RUNTIME-FIX-2: 委托给 facadeSvc.BatchBooking, 它已实现完整 orchestration:
+	//   - parallel/sequential fan-out (req.Parallel 选)
+	//   - 每条 item 走 SyncBooking → accountingSvc.DoubleEntryBooking (幂等/聚合/校验)
+	//   - 自动生成 batch RequestID + per-item RequestID (无 RequestId 时用 idgen)
+	//   - log "batch booking started" + counter
+	// 之前 Kitex handler 自己 for-loop reenter, 忽略 parallel 字段 — 同款"绕 service 层"反模式.
 	n := len(req.Requests)
-	results := make([]*accountingv1.DoubleEntryBookingResponse, n)
 	if n == 0 {
 		return &accountingv1.BatchBookingResponse{Code: 0, Message: "ok"}, nil
 	}
 
-	if req.GetParallel() {
-		var wg sync.WaitGroup
-		// 限制并发上限避免打爆下游 DB / hot-account; 8 是经验值 (跟 accountingSvc
-		// 内部 conn pool max_idle 同量级).
-		const maxConcurrency = 8
-		sem := make(chan struct{}, maxConcurrency)
-		for i, r := range req.Requests {
-			i, r := i, r
-			wg.Add(1)
-			sem <- struct{}{}
-			go func() {
-				defer wg.Done()
-				defer func() { <-sem }()
-				res, err := s.DoubleEntryBooking(ctx, r)
-				if err != nil {
-					res = &accountingv1.DoubleEntryBookingResponse{Code: 500, Message: err.Error()}
-				}
-				results[i] = res
-			}()
-		}
-		wg.Wait()
-	} else {
-		for i, r := range req.Requests {
-			res, err := s.DoubleEntryBooking(ctx, r)
-			if err != nil {
-				res = &accountingv1.DoubleEntryBookingResponse{Code: 500, Message: err.Error()}
+	// wire → service: 转换 proto DoubleEntryBookingRequest → service.DoubleEntryBookingRequest.
+	// 每条 item 复用现有 resolveEntryAmounts (跟 single DoubleEntryBooking 同款), 避免
+	// facade SyncBooking 内部又解析一次 minor unit / direction 分支.
+	//
+	// 注意: facade SyncBooking 内部会用 generateRequestID 覆盖 caller 的 RequestID,
+	// 不能靠 RequestID 反查 — 用 wire index → svcReq index 的位置映射对齐.
+	svcReqs := make([]*service.DoubleEntryBookingRequest, 0, n)
+	svcReqWireIdx := make([]int, 0, n) // svcReqs[k] 对应 wire 第 svcReqWireIdx[k] 条
+	wireSkips := make([]*accountingv1.DoubleEntryBookingResponse, n)
+	for i, r := range req.Requests {
+		if r.GetRequestId() == "" {
+			wireSkips[i] = &accountingv1.DoubleEntryBookingResponse{
+				Code: 400, Message: fmt.Sprintf("item[%d] request_id is required for idempotency", i),
 			}
-			results[i] = res
+			continue
+		}
+		currency := r.GetCurrency()
+		if currency == "" {
+			currency = "PHP"
+		}
+		entries := make([]service.AccountingEntry, len(r.GetEntries()))
+		var entryErr error
+		for j, e := range r.GetEntries() {
+			debit, credit, err := resolveEntryAmounts(e, currency)
+			if err != nil {
+				entryErr = fmt.Errorf("item[%d] entry[%d]: %w", i, j, err)
+				break
+			}
+			entries[j] = service.AccountingEntry{
+				AccountNo:    e.AccountNo,
+				DebitAmount:  debit,
+				CreditAmount: credit,
+				Description:  e.Description,
+			}
+		}
+		if entryErr != nil {
+			wireSkips[i] = &accountingv1.DoubleEntryBookingResponse{
+				Code: 400, Message: entryErr.Error(),
+			}
+			continue
+		}
+		svcReqs = append(svcReqs, &service.DoubleEntryBookingRequest{
+			RequestID:    r.GetRequestId(),
+			BusinessNo:   r.GetBusinessNo(),
+			BusinessType: convertBusinessType(r.GetBusinessType()),
+			Entries:      entries,
+			Currency:     currency,
+			Description:  r.GetDescription(),
+		})
+		svcReqWireIdx = append(svcReqWireIdx, i)
+	}
+
+	// facade.BatchBooking 内部 processBatchBookingSequential / Parallel 都按 input
+	// 下标顺序写 results[i], 顺序跟传入 svcReqs 严格对应 — 用 svcReqWireIdx 反查回 wire 位置.
+	var batchResp *service.BatchBookingResponse
+	if len(svcReqs) > 0 {
+		var berr error
+		batchResp, berr = s.facadeSvc.BatchBooking(ctx, svcReqs, req.GetParallel())
+		if berr != nil {
+			s.logger.Warn("facade BatchBooking error", zap.Error(berr))
+			return &accountingv1.BatchBookingResponse{
+				Code: 500, Message: berr.Error(),
+				Failed: int32(n), Total: int32(n),
+			}, nil
 		}
 	}
 
+	results := make([]*accountingv1.DoubleEntryBookingResponse, n)
+	// 1. 先填 facade 返回的成功/失败结果到原 wire 下标
+	if batchResp != nil {
+		for k, fr := range batchResp.Results {
+			if k >= len(svcReqWireIdx) {
+				break // 防御性: 长度不一致就停下来, 剩下的 wireSkip / fallback 兜底
+			}
+			wireIdx := svcReqWireIdx[k]
+			if fr.Success {
+				results[wireIdx] = &accountingv1.DoubleEntryBookingResponse{
+					Code: 0, Message: "ok",
+					VoucherNo:      fr.VoucherNo,
+					TransactionIds: fr.TransactionIDs,
+				}
+			} else {
+				results[wireIdx] = &accountingv1.DoubleEntryBookingResponse{
+					Code: 500, Message: fr.ErrorMessage,
+				}
+			}
+		}
+	}
+	// 2. 早期 reject 的位置覆盖回去 (svcReqs 没包它们)
+	for i, skip := range wireSkips {
+		if skip != nil {
+			results[i] = skip
+		}
+	}
+	// 3. 没填上的兜底 (理论不会发生)
 	var success, failed int32
-	for _, res := range results {
-		if res != nil && res.Code == 0 {
+	for i := range results {
+		if results[i] == nil {
+			results[i] = &accountingv1.DoubleEntryBookingResponse{
+				Code: 500, Message: "missing result from facade (defensive fallback)",
+			}
+		}
+		if results[i].Code == 0 {
 			success++
 		} else {
 			failed++
