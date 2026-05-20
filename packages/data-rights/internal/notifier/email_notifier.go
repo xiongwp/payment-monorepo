@@ -23,8 +23,8 @@ type LogNotifier struct {
 func (n *LogNotifier) NotifyFulfilled(_ context.Context, req *domain.Request, url string) error {
 	if n.Log != nil {
 		n.Log.Info("DSAR fulfilled — would email user (dev mode)",
-			zap.String("request_id", req.ID),
-			zap.String("subject_id", req.SubjectID),
+			zap.String("request_id", req.RequestID),
+			zap.String("subject_id", req.Subject.ID),
 			zap.String("type", string(req.Type)),
 			zap.String("download_url", url))
 	}
@@ -54,8 +54,11 @@ type SMTPNotifier struct {
 }
 
 func (n *SMTPNotifier) NotifyFulfilled(_ context.Context, req *domain.Request, url string) error {
-	if req == nil || req.SubjectEmail == "" {
-		return fmt.Errorf("smtp notifier: missing subject email for request %s", req.ID)
+	if req == nil {
+		return fmt.Errorf("smtp notifier: nil request")
+	}
+	if req.Subject.Email == "" {
+		return fmt.Errorf("smtp notifier: missing subject email for request %s", req.RequestID)
 	}
 	subject := "Your data export is ready"
 	body := fmt.Sprintf(`Hello,
@@ -70,12 +73,12 @@ please contact privacy@example.com immediately.
 
 Regards,
 Privacy Office
-`, req.ID, url)
+`, req.RequestID, url)
 
 	msg := []byte(fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n%s",
-		n.From, req.SubjectEmail, subject, body))
+		n.From, req.Subject.Email, subject, body))
 
 	auth := smtp.PlainAuth("", n.Username, n.Password, n.Host)
 	addr := fmt.Sprintf("%s:%d", n.Host, n.Port)
-	return smtp.SendMail(addr, auth, n.From, []string{req.SubjectEmail}, msg)
+	return smtp.SendMail(addr, auth, n.From, []string{req.Subject.Email}, msg)
 }

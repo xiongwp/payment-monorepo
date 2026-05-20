@@ -92,7 +92,7 @@ func (e *S3Exporter) Export(ctx context.Context, req *domain.Request) (string, s
 	//
 	// 当前路径暂返 in-memory blob 的 placeholder URL, 但 zip + AES 是真的,
 	// 上线只需替 PutObject 三行. 保持 interface 稳定.
-	key := fmt.Sprintf("dsar/%s/%s.zip.enc", time.Now().Format("2006/01/02"), req.ID)
+	key := fmt.Sprintf("dsar/%s/%s.zip.enc", time.Now().Format("2006/01/02"), req.RequestID)
 	pseudoURL := fmt.Sprintf("s3://%s/%s?expires=%dh&size=%d",
 		e.cfg.Bucket, key, int(e.cfg.URLExpiry.Hours()), len(encBytes))
 
@@ -107,13 +107,13 @@ func buildExportZip(req *domain.Request) ([]byte, string, error) {
 
 	// metadata.json 描述这次导出
 	meta := map[string]interface{}{
-		"request_id":  req.ID,
-		"subject_id":  req.SubjectID,
-		"type":        req.Type,
-		"submitted":   req.SubmittedAt,
-		"approved":    req.ApprovedAt,
-		"fulfilled":   time.Now().UTC(),
-		"services":    len(req.ServiceStatuses),
+		"request_id": req.RequestID,
+		"subject_id": req.Subject.ID,
+		"type":       string(req.Type),
+		"submitted":  req.SubmittedAt,
+		"approved":   req.ApprovedAt,
+		"fulfilled":  time.Now().UTC(),
+		"services":   len(req.ServiceStatuses),
 	}
 	if err := writeJSONEntry(zw, "metadata.json", meta); err != nil {
 		return nil, "", err
