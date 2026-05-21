@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/pkg/retry"
 	"github.com/cloudwego/kitex/transport"
 	"github.com/xiongwp/payment-util/kitexutil"
 
@@ -68,14 +69,26 @@ func NewAccountingGRPCClient(endpoint string) (*AccountingGRPCClient, error) {
 		// 显式指定的 endpoint 优先级最高 (CLI / 测试场景).
 		opts = append(opts, client.WithHostPorts(endpoint))
 	}
+	// ⚡ 优化 #2: 禁掉 Kitex auto retry。
+	// 默认 Kitex 在 timeout / connection-closed 等可重试错时会自动 retry 多次，
+	// 让 5s timeout 实际变成 10-15s（叠加 1-2 次 retry）。压测时这放大效应会
+	// 把 worker 全卡死。配置 MaxRetryTimes=0 = 完全禁用重试，单次 timeout 立即失败。
+	noRetryPolicy := retry.BuildFailurePolicy(&retry.FailurePolicy{
+		StopPolicy: retry.StopPolicy{
+			MaxRetryTimes:    0,                       // 不 retry
+			MaxDurationMS:    0,
+			DisableChainStop: false,
+		},
+	})
+
 	opts = append(opts,
 		// 强制 gRPC over HTTP/2 over TCP, 避开 Kitex netpoll 把 host:port 当 unix
 		// socket 路径解读的 "dial unix ...: no such file or directory" 陷阱.
 		client.WithTransportProtocol(transport.GRPC),
-		// 压测 tuning：原 3s timeout 在 accounting 偶发慢请求时会 → 5 次 retry,
-		// 单个 5-leg TriggerEvent 被放大到 ~90s 卡死链路。10s 给真实 mysql + redis
-		// 慢写留 buffer，retry middleware 也减少触发。
+		// 压测 tuning：10s 给真实 mysql + redis 慢写留 buffer，retry 已禁掉所以
+		// 不会被放大。
 		client.WithRPCTimeout(10*time.Second),
+		client.WithFailureRetry(noRetryPolicy),
 	)
 	cli, err := transactionservice.NewClient("accounting-service", opts...)
 	if err != nil {

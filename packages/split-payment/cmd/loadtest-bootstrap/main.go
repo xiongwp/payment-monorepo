@@ -79,16 +79,34 @@ type PlatformAccounts struct {
 //   [100_000_000, 899_999_999]        普通用户账户 (base 1e8),               gRPC CreateAccount
 //   [900_000_000, ...]                商户账户 (base 9e8),                   gRPC CreateAccount
 //
-// channel 子账户都在保留段里；4 类用 1000 步长间隔避免 (owner_id, biz_type) 撞键。
+// ⚡ 优化 #3: shard 分散 —— accounting Router 的规则是 dbIdx = (id % 1000) / 100。
+// 旧版用连续 id（1..100, 100_000_001..100_000_100），结果 mod 1000 全落在 [0, 99]
+// → dbIdx=0 → 100% 数据挤在 shard-0。
+//
+// 新版：每个相邻账户的 owner_id step=100，覆盖所有 dbIdx：
+//   第 i 个账户 owner_id = base + i*100 + sub_offset
+//   - base 控制账户大类
+//   - sub_offset 控制同一渠道的不同子账户类型（recv/suspense/fee/payable）
+//   - i*100 让 mod 1000 在 i=0..9 时遍历 0/100/200/.../900，正好 10 个 dbIdx
+//   - 100 账户 → 10 个一组循环 → 每个 shard 10 个账户
 const (
-	channelRecvBase     = 1     // recv:     reserved_id 1..numChannels
-	channelSuspenseBase = 1000  // suspense: 1001..1000+numChannels
-	channelFeeBase      = 2000  // fee:      2001..2000+numChannels
-	channelPayableBase  = 3000  // payable:  3001..3000+numChannels
-	platformBase        = 9000  // 平台账户 9001/9002/9003
+	// 渠道 4 个子类，sub_offset 用 10 步长避免相邻冲突，i*100 让 dbIdx 均匀散布
+	channelRecvOffset     = 0     // 1, 101, 201, ..., 9901 → 100 channels, dbIdx均匀
+	channelSuspenseOffset = 10    // 11, 111, 211, ..., 9911
+	channelFeeOffset      = 20    // 21, 121, ..., 9921
+	channelPayableOffset  = 30    // 31, 131, ..., 9931
+	channelOwnerStep      = 100   // 相邻 channel 间隔 100，使 dbIdx 循环遍历 0..9
+	channelOwnerStart     = 1     // 第一个 channel 起始 owner_id
 
-	userOwnerBase     = 100_000_000 // user:     100_000_001..100_000_000+numUsers
-	merchantOwnerBase = 900_000_000 // merchant: 900_000_001..900_000_000+numMerchants
+	// 平台账户：放到很大的 id（同时离 channel 段 1..9930 远），避开冲突
+	// 9101/9201/9301 — 同样让它们各自落在不同 db
+	platformFeeClearingOwnerID     = 9101
+	platformFeeRevenueOwnerID      = 9201
+	platformWithdrawPendingOwnerID = 9301
+
+	userOwnerBase     = 100_000_000 // user_i = 100_000_000 + i*100
+	merchantOwnerBase = 900_000_000 // merchant_i = 900_000_000 + i*100
+	bizOwnerStep      = 100         // user/merchant 相邻 owner_id 间隔 100
 )
 
 // ─── flags ────────────────────────────────────────────────────────────────
@@ -183,9 +201,11 @@ func run() error {
 // ─── gRPC: 用户 / 商户 / 待结算 ───────────────────────────────────────────
 
 // createUsers 创建 N 个用户余额账户。
+// owner_id = userOwnerBase + (i+1)*100 → 相邻 id 间隔 100，使 accounting Router
+// 的 dbIdx = (id % 1000)/100 在 i=0..9 循环时均匀落到 db=0..9，100 用户 = 每 db 10 个。
 func createUsers(gClient acctsvc.Client, pool *AccountPool) error {
 	return parallelCreate(*flagNumUsers, *flagWorkers, func(i int) error {
-		userID := int64(userOwnerBase + 1 + i)
+		userID := int64(userOwnerBase + (i+1)*bizOwnerStep)
 		acctNo, err := grpcCreate(gClient, userID,
 			acctv1.AccountType_ACCOUNT_TYPE_USER,
 			acctv1.AccountBusinessType_ACCOUNT_BUSINESS_TYPE_USER_BALANCE,
@@ -202,7 +222,8 @@ func createUsers(gClient acctsvc.Client, pool *AccountPool) error {
 // 用同一段 owner_id（biz_type 不同就 idempotency-key 不同了）。
 func createMerchants(gClient acctsvc.Client, pool *AccountPool) error {
 	if err := parallelCreate(*flagNumMerchant, *flagWorkers, func(i int) error {
-		merchantID := int64(merchantOwnerBase + 1 + i)
+		// merchant_id = merchantOwnerBase + (i+1)*100 → 散到 10 shard
+		merchantID := int64(merchantOwnerBase + (i+1)*bizOwnerStep)
 		acctNo, err := grpcCreate(gClient, merchantID,
 			acctv1.AccountType_ACCOUNT_TYPE_MERCHANT,
 			acctv1.AccountBusinessType_ACCOUNT_BUSINESS_TYPE_MERCHANT_BALANCE,
@@ -216,7 +237,7 @@ func createMerchants(gClient acctsvc.Client, pool *AccountPool) error {
 		return err
 	}
 	return parallelCreate(*flagNumMerchant, *flagWorkers, func(i int) error {
-		merchantID := int64(merchantOwnerBase + 1 + i)
+		merchantID := int64(merchantOwnerBase + (i+1)*bizOwnerStep)
 		acctNo, err := grpcCreate(gClient, merchantID,
 			acctv1.AccountType_ACCOUNT_TYPE_MERCHANT_PENDING_SETTLE,
 			acctv1.AccountBusinessType_ACCOUNT_BUSINESS_TYPE_MERCHANT_PENDING_SETTLE,
@@ -261,23 +282,27 @@ func grpcCreate(c acctsvc.Client, userID int64,
 func createChannels(httpC *http.Client, pool *AccountPool) error {
 	subs := []struct {
 		name    string
-		base    int
+		offset  int // sub_offset (0/10/20/30) — 4 类同一渠道避免 owner_id 冲突
 		accType int // AccountType 枚举值
 		setter  func(*ChannelAccounts, string)
 	}{
-		{"recv", channelRecvBase, 5, func(c *ChannelAccounts, no string) { c.Receivable = no }},
-		{"suspense", channelSuspenseBase, 9, func(c *ChannelAccounts, no string) { c.Suspense = no }},
-		{"fee", channelFeeBase, 7, func(c *ChannelAccounts, no string) { c.Fee = no }},
-		{"payable", channelPayableBase, 6, func(c *ChannelAccounts, no string) { c.Payable = no }},
+		{"recv", channelRecvOffset, 5, func(c *ChannelAccounts, no string) { c.Receivable = no }},
+		{"suspense", channelSuspenseOffset, 9, func(c *ChannelAccounts, no string) { c.Suspense = no }},
+		{"fee", channelFeeOffset, 7, func(c *ChannelAccounts, no string) { c.Fee = no }},
+		{"payable", channelPayableOffset, 6, func(c *ChannelAccounts, no string) { c.Payable = no }},
 	}
 	for _, s := range subs {
 		s := s // capture
-		fmt.Printf("    channel-%s: type=%d  reserved_id %d..%d ...\n", s.name, s.accType, s.base+1, s.base+*flagNumChannels)
+		first := channelOwnerStart + s.offset                                    // i=0 时的 owner_id
+		last := channelOwnerStart + s.offset + (*flagNumChannels-1)*channelOwnerStep // i=N-1 时的 owner_id
+		fmt.Printf("    channel-%s: type=%d  owner_id step=100, %d..%d (散到 10 shards)\n",
+			s.name, s.accType, first, last)
 		if err := parallelCreate(*flagNumChannels, *flagWorkers, func(i int) error {
-			reservedID := int64(s.base + 1 + i)
+			// owner_id = start + offset + i*step → 相邻 channel 间隔 100，循环遍历 db=0..9
+			reservedID := int64(channelOwnerStart + s.offset + i*channelOwnerStep)
 			acctNo, err := httpCreatePlatform(httpC, reservedID, s.accType)
 			if err != nil {
-				return fmt.Errorf("channel-%s ch=%d: %w", s.name, i+1, err)
+				return fmt.Errorf("channel-%s ch=%d (owner_id=%d): %w", s.name, i, reservedID, err)
 			}
 			s.setter(&pool.Channels[i], acctNo)
 			return nil
@@ -289,17 +314,18 @@ func createChannels(httpC *http.Client, pool *AccountPool) error {
 }
 
 // createPlatform 3 个全局平台账户：fee_clearing / fee_revenue / withdraw_pending。
+// owner_id 选 9101 / 9201 / 9301 — 不同 mod-1000 → 落不同 shard，热点平台账户
+// 分散到 3 个 shard 而不是挤在 1 个。
 func createPlatform(httpC *http.Client, pool *AccountPool) error {
-	// type=4 (Platform) 对 biz=4 (PLATFORM_PNL). 两个不同 reserved_id 即可区分。
-	feeClearing, err := httpCreatePlatform(httpC, platformBase+1, 4)
+	feeClearing, err := httpCreatePlatform(httpC, platformFeeClearingOwnerID, 4)
 	if err != nil {
 		return fmt.Errorf("fee_clearing: %w", err)
 	}
-	feeRevenue, err := httpCreatePlatform(httpC, platformBase+2, 4)
+	feeRevenue, err := httpCreatePlatform(httpC, platformFeeRevenueOwnerID, 4)
 	if err != nil {
 		return fmt.Errorf("fee_revenue: %w", err)
 	}
-	withdrawPending, err := httpCreatePlatform(httpC, platformBase+3, 9)
+	withdrawPending, err := httpCreatePlatform(httpC, platformWithdrawPendingOwnerID, 9)
 	if err != nil {
 		return fmt.Errorf("withdraw_pending: %w", err)
 	}
