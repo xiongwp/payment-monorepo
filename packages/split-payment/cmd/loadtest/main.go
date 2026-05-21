@@ -339,18 +339,21 @@ func (w *worker) dispatch(ctx context.Context, flow flowKind) error {
 	amtStr := fmt.Sprintf("%d", amount)
 	peerUserID := int64(w.rng.Intn(maxOr(w.cfg.Flow.UserCount, 1)))
 
-	event := map[string]any{
-		"flow_id":      flowID,
-		"requested_at": time.Now().UTC().Format(time.RFC3339Nano),
-		// 关键：split-payment 的 translator.TriggerContext 读顶层 amount_minor / currency
-		// 来跑 guard（amount_min 等）+ 给 leg 分账。少了这俩，graph 在 translate 阶段
-		// 就被 amount_min guard 全拒（"金额必须 > 0"），loadtest 看到 100% errs，
-		// accounting RPC 根本没被调用，mysql 也就没 booking 行。
-		"amount_minor": amount,
-		"currency":     cur,
-	}
+	// split-payment workflow.BusinessEvent / TriggerContext 期望的 JSON 结构：
+	//   {
+	//     "event":        "<event_code>",
+	//     "amount_minor": <int64>,
+	//     "currency":     "<cur>",
+	//     "attributes":   { "<node_account_id_attr>": "<acct_id>",
+	//                        "<node_account_id_attr>_amount": "<int>",
+	//                        "<node_account_id_attr>_currency": "<cur>", ... }
+	//   }
+	// translator.resolveAccountID 读 tc.Attributes[node.AccountIDAttr] —— 必须放
+	// 在 attributes 子对象里，不是顶层。之前放顶层导致 translator 报
+	//   "edge X→Y from: attributes[\"X_account\"] missing"
+	attrs := map[string]string{}
 
-	// 每个 graph 的字段集
+	// 每个 graph 的字段集 —— 全部塞进 attrs 子对象
 	switch flow {
 	case flowTopup:
 		// graph topup.json: channel_receivable → suspense → user_wallet, fee_clearing → channel_payable, platform_revenue
@@ -358,30 +361,40 @@ func (w *worker) dispatch(ctx context.Context, flow flowKind) error {
 		if net < 1 {
 			net = 1
 		}
-		event["channel_receivable_account"], event["channel_receivable_account_amount"], event["channel_receivable_account_currency"] = fmt.Sprintf("ch-%d/recv", channelID), amtStr, cur
-		event["channel_suspense_account"], event["channel_suspense_account_amount"], event["channel_suspense_account_currency"] = fmt.Sprintf("ch-%d/suspense", channelID), amtStr, cur
-		event["user_id_account"], event["user_id_account_amount"], event["user_id_account_currency"] = fmt.Sprintf("%d", userID), fmt.Sprintf("%d", net), cur
-		event["fee_clearing_account"], event["fee_clearing_account_amount"], event["fee_clearing_account_currency"] = "platform/fee_clearing", "100", cur
-		event["channel_fee_account"], event["channel_fee_account_amount"], event["channel_fee_account_currency"] = fmt.Sprintf("ch-%d/fee", channelID), "60", cur
-		event["fee_account"], event["fee_account_amount"], event["fee_account_currency"] = "platform/fee_revenue", "40", cur
+		attrs["channel_receivable_account"], attrs["channel_receivable_account_amount"], attrs["channel_receivable_account_currency"] = fmt.Sprintf("ch-%d/recv", channelID), amtStr, cur
+		attrs["channel_suspense_account"], attrs["channel_suspense_account_amount"], attrs["channel_suspense_account_currency"] = fmt.Sprintf("ch-%d/suspense", channelID), amtStr, cur
+		attrs["user_id_account"], attrs["user_id_account_amount"], attrs["user_id_account_currency"] = fmt.Sprintf("%d", userID), fmt.Sprintf("%d", net), cur
+		attrs["fee_clearing_account"], attrs["fee_clearing_account_amount"], attrs["fee_clearing_account_currency"] = "platform/fee_clearing", "100", cur
+		attrs["channel_fee_account"], attrs["channel_fee_account_amount"], attrs["channel_fee_account_currency"] = fmt.Sprintf("ch-%d/fee", channelID), "60", cur
+		attrs["fee_account"], attrs["fee_account_amount"], attrs["fee_account_currency"] = "platform/fee_revenue", "40", cur
 
 	case flowPayment:
 		// graph payment.json: user_wallet → merchant_pending → merchant_wallet
 		merchantID := w.rng.Intn(100) + 1
-		event["payer_account"], event["payer_account_amount"], event["payer_account_currency"] = fmt.Sprintf("%d", userID), amtStr, cur
-		event["merchant_pending_account"], event["merchant_pending_account_amount"], event["merchant_pending_account_currency"] = fmt.Sprintf("m-%d/pending", merchantID), amtStr, cur
-		event["merchant_account"], event["merchant_account_amount"], event["merchant_account_currency"] = fmt.Sprintf("m-%d", merchantID), amtStr, cur
+		attrs["payer_account"], attrs["payer_account_amount"], attrs["payer_account_currency"] = fmt.Sprintf("%d", userID), amtStr, cur
+		attrs["merchant_pending_account"], attrs["merchant_pending_account_amount"], attrs["merchant_pending_account_currency"] = fmt.Sprintf("m-%d/pending", merchantID), amtStr, cur
+		attrs["merchant_account"], attrs["merchant_account_amount"], attrs["merchant_account_currency"] = fmt.Sprintf("m-%d", merchantID), amtStr, cur
 
 	case flowTransfer:
 		// graph transfer.json: from_wallet → to_wallet
-		event["from_account"], event["from_account_amount"], event["from_account_currency"] = fmt.Sprintf("%d", userID), amtStr, cur
-		event["to_account"], event["to_account_amount"], event["to_account_currency"] = fmt.Sprintf("%d", peerUserID), amtStr, cur
+		attrs["from_account"], attrs["from_account_amount"], attrs["from_account_currency"] = fmt.Sprintf("%d", userID), amtStr, cur
+		attrs["to_account"], attrs["to_account_amount"], attrs["to_account_currency"] = fmt.Sprintf("%d", peerUserID), amtStr, cur
 
 	case flowWithdraw:
 		// graph withdraw.json: user_wallet → withdraw_pending → channel_payable
-		event["user_account"], event["user_account_amount"], event["user_account_currency"] = fmt.Sprintf("%d", userID), amtStr, cur
-		event["withdraw_pending_account"], event["withdraw_pending_account_amount"], event["withdraw_pending_account_currency"] = "platform/withdraw_pending", amtStr, cur
-		event["channel_payable_account"], event["channel_payable_account_amount"], event["channel_payable_account_currency"] = fmt.Sprintf("ch-%d/payable", channelID), amtStr, cur
+		attrs["user_account"], attrs["user_account_amount"], attrs["user_account_currency"] = fmt.Sprintf("%d", userID), amtStr, cur
+		attrs["withdraw_pending_account"], attrs["withdraw_pending_account_amount"], attrs["withdraw_pending_account_currency"] = "platform/withdraw_pending", amtStr, cur
+		attrs["channel_payable_account"], attrs["channel_payable_account_amount"], attrs["channel_payable_account_currency"] = fmt.Sprintf("ch-%d/payable", channelID), amtStr, cur
+	}
+
+	event := map[string]any{
+		// 顶层 — guard / leg 分账要读
+		"event":        fmt.Sprintf("%s.loadtest", flow), // 任意非空字符串就行，engine 只用 trigger event_code 路由 edge
+		"charge_id":    flowID,
+		"amount_minor": amount,
+		"currency":     cur,
+		"trace_id":     flowID,
+		"attributes":   attrs, // ← 关键修正：嵌套，不是摊在顶层
 	}
 	payload, err := json.Marshal(event)
 	if err != nil {
