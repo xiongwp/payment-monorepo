@@ -195,9 +195,31 @@ fi
 if [[ "${DO_LOADTEST}" -eq 1 ]]; then
   # 每次都重建 loadtest 镜像 —— `docker compose run` 不带 --build，且没有
   # 用 up 拉起 loadtest（它本来就是按需 run --rm），所以 cmd/loadtest/main.go
-  # 的修改不会自动进镜像。这里强制 build，避免改了代码却跑了旧 binary。
-  echo ">>> 重建 loadtest 镜像（每次都做，确保 cmd/loadtest 改动生效）"
+  # 或 cmd/loadtest-bootstrap/main.go 的修改不会自动进镜像。这里强制 build。
+  echo ">>> 重建 loadtest 镜像（含 loadtest + loadtest-bootstrap）"
   docker compose build loadtest
+
+  # ─── Plan A: 先跑 loadtest-bootstrap 预创建 ~700 个账户 + 写 pool.json ───
+  # 跑过一次后 account_pool.json 就常驻 ./output/，下次 rerun 直接复用。
+  # 想强制重跑：先 rm output/account_pool.json
+  POOL_FILE="${DIR}/output/account_pool.json"
+  if [[ -s "${POOL_FILE}" ]]; then
+    echo ">>> account_pool.json 已存在 (${POOL_FILE})，跳过 bootstrap"
+    echo "    强制重跑：rm ${POOL_FILE}"
+  else
+    echo ">>> 跑 loadtest-bootstrap 预创建账户池..."
+    mkdir -p "${DIR}/output"
+    docker compose run --rm --entrypoint /usr/local/bin/loadtest-bootstrap loadtest \
+      --accounting-grpc=accounting-service:50051 \
+      --accounting-http=http://accounting-service:8888 \
+      --output=/output/account_pool.json \
+      --num-users=100 --num-merchants=100 --num-channels=100 \
+      --currency=PHP --workers=16
+    if [[ ! -s "${POOL_FILE}" ]]; then
+      echo "ERROR: bootstrap 跑完但没生成 ${POOL_FILE}" >&2
+      exit 1
+    fi
+  fi
 
   echo ">>> 启动压测..."
   EXTRA=()

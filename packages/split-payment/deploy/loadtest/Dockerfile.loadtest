@@ -36,11 +36,16 @@ COPY . /src/split-payment/
 WORKDIR /src/split-payment
 RUN go mod download
 
-# 编译压测 binary
+# 编译压测 binary（两个：loadtest 主程序 + loadtest-bootstrap 账户池预创建工具）
 RUN go build \
     -ldflags="-s -w -X main.buildVersion=$(date +%Y%m%d-%H%M%S)" \
     -o /out/loadtest \
     ./cmd/loadtest
+
+RUN go build \
+    -ldflags="-s -w" \
+    -o /out/loadtest-bootstrap \
+    ./cmd/loadtest-bootstrap
 
 # ─── Stage 2: runtime ────────────────────────────────────────────────────────
 # 用 alpine 而非 distroless：脚本里要在容器里 exec shell 跑 bootstrap / chaos 命令
@@ -48,7 +53,8 @@ FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates curl jq bash
 
-COPY --from=builder /out/loadtest /usr/local/bin/loadtest
+COPY --from=builder /out/loadtest           /usr/local/bin/loadtest
+COPY --from=builder /out/loadtest-bootstrap /usr/local/bin/loadtest-bootstrap
 
 # /loadtest 是 compose 里 mount config + scripts + output 的位置
 WORKDIR /loadtest

@@ -43,6 +43,71 @@ import (
 
 var buildVersion = "dev"
 
+// ─── Account Pool ─────────────────────────────────────────────────────────
+//
+// loadtest 启动期从 /output/account_pool.json 读进内存（由 loadtest-bootstrap
+// 在压测前预创建账户后写出）。dispatch() 4 种资金流的 event.attrs 全部从这个 pool 里
+// 取真实 account_no（19 位数字串），而不是硬编码 "ch-12/recv" 这种 accounting 不认的字符串。
+//
+// 与 graphCache 同思路：启动期写一次，之后只读 → goroutine 安全。
+// 文件不存在不算错（router-only 模式下可以跳过；mixed 模式发到 TriggerEvent 时
+// accounting 会报 "account not found"，错信号清晰）。
+
+type accountPool struct {
+	Currency         string             `json:"currency"`
+	Users            []string           `json:"users"`             // user balance accounts
+	Merchants        []string           `json:"merchants"`         // merchant balance accounts
+	MerchantPendings []string           `json:"merchant_pendings"` // merchant pending settle
+	Channels         []channelAccounts  `json:"channels"`          // 渠道下 4 个子账户
+	Platform         platformAccounts   `json:"platform"`          // 3 个全局平台账户
+}
+
+type channelAccounts struct {
+	Receivable string `json:"recv"`
+	Suspense   string `json:"suspense"`
+	Fee        string `json:"fee"`
+	Payable    string `json:"payable"`
+}
+
+type platformAccounts struct {
+	FeeClearing     string `json:"fee_clearing"`
+	FeeRevenue      string `json:"fee_revenue"`
+	WithdrawPending string `json:"withdraw_pending"`
+}
+
+var pool *accountPool // 启动期填，runtime 只读
+
+func loadAccountPool(path string) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var p accountPool
+	if err := json.Unmarshal(body, &p); err != nil {
+		return fmt.Errorf("parse pool %s: %w", path, err)
+	}
+	if len(p.Users) == 0 || len(p.Channels) == 0 || len(p.Merchants) == 0 {
+		return fmt.Errorf("pool %s 缺数据: users=%d merchants=%d channels=%d",
+			path, len(p.Users), len(p.Merchants), len(p.Channels))
+	}
+	pool = &p
+	return nil
+}
+
+// 取 modulo 索引，方便 worker 用 random user_id 落到 pool 已有的账户上。
+func (p *accountPool) user(i int64) string {
+	return p.Users[int(i)%len(p.Users)]
+}
+func (p *accountPool) merchant(i int) string {
+	return p.Merchants[(i-1)%len(p.Merchants)]
+}
+func (p *accountPool) merchantPending(i int) string {
+	return p.MerchantPendings[(i-1)%len(p.MerchantPendings)]
+}
+func (p *accountPool) channel(i int64) channelAccounts {
+	return p.Channels[(int(i)-1)%len(p.Channels)]
+}
+
 // graphCache: router-only 模式下不走 TriggerEvent（要 accounting 配齐账户），改走
 // DryRun（split-payment 内部只翻译 + 校验，不落账）。但 DryRun 是 stateless 的 ——
 // 每次 RPC 都要把整个 Graph spec 一起塞进去（不是按 key 查 server-side）。
@@ -442,7 +507,21 @@ func (w *worker) dispatch(ctx context.Context, flow flowKind) error {
 	//   "edge X→Y from: attributes[\"X_account\"] missing"
 	attrs := map[string]string{}
 
-	// 每个 graph 的字段集 —— 全部塞进 attrs 子对象
+	// 每个 graph 的字段集 —— 全部塞进 attrs 子对象。
+	//
+	// account_id 来源：
+	//   - pool != nil（loadtest-bootstrap 已跑过 + pool 文件已挂入）→ 真实 account_no
+	//     （19 位数字字符串，accounting 真识别，TriggerEvent 能完整落 booking）
+	//   - pool == nil → 退化到老的 "ch-N/recv" 这种 fake 字符串，仅 router-only
+	//     模式可用（DryRun 不查 accounting）
+	usePool := pool != nil
+	userAcct := fmt.Sprintf("%d", userID)
+	peerUserAcct := fmt.Sprintf("%d", peerUserID)
+	if usePool {
+		userAcct = pool.user(userID)
+		peerUserAcct = pool.user(peerUserID)
+	}
+
 	switch flow {
 	case flowTopup:
 		// graph topup.json: channel_receivable → suspense → user_wallet, fee_clearing → channel_payable, platform_revenue
@@ -450,30 +529,53 @@ func (w *worker) dispatch(ctx context.Context, flow flowKind) error {
 		if net < 1 {
 			net = 1
 		}
-		attrs["channel_receivable_account"], attrs["channel_receivable_account_amount"], attrs["channel_receivable_account_currency"] = fmt.Sprintf("ch-%d/recv", channelID), amtStr, cur
-		attrs["channel_suspense_account"], attrs["channel_suspense_account_amount"], attrs["channel_suspense_account_currency"] = fmt.Sprintf("ch-%d/suspense", channelID), amtStr, cur
-		attrs["user_id_account"], attrs["user_id_account_amount"], attrs["user_id_account_currency"] = fmt.Sprintf("%d", userID), fmt.Sprintf("%d", net), cur
-		attrs["fee_clearing_account"], attrs["fee_clearing_account_amount"], attrs["fee_clearing_account_currency"] = "platform/fee_clearing", "100", cur
-		attrs["channel_fee_account"], attrs["channel_fee_account_amount"], attrs["channel_fee_account_currency"] = fmt.Sprintf("ch-%d/fee", channelID), "60", cur
-		attrs["fee_account"], attrs["fee_account_amount"], attrs["fee_account_currency"] = "platform/fee_revenue", "40", cur
+		chRecv := fmt.Sprintf("ch-%d/recv", channelID)
+		chSus := fmt.Sprintf("ch-%d/suspense", channelID)
+		chFee := fmt.Sprintf("ch-%d/fee", channelID)
+		feeClearing := "platform/fee_clearing"
+		feeRevenue := "platform/fee_revenue"
+		if usePool {
+			ch := pool.channel(channelID)
+			chRecv, chSus, chFee = ch.Receivable, ch.Suspense, ch.Fee
+			feeClearing = pool.Platform.FeeClearing
+			feeRevenue = pool.Platform.FeeRevenue
+		}
+		attrs["channel_receivable_account"], attrs["channel_receivable_account_amount"], attrs["channel_receivable_account_currency"] = chRecv, amtStr, cur
+		attrs["channel_suspense_account"], attrs["channel_suspense_account_amount"], attrs["channel_suspense_account_currency"] = chSus, amtStr, cur
+		attrs["user_id_account"], attrs["user_id_account_amount"], attrs["user_id_account_currency"] = userAcct, fmt.Sprintf("%d", net), cur
+		attrs["fee_clearing_account"], attrs["fee_clearing_account_amount"], attrs["fee_clearing_account_currency"] = feeClearing, "100", cur
+		attrs["channel_fee_account"], attrs["channel_fee_account_amount"], attrs["channel_fee_account_currency"] = chFee, "60", cur
+		attrs["fee_account"], attrs["fee_account_amount"], attrs["fee_account_currency"] = feeRevenue, "40", cur
 
 	case flowPayment:
 		// graph payment.json: user_wallet → merchant_pending → merchant_wallet
 		merchantID := w.rng.Intn(100) + 1
-		attrs["payer_account"], attrs["payer_account_amount"], attrs["payer_account_currency"] = fmt.Sprintf("%d", userID), amtStr, cur
-		attrs["merchant_pending_account"], attrs["merchant_pending_account_amount"], attrs["merchant_pending_account_currency"] = fmt.Sprintf("m-%d/pending", merchantID), amtStr, cur
-		attrs["merchant_account"], attrs["merchant_account_amount"], attrs["merchant_account_currency"] = fmt.Sprintf("m-%d", merchantID), amtStr, cur
+		mPending := fmt.Sprintf("m-%d/pending", merchantID)
+		mMain := fmt.Sprintf("m-%d", merchantID)
+		if usePool {
+			mPending = pool.merchantPending(merchantID)
+			mMain = pool.merchant(merchantID)
+		}
+		attrs["payer_account"], attrs["payer_account_amount"], attrs["payer_account_currency"] = userAcct, amtStr, cur
+		attrs["merchant_pending_account"], attrs["merchant_pending_account_amount"], attrs["merchant_pending_account_currency"] = mPending, amtStr, cur
+		attrs["merchant_account"], attrs["merchant_account_amount"], attrs["merchant_account_currency"] = mMain, amtStr, cur
 
 	case flowTransfer:
 		// graph transfer.json: from_wallet → to_wallet
-		attrs["from_account"], attrs["from_account_amount"], attrs["from_account_currency"] = fmt.Sprintf("%d", userID), amtStr, cur
-		attrs["to_account"], attrs["to_account_amount"], attrs["to_account_currency"] = fmt.Sprintf("%d", peerUserID), amtStr, cur
+		attrs["from_account"], attrs["from_account_amount"], attrs["from_account_currency"] = userAcct, amtStr, cur
+		attrs["to_account"], attrs["to_account_amount"], attrs["to_account_currency"] = peerUserAcct, amtStr, cur
 
 	case flowWithdraw:
 		// graph withdraw.json: user_wallet → withdraw_pending → channel_payable
-		attrs["user_account"], attrs["user_account_amount"], attrs["user_account_currency"] = fmt.Sprintf("%d", userID), amtStr, cur
-		attrs["withdraw_pending_account"], attrs["withdraw_pending_account_amount"], attrs["withdraw_pending_account_currency"] = "platform/withdraw_pending", amtStr, cur
-		attrs["channel_payable_account"], attrs["channel_payable_account_amount"], attrs["channel_payable_account_currency"] = fmt.Sprintf("ch-%d/payable", channelID), amtStr, cur
+		withdrawPending := "platform/withdraw_pending"
+		chPayable := fmt.Sprintf("ch-%d/payable", channelID)
+		if usePool {
+			withdrawPending = pool.Platform.WithdrawPending
+			chPayable = pool.channel(channelID).Payable
+		}
+		attrs["user_account"], attrs["user_account_amount"], attrs["user_account_currency"] = userAcct, amtStr, cur
+		attrs["withdraw_pending_account"], attrs["withdraw_pending_account_amount"], attrs["withdraw_pending_account_currency"] = withdrawPending, amtStr, cur
+		attrs["channel_payable_account"], attrs["channel_payable_account_amount"], attrs["channel_payable_account_currency"] = chPayable, amtStr, cur
 	}
 
 	event := map[string]any{
@@ -574,6 +676,21 @@ func main() {
 	)
 	if err != nil {
 		fatal("create split-payment client: %v", err)
+	}
+
+	// 启动期尝试读 account_pool.json（loadtest-bootstrap 写的真实 account_no 池）。
+	// 找不到不算错 —— router-only 模式下没 pool 也能跑（DryRun 不查 accounting），
+	// via-split-payment 模式没 pool 会全报 "account not found"，但那个错很清晰，
+	// 不需要在 loadtest 启动期硬卡死。
+	poolPath := os.Getenv("LOADTEST_ACCOUNT_POOL")
+	if poolPath == "" {
+		poolPath = "/output/account_pool.json"
+	}
+	if err := loadAccountPool(poolPath); err != nil {
+		fmt.Printf("WARN: account pool 未加载 (%v) — fake 字符串模式（only router-only/DryRun 能跑通）\n", err)
+	} else {
+		fmt.Printf("account pool: users=%d merchants=%d channels=%d currency=%s ← %s\n",
+			len(pool.Users), len(pool.Merchants), len(pool.Channels), pool.Currency, poolPath)
 	}
 
 	// 启动期无条件把所有 graph 从盘上读进内存，常驻 graphCache。

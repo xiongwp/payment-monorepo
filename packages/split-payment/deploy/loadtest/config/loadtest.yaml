@@ -23,11 +23,11 @@ load:
   duration: 60s             # 压测持续时间
   rate_limit_qps: 0         # 0 = 不限速；>0 = 全局令牌桶
   warmup: 5s                # 预热（不计入统计）
-  # Plan B：先用 router-only 跑通整个压测框架，验证 translator + router TPS，
-  # 不需要预创建账户。dispatch 调 split-payment.DryRun（stateless 翻译 + 校验），
-  # 不打 accounting → 不会被 "account not found" 卡住。
-  # 验证完后切回 "mixed"，做真实端到端 booking 落库测试（Plan A）。
-  mode: "router-only"       # topup | payment | transfer | withdraw | mixed | router-only
+  # Plan A：真实端到端 booking。loadtest-bootstrap 预创建 ~700 个账户写到
+  # account_pool.json，loadtest dispatch 用真实 account_no 填 attrs，TriggerEvent
+  # 走完整 split-payment → accounting → mysql 链路。
+  # Plan B baseline 是 router-only / DryRun 模式（不查 accounting，31k TPS）。
+  mode: "mixed"             # topup | payment | transfer | withdraw | mixed | router-only
   mix_ratio:                # mixed 模式下的权重；和不必为 100
     topup: 30
     payment: 40
@@ -35,9 +35,15 @@ load:
     withdraw: 15
 
 flow:
-  # 业务模拟参数
-  channel_count: 100              # 模拟 100 个渠道（轮询挑）
-  user_count: 100000              # 模拟 10 万用户（按 worker_idx % user_count 选）
+  # 业务模拟参数 —— 必须跟 loadtest-bootstrap 预创建账户的池大小一致。
+  # 预创建账户量级取决于这三个数字 × 各自的子账户数（详见 cmd/loadtest-bootstrap/main.go）：
+  #   channel_count × 4 (recv/suspense/fee/payable) = 400 channel sub-accounts
+  #   user_count × 1                                = N user balance accounts
+  #   merchant_count(hard 100) × 2 (main/pending)   = 200 merchant accounts
+  #   + 3 platform accounts
+  # 总共 ~703 accounts。pool 里 100 用户就够 random 落点了；要扩到更大并发再 bootstrap 更多。
+  channel_count: 100
+  user_count: 100                 # 必须 ≤ pool.Users 数量；dispatch() 用 modulo 索引
   amount_minor_range: [100, 100000]   # 金额范围（分）—— 100 = ¥1.00，100000 = ¥1000.00
   currency: "PHP"
   # 资金流的 graph_key 由 split-payment 端预注册（见 scripts/bootstrap-logical-accounts.sh）
