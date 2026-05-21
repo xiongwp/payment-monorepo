@@ -194,13 +194,15 @@ services:
       - "19099:9099"   # admin HTTP
 
   # ─── loadtest 客户端 ────────────────────────────────────────────────
+  # 复用 split-payment 的 go.mod，binary 源码 = packages/split-payment/cmd/loadtest/main.go
   loadtest:
     build:
-      context: .
-      dockerfile: Dockerfile.loadtest
+      context: ../../                                  # = packages/split-payment 根
+      dockerfile: deploy/loadtest/Dockerfile.loadtest
       additional_contexts:
-        accounting-grpc-api: ../../../accounting-grpc-api
-        payment-util:        ../../../payment-util
+        payment-util:        ../payment-util           # 解析为 packages/payment-util
+        accounting-system:   ../accounting-system      # 解析为 packages/accounting-system
+        accounting-grpc-api: ../accounting-grpc-api    # 解析为 packages/accounting-grpc-api
       secrets:
         - GITHUB_TOKEN
     image: rotation-loadtest:latest
@@ -211,15 +213,17 @@ services:
       split-payment:
         condition: service_started
     environment:
-      LOADTEST_ACCOUNTING_ENDPOINT: "accounting-system:50051"
-      LOADTEST_SPLIT_PAYMENT_ENDPOINT: "split-payment:9098"
-      LOADTEST_IDGEN_ENDPOINT: "id-generator:9500"
-      LOADTEST_OUTPUT_PATH: "/output/loadtest-report.json"
+      LOADTEST_TARGET_SPLIT_PAYMENT_ENDPOINT: "split-payment:9098"
+      LOADTEST_TARGET_ACCOUNTING_ENDPOINT:    "accounting-system:50051"
+      LOADTEST_TARGET_ACCOUNTING_ADMIN_HTTP:  "http://accounting-system:9092"
+      LOADTEST_REPORT_OUTPUT_PATH:            "/output/loadtest-report.json"
     volumes:
       - ./config/loadtest.yaml:/loadtest/config.yaml:ro
+      - ./scripts:/loadtest/scripts:ro
       - ./output:/output
-    # 默认 entrypoint = sleep（手动 run）；CI 跑可改 = ["/loadtest/loadtest", "--config=/loadtest/config.yaml"]
-    entrypoint: ["sleep", "infinity"]
+    # 默认参数 = 跑一次 60s mixed（CI 友好）；
+    # 交互式压测：docker compose run --rm loadtest --mode=topup --duration=30s
+    command: ["--config=/loadtest/config.yaml"]
 
 # BuildKit secrets：从环境变量读取 GITHUB_TOKEN
 secrets:

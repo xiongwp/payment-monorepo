@@ -1,0 +1,61 @@
+# ============================================================================
+# 轮换账户 E2E 压测配置
+#
+# 通过 split-payment 的 TriggerEvent gRPC 驱动 4 大资金流。
+# 命中 accounting-system 的 rotation 路径（Router → Anchor → DoubleEntryBooking）。
+#
+# 修改后直接 docker compose run --rm loadtest /loadtest/loadtest --config=/loadtest/config.yaml
+# ============================================================================
+
+target:
+  # via-split-payment: 走完整业务流（split-payment → accounting）
+  # direct-accounting: 跳过 split-payment，直接打 accounting.RouterDryRun（测纯路由 TPS）
+  mode: "via-split-payment"
+  split_payment_endpoint: "split-payment:9098"
+  accounting_endpoint: "accounting-system:50051"
+  # admin HTTP 端点（用于 bootstrap-logical-accounts + healthz 检查）
+  accounting_admin_http: "http://accounting-system:9092"
+  # 鉴权 token（accounting-system admin HTTP），按需配；空 = 不带 header
+  admin_token: ""
+
+load:
+  concurrency: 10           # 并发 goroutine 数
+  duration: 60s             # 压测持续时间
+  rate_limit_qps: 0         # 0 = 不限速；>0 = 全局令牌桶
+  warmup: 5s                # 预热（不计入统计）
+  mode: "mixed"             # topup | payment | transfer | withdraw | mixed | router-only
+  mix_ratio:                # mixed 模式下的权重；和不必为 100
+    topup: 30
+    payment: 40
+    transfer: 15
+    withdraw: 15
+
+flow:
+  # 业务模拟参数
+  channel_count: 100              # 模拟 100 个渠道（轮询挑）
+  user_count: 100000              # 模拟 10 万用户（按 worker_idx % user_count 选）
+  amount_minor_range: [100, 100000]   # 金额范围（分）—— 100 = ¥1.00，100000 = ¥1000.00
+  currency: "PHP"
+  # 资金流的 graph_key 由 split-payment 端预注册（见 scripts/bootstrap-logical-accounts.sh）
+  graph_keys:
+    topup:    "user-topup-v1"
+    payment:  "user-balance-payment-v1"
+    transfer: "user-internal-transfer-v1"
+    withdraw: "user-withdraw-v1"
+
+# rotation 相关：压测期间是否动态触发切换 / 故障注入
+chaos:
+  enabled: false
+  # 每隔 N 秒在压测中后台触发一次 ForceSwitch（验证切换无丢账）
+  force_switch_interval: 0s
+  # 每隔 N 秒挑 1 个 LA 做 ForceProvision
+  force_provision_interval: 0s
+
+report:
+  output_path: "/output/loadtest-report.json"
+  # 直方图分桶（毫秒），用于 latency p50/p90/p95/p99
+  latency_buckets_ms: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]
+  # 输出到控制台的进度间隔
+  progress_interval: 5s
+  # 配置后向 prom pushgateway 推 — 实测可去掉
+  prometheus_pushgateway: ""

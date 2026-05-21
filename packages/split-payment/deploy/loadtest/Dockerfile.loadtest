@@ -1,0 +1,62 @@
+# ============================================================================
+# Dockerfile.loadtest — 轮换 E2E 压测客户端
+#
+# 复用 split-payment 的 go.mod（已包含 accounting-system / accounting-grpc-api
+# replace），避免在 loadtest 目录另建 module 导致跨包 import 复杂度。
+#
+# Build context（看 docker-compose.yml）：
+#   context: ../../          ← packages/split-payment 包根（含 cmd/loadtest）
+#   dockerfile: deploy/loadtest/Dockerfile.loadtest
+#   additional_contexts:
+#     payment-util:        ../payment-util
+#     accounting-system:   ../accounting-system
+#     accounting-grpc-api: ../accounting-grpc-api
+#
+# 镜像产物：/usr/local/bin/loadtest（静态二进制 + alpine 工具集做 bootstrap/chaos）
+# ============================================================================
+
+# ─── Stage 1: builder ────────────────────────────────────────────────────────
+FROM golang:1.25-bookworm AS builder
+
+ENV GOPROXY=https://proxy.golang.org,direct
+ENV CGO_ENABLED=0
+ENV GOOS=linux
+
+WORKDIR /src
+
+# mount 兄弟仓（split-payment go.mod 里 replace ../payment-util / ../accounting-system
+# 在镜像里就是 /src/payment-util 等路径）
+COPY --from=payment-util . /src/payment-util/
+COPY --from=accounting-system . /src/accounting-system/
+COPY --from=accounting-grpc-api . /src/accounting-grpc-api/
+
+# split-payment 主源（context = split-payment 根）
+COPY . /src/split-payment/
+
+WORKDIR /src/split-payment
+RUN go mod download
+
+# 编译压测 binary
+RUN go build \
+    -ldflags="-s -w -X main.buildVersion=$(date +%Y%m%d-%H%M%S)" \
+    -o /out/loadtest \
+    ./cmd/loadtest
+
+# ─── Stage 2: runtime ────────────────────────────────────────────────────────
+# 用 alpine 而非 distroless：脚本里要在容器里 exec shell 跑 bootstrap / chaos 命令
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates curl jq bash
+
+COPY --from=builder /out/loadtest /usr/local/bin/loadtest
+
+# /loadtest 是 compose 里 mount config + scripts + output 的位置
+WORKDIR /loadtest
+RUN mkdir -p /output && chmod 0777 /output
+
+LABEL org.opencontainers.image.title="rotation-loadtest"
+LABEL org.opencontainers.image.description="End-to-end loadtest for rotating suspense accounts"
+
+# 默认 sleep，让 compose run 手动启动；scripts/run.sh 会覆盖 entrypoint
+ENTRYPOINT ["/usr/local/bin/loadtest"]
+CMD ["--config=/loadtest/config.yaml"]
