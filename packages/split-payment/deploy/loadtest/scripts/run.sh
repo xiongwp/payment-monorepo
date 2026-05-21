@@ -71,16 +71,30 @@ else
   echo "    用 loadtest overlay 把 Redis Sentinel 模式覆盖成 single 模式"
   # LOADTEST_DIR 给 overlay yaml 用绝对路径解析 volume mount
   export LOADTEST_DIR="${DIR}"
+
+  # 关键：`docker compose up -d` 可能因为 accounting-batchtask 的
+  # depends_on: accounting-service condition: service_healthy 在 mysql init 阶段
+  # 短暂 unhealthy 而返回非零（10 个 shard 各自建 100 张表，首次 1-2 min）。
+  # 但 accounting-service 自己其实是好的——所以我们容忍 compose up 的失败，
+  # 转而自己轮询 /admin/health 决定是否继续。
+  set +e
   ( cd "${ACCOUNTING_DIR}" && \
     docker compose \
       -f docker-compose.yml \
       -f "${DIR}/compose.accounting-override.yml" \
       up -d --build )
+  COMPOSE_RC=$?
+  set -e
+  if [[ ${COMPOSE_RC} -ne 0 ]]; then
+    echo "    NOTE: compose up 退出码 ${COMPOSE_RC}（可能 batchtask 等 service_healthy 超时），继续轮询 /admin/health"
+  fi
 
-  echo ">>> 等 accounting-service 健康（最多 5 分钟，首次建 100 张分表很慢）..."
-  for i in $(seq 1 300); do
+  echo ">>> 等 accounting-service 健康（最多 10 分钟，首次建表 + 1100 表非常慢）..."
+  HEALTH_OK=0
+  for i in $(seq 1 600); do
     if curl -sf http://localhost:8888/admin/health >/dev/null 2>&1; then
       echo "    accounting-service OK (${i}s)"
+      HEALTH_OK=1
       break
     fi
     if (( i % 15 == 0 )); then
@@ -88,10 +102,20 @@ else
     fi
     sleep 1
   done
-  if ! curl -sf http://localhost:8888/admin/health >/dev/null 2>&1; then
-    echo "ERROR: accounting-service 5 分钟未健康，看日志：" >&2
-    echo "  ( cd ${ACCOUNTING_DIR} && docker compose logs accounting-service | tail -50 )" >&2
+  if [[ ${HEALTH_OK} -ne 1 ]]; then
+    echo "ERROR: accounting-service 10 分钟仍未健康，看日志：" >&2
+    echo "  ( cd ${ACCOUNTING_DIR} && docker compose logs accounting-service | tail -80 )" >&2
     exit 1
+  fi
+
+  # 若刚才 compose up 没把 batchtask 起来（因为它的 depends_on 失败了），
+  # 现在 service 健康了，再 up 一次 batchtask 单独把它带起来（幂等）。
+  if [[ ${COMPOSE_RC} -ne 0 ]]; then
+    echo ">>> 补起可能没起来的 accounting-batchtask"
+    ( cd "${ACCOUNTING_DIR}" && \
+      docker compose -f docker-compose.yml -f "${DIR}/compose.accounting-override.yml" \
+        up -d accounting-batchtask ) || \
+      echo "    WARN: batchtask 补起失败（非致命，loadtest 不依赖它）"
   fi
 fi
 
