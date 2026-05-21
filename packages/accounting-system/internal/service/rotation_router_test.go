@@ -779,7 +779,10 @@ func TestResolve_RecoveryPath_RoutingExistsButAnchorMissing(t *testing.T) {
 		ID: 100, FlowID: "F_RECOVERY", LogicalAccountID: 42,
 		AccountNo: "A001",
 	}
-	// ar.byKey[anchorKeyB("F_RECOVERY", "A001")] 不设置 → anchor 缺失
+	// 显式断言 anchor 缺失（ar.byKey 为空）— 这是恢复路径的前置条件
+	if len(ar.byKey) != 0 {
+		t.Fatal("test precondition: anchor map should be empty for recovery path")
+	}
 
 	res, err := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_RECOVERY", BookingDirectionCredit))
 	if err != nil {
@@ -1108,6 +1111,9 @@ func TestResolve_Retry_AnchorWriteFailedRecoveryPath(t *testing.T) {
 	rr.byKey[routeKey("F_PARTIAL", 42)] = res1.RoutePlan.NewRoute
 	rr.byKey[routeKey("F_PARTIAL", 42)].ID = 9001
 	// anchor 写失败 → fake state 中不存在
+	if len(ar.byKey) != 0 {
+		t.Fatal("precondition: anchor should be empty (write failed)")
+	}
 
 	// 第二次 Resolve（retry）：应该走恢复路径
 	res2, _ := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_PARTIAL", BookingDirectionDebit))
