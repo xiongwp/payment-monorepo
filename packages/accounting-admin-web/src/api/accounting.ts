@@ -546,3 +546,62 @@ export interface RebuildRequest {
 export function rebuildHotAccounts(req: RebuildRequest): Promise<RebuildReport> {
   return request({ method: 'POST', url: '/v1/redis/rebuild', data: req });
 }
+
+// ─── 轮换账户管理（rotation feature）API ───────────────────────────────────
+
+import type {
+  RotationLogicalAccountsResponse,
+  RotationInstanceHistoryView,
+  RotationInstanceDetail,
+  RotationManualOpRequest,
+  RotationManualOpResponse,
+} from '../types/accounting';
+
+/**
+ * 列出所有 logical_account 的当前 active 状态。
+ * @param prefix 过滤 logical_account_key 前缀（如 "channel-payable:"）
+ * @param limit 最多返回多少行（默认 200）
+ */
+export function listRotationLogicalAccounts(
+  prefix?: string,
+  limit?: number,
+): Promise<RotationLogicalAccountsResponse> {
+  const params: Record<string, unknown> = {};
+  if (prefix) params.prefix = prefix;
+  if (limit) params.limit = limit;
+  return request({ method: 'GET', url: '/v1/rotation/logical-accounts', params });
+}
+
+/** 查询某 logical_account 下所有 instance 历史 + 余额。 */
+export function getRotationInstanceHistory(
+  logicalAccountKey: string,
+): Promise<RotationInstanceHistoryView> {
+  return request({
+    method: 'GET',
+    url: '/v1/rotation/instance-history',
+    params: { logical_account_key: logicalAccountKey },
+  });
+}
+
+/** 查询单 instance 详情。 */
+export function getRotationInstanceDetail(accountNo: string): Promise<RotationInstanceDetail> {
+  return request({
+    method: 'GET',
+    url: '/v1/rotation/instance-detail',
+    params: { account_no: accountNo },
+  });
+}
+
+/** 立即切换：当前 active → draining，provisioned → active。需先 provision。 */
+export function rotationManualSwitch(
+  req: RotationManualOpRequest,
+): Promise<RotationManualOpResponse> {
+  return request({ method: 'POST', url: '/v1/rotation/manual-switch', data: req });
+}
+
+/** 立即预创建下一期 provisioned instance（不切换）。 */
+export function rotationManualProvision(
+  req: RotationManualOpRequest,
+): Promise<RotationManualOpResponse> {
+  return request({ method: 'POST', url: '/v1/rotation/manual-provision', data: req });
+}

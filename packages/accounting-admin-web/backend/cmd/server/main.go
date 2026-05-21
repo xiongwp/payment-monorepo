@@ -134,6 +134,13 @@ func main() {
 	r.HandleFunc("/v1/tcc-archive/config", instanceH.TccArchiveConfig).Methods(http.MethodGet)
 	r.HandleFunc("/v1/tcc-archive/run", instanceH.TccArchiveRun).Methods(http.MethodPost)
 
+	// ─── 轮换账户管理（rotation）─ proxy 到 accounting-system /admin/rotation/* ───
+	r.HandleFunc("/v1/rotation/logical-accounts", instanceH.RotationListLogicalAccounts).Methods(http.MethodGet)
+	r.HandleFunc("/v1/rotation/instance-history", instanceH.RotationInstanceHistory).Methods(http.MethodGet)
+	r.HandleFunc("/v1/rotation/instance-detail", instanceH.RotationInstanceDetail).Methods(http.MethodGet)
+	r.HandleFunc("/v1/rotation/manual-switch", instanceH.RotationManualSwitch).Methods(http.MethodPost)
+	r.HandleFunc("/v1/rotation/manual-provision", instanceH.RotationManualProvision).Methods(http.MethodPost)
+
 	// Buffer accounts — reload fans out to all live instances via HTTP admin
 	r.HandleFunc("/v1/buffer-accounts/reload", instanceH.ReloadBufferAccounts).Methods(http.MethodPost)
 	r.HandleFunc("/v1/transaction-rules/reload", instanceH.ReloadTransactionRules).Methods(http.MethodPost)

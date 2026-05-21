@@ -43,6 +43,12 @@ type AccountInstanceManager interface {
 
 	// PromoteToFrozen 收敛 job 用：把 draining 推进到 frozen。
 	PromoteToFrozen(ctx context.Context, accountNo string, expectedVersion int64, frozenAt time.Time) error
+
+	// ListByLogical 返回 logical_account_id 下所有 phase 的 instance（按 period_start 升序）。
+	// 同 LA 下所有 instance 共享 user_id → 同一物理分片，单分片查询即可。
+	// 兜底：若 LA 没有 current_active_account_no（首次启用 rotation），扫所有 100 个分片。
+	// 用于 admin-web 详情页查询历史 instance + 余额。limit<=0 默认 200。
+	ListByLogical(ctx context.Context, logicalAccountID int64, limit int) ([]*model.Account, error)
 }
 
 // AIMPromoteParams 切换参数（service 层用 PromoteAndDrainParams，repo 用本类型避免循环）。
@@ -285,6 +291,69 @@ func (m *accountInstanceManager) PromoteAndDrain(
 		return fmt.Errorf("aim: update LA current_active (instance phase already swapped, will reconcile next tick): %w", err)
 	}
 	return nil
+}
+
+// ListByLogical 实现：用 LA.CurrentActiveAccountNo 推导分片（同 LA 下所有 instance 同分片）；
+// 若不存在，扫全部 100 个分片兜底。本方法面向 admin-web 详情页（低频），可以接受兜底开销。
+func (m *accountInstanceManager) ListByLogical(
+	ctx context.Context, logicalAccountID int64, limit int,
+) ([]*model.Account, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	la, err := m.logicalRepo.GetByID(ctx, logicalAccountID)
+	if err != nil {
+		return nil, fmt.Errorf("aim: get LA: %w", err)
+	}
+	if la == nil {
+		return nil, fmt.Errorf("aim: logical_account id=%d not found", logicalAccountID)
+	}
+
+	queryShard := func(dbIdx, gtblIdx int) ([]*model.Account, error) {
+		db, dberr := m.dbManager.GetDB(dbIdx)
+		if dberr != nil {
+			return nil, dberr
+		}
+		tableName := m.router.TableName(ctx, "account", gtblIdx)
+		var rows []*model.Account
+		res := db.WithContext(ctx).Table(tableName).
+			Where("logical_account_id = ?", logicalAccountID).
+			Order("period_start ASC, id ASC").
+			Limit(limit).
+			Find(&rows)
+		if res.Error != nil {
+			if errors.Is(res.Error, gorm.ErrRecordNotFound) {
+				return nil, nil
+			}
+			return nil, res.Error
+		}
+		return rows, nil
+	}
+
+	// 快路径：用 current_active 推导分片
+	if la.CurrentActiveAccountNo != nil && *la.CurrentActiveAccountNo != "" {
+		dbIdx, gtblIdx := m.router.RouteByAccountNo(*la.CurrentActiveAccountNo)
+		rows, err := queryShard(dbIdx, gtblIdx)
+		if err != nil {
+			return nil, fmt.Errorf("aim: list instances: %w", err)
+		}
+		return rows, nil
+	}
+
+	// 兜底：扫所有分片
+	var all []*model.Account
+	for gtblIdx := 0; gtblIdx < sharding.ShardTableTotal; gtblIdx++ {
+		dbIdx := gtblIdx / sharding.ShardTablePerDB
+		rows, err := queryShard(dbIdx, gtblIdx)
+		if err != nil {
+			return nil, fmt.Errorf("aim: list instances scan shard %d.%d: %w", dbIdx, gtblIdx, err)
+		}
+		all = append(all, rows...)
+		if len(all) >= limit {
+			return all[:limit], nil
+		}
+	}
+	return all, nil
 }
 
 // PromoteToFrozen draining → frozen with CAS。

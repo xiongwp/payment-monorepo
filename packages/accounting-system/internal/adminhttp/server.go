@@ -57,6 +57,7 @@ type Server struct {
 	tccArchiveWorker *service.TccArchiveWorker            // 支持 admin-web 触发立即归档
 	bufferedBalWk    *service.BufferedBalanceWorker       // 支持 /admin/buffered-balance/flush 立即 flush
 	pinger           HealthPinger                         // readiness DB ping，可选（nil = 仅检查 draining）
+	rotationAdminSvc *service.AdminService                // 轮换账户运维 service；nil = 端点返回 503（见 rotation.go）
 	logger           *zap.Logger
 	httpServer       *http.Server
 
@@ -177,6 +178,10 @@ func NewServer(
 	// 立即触发 buffered balance flush（e2e 测试 / 运维，不等 30s+jitter 周期）
 	mux.HandleFunc("/admin/buffered-balance/flush", s.handleBufferedBalanceFlush) // POST
 	mux.HandleFunc("/admin/redis/rebuild", s.handleRedisRebuild)                  // POST {as_of?, account_nos?, dry_run?}
+
+	// 轮换账户管理（rotation feature）— 见 rotation.go
+	// 端点：list-current-active / instance-history / instance-detail / manual-switch / manual-provision
+	s.registerRotationRoutes(mux)
 
 	// authMiddleware 包一层：除 /admin/health* 外其他端点都校验 token。
 	// /admin/health + /admin/health/readiness 不做鉴权 — k8s probe 不带 header。

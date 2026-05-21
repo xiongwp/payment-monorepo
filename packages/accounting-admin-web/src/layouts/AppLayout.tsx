@@ -20,6 +20,7 @@ import {
   DeleteOutlined,
   SettingOutlined,
   ReloadOutlined,
+  SwapOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 
@@ -57,6 +58,7 @@ const items: MenuItem[] = [
   getItem('业务类型', '/business-types', <ProfileOutlined />),
   getItem('平台账户余额', '/platform-balances', <PieChartOutlined />),
   getItem('平台账户快照', '/platform-snapshots', <AreaChartOutlined />),
+  getItem('账户轮换管理', '/rotation', <SwapOutlined />),
   getItem('TCC 归档', '/tcc-archive', <DeleteOutlined />),
   getItem('系统配置', '/system-config', <SettingOutlined />),
   getItem('Redis 重建', '/redis-rebuild', <ReloadOutlined />),
@@ -91,7 +93,15 @@ export default function AppLayout() {
         </div>
         <Menu
           theme="dark"
-          selectedKeys={[location.pathname]}
+          // 详情页（/rotation/:key, /accounts/:accountNo）也要让父菜单高亮
+          selectedKeys={[
+            // /rotation/foo → /rotation；其它路径保持原样
+            location.pathname.startsWith('/rotation/')
+              ? '/rotation'
+              : location.pathname.startsWith('/accounts/')
+              ? '/accounts'
+              : location.pathname,
+          ]}
           mode="inline"
           items={items}
           onClick={handleMenuClick}

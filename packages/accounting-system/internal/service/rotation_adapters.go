@@ -57,3 +57,57 @@ func (a *accountInstanceManagerAdapter) PromoteToFrozen(
 ) error {
 	return a.repo.PromoteToFrozen(ctx, accountNo, expectedVersion, frozenAt)
 }
+
+// ============================================================================
+// AdminService 适配器 — 给 admin-web HTTP 端点用
+//
+// service.AdminService 要求 3 个上游接口（LogicalAccountAdminReader / AccountAdminReader
+// / SchedulerCommand）。本文件下半给 repo 实现到这 3 个接口的适配。
+// ============================================================================
+
+// adminAccountReaderAdapter 用 AccountInstanceManager (sharded ListByLogical) +
+// AccountRepository (GetAccountByNo) 实现 AccountAdminReader。
+type adminAccountReaderAdapter struct {
+	instances repository.AccountInstanceManager
+	accounts  repository.AccountRepository
+}
+
+// NewAdminAccountReaderAdapter 工厂。
+func NewAdminAccountReaderAdapter(
+	instances repository.AccountInstanceManager,
+	accounts repository.AccountRepository,
+) AccountAdminReader {
+	return &adminAccountReaderAdapter{instances: instances, accounts: accounts}
+}
+
+func (a *adminAccountReaderAdapter) ListByLogical(
+	ctx context.Context, logicalAccountID int64, limit int,
+) ([]*model.Account, error) {
+	return a.instances.ListByLogical(ctx, logicalAccountID, limit)
+}
+
+func (a *adminAccountReaderAdapter) GetByAccountNo(ctx context.Context, accountNo string) (*model.Account, error) {
+	return a.accounts.GetAccountByNo(ctx, accountNo)
+}
+
+// adminSchedulerCommandAdapter 让 *Scheduler 满足 SchedulerCommand 接口（接口签名
+// 已经完全一致，但拿到的是 struct 不是 interface，包一层）。
+type adminSchedulerCommandAdapter struct {
+	sch *Scheduler
+}
+
+// NewAdminSchedulerCommandAdapter 工厂。
+func NewAdminSchedulerCommandAdapter(sch *Scheduler) SchedulerCommand {
+	return &adminSchedulerCommandAdapter{sch: sch}
+}
+
+func (a *adminSchedulerCommandAdapter) ForceSwitch(ctx context.Context, laID int64, operator, reason string) error {
+	return a.sch.ForceSwitch(ctx, laID, operator, reason)
+}
+
+func (a *adminSchedulerCommandAdapter) ForceProvision(ctx context.Context, laID int64, operator, reason string) error {
+	return a.sch.ForceProvision(ctx, laID, operator, reason)
+}
+
+// LogicalAccountRepository 已经满足 LogicalAccountAdminReader 接口（GetByKey/GetByID/
+// ListByPrefix 签名都一致），所以 fx provider 可以直接传 repo 实例。
