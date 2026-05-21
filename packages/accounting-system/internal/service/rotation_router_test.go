@@ -1030,6 +1030,334 @@ func TestResolve_DisabledLAFilteredByRepo_Documentation(t *testing.T) {
 	t.Log("Router 不重复校验 status，依赖 repo 层过滤")
 }
 
+// ============================================================================
+// 可重入 / 可重试 / 可幂等 — 三大铁律
+// ============================================================================
+
+// 可重入：同一 (LA, flow) 多次 Resolve 必须产生**相同**结果（无副作用，纯函数）。
+// 这是分布式系统下幂等保证的基础。
+func TestResolve_Reentrant_PureFunction(t *testing.T) {
+	now := time.Now()
+	r, lr, _, _, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A001")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+
+	// 1000 次 Resolve，结果必须完全一致
+	var firstAccountNo string
+	var firstAnchorGtbl, firstRouteGtbl int
+	for i := 0; i < 1000; i++ {
+		res, err := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_REENTRY", BookingDirectionDebit))
+		if err != nil {
+			t.Fatalf("iter %d: %v", i, err)
+		}
+		if i == 0 {
+			firstAccountNo = res.AccountNo
+			firstAnchorGtbl = res.AnchorGlobalTableIndex
+			firstRouteGtbl = res.RouteGlobalTableIndex
+			continue
+		}
+		if res.AccountNo != firstAccountNo {
+			t.Fatalf("iter %d: AccountNo drifted: %s vs %s", i, res.AccountNo, firstAccountNo)
+		}
+		if res.AnchorGlobalTableIndex != firstAnchorGtbl {
+			t.Fatalf("iter %d: anchor shard drifted", i)
+		}
+		if res.RouteGlobalTableIndex != firstRouteGtbl {
+			t.Fatalf("iter %d: route shard drifted", i)
+		}
+	}
+}
+
+// 可重试 step 1（routing 写失败）：caller retry Resolve → 同样的 Insert+Route plan
+func TestResolve_Retry_RoutingWriteFailedNoSideEffect(t *testing.T) {
+	now := time.Now()
+	r, lr, _, _, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A001")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+
+	// 第一次 Resolve（成功，但 caller 写 routing 失败 → 不更新 fake state）
+	res1, _ := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_RETRY", BookingDirectionDebit))
+	if res1.RoutePlan == nil || res1.AnchorPlan == nil {
+		t.Fatal("first resolve should have both plans")
+	}
+
+	// 模拟 caller 失败 — 不写入任何东西
+	// 第二次 Resolve（retry）：应该看到 routing 仍不存在 → 仍返回完整双 plan
+	res2, _ := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_RETRY", BookingDirectionDebit))
+	if res2.RoutePlan == nil {
+		t.Error("retry after routing failure should produce same RoutePlan")
+	}
+	if res2.AnchorPlan == nil || res2.AnchorPlan.Op != AnchorOpInsert {
+		t.Error("retry should still produce Insert anchor plan")
+	}
+	if res2.AccountNo != res1.AccountNo {
+		t.Errorf("retry should route to same instance")
+	}
+}
+
+// 可重试 step 2（routing 写成功 + anchor 写失败）：retry → 进入恢复路径
+func TestResolve_Retry_AnchorWriteFailedRecoveryPath(t *testing.T) {
+	now := time.Now()
+	r, lr, ar, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A001")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+
+	// 第一次 Resolve
+	res1, _ := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_PARTIAL", BookingDirectionDebit))
+	// 模拟 caller：routing 写成功
+	rr.byKey[routeKey("F_PARTIAL", 42)] = res1.RoutePlan.NewRoute
+	rr.byKey[routeKey("F_PARTIAL", 42)].ID = 9001
+	// anchor 写失败 → fake state 中不存在
+
+	// 第二次 Resolve（retry）：应该走恢复路径
+	res2, _ := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_PARTIAL", BookingDirectionDebit))
+	if res2.RoutePlan != nil {
+		t.Error("retry recovery: RoutePlan should be nil")
+	}
+	if res2.AnchorPlan == nil || res2.AnchorPlan.Op != AnchorOpInsert {
+		t.Error("retry recovery: AnchorPlan should be Insert")
+	}
+	if res2.AccountNo != "A001" {
+		t.Errorf("retry recovery should keep account A001")
+	}
+}
+
+// 可重试 step 3（routing + anchor 都成功，transaction 失败）：retry → UpdatePosting plan
+// 这是最常见的"部分成功"场景
+func TestResolve_Retry_TransactionFailedAfterAnchor(t *testing.T) {
+	now := time.Now()
+	r, lr, ar, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A001")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+
+	// 第一次 Resolve
+	res1, _ := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_TX_FAIL", BookingDirectionDebit))
+	// 模拟 caller：routing + anchor 都成功
+	rr.byKey[routeKey("F_TX_FAIL", 42)] = res1.RoutePlan.NewRoute
+	rr.byKey[routeKey("F_TX_FAIL", 42)].ID = 9101
+	ar.byKey[anchorKeyB("F_TX_FAIL", "A001")] = res1.AnchorPlan.NewAnchor
+	ar.byKey[anchorKeyB("F_TX_FAIL", "A001")].ID = 9102
+	ar.byKey[anchorKeyB("F_TX_FAIL", "A001")].Version = 0
+
+	// 第二次 Resolve（retry，caller 用同样的 direction）
+	res2, _ := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_TX_FAIL", BookingDirectionDebit))
+	if res2.RoutePlan != nil {
+		t.Error("retry: RoutePlan should be nil")
+	}
+	if res2.AnchorPlan == nil || res2.AnchorPlan.Op != AnchorOpUpdatePosting {
+		t.Errorf("retry: should produce UpdatePosting plan, got op=%v", res2.AnchorPlan)
+	}
+	// CAS 版本号正确传递（caller 用此版本号做 UpdatePosting，避免重复加 1）
+	if res2.AnchorPlan.UpdateExpectedVersion != 0 {
+		t.Errorf("retry: expected version should match existing anchor version 0, got %d",
+			res2.AnchorPlan.UpdateExpectedVersion)
+	}
+}
+
+// 可幂等：同一 anchor 重复 UpdatePosting 计划应该被 CAS 防御
+// （这一层在 repo，但 router 必须正确传递 version）
+func TestResolve_Idempotent_VersionCASPropagated(t *testing.T) {
+	now := time.Now()
+	r, lr, ar, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A001")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+
+	// 已有 anchor version=5
+	rr.byKey[routeKey("F_IDEM", 42)] = &model.FlowAnchorRoute{
+		ID: 1, FlowID: "F_IDEM", LogicalAccountID: 42, AccountNo: "A001",
+	}
+	ar.byKey[anchorKeyB("F_IDEM", "A001")] = &model.TxAccountAnchor{
+		ID: 50, FlowID: "F_IDEM", LogicalAccountID: 42, AccountNo: "A001",
+		Status: model.AnchorStatusActive, Version: 5,
+	}
+
+	res, _ := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_IDEM", BookingDirectionCredit))
+	if res.AnchorPlan.UpdateExpectedVersion != 5 {
+		t.Errorf("CAS version should be 5, got %d", res.AnchorPlan.UpdateExpectedVersion)
+	}
+	// Repo 层将以 version=5 做 CAS；如果其他人已经更新过（version=6），CAS 失败，caller 重新 Resolve
+}
+
+// 极端情况：调用方传入完全相同的 ResolveRequest 100 次，并发
+// 任何 race 都不应该让结果不一致
+func TestResolve_ConcurrentSameRequest_NoRaceInResults(t *testing.T) {
+	now := time.Now()
+	r, lr, ar, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A001")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+	// 预置 routing + anchor（模拟稳定态）
+	rr.byKey[routeKey("F_CONC", 42)] = &model.FlowAnchorRoute{
+		ID: 1, FlowID: "F_CONC", LogicalAccountID: 42, AccountNo: "A001",
+	}
+	ar.byKey[anchorKeyB("F_CONC", "A001")] = &model.TxAccountAnchor{
+		ID: 1, FlowID: "F_CONC", LogicalAccountID: 42, AccountNo: "A001",
+		Status: model.AnchorStatusActive, Version: 3,
+	}
+
+	const N = 100
+	results := make([]string, N)
+	versions := make([]int64, N)
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			res, _ := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_CONC", BookingDirectionDebit))
+			results[i] = res.AccountNo
+			versions[i] = res.AnchorPlan.UpdateExpectedVersion
+		}(i)
+	}
+	wg.Wait()
+	for i, acc := range results {
+		if acc != "A001" {
+			t.Errorf("goroutine %d: got %q, want A001", i, acc)
+		}
+		if versions[i] != 3 {
+			t.Errorf("goroutine %d: version=%d, want 3", i, versions[i])
+		}
+	}
+}
+
+// ============================================================================
+// 极端边界
+// ============================================================================
+
+// 极端：FlowID 包含特殊字符（unicode、空白前后、超长）
+func TestResolve_ExtremeFlowIDs(t *testing.T) {
+	now := time.Now()
+	r, lr, _, _, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A001")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+
+	cases := []string{
+		"F_NORMAL_123",
+		strings.Repeat("X", 64),         // 最大长度
+		"flow-中文-id",                    // unicode
+		"flow.with.dots.and-dashes_123", // 复合字符
+	}
+	for _, flowID := range cases {
+		t.Run(flowID[:min(20, len(flowID))], func(t *testing.T) {
+			res, err := r.Resolve(context.Background(), mkRequest("transit:foo:USD", flowID, BookingDirectionDebit))
+			if err != nil {
+				t.Errorf("flow=%q: %v", flowID, err)
+				return
+			}
+			if res.AccountNo != "A001" {
+				t.Errorf("flow=%q: wrong account", flowID)
+			}
+			if res.AnchorPlan.NewAnchor.FlowID != flowID {
+				t.Errorf("flow=%q: anchor flow_id should preserve exactly", flowID)
+			}
+		})
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// 极端：很小的 logical_account_id (1) 和很大的 (MaxInt64-1)
+func TestResolve_ExtremeLogicalAccountIDs(t *testing.T) {
+	now := time.Now()
+	r, lr, _, _, accR := newRouterFixture(now)
+	for _, laID := range []int64{1, 999999, 1 << 50, 1<<62 - 1} {
+		key := fmt.Sprintf("transit:la%d:USD", laID)
+		lr.byKey[key] = mkLogicalAccount(laID, key, true, "A001")
+		accR.byNo["A001"] = mkAccountActive("A001", laID)
+		res, err := r.Resolve(context.Background(), mkRequest(key, fmt.Sprintf("F_%d", laID), BookingDirectionDebit))
+		if err != nil {
+			t.Errorf("la_id=%d: %v", laID, err)
+		}
+		if res.AnchorPlan.NewAnchor.LogicalAccountID != laID {
+			t.Errorf("la_id=%d: anchor should preserve la_id", laID)
+		}
+	}
+}
+
+// 极端：retry 100 次方向 1 退款 → 全部走同一 flow inheritance 路径
+func TestResolve_RetryRefund100Times_Idempotent(t *testing.T) {
+	now := time.Now()
+	r, lr, _, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A001")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+	// 源 flow 已锁
+	rr.byKey[routeKey("PAY_SRC", 42)] = &model.FlowAnchorRoute{
+		ID: 99, FlowID: "PAY_SRC", LogicalAccountID: 42, AccountNo: "A001",
+	}
+
+	req := &ResolveRequest{
+		LogicalAccountKey: "transit:foo:USD",
+		FlowID:            "RFD_X",
+		Direction:         BookingDirectionDebit,
+		OriginalFlowID:    "PAY_SRC",
+		ReuseSource:       model.AnchorReuseSourceRefundOf,
+	}
+
+	for i := 0; i < 100; i++ {
+		res, err := r.Resolve(context.Background(), req)
+		if err != nil {
+			t.Fatalf("iter %d: %v", i, err)
+		}
+		if res.AccountNo != "A001" {
+			t.Fatalf("iter %d: refund routing drifted", i)
+		}
+		if res.AnchorPlan.NewAnchor.ReuseSource != model.AnchorReuseSourceRefundOf {
+			t.Fatalf("iter %d: reuse source lost", i)
+		}
+	}
+}
+
+// 极端：FlowID 与 OriginalFlowID 相同（业务方错传自引用）—— 当 routing 不存在时
+// 路由层会去找"自己的"源，这是 nonsensical 但应该有可预测行为：
+// 当前实现：先查 self lookup（routing 表）找不到 → 然后查 OriginalFlowID 的 routing（也是同一 key，也找不到）
+// → 报错"source flow not found"
+func TestResolve_SelfReferenceAsSource(t *testing.T) {
+	now := time.Now()
+	r, lr, _, _, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A001")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+
+	req := &ResolveRequest{
+		LogicalAccountKey: "transit:foo:USD",
+		FlowID:            "F_SAME",
+		Direction:         BookingDirectionDebit,
+		OriginalFlowID:    "F_SAME", // 自引用
+		ReuseSource:       model.AnchorReuseSourceRefundOf,
+	}
+	_, err := r.Resolve(context.Background(), req)
+	if err == nil {
+		t.Fatal("self-reference as source without existing routing should error")
+	}
+}
+
+// 极端：第一次写完整后，立即用同样的 request 再 Resolve，应该走 UpdatePosting 路径
+// （而不是 Insert + Route，否则会触发 UK 冲突）
+func TestResolve_AfterSuccessfulWrite_NextCallIsUpdate(t *testing.T) {
+	now := time.Now()
+	r, lr, ar, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A001")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+
+	// 第一次 Resolve + 模拟 caller 完整落盘
+	res1, _ := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_NEXT", BookingDirectionDebit))
+	rr.byKey[routeKey("F_NEXT", 42)] = res1.RoutePlan.NewRoute
+	rr.byKey[routeKey("F_NEXT", 42)].ID = 8001
+	ar.byKey[anchorKeyB("F_NEXT", "A001")] = res1.AnchorPlan.NewAnchor
+	ar.byKey[anchorKeyB("F_NEXT", "A001")].ID = 8002
+
+	// 立即 Resolve 同 flow
+	res2, _ := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_NEXT", BookingDirectionCredit))
+	if res2.AnchorPlan.Op != AnchorOpUpdatePosting {
+		t.Errorf("second resolve should be UpdatePosting, got op=%d", res2.AnchorPlan.Op)
+	}
+	if res2.RoutePlan != nil {
+		t.Errorf("second resolve should have no RoutePlan")
+	}
+}
+
 func TestBookingDirection_IsValid(t *testing.T) {
 	for _, d := range []BookingDirection{BookingDirectionDebit, BookingDirectionCredit} {
 		if !d.IsValid() {
