@@ -13,7 +13,6 @@ package adminhttp
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 
@@ -151,11 +150,7 @@ func (s *Server) handleManualSwitch(w http.ResponseWriter, r *http.Request) {
 		Reason:            req.Reason,
 	})
 	if err != nil {
-		code := http.StatusInternalServerError
-		if errors.Is(err, http.ErrAbortHandler) { // placeholder; no specific err types yet
-			code = http.StatusConflict
-		}
-		writeJSON(w, code, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

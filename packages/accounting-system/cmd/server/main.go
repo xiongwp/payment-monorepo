@@ -115,6 +115,18 @@ func main() {
 		fx.Provide(NewAdminHTTPConfig),
 		fx.Provide(func(m *database.Manager) adminhttp.HealthPinger { return m }),
 		fx.Provide(adminhttp.NewServer),
+		// ─── 轮换账户管理（rotation feature）接线 ───────────────────────
+		// 这些 provider 让 service.AdminService 可用，从而让
+		// adminhttp 的 /admin/rotation/* 端点返回真实数据（不是 503）。
+		// 见 rotation_wiring.go。
+		fx.Provide(
+			NewRotationLogicalAccountRepository,
+			NewRotationAccountInstanceManager,
+			NewRotationLogicalAccountAdminReader,
+			NewRotationAccountAdminReader,
+			NewStubSchedulerCommand, // TODO: 等完整 Scheduler 接线后换 NewAdminSchedulerCommandAdapter
+			NewRotationAdminService,
+		),
 		fx.Provide(NewEtcdClient),
 		fx.Invoke(
 			StartGRPCServer,
@@ -310,7 +322,15 @@ func NewAdminHTTPConfig(v *viper.Viper) adminhttp.Config {
 	}
 }
 
-func StartAdminHTTPServer(lc fx.Lifecycle, srv *adminhttp.Server, logger *zap.Logger) {
+func StartAdminHTTPServer(
+	lc fx.Lifecycle,
+	srv *adminhttp.Server,
+	rotationAdmin *service.AdminService, // 轮换 admin service（rotation feature）
+	logger *zap.Logger,
+) {
+	// 把 rotation admin service 注入 server，使 /admin/rotation/* 端点可用。
+	srv.WithRotationAdmin(rotationAdmin)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
