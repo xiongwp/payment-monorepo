@@ -87,6 +87,10 @@ const (
 
 // Account 账户模型
 // 金额字段单位：ISO 最小货币单位 × 100（参见 currency 包）
+//
+// 轮换字段（LogicalAccountID 及之后）由 rotating-suspense-accounts 特性引入，
+// 见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md 与 internal/domain/model/rotation.go。
+// 旧账户 LogicalAccountID=NULL 且 LifecyclePhase=0 (legacy)，与原行为完全一致。
 type Account struct {
 	ID                  int64               `db:"id"                    json:"id"`
 	AccountNo           string              `db:"account_no"            json:"account_no"`
@@ -102,6 +106,52 @@ type Account struct {
 	Version             int64               `db:"version"               json:"version"`
 	CreatedAt           time.Time           `db:"created_at"            json:"created_at"`
 	UpdatedAt           time.Time           `db:"updated_at"            json:"updated_at"`
+
+	// --- Rotation fields ---
+	// 现有账户 LogicalAccountID=NULL, LifecyclePhase=0 (legacy)，不影响既有逻辑。
+	// 仅 rotation_enabled=1 的 logical_account 下的 instance 会填入非 NULL 值。
+
+	LogicalAccountID         *int64         `db:"logical_account_id"          gorm:"column:logical_account_id"          json:"logical_account_id,omitempty"`
+	PeriodStart              *time.Time     `db:"period_start"                gorm:"column:period_start"                json:"period_start,omitempty"`
+	PeriodEnd                *time.Time     `db:"period_end"                  gorm:"column:period_end"                  json:"period_end,omitempty"`
+	LifecyclePhase           LifecyclePhase `db:"lifecycle_phase"             gorm:"column:lifecycle_phase;default:0"   json:"lifecycle_phase"`
+	DrainingStartedAt        *time.Time     `db:"draining_started_at"         gorm:"column:draining_started_at"         json:"draining_started_at,omitempty"`
+	FrozenAt                 *time.Time     `db:"frozen_at"                   gorm:"column:frozen_at"                   json:"frozen_at,omitempty"`
+	ArchivedAt               *time.Time     `db:"archived_at"                 gorm:"column:archived_at"                 json:"archived_at,omitempty"`
+	PolicyVersionAtBirth     *int64         `db:"policy_version_at_birth"     gorm:"column:policy_version_at_birth"     json:"policy_version_at_birth,omitempty"`
+	EffectiveHardTimeoutSecs *int           `db:"effective_hard_timeout_secs" gorm:"column:effective_hard_timeout_secs" json:"effective_hard_timeout_secs,omitempty"`
+	OverrideReason           *string        `db:"override_reason"             gorm:"column:override_reason"             json:"override_reason,omitempty"`
+	OverrideBy               *string        `db:"override_by"                 gorm:"column:override_by"                 json:"override_by,omitempty"`
+	OverrideAt               *time.Time     `db:"override_at"                 gorm:"column:override_at"                 json:"override_at,omitempty"`
+}
+
+// IsLegacy 旧账户（未参与轮换），保持原写入语义。
+// 等价判定：LogicalAccountID=NULL 或 LifecyclePhase=0。
+func (a *Account) IsLegacy() bool {
+	return a.LifecyclePhase == LifecyclePhaseLegacy || a.LogicalAccountID == nil
+}
+
+// IsRotating 参与轮换的 instance。
+func (a *Account) IsRotating() bool {
+	return a.LogicalAccountID != nil && a.LifecyclePhase != LifecyclePhaseLegacy
+}
+
+// AcceptsNewAnchoring 写守卫：本账户是否允许接收新交易首次锚定（§5.2）。
+// Legacy 走旧 API（不通过 anchor），所以 false。
+func (a *Account) AcceptsNewAnchoring() bool {
+	if a.IsLegacy() {
+		return false
+	}
+	return a.LifecyclePhase.AcceptsNewAnchoring()
+}
+
+// AcceptsFollowupPosting 写守卫：本账户是否允许接收既有锚点的后续分录。
+// 注意 frozen 上的 TCC Cancel 例外不在此函数判定，由 router 单独走 §5.6 路径。
+func (a *Account) AcceptsFollowupPosting() bool {
+	if a.IsLegacy() {
+		return false
+	}
+	return a.LifecyclePhase.AcceptsFollowupPosting()
 }
 
 // BusinessType 业务类型
