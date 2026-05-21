@@ -119,25 +119,10 @@ services:
     ports:
       - "19092:9092"
 
-  # ─── id-generator（Leaf 号段）─────────────────────────────────────────
-  id-generator:
-    build:
-      context: ../../../id-generator
-      dockerfile: Dockerfile
-      additional_contexts:
-        payment-util: ../../../payment-util
-      secrets:
-        - GITHUB_TOKEN
-    image: id-generator:latest
-    container_name: loadtest-id-generator
-    depends_on:
-      mysql-meta:
-        condition: service_healthy
-    environment:
-      IDGEN_DB_DSN: "root:password@tcp(mysql-meta:3306)/account_meta?charset=utf8mb4&parseTime=True"
-      IDGEN_REGISTRY_ENDPOINTS: "etcd:2379"
-    ports:
-      - "19500:9500"
+  # id-generator 服务：从压测栈里去掉。
+  # accounting-system 用的是 internal/idgen 包（DB-backed Leaf 号段），不依赖外部 service；
+  # split-payment 也没引用它。保留只会带来 build 错（id-generator 包目前有 stale import：
+  # cmd/server/main.go 引 idgen/v1/idgenservice，但磁盘上只有 idgen/v1/idservice）。
 
   # ─── accounting-system（含 rotation 特性）───────────────────────────
   accounting-system:
@@ -160,8 +145,6 @@ services:
         condition: service_started
       redis:
         condition: service_started
-      id-generator:
-        condition: service_started
     environment:
       ACCOUNTING_LOG_DEV: "false"
       ACCOUNTING_REGISTRY_ENDPOINTS: "etcd:2379"
@@ -169,7 +152,7 @@ services:
       ACCOUNTING_DB_SHARD_PREFIX: "root:password@tcp(mysql-{shard}:3306)/accounting_db_{shard}?charset=utf8mb4&parseTime=True&loc=UTC"
       ACCOUNTING_REDIS_ADDR: "redis:6379"
       ACCOUNTING_KAFKA_BROKERS: "kafka:9092"
-      ACCOUNTING_IDGEN_ENDPOINT: "id-generator:9500"
+      # accounting-system 用内部 idgen 包，不需要外部 id-generator endpoint
       # rotation 特性开关
       ACCOUNTING_ROTATION_ENABLED: "true"
       ACCOUNTING_ROTATION_SCHEDULER_TICK: "10s"
@@ -193,13 +176,11 @@ services:
     depends_on:
       accounting-system:
         condition: service_started
-      id-generator:
-        condition: service_started
     environment:
       SPLIT_PAYMENT_LOG_DEV: "false"
       SPLIT_PAYMENT_REGISTRY_ENDPOINTS: "etcd:2379"
       SPLIT_PAYMENT_ACCOUNTING_ENDPOINT: "accounting-system:50051"
-      SPLIT_PAYMENT_IDGEN_ENDPOINT: "id-generator:9500"
+      # split-payment 没显式依赖 id-generator service
     ports:
       - "19098:9098"   # gRPC
       - "19099:9099"   # admin HTTP
