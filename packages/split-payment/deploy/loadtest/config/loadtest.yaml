@@ -19,19 +19,18 @@ target:
   admin_token: ""
 
 load:
-  # ──── Plan A tuning (insufficient balance + accounting overload 的应对) ──────
-  # 把并发先压到 3：之前 10 并发 → Kitex retry storm 把单笔放大到 30s 链路卡死，
-  # 真实 TPS 被 retry 队列吃掉。3 并发让 accounting 有缓冲，先看 happy path。
-  # 拿到 baseline 之后逐步往上加。
-  concurrency: 3
-  duration: 30s             # 调试阶段缩短，跑稳了再拉到 60s+
+  # ──── Plan A tuning ─────────────────────────────────────────────────────
+  # prefund 之后所有 4 个 flow 都能跑（没 insufficient balance 问题）。
+  # 50 并发：之前 DoubleEntryBooking 直打 ~300 TPS，split-payment 5-leg topup 理论
+  # 上限 60 TPS × 5 = 300 leg/sec，跟 baseline 对得上。50 并发给 split-payment
+  # 翻译开销 + Kitex 序列化留余地。
+  # 如果 connection-closed-by-peer 还在 → accounting 连接池 / retry 配置需要调；
+  # 如果干干净净 → 50 → 100 → 200 往上推找拐点。
+  concurrency: 50
+  duration: 60s
   rate_limit_qps: 0         # 0 = 不限速；>0 = 全局令牌桶
-  warmup: 3s
-  # 先单跑 topup —— 它的 first leg 是 channel_receivable (Asset)，理论上不需要
-  # 预先充值就能走通；payment/transfer/withdraw 出账方都是 user wallet (Liability,
-  # 初始 0)，没充钱必拒 "insufficient available balance"。
-  # topup 验证通了再切回 mixed 或加充值步骤。
-  mode: "topup"             # topup | payment | transfer | withdraw | mixed | router-only
+  warmup: 5s
+  mode: "mixed"             # topup | payment | transfer | withdraw | mixed | router-only
   mix_ratio:                # mixed 模式下的权重；和不必为 100
     topup: 30
     payment: 40
