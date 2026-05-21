@@ -151,10 +151,23 @@ if [[ ${SP_OK} -ne 1 ]]; then
 fi
 
 # ─── Bootstrap LA + rotation policy ──────────────────────────────────────
-echo ">>> 预注册 logical_accounts + rotation policy ..."
-ACCOUNTING_ADMIN="http://localhost:8888" \
-  bash "${DIR}/scripts/bootstrap-logical-accounts.sh" || {
-  echo "WARN: bootstrap 失败（可能已经注册过，继续）"
+# 通过 split-payment 容器的网络命名空间打 accounting-service:8888（内网，绕过
+# host 的 port range 偏移 / unhealthy false alarm）。-e 把 admin endpoint 注入
+# bootstrap 脚本要读的环境变量。
+echo ">>> 预注册 logical_accounts + rotation policy（容器内网走 accounting-service:8888）..."
+docker compose exec -T \
+  -e ACCOUNTING_ADMIN="http://accounting-service:8888" \
+  -e SPLIT_PAYMENT_ADMIN="http://split-payment:9099" \
+  split-payment bash -c '
+    apk add --no-cache curl bash >/dev/null 2>&1 || true
+    # 用 split-payment 容器跑 bootstrap：它有 curl，也在 payment-stack 网络里
+    cat > /tmp/bootstrap.sh <<'\''EOF'\''
+'"$(cat "${DIR}/scripts/bootstrap-logical-accounts.sh")"'
+EOF
+    bash /tmp/bootstrap.sh
+  ' || {
+  echo "WARN: bootstrap 失败 — accounting-service 内网仍不可达，或 LA 已注册"
+  echo "      手动确认：docker compose -f ${ACCOUNTING_DIR}/docker-compose.yml -f ${DIR}/compose.accounting-override.yml ps"
 }
 
 # ─── Chaos 注入（可选）─────────────────────────────────────────────────

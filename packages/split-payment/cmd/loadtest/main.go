@@ -342,6 +342,12 @@ func (w *worker) dispatch(ctx context.Context, flow flowKind) error {
 	event := map[string]any{
 		"flow_id":      flowID,
 		"requested_at": time.Now().UTC().Format(time.RFC3339Nano),
+		// 关键：split-payment 的 translator.TriggerContext 读顶层 amount_minor / currency
+		// 来跑 guard（amount_min 等）+ 给 leg 分账。少了这俩，graph 在 translate 阶段
+		// 就被 amount_min guard 全拒（"金额必须 > 0"），loadtest 看到 100% errs，
+		// accounting RPC 根本没被调用，mysql 也就没 booking 行。
+		"amount_minor": amount,
+		"currency":     cur,
 	}
 
 	// 每个 graph 的字段集
