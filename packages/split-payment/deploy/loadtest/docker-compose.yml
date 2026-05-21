@@ -112,6 +112,10 @@ services:
       - ./config/loadtest.yaml:/loadtest/config.yaml:ro
       - ./scripts:/loadtest/scripts:ro
       - ./output:/output
+      # router-only 模式 + 启动期 preload：loadtest 直接从盘上读 graph json
+      # 进内存，跳过 spClient.GetGraph RPC（避免依赖 split-payment 已 seed 完
+      # + 避免启动期 RPC race 引起的 sometimes-empty 响应）。
+      - ./graphs:/loadtest/graphs:ro
     # 默认参数 = 跑 60s mixed（CI 友好）；
     # 交互式：docker compose run --rm loadtest --mode=topup --duration=30s
     command: ["--config=/loadtest/config.yaml"]

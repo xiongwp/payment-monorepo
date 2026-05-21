@@ -43,6 +43,92 @@ import (
 
 var buildVersion = "dev"
 
+// graphCache: router-only 模式下不走 TriggerEvent（要 accounting 配齐账户），改走
+// DryRun（split-payment 内部只翻译 + 校验，不落账）。但 DryRun 是 stateless 的 ——
+// 每次 RPC 都要把整个 Graph spec 一起塞进去（不是按 key 查 server-side）。
+// 所以启动期一次性把所有 graph json 从盘上读进内存，dispatch 直接从 map 里拿。
+//
+// 为什么读盘而非 spClient.GetGraph：
+//   1. 不依赖 split-payment 已 seed 完成（避免启动 race）
+//   2. 不依赖 split-payment 服务可用（启动期失败可立即定位是配置问题）
+//   3. 同一份 json 文件 split-payment 的 seed 也是读它（MONEYFLOW_SEED_DIR），
+//      天然保证 loadtest 看到的 graph spec 跟 split-payment 处理的一致
+//
+// 注意：graphCache 只在 main 启动期写一次，之后只读 → goroutine 安全。
+var graphCache map[string]*spadmin.Graph
+
+// loadGraphsFromDir 从 dir/*.json 读所有 graph，按 key 索引。
+//
+// graph json 的顶层结构（见 deploy/loadtest/graphs/topup.json）：
+//   { "key": "user-topup-v1", "name": "...", "version": "...", "status": "active", "spec": { ... } }
+//
+// spadmin.Graph 的 SpecJson 是 spec 子对象的 JSON 字面量（不是整个文件）—— 同 GetGraph
+// 返回的格式。这里读完整 json，把 spec 提出来重新 marshal 成 SpecJson。
+func loadGraphsFromDir(dir string, keys map[string]string) error {
+	graphCache = make(map[string]*spadmin.Graph, len(keys))
+
+	// 把配置里的 key 集合反向成 set，方便文件 → key 匹配
+	wantKeys := make(map[string]bool, len(keys))
+	for _, gk := range keys {
+		if gk != "" {
+			wantKeys[gk] = true
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("readdir %s: %w", dir, err)
+	}
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		path := dir + "/" + e.Name()
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+
+		// 顶层 envelope：{ key, name, version, status, spec }
+		var envelope struct {
+			Key     string          `json:"key"`
+			Name    string          `json:"name"`
+			Version string          `json:"version"`
+			Status  string          `json:"status"`
+			Spec    json.RawMessage `json:"spec"`
+		}
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		if envelope.Key == "" {
+			fmt.Printf("  WARN: %s 没有 key 字段，跳过\n", path)
+			continue
+		}
+		if !wantKeys[envelope.Key] {
+			// 文件存在但 config 没引用，跳过（不算错）
+			continue
+		}
+
+		graphCache[envelope.Key] = &spadmin.Graph{
+			Key:      envelope.Key,
+			Name:     envelope.Name,
+			Version:  envelope.Version,
+			Status:   envelope.Status,
+			SpecJson: []byte(envelope.Spec), // RawMessage 直接转 []byte
+		}
+		fmt.Printf("  cached graph %s ← %s (spec=%d bytes)\n", envelope.Key, path, len(envelope.Spec))
+	}
+
+	// 校验配置里要的 key 都拿到了
+	for _, gk := range keys {
+		if gk != "" && graphCache[gk] == nil {
+			return fmt.Errorf("graph %q referenced in config.flow.graph_keys but not found in %s", gk, dir)
+		}
+	}
+	return nil
+}
+
 // ─── 配置 ─────────────────────────────────────────────────────────────────
 
 type targetConfig struct {
@@ -304,7 +390,10 @@ func (w *worker) pickFlow() flowKind {
 	case "mixed":
 		return w.picker.pick(w.rng)
 	case "router-only":
-		return flowKind("router-only")
+		// router-only 模式下 dispatch 走 DryRun（不打 accounting），但 graph 翻译
+		// 还要正常的 event payload —— 所以仍按 mix_ratio 选一个真实资金流，event
+		// 字段全填，只是最后调用 DryRun 而不是 TriggerEvent。
+		return w.picker.pick(w.rng)
 	case string(flowTopup), string(flowPayment), string(flowTransfer), string(flowWithdraw):
 		return flowKind(w.cfg.Load.Mode)
 	default:
@@ -401,6 +490,29 @@ func (w *worker) dispatch(ctx context.Context, flow flowKind) error {
 		return fmt.Errorf("marshal event: %w", err)
 	}
 
+	// router-only 模式：跳过 accounting（避免账户预创建依赖），只压 split-payment
+	// 自身的 translator + router。DryRun 是 stateless 的，需要把 graph 一起塞进去。
+	if w.cfg.Load.Mode == "router-only" {
+		g := graphCache[graphKey]
+		if g == nil {
+			return fmt.Errorf("router-only: graph %q not cached (server didn't seed it?)", graphKey)
+		}
+		dr, err := w.spClient.DryRun(ctx, &spadmin.DryRunRequest{
+			Graph:     g,
+			EventJson: payload,
+		})
+		if err != nil {
+			return fmt.Errorf("dryrun: %w", err)
+		}
+		if dr == nil {
+			return fmt.Errorf("dryrun: nil response")
+		}
+		if dr.Error != "" {
+			return fmt.Errorf("dryrun business: %s", dr.Error)
+		}
+		return nil
+	}
+
 	req := &spadmin.TriggerEventRequest{
 		GraphKey:  graphKey,
 		EventJson: payload,
@@ -463,6 +575,22 @@ func main() {
 	if err != nil {
 		fatal("create split-payment client: %v", err)
 	}
+
+	// 启动期无条件把所有 graph 从盘上读进内存，常驻 graphCache。
+	// 用途：
+	//   - router-only：dispatch 时塞进 DryRun（stateless 翻译）
+	//   - via-split-payment / 单 flow：可做客户端预校验（避免发空 event）+ 排错信息
+	//   - 失败 fast-fail：graph 文件缺失/格式错在启动期就报，不到压测中才发现
+	// 跟 spClient.GetGraph 比的好处：不依赖 split-payment seed 完成，不引入 RPC race。
+	graphDir := os.Getenv("LOADTEST_GRAPH_DIR")
+	if graphDir == "" {
+		graphDir = "/loadtest/graphs" // 容器内默认 mount 点（compose 配的）
+	}
+	fmt.Printf("pre-loading graphs from %s ...\n", graphDir)
+	if err := loadGraphsFromDir(graphDir, cfg.Flow.GraphKeys); err != nil {
+		fatal("loadGraphsFromDir: %v", err)
+	}
+	fmt.Printf("graphCache: %d graphs ready in memory\n", len(graphCache))
 
 	picker := newWeightedPicker(cfg.Load.MixRatio)
 
