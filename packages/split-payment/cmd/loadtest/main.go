@@ -491,7 +491,12 @@ func (w *worker) dispatch(ctx context.Context, flow flowKind) error {
 	//   booking router → flow_anchor_route → tx_account_anchor → DoubleEntryBooking
 	cur := w.cfg.Flow.Currency
 	amtStr := fmt.Sprintf("%d", amount)
+	// 保证 peerUserID != userID，避免 transfer flow 同账户互转报
+	// "leg[0] from == to: self-transfer not allowed"
 	peerUserID := int64(w.rng.Intn(maxOr(w.cfg.Flow.UserCount, 1)))
+	if peerUserID == userID {
+		peerUserID = (peerUserID + 1) % int64(maxOr(w.cfg.Flow.UserCount, 1))
+	}
 
 	// split-payment workflow.BusinessEvent / TriggerContext 期望的 JSON 结构：
 	//   {
