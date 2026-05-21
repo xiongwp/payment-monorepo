@@ -179,14 +179,17 @@ services:
       - "19094:9092"   # admin HTTP（host 19094 → 容器 9092；避开 kafka 的 19092）
 
   # ─── split-payment（业务编排层）───────────────────────────────────────
+  # NOTE: additional_contexts 的相对路径是从 **compose 文件所在目录**算
+  # （= packages/split-payment/deploy/loadtest/），不是从上面的 context 算。
+  # 所以指向兄弟仓需要 ../../../X 跳到 packages/ 下。
   split-payment:
     build:
       context: ../../
       dockerfile: Dockerfile
       additional_contexts:
-        payment-util:        ../payment-util
-        accounting-grpc-api: ../accounting-grpc-api
-        accounting-system:   ../accounting-system
+        payment-util:        ../../../payment-util
+        accounting-grpc-api: ../../../accounting-grpc-api
+        accounting-system:   ../../../accounting-system
       secrets:
         - GITHUB_TOKEN
     image: split-payment:rotation-loadtest
@@ -207,14 +210,16 @@ services:
 
   # ─── loadtest 客户端 ────────────────────────────────────────────────
   # 复用 split-payment 的 go.mod，binary 源码 = packages/split-payment/cmd/loadtest/main.go
+  # NOTE: additional_contexts 路径是从 **compose 文件所在目录**（loadtest/）算的，
+  # 所以指向 packages/X 需要 ../../../X，不是 ../X。
   loadtest:
     build:
-      context: ../../                                  # = packages/split-payment 根
+      context: ../../                                       # = packages/split-payment 根
       dockerfile: deploy/loadtest/Dockerfile.loadtest
       additional_contexts:
-        payment-util:        ../payment-util           # 解析为 packages/payment-util
-        accounting-system:   ../accounting-system      # 解析为 packages/accounting-system
-        accounting-grpc-api: ../accounting-grpc-api    # 解析为 packages/accounting-grpc-api
+        payment-util:        ../../../payment-util          # = packages/payment-util
+        accounting-system:   ../../../accounting-system     # = packages/accounting-system
+        accounting-grpc-api: ../../../accounting-grpc-api   # = packages/accounting-grpc-api
       secrets:
         - GITHUB_TOKEN
     image: rotation-loadtest:latest
