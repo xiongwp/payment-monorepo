@@ -74,9 +74,12 @@ type PlatformAccounts struct {
 
 // ─── Owner ID 分配 ────────────────────────────────────────────────────────
 //
-// 系统内部账户 owner_id ∈ [1, ReservedOwnerIDMax=10000]，业务账户必须 > 10000。
-// 为了同一通道下 4 个子账户在不同 (owner_id, biz_type, currency) 槽位里都唯一，
-// 给每个子账户类型留 1000 段 owner_id。
+// accounting 的 owner_id 严格分段（accounting_service.go:2464）：
+//   [1, 10_000]                       系统内部账户 (平台 / 中转 / 手续费), HTTP /admin/platform-accounts
+//   [100_000_000, 899_999_999]        普通用户账户 (base 1e8),               gRPC CreateAccount
+//   [900_000_000, ...]                商户账户 (base 9e8),                   gRPC CreateAccount
+//
+// channel 子账户都在保留段里；4 类用 1000 步长间隔避免 (owner_id, biz_type) 撞键。
 const (
 	channelRecvBase     = 1     // recv:     reserved_id 1..numChannels
 	channelSuspenseBase = 1000  // suspense: 1001..1000+numChannels
@@ -84,8 +87,8 @@ const (
 	channelPayableBase  = 3000  // payable:  3001..3000+numChannels
 	platformBase        = 9000  // 平台账户 9001/9002/9003
 
-	userOwnerBase     = 20000 // user:     20001..20000+numUsers
-	merchantOwnerBase = 30000 // merchant: 30001..30000+numMerchants
+	userOwnerBase     = 100_000_000 // user:     100_000_001..100_000_000+numUsers
+	merchantOwnerBase = 900_000_000 // merchant: 900_000_001..900_000_000+numMerchants
 )
 
 // ─── flags ────────────────────────────────────────────────────────────────
