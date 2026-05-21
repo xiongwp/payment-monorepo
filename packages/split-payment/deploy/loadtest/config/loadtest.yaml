@@ -19,15 +19,19 @@ target:
   admin_token: ""
 
 load:
-  concurrency: 10           # 并发 goroutine 数
-  duration: 60s             # 压测持续时间
+  # ──── Plan A tuning (insufficient balance + accounting overload 的应对) ──────
+  # 把并发先压到 3：之前 10 并发 → Kitex retry storm 把单笔放大到 30s 链路卡死，
+  # 真实 TPS 被 retry 队列吃掉。3 并发让 accounting 有缓冲，先看 happy path。
+  # 拿到 baseline 之后逐步往上加。
+  concurrency: 3
+  duration: 30s             # 调试阶段缩短，跑稳了再拉到 60s+
   rate_limit_qps: 0         # 0 = 不限速；>0 = 全局令牌桶
-  warmup: 5s                # 预热（不计入统计）
-  # Plan A：真实端到端 booking。loadtest-bootstrap 预创建 ~700 个账户写到
-  # account_pool.json，loadtest dispatch 用真实 account_no 填 attrs，TriggerEvent
-  # 走完整 split-payment → accounting → mysql 链路。
-  # Plan B baseline 是 router-only / DryRun 模式（不查 accounting，31k TPS）。
-  mode: "mixed"             # topup | payment | transfer | withdraw | mixed | router-only
+  warmup: 3s
+  # 先单跑 topup —— 它的 first leg 是 channel_receivable (Asset)，理论上不需要
+  # 预先充值就能走通；payment/transfer/withdraw 出账方都是 user wallet (Liability,
+  # 初始 0)，没充钱必拒 "insufficient available balance"。
+  # topup 验证通了再切回 mixed 或加充值步骤。
+  mode: "topup"             # topup | payment | transfer | withdraw | mixed | router-only
   mix_ratio:                # mixed 模式下的权重；和不必为 100
     topup: 30
     payment: 40
@@ -66,7 +70,7 @@ chaos:
 report:
   output_path: "/output/loadtest-report.json"
   # 直方图分桶（毫秒），用于 latency p50/p90/p95/p99
-  latency_buckets_ms: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]
+  latency_buckets_ms: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000]
   # 输出到控制台的进度间隔
   progress_interval: 5s
   # 配置后向 prom pushgateway 推 — 实测可去掉
