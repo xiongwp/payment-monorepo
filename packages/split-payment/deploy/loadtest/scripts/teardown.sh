@@ -32,7 +32,10 @@ docker compose down "${DOWN_ARGS[@]}"
 
 if [[ "${ALL}" -eq 1 ]]; then
   echo ">>> 停 accounting-system 栈"
-  ( cd "${ACCOUNTING_DIR}" && docker compose down "${DOWN_ARGS[@]}" )
+  export LOADTEST_DIR="${DIR}"
+  ( cd "${ACCOUNTING_DIR}" && \
+    docker compose -f docker-compose.yml -f "${DIR}/compose.accounting-override.yml" \
+      down "${DOWN_ARGS[@]}" )
 fi
 
 echo ">>> 清理完毕"

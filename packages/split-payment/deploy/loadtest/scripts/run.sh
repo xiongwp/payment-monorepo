@@ -68,8 +68,14 @@ else
     exit 1
   fi
   echo ">>> Step 1/2: 起 accounting-system 栈（10 mysql + redis + kafka + accounting-service）"
-  echo "    cd ${ACCOUNTING_DIR}"
-  ( cd "${ACCOUNTING_DIR}" && docker compose up -d --build )
+  echo "    用 loadtest overlay 把 Redis Sentinel 模式覆盖成 single 模式"
+  # LOADTEST_DIR 给 overlay yaml 用绝对路径解析 volume mount
+  export LOADTEST_DIR="${DIR}"
+  ( cd "${ACCOUNTING_DIR}" && \
+    docker compose \
+      -f docker-compose.yml \
+      -f "${DIR}/compose.accounting-override.yml" \
+      up -d --build )
 
   echo ">>> 等 accounting-service 健康（最多 5 分钟，首次建 100 张分表很慢）..."
   for i in $(seq 1 300); do
@@ -114,11 +120,15 @@ if [[ -n "${CHAOS}" ]]; then
   case "${CHAOS}" in
     restart-accounting)
       echo ">>> CHAOS: 60s 后重启 accounting-service"
-      ( sleep 60 && cd "${ACCOUNTING_DIR}" && docker compose restart accounting-service ) &
+      ( sleep 60 && cd "${ACCOUNTING_DIR}" && \
+        docker compose -f docker-compose.yml -f "${DIR}/compose.accounting-override.yml" restart accounting-service ) &
       ;;
     mysql-restart)
       echo ">>> CHAOS: 60s 后 30s 断 mysql-0"
-      ( sleep 60 && cd "${ACCOUNTING_DIR}" && docker compose stop mysql-0 && sleep 30 && cd "${ACCOUNTING_DIR}" && docker compose start mysql-0 ) &
+      ( sleep 60 && cd "${ACCOUNTING_DIR}" && \
+        docker compose -f docker-compose.yml -f "${DIR}/compose.accounting-override.yml" stop mysql-0 && \
+        sleep 30 && cd "${ACCOUNTING_DIR}" && \
+        docker compose -f docker-compose.yml -f "${DIR}/compose.accounting-override.yml" start mysql-0 ) &
       ;;
     *)
       echo "WARN: 未知 chaos 模式 '${CHAOS}'，忽略"

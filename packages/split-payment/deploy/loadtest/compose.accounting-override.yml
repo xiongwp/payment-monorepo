@@ -1,0 +1,28 @@
+# ============================================================================
+# accounting-system docker-compose.yml 的 loadtest 覆盖
+#
+# 用途：把 accounting-service / accounting-batchtask 默认 mount 的
+#   ./config/config.docker.yaml （Redis Sentinel 3 节点模式）
+# 改成本 loadtest 目录下的 single-redis 版本。这样不修改 accounting-system 仓库
+# 自己的代码，loadtest 就能独立跑通。
+#
+# 触发方式：scripts/run.sh 用 `docker compose -f f1 -f f2` 链式叠加。
+#
+# 关键：必须用 ${LOADTEST_DIR} 绝对路径，因为多 -f 文件 compose 解析 volume
+# 相对路径会跟着第一个 -f 文件的 project_directory（= accounting-system/）。
+# ============================================================================
+
+services:
+  accounting-service:
+    volumes:
+      # 用 !override 把第一个 compose 文件里同 service 的 volumes 整段替换掉，
+      # 否则相对路径 ./config/config.docker.yaml 还会按 project_directory 解析出错。
+      - !override
+        - "${LOADTEST_DIR}/config/accounting-config.loadtest.yaml:/app/config/config.yaml:ro"
+        - app-logs:/app/logs
+
+  accounting-batchtask:
+    volumes:
+      - !override
+        - "${LOADTEST_DIR}/config/accounting-config.loadtest.yaml:/app/config/config.yaml:ro"
+        - app-logs:/app/logs
