@@ -14,44 +14,47 @@ import (
 // Fakes — 注入式依赖，不需要真实 DB
 // ============================================================================
 
-type fakeAccountReader struct {
+// fakeAccountReaderForPhase 注意：这与 router_test.go 中的 fakeAccountReaderForPhase 区别
+// 在于额外的 CountActiveByLogical 方法（state machine 守卫 I1 需要）。
+type fakeAccountReaderForPhase struct {
 	activeCountByLogical map[int64]int
 	accountsByNo         map[string]*model.Account
 	errOnCount           error
 }
 
-func (f *fakeAccountReader) CountActiveByLogical(_ context.Context, la int64) (int, error) {
+func (f *fakeAccountReaderForPhase) CountActiveByLogical(_ context.Context, la int64) (int, error) {
 	if f.errOnCount != nil {
 		return 0, f.errOnCount
 	}
 	return f.activeCountByLogical[la], nil
 }
 
-func (f *fakeAccountReader) GetByAccountNo(_ context.Context, no string) (*model.Account, error) {
+func (f *fakeAccountReaderForPhase) GetByAccountNo(_ context.Context, no string) (*model.Account, error) {
 	return f.accountsByNo[no], nil
 }
 
-type fakeAnchorReader struct {
-	openByShard  map[int]int64
-	stuckByShard map[int]int64
-	errOnCount   error
+// fakeAnchorReaderForPhaseStub 方向 B 下单片查询，不再有 gtbl 参数。
+type fakeAnchorReaderForPhaseStub struct {
+	openByAccount  map[string]int64
+	stuckByAccount map[string]int64
+	errOnCount     error
 }
 
-func (f *fakeAnchorReader) CountOpenByAccountNo(_ context.Context, _ string, gtbl int) (int64, error) {
+func (f *fakeAnchorReaderForPhaseStub) CountOpenByAccountNo(_ context.Context, accountNo string) (int64, error) {
 	if f.errOnCount != nil {
 		return 0, f.errOnCount
 	}
-	return f.openByShard[gtbl], nil
+	return f.openByAccount[accountNo], nil
 }
 
-func (f *fakeAnchorReader) CountStuckByAccountNo(_ context.Context, _ string, gtbl int) (int64, error) {
+func (f *fakeAnchorReaderForPhaseStub) CountStuckByAccountNo(_ context.Context, accountNo string) (int64, error) {
 	if f.errOnCount != nil {
 		return 0, f.errOnCount
 	}
-	return f.stuckByShard[gtbl], nil
+	return f.stuckByAccount[accountNo], nil
 }
 
-func (f *fakeAnchorReader) OldestOpenAnchoredAt(_ context.Context, _ string, _ int) (*time.Time, error) {
+func (f *fakeAnchorReaderForPhaseStub) OldestOpenAnchoredAt(_ context.Context, _ string) (*time.Time, error) {
 	return nil, nil
 }
 
@@ -67,24 +70,20 @@ func (f *fakePolicyReader) GetPolicy(_ context.Context, _ int64) (*model.Logical
 	return f.policy, nil
 }
 
-type fakeAnchorShards struct{ ids []int }
-
-func (f *fakeAnchorShards) AllAnchorShards() []int { return f.ids }
-
 // 工厂：返回一个能跑大部分测试的 fixture
 func newFixture(now time.Time) (
 	*InstanceStateMachine,
-	*fakeAccountReader,
-	*fakeAnchorReader,
+	*fakeAccountReaderForPhase,
+	*fakeAnchorReaderForPhaseStub,
 	*fakePolicyReader,
 ) {
-	ar := &fakeAccountReader{
+	ar := &fakeAccountReaderForPhase{
 		activeCountByLogical: map[int64]int{},
 		accountsByNo:         map[string]*model.Account{},
 	}
-	anr := &fakeAnchorReader{
-		openByShard:  map[int]int64{},
-		stuckByShard: map[int]int64{},
+	anr := &fakeAnchorReaderForPhaseStub{
+		openByAccount:  map[string]int64{},
+		stuckByAccount: map[string]int64{},
 	}
 	pr := &fakePolicyReader{
 		policy: &model.LogicalAccountRotationPolicy{
@@ -98,8 +97,7 @@ func newFixture(now time.Time) (
 			ProvisionLeadSecs:    86400,
 		},
 	}
-	shards := &fakeAnchorShards{ids: []int{0, 1, 2, 50, 99}}
-	sm := NewInstanceStateMachine(ar, anr, pr, shards, func() time.Time { return now })
+	sm := NewInstanceStateMachine(ar, anr, pr, func() time.Time { return now })
 	return sm, ar, anr, pr
 }
 
@@ -306,7 +304,7 @@ func TestGuardEnterFrozen_BlockedByYoungDrain(t *testing.T) {
 func TestGuardEnterFrozen_BlockedByOpenAnchor(t *testing.T) {
 	now := time.Now()
 	sm, _, anr, _ := newFixture(now)
-	anr.openByShard[1] = 1 // 一个 shard 还有 1 笔 open
+	anr.openByAccount["A001"] = 1 // 一个 shard 还有 1 笔 open
 	acc := mkDrainingAccount(now, 8, 0)
 	r, _ := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
 	if r.Allowed {
@@ -320,7 +318,7 @@ func TestGuardEnterFrozen_BlockedByOpenAnchor(t *testing.T) {
 func TestGuardEnterFrozen_BlockedByStuckAnchor(t *testing.T) {
 	now := time.Now()
 	sm, _, anr, _ := newFixture(now)
-	anr.stuckByShard[50] = 1
+	anr.stuckByAccount["A001"] = 1
 	acc := mkDrainingAccount(now, 8, 0)
 	r, _ := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
 	if r.Allowed {
@@ -548,17 +546,15 @@ var _ = fmt.Sprint
 // nil clock 必须 fallback 到 time.Now
 func TestNewInstanceStateMachine_NilClockFallsBack(t *testing.T) {
 	sm := NewInstanceStateMachine(
-		&fakeAccountReader{},
-		&fakeAnchorReader{},
+		&fakeAccountReaderForPhase{},
+		&fakeAnchorReaderForPhaseStub{},
 		&fakePolicyReader{},
-		&fakeAnchorShards{},
-		nil, // 不能 panic
+		nil, // clock=nil → fallback
 	)
 	now := sm.clock()
 	if now.IsZero() {
 		t.Fatal("nil clock fallback should return real time, got zero")
 	}
-	// 应该在合理范围内（最近 10 秒）
 	if time.Since(now) > 10*time.Second || time.Since(now) < 0 {
 		t.Errorf("clock fallback returned suspicious time: %v", now)
 	}
@@ -614,59 +610,17 @@ func TestGuardEnterFrozen_BalanceBoundaries(t *testing.T) {
 	}
 }
 
-// guardEnterFrozen: 部分 shard IO 失败必须传播错误（不能用"部分数据"判定收敛）
-func TestGuardEnterFrozen_PartialShardFailurePropagates(t *testing.T) {
+// guardEnterFrozen: anchor read IO 错误必须传播（不能用"无数据"默认通过）
+// 【方向 B】单分片查询，错误传播简单：直接 stub 返回错误即可
+func TestGuardEnterFrozen_AnchorReadErrorPropagates(t *testing.T) {
 	now := time.Now()
-
-	failingAnchor := &flakyAnchorReader{
-		// shard 50 失败，其余成功
-		failOnShard: 50,
-	}
-	sm := NewInstanceStateMachine(
-		&fakeAccountReader{},
-		failingAnchor,
-		&fakePolicyReader{
-			policy: &model.LogicalAccountRotationPolicy{
-				LogicalAccountID:     42,
-				DrainP99Seconds:      1,
-				DrainHardTimeoutSecs: 100,
-				ArchiveGraceSecs:     0,
-				PeriodUnit:           model.PeriodUnitMonth,
-				PeriodCount:          1,
-				RotationAnchorTZ:     "UTC",
-			},
-		},
-		&fakeAnchorShards{ids: []int{0, 1, 50, 99}},
-		func() time.Time { return now },
-	)
+	sm, _, anr, _ := newFixture(now)
+	anr.errOnCount = errors.New("anchor read timeout")
 	acc := mkDrainingAccount(now, 100, 0)
 	_, err := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
 	if err == nil {
-		t.Fatal("partial shard failure must propagate; absence implies dangerous default")
+		t.Fatal("anchor read failure must propagate; absence implies dangerous default")
 	}
-}
-
-// flakyAnchorReader 实现 AnchorReaderForPhase：在指定 shard 报错。
-type flakyAnchorReader struct {
-	failOnShard int
-}
-
-func (f *flakyAnchorReader) CountOpenByAccountNo(_ context.Context, _ string, gtbl int) (int64, error) {
-	if gtbl == f.failOnShard {
-		return 0, errors.New("shard read timeout")
-	}
-	return 0, nil
-}
-
-func (f *flakyAnchorReader) CountStuckByAccountNo(_ context.Context, _ string, gtbl int) (int64, error) {
-	if gtbl == f.failOnShard {
-		return 0, errors.New("shard read timeout")
-	}
-	return 0, nil
-}
-
-func (f *flakyAnchorReader) OldestOpenAnchoredAt(_ context.Context, _ string, _ int) (*time.Time, error) {
-	return nil, nil
 }
 
 // guardEnterActive: PeriodStart 精确等于 now → 允许（不超前即允）
@@ -736,33 +690,8 @@ func TestGuardEnterArchived_GracePrecision(t *testing.T) {
 	}
 }
 
-// 没有 anchor shard 配置（空切片）—— sumAnchorCounters 返回 0,0
-// 验证 frozen 允许（其他条件满足时）。这是 ops 在极端情况下手动配置的可能。
-func TestGuardEnterFrozen_EmptyShardList(t *testing.T) {
-	now := time.Now()
-	emptyShards := &fakeAnchorShards{ids: []int{}}
-	sm := NewInstanceStateMachine(
-		&fakeAccountReader{},
-		&fakeAnchorReader{},
-		&fakePolicyReader{
-			policy: &model.LogicalAccountRotationPolicy{
-				LogicalAccountID: 42, DrainP99Seconds: 1, DrainHardTimeoutSecs: 1,
-				ArchiveGraceSecs: 0, PeriodUnit: model.PeriodUnitDay, PeriodCount: 1,
-				RotationAnchorTZ: "UTC",
-			},
-		},
-		emptyShards,
-		func() time.Time { return now },
-	)
-	acc := mkDrainingAccount(now, 100, 0)
-	r, err := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if !r.Allowed {
-		t.Errorf("empty shard list should allow (vacuously zero anchors), got %q", r.Reason)
-	}
-}
+// 方向 B 下不再有 EmptyShardList 概念（anchor 单片查询）—— 测试删除
+// 等效测试由 TestGuardEnterFrozen_HappyPath / PerfectHappyPath 覆盖
 
 // CheckTransition 自环（from==to）必须拒（不允许自反转换，与 model 层一致）
 func TestCheckTransition_SelfLoopRejected(t *testing.T) {
@@ -952,8 +881,8 @@ func TestGuardEnterFrozen_PerfectHappyPath(t *testing.T) {
 	acc.Balance = 0
 	// 每个 shard 都 0
 	for _, gtbl := range []int{0, 1, 2, 50, 99} {
-		anr.openByShard[gtbl] = 0
-		anr.stuckByShard[gtbl] = 0
+		anr.openByAccount["A001"] = 0
+		anr.stuckByAccount["A001"] = 0
 	}
 
 	r, err := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
@@ -966,74 +895,35 @@ func TestGuardEnterFrozen_PerfectHappyPath(t *testing.T) {
 }
 
 // ============================================================================
-// 大量 anchor shard：100 个全 0 也要正确求和
+// 方向 B：anchor 与 instance 同分片 —— 单片查询，无 fan-out
 // ============================================================================
 
-func TestGuardEnterFrozen_All100ShardsZero(t *testing.T) {
+// 验证 instance 上有 1 笔 open anchor 时 → 阻断 frozen
+func TestGuardEnterFrozen_AnchorOnTargetInstanceBlocks(t *testing.T) {
 	now := time.Now()
-
-	allShards := make([]int, 100)
-	for i := range allShards {
-		allShards[i] = i
+	sm, _, anr, _ := newFixture(now)
+	anr.openByAccount["A001"] = 1 // 目标 instance 上 1 笔 open
+	acc := mkDrainingAccount(now, 10, 0)
+	r, _ := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
+	if r.Allowed {
+		t.Fatal("1 open anchor on target instance must block")
 	}
-	shards := &fakeAnchorShards{ids: allShards}
+	if !contains(r.Reason, "1 open anchor") {
+		t.Errorf("reason should mention count, got %q", r.Reason)
+	}
+}
 
-	sm := NewInstanceStateMachine(
-		&fakeAccountReader{},
-		&fakeAnchorReader{
-			openByShard:  map[int]int64{}, // all default 0
-			stuckByShard: map[int]int64{},
-		},
-		&fakePolicyReader{
-			policy: &model.LogicalAccountRotationPolicy{
-				LogicalAccountID: 42, DrainP99Seconds: 1, DrainHardTimeoutSecs: 1,
-				ArchiveGraceSecs: 0, PeriodUnit: model.PeriodUnitDay, PeriodCount: 1,
-				RotationAnchorTZ: "UTC",
-			},
-		},
-		shards,
-		func() time.Time { return now },
-	)
+// 验证 instance 上无 anchor → 允许 frozen
+func TestGuardEnterFrozen_NoAnchorOnInstanceAllows(t *testing.T) {
+	now := time.Now()
+	sm, _, _, _ := newFixture(now)
+	// 默认 openByAccount["A001"]=0, stuckByAccount["A001"]=0
 	acc := mkDrainingAccount(now, 10, 0)
 	r, err := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !r.Allowed {
-		t.Errorf("all 100 shards zero should allow; got %q", r.Reason)
-	}
-}
-
-// 一个 shard 有 1 笔 open，其他 99 全 0 —— 必须拒
-func TestGuardEnterFrozen_SingleAnchorAcrossManyShards(t *testing.T) {
-	now := time.Now()
-	allShards := make([]int, 100)
-	for i := range allShards {
-		allShards[i] = i
-	}
-
-	sm := NewInstanceStateMachine(
-		&fakeAccountReader{},
-		&fakeAnchorReader{
-			openByShard:  map[int]int64{42: 1}, // shard 42 has 1 open
-			stuckByShard: map[int]int64{},
-		},
-		&fakePolicyReader{
-			policy: &model.LogicalAccountRotationPolicy{
-				LogicalAccountID: 42, DrainP99Seconds: 1, DrainHardTimeoutSecs: 1,
-				ArchiveGraceSecs: 0, PeriodUnit: model.PeriodUnitDay, PeriodCount: 1,
-				RotationAnchorTZ: "UTC",
-			},
-		},
-		&fakeAnchorShards{ids: allShards},
-		func() time.Time { return now },
-	)
-	acc := mkDrainingAccount(now, 10, 0)
-	r, _ := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
-	if r.Allowed {
-		t.Fatal("1 open anchor anywhere must block")
-	}
-	if !contains(r.Reason, "1 open anchor") {
-		t.Errorf("reason should mention count, got %q", r.Reason)
+		t.Errorf("no anchor on instance should allow; got %q", r.Reason)
 	}
 }

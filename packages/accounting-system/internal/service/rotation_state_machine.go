@@ -37,10 +37,13 @@ type AccountReaderForPhase interface {
 }
 
 // AnchorReaderForPhase 状态机依赖：anchor 计数。
+//
+// 【方向 B 收益】anchor 与 instance 同分片 → 计数只需单片查询，无需 fan-out。
+// 接口签名不再需要 globalTableIndex（repo 内部根据 account_no 自动路由）。
 type AnchorReaderForPhase interface {
-	CountOpenByAccountNo(ctx context.Context, accountNo string, globalTableIndex int) (int64, error)
-	CountStuckByAccountNo(ctx context.Context, accountNo string, globalTableIndex int) (int64, error)
-	OldestOpenAnchoredAt(ctx context.Context, accountNo string, globalTableIndex int) (*time.Time, error)
+	CountOpenByAccountNo(ctx context.Context, accountNo string) (int64, error)
+	CountStuckByAccountNo(ctx context.Context, accountNo string) (int64, error)
+	OldestOpenAnchoredAt(ctx context.Context, accountNo string) (*time.Time, error)
 }
 
 // PolicyReader 取策略（drain_p99, archive_grace 等）。
@@ -48,24 +51,14 @@ type PolicyReader interface {
 	GetPolicy(ctx context.Context, logicalAccountID int64) (*model.LogicalAccountRotationPolicy, error)
 }
 
-// AnchorShardRouter 由 router 提供：给 instance 上属于哪几片 anchor。
-// 这是一个抽象点——instance 上的 anchor 实际分布在多个 anchor shard 上（因为
-// anchor shard 按 flow_id 哈希，与 account_no 无关）。守卫必须扫所有
-// 100 个分片 SUM(open_count) 才能判定 instance 是否真的"无 open anchor"。
-//
-// 为简化测试，这里抽象成"按 instance 列举所有要扫的分片 id"。
-type AnchorShardRouter interface {
-	// AllAnchorShards 返回全部 globalTableIndex 列表（0..99）。
-	AllAnchorShards() []int
-}
-
 // InstanceStateMachine instance phase 转换的业务守卫 + 推进。
+//
+// 【方向 B 简化】anchor 与 instance 同分片 → 无需 AnchorShardRouter fan-out 列举。
 type InstanceStateMachine struct {
-	accounts      AccountReaderForPhase
-	anchors       AnchorReaderForPhase
-	policies      PolicyReader
-	anchorShards  AnchorShardRouter
-	clock         func() time.Time
+	accounts AccountReaderForPhase
+	anchors  AnchorReaderForPhase
+	policies PolicyReader
+	clock    func() time.Time
 }
 
 // NewInstanceStateMachine 构造。clock 可注入；nil 时用 time.Now()。
@@ -73,18 +66,16 @@ func NewInstanceStateMachine(
 	accounts AccountReaderForPhase,
 	anchors AnchorReaderForPhase,
 	policies PolicyReader,
-	anchorShards AnchorShardRouter,
 	clock func() time.Time,
 ) *InstanceStateMachine {
 	if clock == nil {
 		clock = func() time.Time { return time.Now().UTC() }
 	}
 	return &InstanceStateMachine{
-		accounts:     accounts,
-		anchors:      anchors,
-		policies:     policies,
-		anchorShards: anchorShards,
-		clock:        clock,
+		accounts: accounts,
+		anchors:  anchors,
+		policies: policies,
+		clock:    clock,
 	}
 }
 
@@ -239,21 +230,25 @@ func (sm *InstanceStateMachine) guardEnterFrozen(
 		}, nil
 	}
 
-	// 3. anchors: open=0 且 stuck=0（跨所有 anchor 分片）
-	openTotal, stuckTotal, err := sm.sumAnchorCounters(ctx, acc.AccountNo)
+	// 3. anchors: open=0 且 stuck=0（方向 B：单片查询，无需 fan-out）
+	stuckCount, err := sm.anchors.CountStuckByAccountNo(ctx, acc.AccountNo)
 	if err != nil {
-		return PhaseGuardResult{}, err
+		return PhaseGuardResult{}, fmt.Errorf("guardEnterFrozen: count stuck: %w", err)
 	}
-	if stuckTotal > 0 {
+	if stuckCount > 0 {
 		return PhaseGuardResult{
 			Allowed: false,
-			Reason:  fmt.Sprintf("enter frozen blocked: %d stuck anchor(s); must quarantine first", stuckTotal),
+			Reason:  fmt.Sprintf("enter frozen blocked: %d stuck anchor(s); must quarantine first", stuckCount),
 		}, nil
 	}
-	if openTotal > 0 {
+	openCount, err := sm.anchors.CountOpenByAccountNo(ctx, acc.AccountNo)
+	if err != nil {
+		return PhaseGuardResult{}, fmt.Errorf("guardEnterFrozen: count open: %w", err)
+	}
+	if openCount > 0 {
 		return PhaseGuardResult{
 			Allowed: false,
-			Reason:  fmt.Sprintf("enter frozen: %d open anchor(s) remain", openTotal),
+			Reason:  fmt.Sprintf("enter frozen: %d open anchor(s) remain", openCount),
 		}, nil
 	}
 	return PhaseGuardResult{Allowed: true}, nil
@@ -305,26 +300,7 @@ func (sm *InstanceStateMachine) guardEnterArchived(
 	return PhaseGuardResult{Allowed: true}, nil
 }
 
-// sumAnchorCounters 跨所有 anchor 分片求和 (open, stuck)。
-// 任一分片读失败即返回错误——不能用部分数据做收敛决策。
-func (sm *InstanceStateMachine) sumAnchorCounters(
-	ctx context.Context, accountNo string,
-) (open, stuck int64, err error) {
-	shards := sm.anchorShards.AllAnchorShards()
-	for _, gtbl := range shards {
-		o, e := sm.anchors.CountOpenByAccountNo(ctx, accountNo, gtbl)
-		if e != nil {
-			return 0, 0, fmt.Errorf("sumAnchorCounters: shard %d: %w", gtbl, e)
-		}
-		s, e := sm.anchors.CountStuckByAccountNo(ctx, accountNo, gtbl)
-		if e != nil {
-			return 0, 0, fmt.Errorf("sumAnchorCounters: shard %d: %w", gtbl, e)
-		}
-		open += o
-		stuck += s
-	}
-	return open, stuck, nil
-}
+// sumAnchorCounters 已移除——方向 B 下 anchor 与 instance 同分片，单片查询足够。
 
 // ============================================================================
 // Anchor Status State Machine — 服务层
