@@ -109,7 +109,31 @@ func (h *MoneyflowHandler) handleGraphs(w http.ResponseWriter, r *http.Request, 
 			h.fail(w, http.StatusBadGateway, "GetGraph: "+err.Error())
 			return
 		}
-		writeJSON(w, resp)
+		// MF-DETAIL-FIX: 跟 SaveGraph 反向 — proto 里 spec_json 是 []byte (json marshal
+		// 会成 base64 string), 前端 designer 期望 spec 是嵌套对象 (state.graph.spec.nodes/edges).
+		// 这里把 SpecJson 解回 spec 对象再发, 让 unwrapGraph + render() 直接能用.
+		g := resp.GetGraph()
+		out := map[string]interface{}{
+			"key":        g.GetKey(),
+			"name":       g.GetName(),
+			"version":    g.GetVersion(),
+			"status":     g.GetStatus(),
+			"owner_type": g.GetOwnerType(),
+			"owner_id":   g.GetOwnerId(),
+		}
+		if sj := g.GetSpecJson(); len(sj) > 0 {
+			var spec map[string]interface{}
+			if jerr := json.Unmarshal(sj, &spec); jerr == nil {
+				out["spec"] = spec
+			} else {
+				// 解不出来 → 给空 spec + 原始字节都丢一份, 让前端能 fallback 看 raw
+				out["spec"] = map[string]interface{}{"triggers": []any{}, "nodes": []any{}, "edges": []any{}}
+				out["spec_decode_error"] = jerr.Error()
+			}
+		} else {
+			out["spec"] = map[string]interface{}{"triggers": []any{}, "nodes": []any{}, "edges": []any{}}
+		}
+		writeJSON(w, out)
 	case r.Method == http.MethodPost && !hasKey:
 		body, _ := io.ReadAll(r.Body)
 		// MF-SAVE-FIX: 前端发 {key, name, version, status, spec:{scenario,triggers,nodes,edges,...}}.
