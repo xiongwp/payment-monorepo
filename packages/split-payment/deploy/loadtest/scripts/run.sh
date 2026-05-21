@@ -103,23 +103,20 @@ else
     echo "    NOTE: compose up 退出码 ${COMPOSE_RC}（可能 batchtask 等 service_healthy 超时），继续轮询 /admin/health"
   fi
 
-  echo ">>> 等 accounting-service 健康（最多 1 分钟）..."
-  HEALTH_OK=0
-  for i in $(seq 1 60); do
-    if curl -sf http://localhost:8888/admin/health >/dev/null 2>&1; then
-      echo "    accounting-service OK (${i}s)"
-      HEALTH_OK=1
-      break
-    fi
-    if (( i % 15 == 0 )); then
-      echo "    ...等待中 (${i}s)"
-    fi
-    sleep 1
-  done
-  if [[ ${HEALTH_OK} -ne 1 ]]; then
-    echo "ERROR: accounting-service 1 分钟仍未健康，看日志：" >&2
-    echo "  ( cd ${ACCOUNTING_DIR} && docker compose logs accounting-service | tail -80 )" >&2
-    exit 1
+  # NOTE: 不再硬卡死等 accounting-service /admin/health。
+  # 原因：
+  #   1) accounting compose 给的是端口范围映射（8888-8898:8888），host 侧端口经常
+  #      不是 8888，curl localhost:8888 在 macOS Docker Desktop 上会假阴性。
+  #   2) docker HEALTHCHECK 本身有滞后（首次 healthy 之前会显示 unhealthy），
+  #      但服务实际已经在监听 50051 / 8888 内部端口，loadtest 走容器网络访问
+  #      不受 host 端口映射影响。
+  # 这里只做一次 best-effort 探测；探不到也继续，让 split-payment / loadtest 自己
+  # 通过 docker 内网解析 accounting-service:50051 — 那个路径才是真的服务可达性。
+  echo ">>> best-effort 探一下 accounting-service /admin/health（不强制）..."
+  if curl -sf -m 2 http://localhost:8888/admin/health >/dev/null 2>&1; then
+    echo "    accounting-service host:8888 可达"
+  else
+    echo "    accounting-service host:8888 探不到（很可能 host port 偏移），跳过；后续走容器内网"
   fi
 
   # 若刚才 compose up 没把 batchtask 起来（因为它的 depends_on 失败了），

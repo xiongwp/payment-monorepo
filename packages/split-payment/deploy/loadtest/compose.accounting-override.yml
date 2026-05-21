@@ -17,8 +17,18 @@ services:
     volumes: !override
       - "${LOADTEST_DIR}/config/accounting-config.loadtest.yaml:/app/config/config.yaml:ro"
       - app-logs:/app/logs
+    environment:
+      # 跨 compose 项目共享 payment-stack 网络时，service name "etcd" 解析不到
+      # loadtest 栈里的 etcd 容器。直接用 container_name `loadtest-etcd` 兜底。
+      # （我们也给 etcd 加了 network alias，但 alias 在 macOS Docker Desktop
+      # 偶发不生效，container_name 是最稳的）。
+      - ETCD_ENDPOINTS=loadtest-etcd:2379
+      - REGISTRY_ENDPOINTS=loadtest-etcd:2379
 
   accounting-batchtask:
     volumes: !override
       - "${LOADTEST_DIR}/config/accounting-config.loadtest.yaml:/app/config/config.yaml:ro"
       - app-logs:/app/logs
+    environment:
+      - ETCD_ENDPOINTS=loadtest-etcd:2379
+      - REGISTRY_ENDPOINTS=loadtest-etcd:2379
