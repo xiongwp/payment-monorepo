@@ -610,18 +610,7 @@ func TestGuardEnterFrozen_BalanceBoundaries(t *testing.T) {
 	}
 }
 
-// guardEnterFrozen: anchor read IO 错误必须传播（不能用"无数据"默认通过）
-// 【方向 B】单分片查询，错误传播简单：直接 stub 返回错误即可
-func TestGuardEnterFrozen_AnchorReadErrorPropagates(t *testing.T) {
-	now := time.Now()
-	sm, _, anr, _ := newFixture(now)
-	anr.errOnCount = errors.New("anchor read timeout")
-	acc := mkDrainingAccount(now, 100, 0)
-	_, err := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
-	if err == nil {
-		t.Fatal("anchor read failure must propagate; absence implies dangerous default")
-	}
-}
+// （重复测试已合并到 TestGuardEnterFrozen_AnchorReadError, line 354）
 
 // guardEnterActive: PeriodStart 精确等于 now → 允许（不超前即允）
 func TestGuardEnterActive_PeriodStartExactlyNow(t *testing.T) {
@@ -879,11 +868,9 @@ func TestGuardEnterFrozen_PerfectHappyPath(t *testing.T) {
 	acc := mkAccount("A001", 42, model.LifecyclePhaseDraining)
 	acc.DrainingStartedAt = ptrTime(now.Add(-1 * time.Second))
 	acc.Balance = 0
-	// 每个 shard 都 0
-	for _, gtbl := range []int{0, 1, 2, 50, 99} {
-		anr.openByAccount["A001"] = 0
-		anr.stuckByAccount["A001"] = 0
-	}
+	// 方向 B：单片查询，instance A001 上 0 anchor
+	anr.openByAccount["A001"] = 0
+	anr.stuckByAccount["A001"] = 0
 
 	r, err := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
 	if err != nil {
