@@ -18,7 +18,7 @@
 set -euo pipefail
 
 # ─── 配置 ─────────────────────────────────────────────────────────────────
-ACCOUNTING_ADMIN="${ACCOUNTING_ADMIN:-http://localhost:19092}"   # compose 宿主端口
+ACCOUNTING_ADMIN="${ACCOUNTING_ADMIN:-http://localhost:19094}"   # compose 宿主端口（19092 已被 kafka 占）
 SPLIT_PAYMENT_ADMIN="${SPLIT_PAYMENT_ADMIN:-http://localhost:19099}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-}"
 CURRENCY="${CURRENCY:-PHP}"
