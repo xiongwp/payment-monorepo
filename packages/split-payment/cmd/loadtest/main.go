@@ -170,10 +170,23 @@ func newStats(bucketsMs []int64) *stats {
 	return s
 }
 
-func (s *stats) record(latency time.Duration, isErr bool) {
+func (s *stats) record(latency time.Duration, err error) {
 	s.ops.Add(1)
-	if isErr {
+	if err != nil {
 		s.errs.Add(1)
+		// 取前 60 字符做 key，避免 unique flow_id 撑爆 sync.Map
+		key := err.Error()
+		if len(key) > 60 {
+			key = key[:60]
+		}
+		if v, ok := s.errSamples.Load(key); ok {
+			cnt := v.(*atomic.Int64)
+			cnt.Add(1)
+		} else {
+			cnt := &atomic.Int64{}
+			cnt.Store(1)
+			s.errSamples.Store(key, cnt)
+		}
 	}
 	ns := latency.Nanoseconds()
 	s.totalLatNs.Add(ns)
@@ -182,6 +195,35 @@ func (s *stats) record(latency time.Duration, isErr bool) {
 	// 找第一个 >= ms 的 bucket
 	idx := sort.Search(len(s.bucketBounds), func(i int) bool { return s.bucketBounds[i] >= ms })
 	s.bucketHits[idx].Add(1)
+}
+
+// topErrors 返回 cnt 最多的 N 个错误样本。
+func (s *stats) topErrors(n int) []struct {
+	Msg   string
+	Count int64
+} {
+	type pair struct {
+		Msg   string
+		Count int64
+	}
+	var all []pair
+	s.errSamples.Range(func(k, v any) bool {
+		all = append(all, pair{k.(string), v.(*atomic.Int64).Load()})
+		return true
+	})
+	sort.Slice(all, func(i, j int) bool { return all[i].Count > all[j].Count })
+	if len(all) > n {
+		all = all[:n]
+	}
+	out := make([]struct {
+		Msg   string
+		Count int64
+	}, len(all))
+	for i, p := range all {
+		out[i].Msg = p.Msg
+		out[i].Count = p.Count
+	}
+	return out
 }
 
 // percentile 用直方图线性插值估 p（0-100）
@@ -250,9 +292,9 @@ func (w *worker) run(ctx context.Context, wg *sync.WaitGroup) {
 		err := w.dispatch(ctx, flow)
 		elapsed := time.Since(start)
 
-		w.mainStats.record(elapsed, err != nil)
+		w.mainStats.record(elapsed, err)
 		if fs := w.flowStats[flow]; fs != nil {
-			fs.record(elapsed, err != nil)
+			fs.record(elapsed, err)
 		}
 	}
 }
@@ -493,7 +535,7 @@ func main() {
 	if err := writeReport(cfg.Report.OutputPath, report); err != nil {
 		fmt.Fprintf(os.Stderr, "write report: %v\n", err)
 	}
-	printReport(report)
+	printReportWithErrors(report, mainStats)
 }
 
 func runWorkers(
@@ -602,6 +644,21 @@ func buildReport(cfg *config, elapsed time.Duration, m *stats, per map[flowKind]
 		}
 	}
 	return rpt
+}
+
+// printReportWithErrors 在 fullReport 之上加 errSamples 的 top N 输出。
+// 调用方传入 mainStats，因为 errSamples 没序列化进 fullReport。
+func printReportWithErrors(r fullReport, mainStats *stats) {
+	printReport(r)
+	tops := mainStats.topErrors(5)
+	if len(tops) == 0 {
+		return
+	}
+	fmt.Println("  Top errors:")
+	for _, t := range tops {
+		fmt.Printf("    [%d×] %s\n", t.Count, t.Msg)
+	}
+	fmt.Println("════════════════════════════════════════════════════════════════")
 }
 
 func printReport(r fullReport) {
