@@ -36,6 +36,13 @@ services:
   etcd:
     image: quay.io/coreos/etcd:v3.5.16
     container_name: loadtest-etcd
+    # 关键：accounting-system 那边的 service 用 `REGISTRY_ENDPOINTS=etcd:2379` 找这个容器；
+    # 跨 compose 项目共享 payment-stack 网络时，DNS 只能匹配 container_name 或 alias。
+    # 容器名是 loadtest-etcd → 加个 alias `etcd` 让 accounting / split-payment 都能解析到。
+    networks:
+      default:
+        aliases:
+          - etcd
     environment:
       ETCD_NAME: "etcd0"
       ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"

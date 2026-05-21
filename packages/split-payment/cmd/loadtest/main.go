@@ -156,8 +156,10 @@ type stats struct {
 	// 直方图：固定 bucket（毫秒边界），每 bucket 一个原子计数。
 	bucketBounds []int64 // ms
 	bucketHits   []atomic.Int64
-	// 用于精确 percentile：保留首 N 个观测（按需扩展为 reservoir sampling）
-	// 简化：用直方图 + 线性插值估 p50/p90/p95/p99
+
+	// 错误样本（前 5 种 distinct msg），帮助调试。
+	// 简化：sync.Map 存 errMsg → count；输出时取前 5。
+	errSamples sync.Map
 }
 
 func newStats(bucketsMs []int64) *stats {
@@ -346,10 +348,13 @@ func (w *worker) dispatch(ctx context.Context, flow flowKind) error {
 	if err != nil {
 		return fmt.Errorf("trigger: %w", err)
 	}
-	// 业务层成功/失败由 resp 内字段判断；不同 graph 字段不同，这里以 success bool 为约定
-	// （若无 success 字段，默认认为 RPC 成功 == 业务成功）
 	if resp == nil {
 		return fmt.Errorf("nil response")
+	}
+	// 关键：TriggerEventResponse 业务失败时 RPC 层是 success，错误塞在 resp.Error。
+	// 不算这层 → loadtest 看到的 errs 永远是 0，TPS 严重虚高。
+	if resp.Error != "" {
+		return fmt.Errorf("business: %s", resp.Error)
 	}
 	return nil
 }

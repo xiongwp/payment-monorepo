@@ -103,9 +103,9 @@ else
     echo "    NOTE: compose up 退出码 ${COMPOSE_RC}（可能 batchtask 等 service_healthy 超时），继续轮询 /admin/health"
   fi
 
-  echo ">>> 等 accounting-service 健康（最多 3 分钟）..."
+  echo ">>> 等 accounting-service 健康（最多 1 分钟）..."
   HEALTH_OK=0
-  for i in $(seq 1 180); do
+  for i in $(seq 1 60); do
     if curl -sf http://localhost:8888/admin/health >/dev/null 2>&1; then
       echo "    accounting-service OK (${i}s)"
       HEALTH_OK=1
@@ -117,7 +117,7 @@ else
     sleep 1
   done
   if [[ ${HEALTH_OK} -ne 1 ]]; then
-    echo "ERROR: accounting-service 3 分钟仍未健康，看日志：" >&2
+    echo "ERROR: accounting-service 1 分钟仍未健康，看日志：" >&2
     echo "  ( cd ${ACCOUNTING_DIR} && docker compose logs accounting-service | tail -80 )" >&2
     exit 1
   fi
