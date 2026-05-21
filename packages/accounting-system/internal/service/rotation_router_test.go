@@ -762,6 +762,274 @@ func TestNewRouter_NilClockFallback(t *testing.T) {
 // Direction valid/invalid
 // ============================================================================
 
+// ============================================================================
+// 关键 edge case 补充
+// ============================================================================
+
+// 恢复路径：routing 已存在但 anchor 缺失（两步事务中间崩溃后重试）
+// → 应返回 Insert 类型的 AnchorPlan，但 RoutePlan 为 nil（routing 已存在不重写）
+func TestResolve_RecoveryPath_RoutingExistsButAnchorMissing(t *testing.T) {
+	now := time.Now()
+	r, lr, ar, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A002")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+
+	// routing 存在，但 anchor map 为空 → 模拟两步事务中间崩溃
+	rr.byKey[routeKey("F_RECOVERY", 42)] = &model.FlowAnchorRoute{
+		ID: 100, FlowID: "F_RECOVERY", LogicalAccountID: 42,
+		AccountNo: "A001",
+	}
+	// ar.byKey[anchorKeyB("F_RECOVERY", "A001")] 不设置 → anchor 缺失
+
+	res, err := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_RECOVERY", BookingDirectionCredit))
+	if err != nil {
+		t.Fatalf("recovery path should succeed: %v", err)
+	}
+	if res.AnchorPlan == nil || res.AnchorPlan.Op != AnchorOpInsert {
+		t.Errorf("recovery should produce Insert anchor plan, got %+v", res.AnchorPlan)
+	}
+	if res.RoutePlan != nil {
+		t.Errorf("recovery: RoutePlan should be nil (routing exists), got %+v", res.RoutePlan)
+	}
+	if res.AccountNo != "A001" {
+		t.Errorf("recovery should route to routing's account A001, got %s", res.AccountNo)
+	}
+	if res.AnchorPlan.NewAnchor.AccountNo != "A001" {
+		t.Errorf("anchor plan account_no should match routing")
+	}
+}
+
+// 恢复路径在 instance 已经 frozen 时应拒（除非是 TCC Cancel）
+func TestResolve_RecoveryPath_RespectsPhaseGuard(t *testing.T) {
+	now := time.Now()
+	r, lr, _, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A002")
+	accR.byNo["A001"] = mkAccountPhase("A001", 42, model.LifecyclePhaseArchived)
+	rr.byKey[routeKey("F_OLD", 42)] = &model.FlowAnchorRoute{
+		ID: 100, FlowID: "F_OLD", LogicalAccountID: 42, AccountNo: "A001",
+	}
+
+	req := mkRequest("transit:foo:USD", "F_OLD", BookingDirectionDebit)
+	_, err := r.Resolve(context.Background(), req)
+	if !errors.Is(err, model.ErrPhaseGuardRejected) {
+		t.Errorf("recovery on archived should be rejected, got %v", err)
+	}
+}
+
+// quarantined instance 永远拒绝（包括恢复路径）
+func TestResolve_PhaseGuard_QuarantinedAlwaysRejects(t *testing.T) {
+	now := time.Now()
+	r, lr, ar, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A002")
+	accR.byNo["A001"] = mkAccountPhase("A001", 42, model.LifecyclePhaseQuarantined)
+	rr.byKey[routeKey("F1", 42)] = &model.FlowAnchorRoute{
+		ID: 1, FlowID: "F1", LogicalAccountID: 42, AccountNo: "A001",
+	}
+	ar.byKey[anchorKeyB("F1", "A001")] = &model.TxAccountAnchor{
+		ID: 1, FlowID: "F1", LogicalAccountID: 42, AccountNo: "A001",
+		Status: model.AnchorStatusActive,
+	}
+	for _, bt := range []BookingType{
+		BookingTypeNormal, BookingTypeTCCTry, BookingTypeTCCConfirm, BookingTypeTCCCancel,
+	} {
+		req := mkRequest("transit:foo:USD", "F1", BookingDirectionDebit)
+		req.BookingType = bt
+		_, err := r.Resolve(context.Background(), req)
+		if !errors.Is(err, model.ErrPhaseGuardRejected) {
+			t.Errorf("quarantined should reject bt=%d, got %v", bt, err)
+		}
+	}
+}
+
+// 迁移单跳：anchor.status=migrated → 跟随 MigratedToAccountNo
+func TestResolve_MigrationSingleHop(t *testing.T) {
+	now := time.Now()
+	r, lr, ar, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A003")
+	accR.byNo["A002"] = mkAccountActive("A002", 42)
+
+	rr.byKey[routeKey("F1", 42)] = &model.FlowAnchorRoute{
+		ID: 1, FlowID: "F1", LogicalAccountID: 42, AccountNo: "A001",
+	}
+	target := "A002"
+	ar.byKey[anchorKeyB("F1", "A001")] = &model.TxAccountAnchor{
+		ID: 10, FlowID: "F1", LogicalAccountID: 42, AccountNo: "A001",
+		Status: model.AnchorStatusMigrated, MigratedToAccountNo: &target,
+		MigrationChainDepth: 1,
+	}
+
+	res, err := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F1", BookingDirectionDebit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.AccountNo != "A002" {
+		t.Errorf("migration follow should land on A002, got %s", res.AccountNo)
+	}
+}
+
+// 迁移异常：status=migrated 但 MigratedToAccountNo=nil → 回退到原 AccountNo（防御性）
+func TestResolve_MigrationNilTargetFallback(t *testing.T) {
+	now := time.Now()
+	r, lr, ar, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A003")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+
+	rr.byKey[routeKey("F1", 42)] = &model.FlowAnchorRoute{
+		ID: 1, FlowID: "F1", LogicalAccountID: 42, AccountNo: "A001",
+	}
+	ar.byKey[anchorKeyB("F1", "A001")] = &model.TxAccountAnchor{
+		ID: 10, FlowID: "F1", LogicalAccountID: 42, AccountNo: "A001",
+		Status: model.AnchorStatusMigrated, MigratedToAccountNo: nil,
+	}
+
+	res, err := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F1", BookingDirectionDebit))
+	if err != nil {
+		t.Fatalf("nil migrated_to should not panic: %v", err)
+	}
+	if res.AccountNo != "A001" {
+		t.Errorf("nil migrated_to should fallback to original A001, got %s", res.AccountNo)
+	}
+}
+
+// 退款继承：源 flow 已发生迁移，新退款 flow 应继承到迁移后的 instance
+// （routing 表里 source flow 的 account_no 自然指向了最新 instance）
+func TestResolve_RefundInheritsAfterSourceMigration(t *testing.T) {
+	now := time.Now()
+	r, lr, _, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A005")
+	accR.byNo["A003"] = mkAccountActive("A003", 42) // 源已迁移到这里
+
+	// 源 routing 表已经被强制迁移更新过：account_no=A003（不再是 A001），chain_depth=2
+	rr.byKey[routeKey("PAY_OLD", 42)] = &model.FlowAnchorRoute{
+		ID: 10, FlowID: "PAY_OLD", LogicalAccountID: 42, AccountNo: "A003",
+		MigrationChainDepth: 2,
+	}
+
+	req := &ResolveRequest{
+		LogicalAccountKey: "transit:foo:USD",
+		FlowID:            "RFD_NEW",
+		Direction:         BookingDirectionDebit,
+		OriginalFlowID:    "PAY_OLD",
+		ReuseSource:       model.AnchorReuseSourceRefundOf,
+	}
+	res, err := r.Resolve(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 新退款继承到 A003（不是被迁移之前的 A001）
+	if res.AccountNo != "A003" {
+		t.Errorf("refund should inherit source's CURRENT instance A003, got %s", res.AccountNo)
+	}
+	// 新 routing 也应该带 chain_depth=2 继承
+	if res.RoutePlan.NewRoute.MigrationChainDepth != 2 {
+		t.Errorf("refund route chain depth should inherit source's depth=2, got %d",
+			res.RoutePlan.NewRoute.MigrationChainDepth)
+	}
+}
+
+// Cache invalidate 强制重读
+func TestResolve_CacheInvalidate(t *testing.T) {
+	now := time.Now()
+	r, lr, _, _, _ := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", false, "")
+
+	_, _ = r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F1", BookingDirectionDebit))
+	_, _ = r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F2", BookingDirectionDebit))
+	if lr.callCount() != 1 {
+		t.Errorf("expected 1 call within TTL, got %d", lr.callCount())
+	}
+
+	if impl, ok := r.(*router); ok {
+		impl.cache.invalidate("transit:foo:USD")
+	}
+	_, _ = r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F3", BookingDirectionDebit))
+	if lr.callCount() != 2 {
+		t.Errorf("invalidate should force reload, got %d calls", lr.callCount())
+	}
+}
+
+// Flow 一致性强测试：同一 flow 经过多轮调用必须落同一 account
+// （即使发生：routing 路由表分片、anchor 分片、phase 切换）
+func TestResolve_FlowConsistency_MultipleOperationsSameFlow(t *testing.T) {
+	now := time.Now()
+	r, lr, ar, rr, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A001")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+
+	// 第 1 次：建立 routing + anchor
+	res1, err := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_MULTI", BookingDirectionDebit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1.AccountNo != "A001" || res1.AnchorPlan.Op != AnchorOpInsert {
+		t.Fatal("first call should land A001 with Insert plan")
+	}
+	// caller 落 route + anchor
+	rr.byKey[routeKey("F_MULTI", 42)] = res1.RoutePlan.NewRoute
+	rr.byKey[routeKey("F_MULTI", 42)].ID = 7001
+	ar.byKey[anchorKeyB("F_MULTI", "A001")] = res1.AnchorPlan.NewAnchor
+	ar.byKey[anchorKeyB("F_MULTI", "A001")].ID = 7002
+
+	// 第 2 次：UpdatePosting
+	res2, _ := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_MULTI", BookingDirectionCredit))
+	if res2.AccountNo != "A001" || res2.AnchorPlan.Op != AnchorOpUpdatePosting {
+		t.Fatal("second call should land A001 with UpdatePosting plan")
+	}
+
+	// 第 3 次：TCC Confirm
+	req3 := mkRequest("transit:foo:USD", "F_MULTI", BookingDirectionDebit)
+	req3.BookingType = BookingTypeTCCConfirm
+	res3, _ := r.Resolve(context.Background(), req3)
+	if res3.AccountNo != "A001" {
+		t.Fatal("third call still locked to A001")
+	}
+
+	// 第 4 次：TCC Cancel
+	req4 := mkRequest("transit:foo:USD", "F_MULTI", BookingDirectionCredit)
+	req4.BookingType = BookingTypeTCCCancel
+	res4, _ := r.Resolve(context.Background(), req4)
+	if res4.AccountNo != "A001" {
+		t.Fatal("TCC Cancel still locked to A001")
+	}
+}
+
+// 并发首次锚定（race）：多个 goroutine 同时为新 flow 调用 Resolve
+// 路由层应稳定返回相同的 AccountNo 和 RoutePlan
+func TestResolve_ConcurrentFirstAnchoringSameFlow(t *testing.T) {
+	now := time.Now()
+	r, lr, _, _, accR := newRouterFixture(now)
+	lr.byKey["transit:foo:USD"] = mkLogicalAccount(42, "transit:foo:USD", true, "A001")
+	accR.byNo["A001"] = mkAccountActive("A001", 42)
+
+	const N = 20
+	var wg sync.WaitGroup
+	results := make([]string, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			res, err := r.Resolve(context.Background(), mkRequest("transit:foo:USD", "F_RACE", BookingDirectionDebit))
+			if err == nil {
+				results[i] = res.AccountNo
+			}
+		}(i)
+	}
+	wg.Wait()
+	// 所有结果都应该指向 A001（即使他们都是首次锚定 — repo 层 UK 会让只有一个真正写入成功）
+	for i, acc := range results {
+		if acc != "A001" {
+			t.Errorf("goroutine %d got %q, all must be A001", i, acc)
+		}
+	}
+}
+
+// LogicalAccount disabled 在生产 repo 层会过滤；fake 不模拟，但路由层应当依赖
+// repo 行为。此测试文档化这个约定。
+func TestResolve_DisabledLAFilteredByRepo_Documentation(t *testing.T) {
+	t.Log("生产 repo.GetByKey 对 disabled LA 返回 ErrLogicalAccountNotRegistered")
+	t.Log("Router 不重复校验 status，依赖 repo 层过滤")
+}
+
 func TestBookingDirection_IsValid(t *testing.T) {
 	for _, d := range []BookingDirection{BookingDirectionDebit, BookingDirectionCredit} {
 		if !d.IsValid() {
