@@ -158,6 +158,9 @@ func TestConvergenceJob_StuckAnchor_NotReady(t *testing.T) {
 	if res.Converged != 0 {
 		t.Errorf("stuck blocks frozen")
 	}
+	if len(pm.promotions) != 0 {
+		t.Error("stuck should prevent promote")
+	}
 }
 
 // drain age < p99 → 不推进
