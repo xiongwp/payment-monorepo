@@ -767,11 +767,26 @@ func maxOr64(v, fallback int64) int64 {
 	return v
 }
 
-// newBizID 生成业务 flow_id：lt-{flowType}-{ts}{rand4}
-// 注意：业务 flow_id 必须保证全局唯一，由调用方负责；这里用 ns + 32bit rand 已满足 1M/sec。
+// newBizID 生成业务 flow_id。
+//
+// 限制：accounting 的 transaction_order.order_no 是 VARCHAR(64)。split-payment 在
+// translator.go:190 里把 order_no 拼成 `{flow_id}_{event_code}`，其中 event_code
+// 最长是 graph 里的 `channel_settled_fee_pending` = 27 chars。所以 flow_id 必须
+// ≤ 64 - 1 - 27 = 36 chars，留点 buffer 取 32。
+//
+// 老格式 `lt-topup-1716266400123456789-deadbeef` = 38 chars + "_channel_settled_fee_pending" 28
+// = 66 chars，超 64 一截 → Error 1406 (Data too long for column 'order_no')。
+//
+// 新格式：`lt{flow_letter}{nanos_hex_8}{rand_hex_8}` = 2 + 1 + 8 + 8 = 19 chars。
+// 唯一性：每个 worker 用独立 rand 源，碰撞概率 ≈ 1/2^32 × 同纳秒内多请求，可忽略。
 func newBizID(flow string) string {
 	var rb [4]byte
 	_, _ = rand.Read(rb[:])
 	r := binary.BigEndian.Uint32(rb[:])
-	return fmt.Sprintf("lt-%s-%d-%08x", flow, time.Now().UnixNano(), r)
+	// flow 取首字母（t/p/r/w）—— 只用于人工调试时分辨，DB 不依赖
+	flowLetter := "x"
+	if len(flow) > 0 {
+		flowLetter = flow[:1]
+	}
+	return fmt.Sprintf("lt%s%08x%08x", flowLetter, uint32(time.Now().UnixNano()), r)
 }

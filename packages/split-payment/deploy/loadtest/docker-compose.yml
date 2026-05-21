@@ -72,6 +72,11 @@ services:
       ADVERTISE_HOST: "loadtest-split-payment"
       # viper 前缀 = SPLIT_PAYMENT_；config 路径 accounting.grpc_addr → 这个 env name。
       SPLIT_PAYMENT_ACCOUNTING_GRPC_ADDR: "accounting-service:50051"
+      # 关键：没这个 env，split-payment 看到 accounting.http_url 是空，会禁掉 SaveGraph saga
+      # + reconcileGraphRules + TriggerEvent retry。结果 seed 进来的 graph 的 transaction_rule
+      # 永远不会推到 accounting，TriggerEvent 全报 "no transaction rule found"。
+      # 走容器内网，端口是 accounting compose 里 admin HTTP 的 8888（不是 host port range 映射）。
+      ACCOUNTING_HTTP_URL: "http://accounting-service:8888"
       SPLIT_PAYMENT_REGISTRY_ENDPOINTS: "etcd:2379"
       # 启动期自动 seed 资金流 graph（4 个：topup/payment/transfer/withdraw）
       # internal/config.go 把 seed.graph_dir 绑到 MONEYFLOW_SEED_DIR 这个 env 上
