@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/transport"
 
 	acctv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 	acctsvc "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1/accountingservice"
@@ -121,6 +122,10 @@ func run() error {
 	gClient, err := acctsvc.NewClient(
 		"accounting",
 		client.WithHostPorts(*flagAcctGRPC),
+		// 必填：Kitex 默认 netpoll transport 会把 "host:port" 字符串当成 unix socket
+		// 路径，dial 时报 "dial unix accounting-service:50051: no such file or directory"。
+		// 强制走 gRPC over HTTP/2 over TCP（跟 internal/clients/accounting_grpc.go 同款）。
+		client.WithTransportProtocol(transport.GRPC),
 		client.WithRPCTimeout(*flagRPCTimeout),
 	)
 	if err != nil {
