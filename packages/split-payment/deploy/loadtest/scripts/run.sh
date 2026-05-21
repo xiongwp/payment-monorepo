@@ -63,11 +63,25 @@ fi
 if [[ "${SKIP_ACCOUNTING}" -eq 1 ]]; then
   echo ">>> 跳过 accounting-system 栈启动（--skip-accounting）"
 else
+  # ─── Step 0: 先把 etcd 起来 ───────────────────────────────────────────
+  # accounting-service 启动时会向 etcd:2379 grant lease 注册自己（5s 超时）。
+  # 如果先起 accounting 栈、再起 loadtest 栈（含 etcd），accounting 启动期
+  # etcd DNS 解析失败 → gRPC server exit。所以 etcd 必须最早起。
+  echo ">>> Step 0/3: 先把 etcd 起来（accounting-service 注册要用）"
+  docker compose up -d etcd
+  for i in $(seq 1 30); do
+    if docker compose exec -T etcd /bin/sh -c 'etcdctl endpoint health' >/dev/null 2>&1; then
+      echo "    etcd OK (${i}s)"
+      break
+    fi
+    sleep 1
+  done
+
   if [[ ! -f "${ACCOUNTING_DIR}/docker-compose.yml" ]]; then
     echo "ERROR: 找不到 ${ACCOUNTING_DIR}/docker-compose.yml" >&2
     exit 1
   fi
-  echo ">>> Step 1/2: 起 accounting-system 栈（10 mysql + redis + kafka + accounting-service）"
+  echo ">>> Step 1/3: 起 accounting-system 栈（10 mysql + redis + kafka + accounting-service）"
   echo "    用 loadtest overlay 把 Redis Sentinel 模式覆盖成 single 模式"
   # LOADTEST_DIR 给 overlay yaml 用绝对路径解析 volume mount
   export LOADTEST_DIR="${DIR}"
@@ -119,9 +133,9 @@ else
   fi
 fi
 
-# ─── Step 2: 起 loadtest 栈（etcd + split-payment + loadtest）────────────
-echo ">>> Step 2/2: 起 loadtest 栈（etcd + split-payment + loadtest）"
-docker compose up -d --build etcd split-payment
+# ─── Step 2: 起 loadtest 栈剩余部分（split-payment + loadtest 镜像构建）─────
+echo ">>> Step 2/3: 起 split-payment（etcd 已在 Step 0 起）"
+docker compose up -d --build split-payment
 
 echo ">>> 等 split-payment 健康（/healthz）..."
 SP_OK=0
