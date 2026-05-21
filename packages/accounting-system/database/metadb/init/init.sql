@@ -245,3 +245,70 @@ CREATE TABLE IF NOT EXISTS `service_instance` (
 --       outbox_backpressure.low_threshold   = 1000
 --       outbox_backpressure.shrink_ratio    = 0.5
 -- ============================================
+
+-- ============================================
+-- Rotating Suspense / Receivable / Payable Accounts
+-- 设计文档：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md
+-- 域模型：internal/domain/model/rotation.go
+--
+-- logical_account：跨周期稳定的逻辑账户。多个 account instance 在不同周期承接其流量。
+-- I1 不变量：同一 logical_account_id 下任意时刻至多一个 instance phase=active
+--           （由 scheduler 切换事务 + invariant_audit_job 巡检保证）
+-- 反范式化：current_active_account_no/period_end 由 scheduler 在切换事务原子更新，
+--           路由层热路径只查本表即可，避免跨片 account 表 scan。
+-- ============================================
+CREATE TABLE IF NOT EXISTS `logical_account` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `logical_account_key` VARCHAR(64) NOT NULL COMMENT '业务稳定 key（命名前缀白名单见 rotation.go AllowedKeyPrefixes）',
+    `account_type` TINYINT NOT NULL COMMENT '复用 AccountType (期望值 5/6/9)',
+    `account_business_type` SMALLINT NOT NULL COMMENT '复用 AccountBusinessType (1-999)',
+    `currency` CHAR(3) NOT NULL COMMENT 'ISO 4217',
+    `description` VARCHAR(255) DEFAULT NULL,
+    `rotation_enabled` TINYINT NOT NULL DEFAULT 0 COMMENT '0=不轮换(legacy) 1=轮换',
+    `current_active_account_no` VARCHAR(64) DEFAULT NULL COMMENT '反范式化：当期 active 的 account_no',
+    `current_active_period_end` DATETIME DEFAULT NULL,
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=disabled 1=enabled',
+    `registered_by` VARCHAR(64) NOT NULL COMMENT '注册者（审计；禁止 lazy create）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_lak` (`logical_account_key`),
+    KEY `idx_type_biz_currency` (`account_type`, `account_business_type`, `currency`),
+    KEY `idx_rotation_enabled` (`rotation_enabled`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='逻辑账户（跨周期稳定）';
+
+
+-- ============================================
+-- logical_account_rotation_policy：单个逻辑账户的轮换策略
+-- 关键字段：
+--   drain_p99_seconds       — draining 保留下限（业务 P99 生命周期）
+--   drain_hard_timeout_secs — draining 保留上限，超过强制迁移（§8）
+--   archive_grace_secs      — frozen → archived 缓冲
+--   provision_lead_secs     — scheduler 提前多久预创建下一期（默认 24h）
+--   config_version          — 配置版本号，路由层用它判断缓存是否过期 (E-30)
+-- 旧 instance 走出生时锁定的 policy_version_at_birth 而非最新策略 (E-28/E-29)。
+-- ============================================
+CREATE TABLE IF NOT EXISTS `logical_account_rotation_policy` (
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `period_unit` VARCHAR(8) NOT NULL COMMENT 'DAY(测试) / MONTH(应付应收) / QUARTER(通用中间)',
+    `period_count` INT NOT NULL DEFAULT 1 COMMENT '周期倍数',
+    `rotation_anchor_tz` VARCHAR(32) NOT NULL COMMENT 'IANA 时区',
+    `drain_p99_seconds` INT NOT NULL COMMENT 'draining 最短保留',
+    `drain_hard_timeout_secs` INT NOT NULL COMMENT 'draining 最长保留；超过强制迁移',
+    `archive_grace_secs` INT NOT NULL DEFAULT 604800 COMMENT 'frozen → archived 缓冲（默认 7 天）',
+    `provision_lead_secs` INT NOT NULL DEFAULT 86400 COMMENT '提前预创建下一期（默认 24h）',
+    `config_version` BIGINT NOT NULL DEFAULT 1 COMMENT '配置版本号；每次变更 +1',
+    `effective_from` DATETIME NOT NULL,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`logical_account_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='轮换策略';
+
+-- 轮换特性新增预置（10/11/12/13）
+INSERT IGNORE INTO `account_business_type_info`
+    (`business_type`, `business_type_code`, `account_type`, `description`, `enabled`)
+VALUES
+    (10, 'ROTATION_MIGRATION_SUSPENSE',  9, '跨期强制迁移过渡科目，余额恒为 0', 1),
+    (11, 'ROTATION_RESIDUAL_WRITEOFF',   4, '轮换归档残值核销账户', 1),
+    (12, 'ROTATION_OPS_ADJUST',          4, '轮换人工运维调整账户', 1),
+    (13, 'ROTATION_CARRYFORWARD',        2, '轮换跨期结转科目，余额恒为 0', 1);
