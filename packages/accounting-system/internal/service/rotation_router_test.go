@@ -1236,7 +1236,12 @@ func TestResolve_ExtremeFlowIDs(t *testing.T) {
 		"flow.with.dots.and-dashes_123", // 复合字符
 	}
 	for _, flowID := range cases {
-		t.Run(flowID[:min(20, len(flowID))], func(t *testing.T) {
+		// 取前 20 字符作 subtest 名（用 Go 1.21+ 内置 min）
+		nameMax := 20
+		if len(flowID) < nameMax {
+			nameMax = len(flowID)
+		}
+		t.Run(flowID[:nameMax], func(t *testing.T) {
 			res, err := r.Resolve(context.Background(), mkRequest("transit:foo:USD", flowID, BookingDirectionDebit))
 			if err != nil {
 				t.Errorf("flow=%q: %v", flowID, err)
@@ -1250,13 +1255,6 @@ func TestResolve_ExtremeFlowIDs(t *testing.T) {
 			}
 		})
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // 极端：很小的 logical_account_id (1) 和很大的 (MaxInt64-1)
