@@ -74,11 +74,18 @@ services:
 
   # ─── etcd（服务发现 + config-center）──────────────────────────────────
   etcd:
-    image: bitnami/etcd:3.5
+    # bitnami/etcd 老 tag 已从 dockerhub 下架；改用官方 quay 镜像。
+    image: quay.io/coreos/etcd:v3.5.16
     container_name: loadtest-etcd
     environment:
-      ALLOW_NONE_AUTHENTICATION: "yes"
+      ETCD_NAME: "etcd0"
+      ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
       ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
+      ETCD_LISTEN_PEER_URLS: "http://0.0.0.0:2380"
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: "http://etcd:2380"
+      ETCD_INITIAL_CLUSTER: "etcd0=http://etcd:2380"
+      ETCD_INITIAL_CLUSTER_STATE: "new"
+      ETCD_INITIAL_CLUSTER_TOKEN: "loadtest-token"
     ports:
       - "12379:2379"
 
@@ -90,18 +97,25 @@ services:
       - "16379:6379"
     command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
 
-  # ─── Kafka（Outbox 事件流）── 简化为单 broker
+  # ─── Kafka（Outbox 事件流）── 简化为单 broker (KRaft，无 zookeeper)
+  # bitnami/kafka 老 tag 已下架；改用 apache 官方镜像 (env 变量同样是 KAFKA_*)
   kafka:
-    image: bitnami/kafka:3.6
+    image: apache/kafka:3.8.0
     container_name: loadtest-kafka
     environment:
-      KAFKA_CFG_NODE_ID: 0
-      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
-      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
-      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
-      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "controller,broker"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      # KRaft 集群 ID（任意 22 位 base64-url 字符串；固定一次启动用）
+      CLUSTER_ID: "loadtest-cluster-001234567890"
     ports:
       - "19092:9092"
 
