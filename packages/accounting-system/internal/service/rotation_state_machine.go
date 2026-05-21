@@ -50,7 +50,7 @@ type PolicyReader interface {
 
 // AnchorShardRouter 由 router 提供：给 instance 上属于哪几片 anchor。
 // 这是一个抽象点——instance 上的 anchor 实际分布在多个 anchor shard 上（因为
-// anchor shard 按 related_request_id 哈希，与 account_no 无关）。守卫必须扫所有
+// anchor shard 按 flow_id 哈希，与 account_no 无关）。守卫必须扫所有
 // 100 个分片 SUM(open_count) 才能判定 instance 是否真的"无 open anchor"。
 //
 // 为简化测试，这里抽象成"按 instance 列举所有要扫的分片 id"。

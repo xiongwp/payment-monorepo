@@ -817,3 +817,223 @@ func TestAnchorStateMachine_FullMatrix(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// 组合守卫：多个 blocker 同时存在
+// ============================================================================
+
+// 当 balance+age 同时违反时，至少一个原因被报出（不要求两个都报，但不能两个都漏）
+func TestGuardEnterFrozen_MultipleBlockers(t *testing.T) {
+	now := time.Now()
+	sm, _, _, _ := newFixture(now)
+	acc := mkDrainingAccount(now, 3, 100) // age 3d < p99 7d, balance != 0
+	r, _ := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
+	if r.Allowed {
+		t.Fatal("multiple blockers must reject frozen")
+	}
+	// 至少有一个原因被报出
+	if r.Reason == "" {
+		t.Error("Reason must not be empty when blocked")
+	}
+}
+
+// I1 + 时序同时违反：I1 优先（无论 PeriodStart 是否到位，I1 优先拒）
+func TestGuardEnterActive_I1AndTimingBothBlockers(t *testing.T) {
+	now := time.Now()
+	sm, ar, _, _ := newFixture(now)
+	ar.activeCountByLogical[42] = 1
+	acc := mkAccount("A002", 42, model.LifecyclePhaseProvisioned)
+	acc.PeriodStart = ptrTime(now.Add(1 * time.Hour)) // also too early
+	r, _ := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseActive)
+	if r.Allowed {
+		t.Fatal("both I1 and timing should block")
+	}
+	if !contains(r.Reason, "I1") {
+		// I1 第一个查，且永远应该报 I1 先
+		t.Errorf("I1 should be reported first; got %q", r.Reason)
+	}
+}
+
+// ============================================================================
+// 跨多个 active 数：I1 在 1/2/5/100 全部值上拒
+// ============================================================================
+// (already covered by TestGuardEnterActive_I1MultipleActiveBlocks)
+
+// ============================================================================
+// PROPERTY-BASED：随机生成大量场景，状态机 result 必须与 model.CanTransition* 一致
+// 即"无业务守卫时"service 层判定 = model 层判定
+// 当账户满足"无业务约束"配置时（无 logical_account_id 限制下的合法路径仅 quarantined）
+// 业务守卫之外的纯图判定必须一致。
+// ============================================================================
+
+func TestPropertyBased_ServiceMatchesModelForGraphLegality(t *testing.T) {
+	now := time.Now()
+
+	allPhases := []model.LifecyclePhase{
+		model.LifecyclePhaseLegacy, model.LifecyclePhaseProvisioned,
+		model.LifecyclePhaseActive, model.LifecyclePhaseDraining,
+		model.LifecyclePhaseFrozen, model.LifecyclePhaseArchived,
+		model.LifecyclePhaseQuarantined,
+	}
+
+	for _, from := range allPhases {
+		for _, to := range allPhases {
+			modelAllowed := model.CanTransitionPhase(from, to)
+			// 图非法时，service 必拒
+			if !modelAllowed {
+				sm, _, _, _ := newFixture(now)
+				acc := mkAccount("A001", 42, from)
+				r, err := sm.CheckTransition(context.Background(), acc, to)
+				if err != nil {
+					t.Errorf("from=%s to=%s unexpected err %v", from, to, err)
+				}
+				if r.Allowed {
+					t.Errorf("model.CanTransition(%s,%s)=false but service allowed", from, to)
+				}
+			}
+		}
+	}
+}
+
+// ============================================================================
+// 错误传播深度
+// ============================================================================
+
+// 多层错误包装下仍能识别 ErrTransitionGuardRejected
+func TestWrapGuardError_DeepWrap(t *testing.T) {
+	err := WrapGuardError(PhaseGuardResult{Allowed: false, Reason: "root cause"})
+	// 经 5 层包装
+	for i := 0; i < 5; i++ {
+		err = fmt.Errorf("layer %d: %w", i, err)
+	}
+	if !errors.Is(err, ErrTransitionGuardRejected) {
+		t.Error("must detect ErrTransitionGuardRejected through 5 wrap layers")
+	}
+	if !contains(err.Error(), "root cause") {
+		t.Error("must preserve original Reason in deeply wrapped chain")
+	}
+}
+
+// ============================================================================
+// 时钟边界
+// ============================================================================
+
+// 闰秒附近 / unix 0 / 远未来 — clock 不能拒绝奇怪的时间值
+func TestClockInjection_AcceptsExtremeValues(t *testing.T) {
+	extremes := []time.Time{
+		time.Unix(0, 0),                              // unix epoch
+		time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC),  // pre-epoch
+		time.Date(2099, 12, 31, 23, 59, 59, 999999999, time.UTC), // far future
+	}
+	for _, t0 := range extremes {
+		sm, _, _, _ := newFixture(t0)
+		acc := mkAccount("A001", 42, model.LifecyclePhaseProvisioned)
+		acc.PeriodStart = ptrTime(t0) // exactly now (extreme time)
+		r, err := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseActive)
+		if err != nil {
+			t.Errorf("clock=%v unexpected err %v", t0, err)
+		}
+		_ = r
+	}
+}
+
+// ============================================================================
+// 业务守卫边界：drain age + balance + open + stuck 全 0 (完美 happy path)
+// ============================================================================
+
+func TestGuardEnterFrozen_PerfectHappyPath(t *testing.T) {
+	now := time.Now()
+	sm, _, anr, pr := newFixture(now)
+	// 严格的最小 P99: 1 秒
+	pr.policy.DrainP99Seconds = 1
+
+	acc := mkAccount("A001", 42, model.LifecyclePhaseDraining)
+	acc.DrainingStartedAt = ptrTime(now.Add(-1 * time.Second))
+	acc.Balance = 0
+	// 每个 shard 都 0
+	for _, gtbl := range []int{0, 1, 2, 50, 99} {
+		anr.openByShard[gtbl] = 0
+		anr.stuckByShard[gtbl] = 0
+	}
+
+	r, err := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
+	if err != nil {
+		t.Fatalf("unexpected err %v", err)
+	}
+	if !r.Allowed {
+		t.Errorf("perfect happy path should allow; got %q", r.Reason)
+	}
+}
+
+// ============================================================================
+// 大量 anchor shard：100 个全 0 也要正确求和
+// ============================================================================
+
+func TestGuardEnterFrozen_All100ShardsZero(t *testing.T) {
+	now := time.Now()
+
+	allShards := make([]int, 100)
+	for i := range allShards {
+		allShards[i] = i
+	}
+	shards := &fakeAnchorShards{ids: allShards}
+
+	sm := NewInstanceStateMachine(
+		&fakeAccountReader{},
+		&fakeAnchorReader{
+			openByShard:  map[int]int64{}, // all default 0
+			stuckByShard: map[int]int64{},
+		},
+		&fakePolicyReader{
+			policy: &model.LogicalAccountRotationPolicy{
+				LogicalAccountID: 42, DrainP99Seconds: 1, DrainHardTimeoutSecs: 1,
+				ArchiveGraceSecs: 0, PeriodUnit: model.PeriodUnitDay, PeriodCount: 1,
+				RotationAnchorTZ: "UTC",
+			},
+		},
+		shards,
+		func() time.Time { return now },
+	)
+	acc := mkDrainingAccount(now, 10, 0)
+	r, err := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Allowed {
+		t.Errorf("all 100 shards zero should allow; got %q", r.Reason)
+	}
+}
+
+// 一个 shard 有 1 笔 open，其他 99 全 0 —— 必须拒
+func TestGuardEnterFrozen_SingleAnchorAcrossManyShards(t *testing.T) {
+	now := time.Now()
+	allShards := make([]int, 100)
+	for i := range allShards {
+		allShards[i] = i
+	}
+
+	sm := NewInstanceStateMachine(
+		&fakeAccountReader{},
+		&fakeAnchorReader{
+			openByShard:  map[int]int64{42: 1}, // shard 42 has 1 open
+			stuckByShard: map[int]int64{},
+		},
+		&fakePolicyReader{
+			policy: &model.LogicalAccountRotationPolicy{
+				LogicalAccountID: 42, DrainP99Seconds: 1, DrainHardTimeoutSecs: 1,
+				ArchiveGraceSecs: 0, PeriodUnit: model.PeriodUnitDay, PeriodCount: 1,
+				RotationAnchorTZ: "UTC",
+			},
+		},
+		&fakeAnchorShards{ids: allShards},
+		func() time.Time { return now },
+	)
+	acc := mkDrainingAccount(now, 10, 0)
+	r, _ := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
+	if r.Allowed {
+		t.Fatal("1 open anchor anywhere must block")
+	}
+	if !contains(r.Reason, "1 open anchor") {
+		t.Errorf("reason should mention count, got %q", r.Reason)
+	}
+}

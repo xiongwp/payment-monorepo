@@ -50,13 +50,29 @@ Related: `packages/accounting-system/internal/domain/model/account.go`, ADR-0002
 
 **关键不变量** (invariant)：
 
+- **I0（最高优先级）**：**Flow 不可切**。一个资金流（money flow）在生命周期内
+  的所有账户操作必须落在同一个 Account Instance 上，绝不允许中途切换到另一个
+  Instance。Flow 在**第一次接触 logical_account** 时通过 Anchor 锁定 Instance
+  选择，所有后续操作通过 Anchor 查找已锁定的 Instance，无论当前 active 是哪个。
+  跨期、迁移、归档都不能违反此原则。退款 / 红冲是**新 Flow**，但通过显式继承
+  机制（refund-of / reverse-of）"复制"源 Flow 的 Instance 选择——也不是切。
 - **I1**：任意时刻，对任一 `logical_account_key`，至多一个 Instance 处于 `active`。
-- **I2**：同一 `related_request_id` 在同一 `logical_account_key` 上的所有分录，
-  必须落在同一 `account_no`（即 Anchor 永不变更，除非走 §9 的强制迁移）。
+- **I2**：同一 `flow_id`（= flow ID）在同一 `logical_account_key`
+  上的所有分录，必须落在同一 `account_no`。这是 I0 在 anchor 表上的体现。
+  Anchor 永不变更，除非走 §8 的强制迁移（即使迁移，从 Flow 视角看仍是"同一套
+  账户体系"——只是该 Instance 在物理上被搬到了新位置）。
 - **I3**：`Voucher.total_debit == Voucher.total_credit`（既有不变量，不变）。
   跨 Instance 迁移**必须通过 Migration Suspense** 维持单凭证内借贷平衡。
 - **I4**：Instance 进入 `archived` 时余额必须为 0（或仅有可审计的小额尾差并已
   显式核销到损益账户）。
+
+**I0 的工程实现**：
+- `flow_id` 字段语义上 = **flow ID**（在 TCC 场景下三阶段共享同一 ID；
+  在 booking_service 现有调用中等价于 `business_no`）
+- `tx_account_anchor` 表的 `(flow_id, logical_account_id) UNIQUE` 索引
+  在 DB 层强制 I0：同一 flow 不可能同时存在两个 anchor 指向不同 Instance
+- 路由层在 Flow 首次操作时建立 anchor，所有后续操作必须通过 anchor 查找；
+  绝不允许"先看 current active，再写 anchor"这种顺序——错则会破 I0
 
 ---
 
@@ -158,7 +174,7 @@ ALTER TABLE account
 ```sql
 CREATE TABLE tx_account_anchor (
   id                    BIGINT UNSIGNED PRIMARY KEY,
-  related_request_id    VARCHAR(64)  NOT NULL,    -- 业务侧 request_id (= TCC 的 tx 标识)
+  flow_id               VARCHAR(64)  NOT NULL,    -- 业务侧资金流 ID（业务 ID；同一资金流的 TCC/清算/退款共享此 ID）
   logical_account_id    BIGINT UNSIGNED NOT NULL,
   account_no            VARCHAR(32)  NOT NULL,    -- 锚定到的 instance
   direction_mask        TINYINT      NOT NULL,    -- bit0=曾借记 bit1=曾贷记，便于审计
@@ -174,13 +190,13 @@ CREATE TABLE tx_account_anchor (
   created_at             DATETIME    NOT NULL,
   updated_at             DATETIME    NOT NULL,
   version                BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_req_logical (related_request_id, logical_account_id),
+  UNIQUE KEY uk_flow_logical (flow_id, logical_account_id),
   KEY idx_logical_status_lastpost (logical_account_id, status, last_posting_at),
   KEY idx_account_status (account_no, status)
 );
 ```
 
-**分片策略**：按 `related_request_id` 哈希分 100 片，与 `account_transaction`
+**分片策略**：按 `flow_id` 哈希分 100 片，与 `account_transaction`
 对齐，避免跨片 join。
 
 ### 3.4.1 anchor.status 生命周期（关键）
@@ -310,14 +326,14 @@ COMMIT;
 ## 5. 写入路由（Booking Router）
 
 **核心契约**：业务方调用记账接口时，**不指定 `account_no`**，而是指定
-`logical_account_key + related_request_id`。路由层负责把它解析为具体 `account_no`。
+`logical_account_key + flow_id`。路由层负责把它解析为具体 `account_no`。
 
 ### 5.1 接口
 
 ```go
 // 新接口（推荐）
 type BookingRequest struct {
-    RelatedRequestID  string                // 业务幂等 key
+    FlowID  string                // 业务幂等 key
     LogicalAccountKey string                // 例 "transit:channel-payable:alipay:CNY"
     Direction         Direction             // Debit / Credit
     Amount            int64                 // 最小货币单位 × 100
@@ -352,7 +368,7 @@ Book(req):
 
        b. 复用源命中（refund / reverse posting）：参见 §5.5
           - 取被复用 anchor 的 account_no
-          - 用本请求的 related_request_id 新建 anchor，account_no 拷自被复用 anchor，
+          - 用本请求的 flow_id 新建 anchor，account_no 拷自被复用 anchor，
             reuse_source / reuse_source_anchor_id 填值，便于审计
 
        c. 全部未命中：建立新锚点
@@ -360,7 +376,7 @@ Book(req):
             若与 anchor 表分片同片 → 单片查询；否则跨片读 1 次（singleflight + 5s 缓存）
           - 若 current_active_account_no 为空：ErrNoActiveInstance，立即 page（见 E-04）
           - 在 anchor 同分片本地事务里 INSERT tx_account_anchor + INSERT account_transaction
-            （uk_req_logical 防并发重复锚定 → 见 E-01）
+            （uk_flow_logical 防并发重复锚定 → 见 E-01）
 
   3. 写 account_transaction (复用现有逻辑)
        - 复用 voucher 模型保证借贷平衡
@@ -375,7 +391,7 @@ Book(req):
 ### 5.2.1 active instance 反范式化与一致性
 
 `logical_account.current_active_account_no` 是反范式化字段，目的是**避免路由
-热路径跨分片查询 `account` 表**（anchor 表按 `related_request_id` 分片，
+热路径跨分片查询 `account` 表**（anchor 表按 `flow_id` 分片，
 `account` 按 `user_id` 分片，是不同的物理分片）。
 
 **写入此字段的唯一入口**：rotation scheduler 在执行 active 切换的同一事务内
@@ -412,7 +428,7 @@ logical_account 未更新，下次 scheduler tick 检测出"phase=active 的 acc
 - `tx_outbox` 插入（可选）
 
 所有这些必须落在**同一个分片**——所以 anchor 表的分片键与 transaction 表一致（按
-`related_request_id` 哈希）。
+`flow_id` 哈希）。
 
 **为什么不能跨片**：若 anchor 在 A 分片、transaction 在 B 分片，两次 COMMIT
 之间崩溃会导致"锚已建立但流水未落"——下次写入会找到陈旧锚点指向不存在的流水。
@@ -426,12 +442,12 @@ logical_account 未更新，下次 scheduler tick 检测出"phase=active 的 acc
 ```
 
 `voucher_no` 是凭证维度的 ID。路由层对**每一行分录独立做锚定查询**——同一
-`related_request_id` 在不同 `logical_account_id` 上可以并存多条 anchor 记录
-（uk_req_logical 联合唯一）。
+`flow_id` 在不同 `logical_account_id` 上可以并存多条 anchor 记录
+（uk_flow_logical 联合唯一）。
 
 对于跨账户但单凭证的写入，调用方应：
 1. 先 `BeginVoucher(voucher_no)`
-2. 对每行分录调 `Book(req)`，复用同一 `voucher_no` 和 `related_request_id`
+2. 对每行分录调 `Book(req)`，复用同一 `voucher_no` 和 `flow_id`
 3. `CommitVoucher` 触发借贷平衡校验
 
 `CommitVoucher` 在底层是一个跨分片事务——参照 ADR-0002 用 **TCC**：Try
@@ -444,23 +460,23 @@ logical_account 未更新，下次 scheduler tick 检测出"phase=active 的 acc
 
 | 复用语义 | 来源字段 | 业务场景 |
 | --- | --- | --- |
-| 自身 lookup | 本请求的 `related_request_id` | TCC 各阶段、同 tx 后续分录 |
+| 自身 lookup | 本请求的 `flow_id` | TCC 各阶段、同 tx 后续分录 |
 | `refund-of` | `original_request_id_root`（业务方在请求中传） | 退款引用原支付 |
 | `reverse-of` | `original_transaction_id`（业务方在请求中传） | 红冲引用原账 |
 
 **统一查找优先级**（路由层按序尝试）：
 
 ```
-1. 自身 lookup → (related_request_id, logical_account_id)
+1. 自身 lookup → (flow_id, logical_account_id)
 2. reverse-of → 用 original_transaction_id 找到原 anchor
 3. refund-of → 用 original_request_id_root 找到根 anchor
 4. 全部失败 → 走 §5.2 步骤 2c (建立新锚点到当期 active)
 ```
 
-**关键**：复用不会让两个 `related_request_id` 共享同一 anchor 行。复用的含义
-是"用本请求的 related_request_id **新建**一行 anchor，但 `account_no` 拷自被
+**关键**：复用不会让两个 `flow_id` 共享同一 anchor 行。复用的含义
+是"用本请求的 flow_id **新建**一行 anchor，但 `account_no` 拷自被
 复用 anchor，并填 `reuse_source`/`reuse_source_anchor_id` 标识审计"。这样
-`uk_req_logical` 约束不冲突，每个业务请求都有自己的 anchor 行，查询友好。
+`uk_flow_logical` 约束不冲突，每个业务请求都有自己的 anchor 行，查询友好。
 
 **注意**：若被复用 anchor 的 instance 已 `archived`，路由层会走 §8 强制
 迁移路径——把被复用 anchor 也一并迁移到当前 active，再把新 anchor 锚定
@@ -631,7 +647,7 @@ func (j *ConvergenceJob) Run(ctx context.Context) {
 2. 解析目的 instance：同 logical 当前 active。若也 draining → 顺延到下一 active。
 3. 计算"残值"：anchor 在旧 instance 上的净余额 = Σ(debit - credit) for this anchor
    （需要扫该 anchor 的所有 account_transaction）。
-4. 生成迁移凭证 (新 voucher_no, related_request_id=migrate:{anchor_id}):
+4. 生成迁移凭证 (新 voucher_no, flow_id=migrate:{anchor_id}):
      若残值 > 0 (旧 instance 借方挂账):
        借: MigrationSuspense (旧 instance)         +残值
        贷: 旧 instance account                      -残值
@@ -651,13 +667,13 @@ func (j *ConvergenceJob) Run(ctx context.Context) {
 
 ### 8.3 迁移后继续记账
 
-后续业务方再用同样的 `related_request_id` 写入时，路由层走 §5.2 步骤 2a 的
+后续业务方再用同样的 `flow_id` 写入时，路由层走 §5.2 步骤 2a 的
 分支：发现 `status='migrated'`，自动转写到 `migrated_to_account_no`。
 **对业务侧完全透明。**
 
 ### 8.4 迁移的幂等性
 
-`migrate:{anchor_id}` 是稳定 key，重跑会被 `uk_req_logical` 拒绝重复插入。
+`migrate:{anchor_id}` 是稳定 key，重跑会被 `uk_flow_logical` 拒绝重复插入。
 路由层在 Try 阶段就检查 anchor.status，若已是 `migrated` 直接幂等返回。
 
 ### 8.5 迁移失败处理
@@ -732,7 +748,7 @@ backfill。
 
 ### 9.5 分片
 
-`account_transaction`、`tx_account_anchor` 共用 `related_request_id` 哈希
+`account_transaction`、`tx_account_anchor` 共用 `flow_id` 哈希
 分片。`account` 表的分片键仍是 `user_id % 100`——平台账户 user_id 是统一
 平台 ID，所以同一 logical_account 的所有 instance 落在**同一分片**——
 路由层批量查 instance 不跨片。
@@ -753,7 +769,7 @@ backfill。
 
 | 代号 | 场景 | 触发 | 检测 | 对策 |
 | --- | --- | --- | --- | --- |
-| E-01 | 同 `related_request_id` 并发首次锚定 | 高并发首笔 | `uk_req_logical` 唯一索引冲突 | 失败方读已存在 anchor，确认 `account_no` 一致后继续 |
+| E-01 | 同 `flow_id` 并发首次锚定 | 高并发首笔 | `uk_flow_logical` 唯一索引冲突 | 失败方读已存在 anchor，确认 `account_no` 一致后继续 |
 | E-02 | active→draining 切换瞬间，已有请求在 active 上进行 | 切换 tick 与 booking 重叠 | 写入时 `lifecycle_phase` 从 `active` 变为 `draining` | 用 `SELECT FOR UPDATE` 加行锁；写入逻辑接受 active 或 draining（既有锚定）— 两者都允许 |
 | E-03 | 两笔 Book 同时给同一 anchor 写后续分录 | 多线程消费同一 tx | account.version CAS 失败 | 重试至成功；超过 3 次报警 |
 | E-04 | 没有 active instance | scheduler 故障未及时建新 | 路由层 `ErrNoActiveInstance` | (1) 路由层在凌晨预检查并 self-heal 创建临时 instance；(2) 立即 page ops；(3) 业务方收到错误后**绝不能降级到旧账户**，必须重试 |
@@ -767,7 +783,7 @@ backfill。
 | E-07 | anchor 记录写入但 transaction 写入失败 | 分片事务边界错误 | 巡检 job 扫"无对应流水的 anchor" | 不可能发生（同事务）；若发生则 anchor 标记 `stuck`，人工修复 |
 | E-08 | anchor 指向已 archived instance | 长尾交易遗漏迁移 | 路由层 phase 校验失败 | 拒写并触发紧急迁移（同 §8 但不等 timeout） |
 | E-09 | anchor 物理损坏（DB 坏数据） | 极端故障 | 一致性巡检对比 transaction 表 | 从 transaction 表反向重建 anchor（取首笔时间为 anchored_at） |
-| E-10 | 业务方传 `related_request_id` 不稳定 | 业务实现 bug | 同一业务 tx 在 anchor 表出现多条 | 监控指标 `anchor.posting_count` 分布，多条但 count=1 是嫌疑 |
+| E-10 | 业务方传 `flow_id` 不稳定 | 业务实现 bug | 同一业务 tx 在 anchor 表出现多条 | 监控指标 `anchor.posting_count` 分布，多条但 count=1 是嫌疑 |
 
 ### 10.3 跨期与生命周期
 
@@ -775,7 +791,7 @@ backfill。
 | --- | --- | --- | --- | --- |
 | E-11 | 用户讨论的 "3 天支付跨期" | 在 active 锚定，draining 期间完成 | 正常路径 | 路由层透明处理，§5.2 步骤 2a |
 | E-12 | 跨期超过 drain_hard_timeout | 争议持续 180 天 | 收敛 job 发现 | 走 §8 强制迁移 |
-| E-13 | 退款链跨多期 | 原支付在期 A，退款在期 B 锚定**新** anchor | retrieval | 退款必须复用原支付的 `related_request_id_root`（业务方约束）；anchor 表按 root 也建索引 |
+| E-13 | 退款链跨多期 | 原支付在期 A，退款在期 B 锚定**新** anchor | retrieval | 退款必须复用原支付的 `original_flow_id`（业务方约束）；anchor 表按 root 也建索引 |
 | E-14 | 预授权 6 个月后 capture | 预授权时建锚，capture 时 instance 已 archived | E-08 路径 | 同 §8.3，capture 自动落到迁移后的新 instance |
 | E-15 | TCC Try 跨期到 Confirm | Try 在 active，Confirm 在 draining 之后 | 正常路径 | TCC 用 `account_no`（Try 时确定），不受 anchor 影响；anchor 在 Try 时建立，Confirm 是后续分录，phase 校验放行 |
 | E-16 | TCC Cancel 跨期 | Try 在 active，超时 Cancel 在 frozen 之后 | TCC stuck list | Cancel 写入会被 frozen 拒绝 → 触发针对该 anchor 的紧急迁移 → 重试 Cancel |
@@ -835,7 +851,7 @@ backfill。
 
 | 代号 | 场景 | 触发 | 检测 | 对策 |
 | --- | --- | --- | --- | --- |
-| E-44 | anchor 表成为热点 | 高 QPS | 慢查询监控 | 按 related_request_id 分片；命中走主键 + uk_req_logical |
+| E-44 | anchor 表成为热点 | 高 QPS | 慢查询监控 | 按 flow_id 分片；命中走主键 + uk_flow_logical |
 | E-45 | logical balance fan-out 太多 instance | 长尾 archived 还要算 | 路径慢 | 余额查询排除 archived；archived 走专用审计接口 |
 | E-46 | Outbox 重投放大 | Kafka rebalance | 既有幂等 | 复用现有 outbox 幂等键策略 |
 
@@ -964,7 +980,7 @@ KEY idx_logical_phase (logical_account_id, lifecycle_phase)
 KEY idx_phase_period_end (lifecycle_phase, period_end)
 
 -- tx_account_anchor: 路由热点查询
-UNIQUE KEY uk_req_logical (related_request_id, logical_account_id)
+UNIQUE KEY uk_flow_logical (flow_id, logical_account_id)
 -- 收敛 job 按 instance 扫开口 anchor
 KEY idx_account_status (account_no, status)
 -- 长尾告警查询

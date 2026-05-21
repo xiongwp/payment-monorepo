@@ -15,29 +15,28 @@ import (
 
 // AnchorRepository 管理 tx_account_anchor 分片表（100 片）。
 //
-// 分片策略：(related_request_id) 经 FNV-1a 哈希 mod 100 → globalTblIdx；
-//          dbIdx = globalTblIdx / 10。
-// 与 account_transaction 表的对齐由 booking router 保证（router 决定 entry 写哪个
-// 分片 → 该分片同时承接 anchor 写入）。
+// 【方向 B 分片】按 account_no 哈希分 100 片，与 account_transaction、account 同片。
+// anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC。
+//
+// 查找路径：业务方按 (flow_id, logical_account_id) 想找 anchor，必须先查
+// FlowAnchorRouteRepository 拿到 account_no，再来本表查。
 //
 // 设计文档：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4, §3.4.1, §5.2
 type AnchorRepository interface {
-	// RouteByRequestID 暴露分片路由函数，便于 booking router 在写入 entry 前
-	// 决定落到哪个分片。
-	RouteByRequestID(relatedRequestID string) (dbIndex, globalTableIndex int)
+	// RouteByAccountNo 路由：account_no → (db, table)。复用 sharding.Router.RouteByAccountNo。
+	RouteByAccountNo(accountNo string) (dbIndex, globalTableIndex int)
 
 	// InsertInTx 在调用方提供的 gorm.DB 事务上插入 anchor。
-	// 必须与对应 entry 写入处于同一本地事务。
-	// 唯一冲突 (uk_req_logical) 返回 ErrAnchorAlreadyExists。
+	// **同事务必须与对应的 account_transaction 写入合并**（这是方向 B 的核心收益）。
+	// 唯一冲突 (uk_flow_account) 返回 ErrAnchorAlreadyExists。
 	InsertInTx(ctx context.Context, tx *gorm.DB, anchor *model.TxAccountAnchor, globalTableIndex int) error
 
-	// GetByRequestAndLogical 按 (related_request_id, logical_account_id) 查询；
-	// 未命中返回 (nil, nil)。
-	GetByRequestAndLogical(ctx context.Context, relatedRequestID string, logicalAccountID int64) (*model.TxAccountAnchor, error)
+	// GetByFlowAndAccount 按 (flow_id, account_no) 查询；未命中返回 (nil, nil)。
+	// 调用方必须先通过 FlowAnchorRoute 拿到 account_no。
+	GetByFlowAndAccount(ctx context.Context, flowID string, accountNo string) (*model.TxAccountAnchor, error)
 
-	// GetByRequestAndLogicalInTx 同上，但在指定事务里读。
-	// 用于路由层"读—改—写"路径，避免幻读。
-	GetByRequestAndLogicalInTx(ctx context.Context, tx *gorm.DB, relatedRequestID string, logicalAccountID int64, globalTableIndex int) (*model.TxAccountAnchor, error)
+	// GetByFlowAndAccountInTx 同上，但在指定事务里读。
+	GetByFlowAndAccountInTx(ctx context.Context, tx *gorm.DB, flowID string, accountNo string, globalTableIndex int) (*model.TxAccountAnchor, error)
 
 	// UpdatePostingInTx anchor 上记一笔分录后更新计数与 direction_mask。
 	// CAS on version。CAS 失败返回 ErrAnchorVersionConflict。
@@ -45,8 +44,7 @@ type AnchorRepository interface {
 		anchorID int64, expectedVersion int64,
 		newPostingAt time.Time, newMask model.AnchorDirectionMask) error
 
-	// UpdateStatusInTx 改 anchor.status；状态转换合法性由调用方先用 model.CanTransitionAnchor
-	// 检验，repo 层再做 CAS。
+	// UpdateStatusInTx 改 anchor.status；状态转换合法性由调用方先用 model.CanTransitionAnchor 检验。
 	UpdateStatusInTx(ctx context.Context, tx *gorm.DB, globalTableIndex int,
 		anchorID int64, expectedVersion int64, newStatus model.AnchorStatus) error
 
@@ -56,28 +54,26 @@ type AnchorRepository interface {
 		anchorID int64, expectedVersion int64,
 		targetAccountNo string, voucherNo string) error
 
-	// CountOpenByAccountNo 收敛 job 使用：统计某 instance 上 status ∈ {trying, active}
-	// 的 anchor 数量。
-	CountOpenByAccountNo(ctx context.Context, accountNo string, globalTableIndex int) (int64, error)
+	// CountOpenByAccountNo 收敛 job 使用：统计某 instance 上 status ∈ {trying, active} 的 anchor 数量。
+	// 【方向 B 收益】单分片查询，无需 fan-out。
+	CountOpenByAccountNo(ctx context.Context, accountNo string) (int64, error)
 
 	// CountStuckByAccountNo 收敛 job：stuck > 0 时阻断推进到 frozen。
-	CountStuckByAccountNo(ctx context.Context, accountNo string, globalTableIndex int) (int64, error)
+	CountStuckByAccountNo(ctx context.Context, accountNo string) (int64, error)
 
-	// OldestOpenAnchoredAt 收敛 job：找到 instance 上最老的 open anchor 的 anchored_at；
-	// 无 open 返回 (nil, nil)。
-	OldestOpenAnchoredAt(ctx context.Context, accountNo string, globalTableIndex int) (*time.Time, error)
+	// OldestOpenAnchoredAt 收敛 job：找到 instance 上最老的 open anchor 的 anchored_at；无 open 返回 (nil, nil)。
+	OldestOpenAnchoredAt(ctx context.Context, accountNo string) (*time.Time, error)
 
-	// ListStuckCandidates 列出所有 status=active 且 last_posting_at < cutoff 的 anchor，
-	// 用于强制迁移 / stuck 检测。返回 globalTableIndex 维度的结果（调用方按分片合并）。
-	ListStuckCandidates(ctx context.Context, globalTableIndex int, accountNo string, cutoff time.Time, limit int) ([]*model.TxAccountAnchor, error)
+	// ListStuckCandidates 列出 status=active 且 last_posting_at < cutoff 的 anchor。
+	ListStuckCandidates(ctx context.Context, accountNo string, cutoff time.Time, limit int) ([]*model.TxAccountAnchor, error)
 }
 
 // 错误：repo 层暴露的标准错误。
 var (
-	ErrAnchorAlreadyExists      = errors.New("tx_account_anchor already exists (uk_req_logical)")
-	ErrAnchorVersionConflict    = errors.New("tx_account_anchor version conflict (CAS failed)")
-	ErrAnchorNotFound           = errors.New("tx_account_anchor not found")
-	ErrAnchorShardMisrouted     = errors.New("anchor shard index out of range")
+	ErrAnchorAlreadyExists   = errors.New("tx_account_anchor already exists (uk_flow_account)")
+	ErrAnchorVersionConflict = errors.New("tx_account_anchor version conflict (CAS failed)")
+	ErrAnchorNotFound        = errors.New("tx_account_anchor not found")
+	ErrAnchorShardMisrouted  = errors.New("anchor shard index out of range")
 )
 
 type anchorRepository struct {
@@ -90,29 +86,20 @@ func NewAnchorRepository(dbManager *database.Manager, router *sharding.Router) A
 	return &anchorRepository{dbManager: dbManager, router: router}
 }
 
+// RouteByAccountNo 通过 sharding.Router 路由（复用已有 account_no 路由逻辑，
+// 保证 anchor 与 account/transaction 同分片）。
+func (r *anchorRepository) RouteByAccountNo(accountNo string) (dbIndex, globalTableIndex int) {
+	return r.router.RouteByAccountNo(accountNo)
+}
+
 // hashStringMod100 FNV-1a 64bit hash mod ShardTableTotal。
-//
-// 用 FNV 而非 SHA：anchor 分片只需要分布均匀，不需要加密强度，FNV 更快且与
-// payment-monorepo 内其他热点路径选择一致（low-overhead）。
+// 注意：anchor 表方向 B 不用这个（用 RouteByAccountNo），但保留给 flow_anchor_route 使用。
 func hashStringMod100(s string) int {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(s))
 	return int(h.Sum64() % uint64(sharding.ShardTableTotal))
 }
 
-// RouteByRequestID see interface.
-func (r *anchorRepository) RouteByRequestID(relatedRequestID string) (dbIndex, globalTableIndex int) {
-	if relatedRequestID == "" {
-		// fail-safe：空 request_id 落到 shard 0，并由上层 validation 拒绝
-		return 0, 0
-	}
-	gtblIdx := hashStringMod100(relatedRequestID)
-	dbIdx := gtblIdx / sharding.ShardTablePerDB
-	return dbIdx, gtblIdx
-}
-
-// shardTableName 内部：根据 globalTableIndex 生成实际表名。
-// 注意：使用 router.TableName(ctx, ...) 可让 shadow 流量自动落到 _shadow 表。
 func (r *anchorRepository) shardTableName(ctx context.Context, globalTableIndex int) (string, error) {
 	if globalTableIndex < 0 || globalTableIndex >= sharding.ShardTableTotal {
 		return "", fmt.Errorf("%w: globalTableIndex=%d", ErrAnchorShardMisrouted, globalTableIndex)
@@ -138,8 +125,8 @@ func (r *anchorRepository) InsertInTx(
 	if anchor == nil {
 		return errors.New("anchor: nil input")
 	}
-	if anchor.RelatedRequestID == "" {
-		return errors.New("anchor: related_request_id required")
+	if anchor.FlowID == "" {
+		return errors.New("anchor: flow_id required")
 	}
 	if anchor.LogicalAccountID == 0 {
 		return errors.New("anchor: logical_account_id required")
@@ -157,37 +144,37 @@ func (r *anchorRepository) InsertInTx(
 		anchor.PostingCount = 1
 	}
 
-	// 路由校验：调用方传入的 globalTableIndex 必须与 hash(related_request_id) 一致
-	// 否则就是 booking router bug（写入串片）。
-	_, expectedTbl := r.RouteByRequestID(anchor.RelatedRequestID)
+	// 方向 B 路由校验：调用方传入的 globalTableIndex 必须与 RouteByAccountNo 一致
+	_, expectedTbl := r.RouteByAccountNo(anchor.AccountNo)
 	if expectedTbl != globalTableIndex {
-		return fmt.Errorf("%w: caller said gtbl=%d but hash(%q)=%d",
-			ErrAnchorShardMisrouted, globalTableIndex, anchor.RelatedRequestID, expectedTbl)
+		return fmt.Errorf("%w: caller said gtbl=%d but RouteByAccountNo(%q)=%d",
+			ErrAnchorShardMisrouted, globalTableIndex, anchor.AccountNo, expectedTbl)
 	}
 
 	tableName, err := r.shardTableName(ctx, globalTableIndex)
 	if err != nil {
 		return err
 	}
-	// 直接 INSERT；唯一索引 uk_req_logical 由 DB 保证并发安全。
 	if err := tx.WithContext(ctx).Table(tableName).Create(anchor).Error; err != nil {
-		// MySQL duplicate key 错误 1062 → 包装为业务层可识别的 ErrAnchorAlreadyExists
 		if isDuplicateKeyErr(err) {
-			return fmt.Errorf("%w: req_id=%s la_id=%d",
-				ErrAnchorAlreadyExists, anchor.RelatedRequestID, anchor.LogicalAccountID)
+			return fmt.Errorf("%w: flow_id=%s account_no=%s",
+				ErrAnchorAlreadyExists, anchor.FlowID, anchor.AccountNo)
 		}
 		return fmt.Errorf("anchor: insert: %w", err)
 	}
 	return nil
 }
 
-func (r *anchorRepository) GetByRequestAndLogical(
-	ctx context.Context, relatedRequestID string, logicalAccountID int64,
+func (r *anchorRepository) GetByFlowAndAccount(
+	ctx context.Context, flowID string, accountNo string,
 ) (*model.TxAccountAnchor, error) {
-	if relatedRequestID == "" {
-		return nil, errors.New("anchor: empty request_id")
+	if flowID == "" {
+		return nil, errors.New("anchor: empty flow_id")
 	}
-	_, gtblIdx := r.RouteByRequestID(relatedRequestID)
+	if accountNo == "" {
+		return nil, errors.New("anchor: empty account_no")
+	}
+	_, gtblIdx := r.RouteByAccountNo(accountNo)
 	tableName, err := r.shardTableName(ctx, gtblIdx)
 	if err != nil {
 		return nil, err
@@ -198,20 +185,20 @@ func (r *anchorRepository) GetByRequestAndLogical(
 	}
 	var row model.TxAccountAnchor
 	res := db.WithContext(ctx).Table(tableName).
-		Where("related_request_id = ? AND logical_account_id = ?", relatedRequestID, logicalAccountID).
+		Where("flow_id = ? AND account_no = ?", flowID, accountNo).
 		Take(&row)
 	if res.Error != nil {
 		if errors.Is(res.Error, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("anchor: get by (req,la): %w", res.Error)
+		return nil, fmt.Errorf("anchor: get by (flow,acc): %w", res.Error)
 	}
 	return &row, nil
 }
 
-func (r *anchorRepository) GetByRequestAndLogicalInTx(
+func (r *anchorRepository) GetByFlowAndAccountInTx(
 	ctx context.Context, tx *gorm.DB,
-	relatedRequestID string, logicalAccountID int64, globalTableIndex int,
+	flowID string, accountNo string, globalTableIndex int,
 ) (*model.TxAccountAnchor, error) {
 	tableName, err := r.shardTableName(ctx, globalTableIndex)
 	if err != nil {
@@ -219,7 +206,7 @@ func (r *anchorRepository) GetByRequestAndLogicalInTx(
 	}
 	var row model.TxAccountAnchor
 	res := tx.WithContext(ctx).Table(tableName).
-		Where("related_request_id = ? AND logical_account_id = ?", relatedRequestID, logicalAccountID).
+		Where("flow_id = ? AND account_no = ?", flowID, accountNo).
 		Take(&row)
 	if res.Error != nil {
 		if errors.Is(res.Error, gorm.ErrRecordNotFound) {
@@ -242,10 +229,10 @@ func (r *anchorRepository) UpdatePostingInTx(
 	res := tx.WithContext(ctx).Table(tableName).
 		Where("id = ? AND version = ?", anchorID, expectedVersion).
 		Updates(map[string]any{
-			"last_posting_at":  newPostingAt,
-			"posting_count":    gorm.Expr("posting_count + 1"),
-			"direction_mask":   newMask,
-			"version":          gorm.Expr("version + 1"),
+			"last_posting_at": newPostingAt,
+			"posting_count":   gorm.Expr("posting_count + 1"),
+			"direction_mask":  newMask,
+			"version":         gorm.Expr("version + 1"),
 		})
 	if res.Error != nil {
 		return fmt.Errorf("anchor: update posting: %w", res.Error)
@@ -296,11 +283,11 @@ func (r *anchorRepository) MarkMigratedInTx(
 	res := tx.WithContext(ctx).Table(tableName).
 		Where("id = ? AND version = ? AND status = ?", anchorID, expectedVersion, model.AnchorStatusActive).
 		Updates(map[string]any{
-			"status":                  model.AnchorStatusMigrated,
-			"migrated_to_account_no":  targetAccountNo,
-			"migration_voucher_no":    voucherNo,
-			"migration_chain_depth":   gorm.Expr("migration_chain_depth + 1"),
-			"version":                 gorm.Expr("version + 1"),
+			"status":                 model.AnchorStatusMigrated,
+			"migrated_to_account_no": targetAccountNo,
+			"migration_voucher_no":   voucherNo,
+			"migration_chain_depth":  gorm.Expr("migration_chain_depth + 1"),
+			"version":                gorm.Expr("version + 1"),
 		})
 	if res.Error != nil {
 		return fmt.Errorf("anchor: mark migrated: %w", res.Error)
@@ -312,14 +299,14 @@ func (r *anchorRepository) MarkMigratedInTx(
 	return nil
 }
 
-func (r *anchorRepository) CountOpenByAccountNo(
-	ctx context.Context, accountNo string, globalTableIndex int,
-) (int64, error) {
-	tableName, err := r.shardTableName(ctx, globalTableIndex)
+// CountOpenByAccountNo 方向 B 收益：单片查询，无 fan-out。
+func (r *anchorRepository) CountOpenByAccountNo(ctx context.Context, accountNo string) (int64, error) {
+	_, gtblIdx := r.RouteByAccountNo(accountNo)
+	tableName, err := r.shardTableName(ctx, gtblIdx)
 	if err != nil {
 		return 0, err
 	}
-	db, err := r.dbForShard(globalTableIndex)
+	db, err := r.dbForShard(gtblIdx)
 	if err != nil {
 		return 0, err
 	}
@@ -334,14 +321,13 @@ func (r *anchorRepository) CountOpenByAccountNo(
 	return count, nil
 }
 
-func (r *anchorRepository) CountStuckByAccountNo(
-	ctx context.Context, accountNo string, globalTableIndex int,
-) (int64, error) {
-	tableName, err := r.shardTableName(ctx, globalTableIndex)
+func (r *anchorRepository) CountStuckByAccountNo(ctx context.Context, accountNo string) (int64, error) {
+	_, gtblIdx := r.RouteByAccountNo(accountNo)
+	tableName, err := r.shardTableName(ctx, gtblIdx)
 	if err != nil {
 		return 0, err
 	}
-	db, err := r.dbForShard(globalTableIndex)
+	db, err := r.dbForShard(gtblIdx)
 	if err != nil {
 		return 0, err
 	}
@@ -356,13 +342,14 @@ func (r *anchorRepository) CountStuckByAccountNo(
 }
 
 func (r *anchorRepository) OldestOpenAnchoredAt(
-	ctx context.Context, accountNo string, globalTableIndex int,
+	ctx context.Context, accountNo string,
 ) (*time.Time, error) {
-	tableName, err := r.shardTableName(ctx, globalTableIndex)
+	_, gtblIdx := r.RouteByAccountNo(accountNo)
+	tableName, err := r.shardTableName(ctx, gtblIdx)
 	if err != nil {
 		return nil, err
 	}
-	db, err := r.dbForShard(globalTableIndex)
+	db, err := r.dbForShard(gtblIdx)
 	if err != nil {
 		return nil, err
 	}
@@ -388,7 +375,7 @@ func (r *anchorRepository) OldestOpenAnchoredAt(
 }
 
 func (r *anchorRepository) ListStuckCandidates(
-	ctx context.Context, globalTableIndex int, accountNo string, cutoff time.Time, limit int,
+	ctx context.Context, accountNo string, cutoff time.Time, limit int,
 ) ([]*model.TxAccountAnchor, error) {
 	if limit <= 0 {
 		limit = 100
@@ -396,20 +383,19 @@ func (r *anchorRepository) ListStuckCandidates(
 	if limit > 1000 {
 		limit = 1000
 	}
-	tableName, err := r.shardTableName(ctx, globalTableIndex)
+	_, gtblIdx := r.RouteByAccountNo(accountNo)
+	tableName, err := r.shardTableName(ctx, gtblIdx)
 	if err != nil {
 		return nil, err
 	}
-	db, err := r.dbForShard(globalTableIndex)
+	db, err := r.dbForShard(gtblIdx)
 	if err != nil {
 		return nil, err
 	}
 	var rows []*model.TxAccountAnchor
 	q := db.WithContext(ctx).Table(tableName).
-		Where("status = ? AND last_posting_at < ?", model.AnchorStatusActive, cutoff)
-	if accountNo != "" {
-		q = q.Where("account_no = ?", accountNo)
-	}
+		Where("status = ? AND last_posting_at < ? AND account_no = ?",
+			model.AnchorStatusActive, cutoff, accountNo)
 	if err := q.Order("anchored_at ASC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("anchor: list stuck candidates: %w", err)
 	}
@@ -417,19 +403,14 @@ func (r *anchorRepository) ListStuckCandidates(
 }
 
 // isDuplicateKeyErr 检测 MySQL duplicate key 错误（错误码 1062）。
-// 我们容忍 GORM/driver 升级时的错误类型变化——用错误消息子串而非具体类型。
 func isDuplicateKeyErr(err error) bool {
 	if err == nil {
 		return false
 	}
 	s := err.Error()
-	// MySQL: "Error 1062: Duplicate entry"
-	// MariaDB: similar
-	// GORM wraps but preserves the original message.
 	return contains(s, "1062") || contains(s, "Duplicate entry") || contains(s, "duplicate key")
 }
 
-// contains 不引入 strings 包以保持 repo 文件依赖面简洁。
 func contains(s, substr string) bool {
 	if substr == "" {
 		return true

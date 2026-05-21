@@ -173,3 +173,25 @@ CREATE TABLE IF NOT EXISTS `tcc_coordinator_69_shadow` LIKE `tcc_coordinator_69`
 CREATE TABLE IF NOT EXISTS `batch_order_69_shadow` LIKE `batch_order_69`;
 CREATE TABLE IF NOT EXISTS `settlement_outbox_69_shadow` LIKE `settlement_outbox_69`;
 
+
+
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_60_shadow` LIKE `tx_account_anchor_60`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_60_shadow` LIKE `flow_anchor_route_60`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_61_shadow` LIKE `tx_account_anchor_61`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_61_shadow` LIKE `flow_anchor_route_61`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_62_shadow` LIKE `tx_account_anchor_62`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_62_shadow` LIKE `flow_anchor_route_62`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_63_shadow` LIKE `tx_account_anchor_63`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_63_shadow` LIKE `flow_anchor_route_63`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_64_shadow` LIKE `tx_account_anchor_64`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_64_shadow` LIKE `flow_anchor_route_64`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_65_shadow` LIKE `tx_account_anchor_65`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_65_shadow` LIKE `flow_anchor_route_65`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_66_shadow` LIKE `tx_account_anchor_66`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_66_shadow` LIKE `flow_anchor_route_66`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_67_shadow` LIKE `tx_account_anchor_67`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_67_shadow` LIKE `flow_anchor_route_67`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_68_shadow` LIKE `tx_account_anchor_68`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_68_shadow` LIKE `flow_anchor_route_68`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_69_shadow` LIKE `tx_account_anchor_69`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_69_shadow` LIKE `flow_anchor_route_69`;

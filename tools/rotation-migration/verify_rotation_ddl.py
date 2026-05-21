@@ -41,7 +41,7 @@ REQUIRED_ACCOUNT_INDEXES = [
 ]
 
 REQUIRED_ANCHOR_COLUMNS = [
-    "related_request_id",
+    "flow_id",
     "logical_account_id",
     "account_no",
     "direction_mask",
@@ -53,6 +53,14 @@ REQUIRED_ANCHOR_COLUMNS = [
     "status",
     "reuse_source",
     "reuse_source_anchor_id",
+    "migration_chain_depth",
+    "version",
+]
+
+REQUIRED_ROUTE_COLUMNS = [
+    "flow_id",
+    "logical_account_id",
+    "account_no",
     "migration_chain_depth",
     "version",
 ]
@@ -102,18 +110,32 @@ def main():
             for col in REQUIRED_ANCHOR_COLUMNS:
                 if f"`{col}`" not in anchor_block:
                     errors.append(f"tx_account_anchor_{nn}: missing column `{col}`")
-            if "uk_req_logical" not in anchor_block:
-                errors.append(f"tx_account_anchor_{nn}: missing UNIQUE KEY uk_req_logical")
+            if "uk_flow_account" not in anchor_block:
+                errors.append(f"tx_account_anchor_{nn}: missing UNIQUE KEY uk_flow_account (direction B)")
+            if "idx_flow_logical" not in anchor_block:
+                errors.append(f"tx_account_anchor_{nn}: missing secondary index idx_flow_logical (direction B routing fallback)")
 
-        # shadow side must have all 10 LIKE statements
+            # flow_anchor_route_NN must exist (direction B routing table)
+            route_block = slice_create_table(sql, f"flow_anchor_route_{nn}")
+            if not route_block:
+                errors.append(f"missing CREATE TABLE flow_anchor_route_{nn} in {path}")
+                continue
+            for col in REQUIRED_ROUTE_COLUMNS:
+                if f"`{col}`" not in route_block:
+                    errors.append(f"flow_anchor_route_{nn}: missing column `{col}`")
+            if "uk_flow_logical" not in route_block:
+                errors.append(f"flow_anchor_route_{nn}: missing UNIQUE KEY uk_flow_logical (direction B)")
+
+        # shadow side must have all 10 LIKE statements for both anchor + route
         shadow_path = os.path.join(ACCT_INIT_DIR, f"{db_idx}_init_shadow.sql")
         with open(shadow_path, "r", encoding="utf-8") as f:
             shadow_sql = f.read()
         for tbl_idx in range(10):
             nn = f"{db_idx * 10 + tbl_idx:02d}"
-            line = f"`tx_account_anchor_{nn}_shadow` LIKE `tx_account_anchor_{nn}`"
-            if line not in shadow_sql:
-                errors.append(f"missing shadow LIKE for tx_account_anchor_{nn} in {shadow_path}")
+            for base in (f"tx_account_anchor_{nn}", f"flow_anchor_route_{nn}"):
+                line = f"`{base}_shadow` LIKE `{base}`"
+                if line not in shadow_sql:
+                    errors.append(f"missing shadow LIKE for {base} in {shadow_path}")
 
     # metadb checks
     meta_path = os.path.join(META_INIT_DIR, "init.sql")

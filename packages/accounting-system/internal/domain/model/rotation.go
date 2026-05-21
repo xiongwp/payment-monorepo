@@ -239,7 +239,7 @@ func ValidateAnchorTransition(from, to AnchorStatus) error {
 // AnchorReuseSource anchor 复用来源（§5.5）。
 //
 // 复用规则：refund / reverse posting 不共享 anchor 行，而是用本请求的
-// related_request_id 新建 anchor 行，account_no 拷自被复用 anchor，
+// flow_id 新建 anchor 行，account_no 拷自被复用 anchor，
 // reuse_source / reuse_source_anchor_id 填入用于审计。
 type AnchorReuseSource int8
 
@@ -247,7 +247,7 @@ const (
 	// AnchorReuseSourcePrimary 本请求自身首次锚定（默认）。
 	AnchorReuseSourcePrimary AnchorReuseSource = 0
 
-	// AnchorReuseSourceRefundOf 退款引用原支付的 related_request_id_root。
+	// AnchorReuseSourceRefundOf 退款引用原支付的 OriginalFlowID。
 	AnchorReuseSourceRefundOf AnchorReuseSource = 1
 
 	// AnchorReuseSourceReverseOf 红冲引用原 transaction_id（错账冲销）。
@@ -453,21 +453,31 @@ func (p *LogicalAccountRotationPolicy) Validate() error {
 // TxAccountAnchor — 交易锚点注册表
 // ============================================================================
 
-// TxAccountAnchor 交易在 logical_account 上的锚点。
+// TxAccountAnchor 资金流在 instance 上的锚点。
 //
-// 表：tx_account_anchor，按 related_request_id 哈希分 100 片（与 account_transaction 对齐）。
+// 【方向 B 分片】按 account_no 哈希分 100 片（与 account_transaction、account 同片）。
+// anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC。
+//
+// 字段语义：
+//   FlowID 是**业务侧资金流 ID**（业务 ID，由业务方在请求里传入；等同 business_no）。
+//   例：用户充值流（flow-topup）发起时业务系统生成一个 business_id —— 这就是这次
+//   充值的 FlowID。后续清算、结算、退款等关联操作都共用同一个 FlowID。
+//
+// 查找路径（方向 B 关键）：
+//   业务方按 (flow_id, logical_account_id) 想找 account_no，必须先查
+//   FlowAnchorRoute 表（按 flow_id 分片）拿到 account_no，再来本表查 anchor 详情。
 //
 // 关键不变量（强制）：
-//   I-A1 (related_request_id, logical_account_id) 唯一 → uk_req_logical
-//   I-A2 同一 anchor 的所有 transaction 必须落在 anchor.account_no 上（或迁移后的 chain 末端）
+//   I-A1 (flow_id, account_no) 唯一 → uk_flow_account（同 flow 在同 instance 上仅一条 anchor）
+//   I-A2 同一 flow 的所有 transaction 必须落在 anchor.account_no 上（或迁移后的 chain 末端）
 //   I-A3 status 转换必须经过 CanTransitionAnchor 校验
 //
 // 见设计文档 §3.4 与 §3.4.1。
 type TxAccountAnchor struct {
 	ID                   int64               `db:"id"                       gorm:"column:id;primaryKey"`
-	RelatedRequestID     string              `db:"related_request_id"       gorm:"column:related_request_id;type:varchar(64);uniqueIndex:uk_req_logical,priority:1"`
-	LogicalAccountID     int64               `db:"logical_account_id"       gorm:"column:logical_account_id;uniqueIndex:uk_req_logical,priority:2"`
-	AccountNo            string              `db:"account_no"               gorm:"column:account_no;type:varchar(32);index:idx_account_status,priority:1"`
+	FlowID               string              `db:"flow_id"                  gorm:"column:flow_id;type:varchar(64);uniqueIndex:uk_flow_account,priority:1;index:idx_flow_logical,priority:1"`
+	LogicalAccountID     int64               `db:"logical_account_id"       gorm:"column:logical_account_id;index:idx_flow_logical,priority:2"`
+	AccountNo            string              `db:"account_no"               gorm:"column:account_no;type:varchar(64);uniqueIndex:uk_flow_account,priority:2;index:idx_account_status,priority:1"`
 	DirectionMask        AnchorDirectionMask `db:"direction_mask"           gorm:"column:direction_mask"`
 	AnchoredAt           time.Time           `db:"anchored_at"              gorm:"column:anchored_at"`
 	LastPostingAt        time.Time           `db:"last_posting_at"          gorm:"column:last_posting_at"`
@@ -494,6 +504,39 @@ func (a *TxAccountAnchor) IsMigrated() bool { return a.Status == AnchorStatusMig
 
 // IsStuck 自动重试耗尽，等待人工处理。
 func (a *TxAccountAnchor) IsStuck() bool { return a.Status == AnchorStatusStuck }
+
+// ============================================================================
+// FlowAnchorRoute — 方向 B 路由索引表
+//
+// 【方向 B 关键】routing table，按 flow_id 分片，承担"(flow_id, logical_account_id) →
+// account_no" 的查找职责。
+//
+// 写入：
+//   - 首次锚定时由路由层写入（在 flow_id 所在分片本地事务）
+//   - 强制迁移时更新 AccountNo + chain_depth++
+//   - 其他情况 immutable
+//
+// 读取：路由热路径每次都查（带 5s 缓存）。
+//
+// I0 不变量在此表的物化：
+//   - uk_flow_logical 保证 (flow_id, logical_account_id) 唯一
+//   - 一旦写入，该 flow 在该 LA 上的 account_no 锁定（除迁移）
+//   - 即使中间发生 instance 轮换（active 切换到新 instance），routing 不改 →
+//     原 flow 永远找回原锁定的 account_no，I0 满足
+// ============================================================================
+type FlowAnchorRoute struct {
+	ID                  int64     `db:"id"                    gorm:"column:id;primaryKey"`
+	FlowID              string    `db:"flow_id"               gorm:"column:flow_id;type:varchar(64);uniqueIndex:uk_flow_logical,priority:1"`
+	LogicalAccountID    int64     `db:"logical_account_id"    gorm:"column:logical_account_id;uniqueIndex:uk_flow_logical,priority:2"`
+	AccountNo           string    `db:"account_no"            gorm:"column:account_no;type:varchar(64);index:idx_account_no"`
+	MigrationChainDepth int8      `db:"migration_chain_depth" gorm:"column:migration_chain_depth;default:0"`
+	CreatedAt           time.Time `db:"created_at"            gorm:"column:created_at"`
+	UpdatedAt           time.Time `db:"updated_at"            gorm:"column:updated_at"`
+	Version             int64     `db:"version"               gorm:"column:version;default:0"`
+}
+
+// TableName GORM 表名约定（分片由 repository 决定 _NN 后缀）。
+func (FlowAnchorRoute) TableName() string { return "flow_anchor_route" }
 
 // EffectiveAccountNo 路由层使用的"当前应写入的 account_no"：
 // 若已迁移则取 migrated_to_account_no，否则取 account_no。

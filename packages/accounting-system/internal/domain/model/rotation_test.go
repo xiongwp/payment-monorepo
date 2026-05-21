@@ -877,3 +877,252 @@ func TestHasPrefix_Boundaries(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// PROPERTY-BASED TESTS — 随机序列必须保持不变量
+//
+// 用 testing/quick 风格的手摇随机：对任意（合法）转换序列，每一步必须满足
+// CanTransitionPhase；任何序列结束在 archived 的下一步只能是 quarantined（终态）。
+// ============================================================================
+
+// 任意起始 phase 走任意一条合法路径，过程中不变量恒成立：
+//   1. 每一步都在 AllowedPhaseTransitions 中
+//   2. archived 后不能再走非 quarantined
+//   3. 序列长度上限触发不会被绕过
+func TestPropertyBased_PhaseSequenceInvariants(t *testing.T) {
+	allPhases := []LifecyclePhase{
+		LifecyclePhaseProvisioned, LifecyclePhaseActive,
+		LifecyclePhaseDraining, LifecyclePhaseFrozen, LifecyclePhaseArchived,
+		LifecyclePhaseQuarantined,
+	}
+
+	// 简单 LCG，确定性可复现的伪随机
+	seed := uint64(0xCAFEBABE)
+	nextRand := func() uint64 {
+		seed = seed*6364136223846793005 + 1442695040888963407
+		return seed
+	}
+
+	const iterations = 5000
+	for it := 0; it < iterations; it++ {
+		current := allPhases[nextRand()%uint64(len(allPhases))]
+		path := []LifecyclePhase{current}
+		steps := int(nextRand()%10) + 1
+		for step := 0; step < steps; step++ {
+			target := allPhases[nextRand()%uint64(len(allPhases))]
+			if !CanTransitionPhase(current, target) {
+				continue
+			}
+			path = append(path, target)
+			current = target
+		}
+		// invariant 1: 每一步都合法
+		for i := 0; i+1 < len(path); i++ {
+			if !CanTransitionPhase(path[i], path[i+1]) {
+				t.Fatalf("iter=%d path=%v illegal step %d: %s->%s",
+					it, path, i, path[i], path[i+1])
+			}
+		}
+		// invariant 2: archived 之后只能是 quarantined
+		for i := 0; i+1 < len(path); i++ {
+			if path[i] == LifecyclePhaseArchived && path[i+1] != LifecyclePhaseQuarantined {
+				t.Fatalf("iter=%d path=%v: archived followed by non-quarantined %s",
+					it, path, path[i+1])
+			}
+		}
+	}
+}
+
+// 同样的 property 测试 anchor.status
+func TestPropertyBased_AnchorSequenceInvariants(t *testing.T) {
+	all := []AnchorStatus{
+		AnchorStatusTrying, AnchorStatusActive,
+		AnchorStatusSettled, AnchorStatusMigrated, AnchorStatusStuck,
+	}
+
+	seed := uint64(0xDEADBEEF)
+	nextRand := func() uint64 {
+		seed = seed*6364136223846793005 + 1442695040888963407
+		return seed
+	}
+
+	const iterations = 5000
+	for it := 0; it < iterations; it++ {
+		current := all[nextRand()%uint64(len(all))]
+		visited := []AnchorStatus{current}
+		for step := 0; step < 10; step++ {
+			target := all[nextRand()%uint64(len(all))]
+			if !CanTransitionAnchor(current, target) {
+				continue
+			}
+			visited = append(visited, target)
+			current = target
+		}
+		// invariant: 终态（settled / migrated）后不能再有合法转换
+		for i := 0; i+1 < len(visited); i++ {
+			if visited[i].IsTerminal() {
+				t.Fatalf("iter=%d path=%v: terminal %s has follower %s",
+					it, visited, visited[i], visited[i+1])
+			}
+		}
+	}
+}
+
+// 验证 CanTransitionPhase 对每个 (from, to) 对的结果与 AllowedPhaseTransitions
+// map 严格一致（无遗漏、无虚假合法）。
+func TestCanTransitionPhase_MapAuthorityCheck(t *testing.T) {
+	all := []LifecyclePhase{
+		LifecyclePhaseLegacy, LifecyclePhaseProvisioned, LifecyclePhaseActive,
+		LifecyclePhaseDraining, LifecyclePhaseFrozen, LifecyclePhaseArchived,
+		LifecyclePhaseQuarantined,
+	}
+	for _, from := range all {
+		expected := AllowedPhaseTransitions[from] // nil if not present
+		// 在不在 expected 列表里
+		expectedSet := make(map[LifecyclePhase]bool)
+		for _, p := range expected {
+			expectedSet[p] = true
+		}
+		for _, to := range all {
+			got := CanTransitionPhase(from, to)
+			want := expectedSet[to] && from != to // CanTransitionPhase 显式禁自环
+			if got != want {
+				t.Errorf("CanTransitionPhase(%s,%s)=%v but map says %v (selfLoop=%v)",
+					from, to, got, want, from == to)
+			}
+		}
+	}
+}
+
+// AnchorStatus.IsOpen 与 AllowedAnchorTransitions 起点必须一致：
+// IsOpen=true 的状态都必须在 map 里有合法转换；反之 IsOpen=false 不在 map。
+func TestAnchorStatus_IsOpenMatchesTransitionMap(t *testing.T) {
+	for _, s := range []AnchorStatus{
+		AnchorStatusTrying, AnchorStatusActive,
+		AnchorStatusSettled, AnchorStatusMigrated, AnchorStatusStuck,
+	} {
+		_, hasMapping := AllowedAnchorTransitions[s]
+		if s.IsOpen() != hasMapping {
+			t.Errorf("anchor %s: IsOpen=%v but transition map has=%v", s, s.IsOpen(), hasMapping)
+		}
+	}
+}
+
+// ============================================================================
+// 业务语义：4 个新预置 business_type 的 account_type 映射
+// ============================================================================
+
+// MigrationSuspense 必须是 type=9 (Transit)；OpsAdjust/WriteOff 必须是 type=4 (P&L)；
+// Carryforward 必须是 type=2 (Liability)。
+// 这是 DB INSERT 的同一映射，但 Go 常量这边要文档化保持一致。
+func TestNewBusinessTypes_DocumentedAccountTypes(t *testing.T) {
+	// 这些映射在 init.sql 里用 INSERT IGNORE 写死；Go 常量不必硬编码 account_type，
+	// 但我们至少要保证常量值稳定（已在 TestBusinessTypeConstants_Stable 覆盖）。
+	// 这里补充：业务码命名规律
+	if AccountBusinessTypeMigrationSuspense >= AccountBusinessTypeResidualWriteOff {
+		t.Error("MigrationSuspense should have lower business_type than ResidualWriteOff (asc order)")
+	}
+	if AccountBusinessTypeResidualWriteOff >= AccountBusinessTypeRotationOpsAdjust {
+		t.Error("ResidualWriteOff < OpsAdjust")
+	}
+	if AccountBusinessTypeRotationOpsAdjust >= AccountBusinessTypeRotationCarryforward {
+		t.Error("OpsAdjust < Carryforward")
+	}
+}
+
+// ============================================================================
+// LogicalAccount 严格性：禁止某些组合
+// ============================================================================
+
+// Currency 校验委托给 caller（Validate 不做），但 Description 是 *string 允 nil。
+// 验证 LogicalAccount 实例化不会 panic（基本构造健壮性）。
+func TestLogicalAccount_ConstructionWithNullableFields(t *testing.T) {
+	la := &LogicalAccount{
+		LogicalAccountKey:   "transit:test:USD",
+		AccountType:         AccountTypeTransit,
+		AccountBusinessType: AccountBusinessTypeTransit,
+		Currency:            "USD",
+		RotationEnabled:     1,
+		RegisteredBy:        "ops",
+		Status:              LogicalAccountStatusEnabled,
+		// Description / CurrentActive* 留 nil
+	}
+	if !la.IsRotating() {
+		t.Error("rotation_enabled=1 should report IsRotating")
+	}
+	if !la.IsEnabled() {
+		t.Error("enabled status should report IsEnabled")
+	}
+}
+
+// ============================================================================
+// DirectionMask 全 256 字节穷举：只看低 2 位，高位不该影响 HasDebit/HasCredit
+// ============================================================================
+func TestDirectionMask_All256BytesLow2BitsOnly(t *testing.T) {
+	for v := 0; v < 256; v++ {
+		m := AnchorDirectionMask(int8(v))
+		// 我们的 mask 字段是 int8（-128..127），强制位运算
+		expectedDebit := v&1 != 0
+		expectedCredit := v&2 != 0
+		if m.HasDebit() != expectedDebit {
+			t.Errorf("mask=0x%02x: HasDebit=%v want %v", v, m.HasDebit(), expectedDebit)
+		}
+		if m.HasCredit() != expectedCredit {
+			t.Errorf("mask=0x%02x: HasCredit=%v want %v", v, m.HasCredit(), expectedCredit)
+		}
+	}
+}
+
+// WithDebit/WithCredit 幂等性：多次应用结果稳定
+func TestDirectionMask_WithMethods_Idempotent(t *testing.T) {
+	for v := 0; v < 256; v++ {
+		m := AnchorDirectionMask(int8(v))
+		a := m.WithDebit().WithDebit().WithDebit()
+		b := m.WithDebit()
+		if a != b {
+			t.Errorf("mask=0x%02x: WithDebit not idempotent: triple=%d single=%d", v, a, b)
+		}
+		c := m.WithCredit().WithCredit()
+		d := m.WithCredit()
+		if c != d {
+			t.Errorf("mask=0x%02x: WithCredit not idempotent: double=%d single=%d", v, c, d)
+		}
+	}
+}
+
+// ============================================================================
+// LifecyclePhase 终态语义
+// ============================================================================
+
+func TestLifecyclePhase_IsTerminal_ArchivedOnly(t *testing.T) {
+	terminals := map[LifecyclePhase]bool{
+		LifecyclePhaseLegacy:      false,
+		LifecyclePhaseProvisioned: false,
+		LifecyclePhaseActive:      false,
+		LifecyclePhaseDraining:    false,
+		LifecyclePhaseFrozen:      false,
+		LifecyclePhaseArchived:    true, // 唯一终态
+		LifecyclePhaseQuarantined: false,
+	}
+	for p, want := range terminals {
+		if p.IsTerminal() != want {
+			t.Errorf("IsTerminal(%s)=%v want %v", p, p.IsTerminal(), want)
+		}
+	}
+}
+
+// AnchorStatus.IsTerminal: settled / migrated 是终态
+func TestAnchorStatus_IsTerminal_Coverage(t *testing.T) {
+	cases := map[AnchorStatus]bool{
+		AnchorStatusTrying:   false,
+		AnchorStatusActive:   false,
+		AnchorStatusSettled:  true, // 终态
+		AnchorStatusMigrated: true, // 终态
+		AnchorStatusStuck:    false, // 等待人工介入，不算终态
+	}
+	for s, want := range cases {
+		if s.IsTerminal() != want {
+			t.Errorf("IsTerminal(%s)=%v want %v", s, s.IsTerminal(), want)
+		}
+	}
+}

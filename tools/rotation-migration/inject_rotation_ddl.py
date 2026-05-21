@@ -56,16 +56,20 @@ def anchor_table_ddl(nn: str) -> str:
     """Generate CREATE TABLE for tx_account_anchor_NN."""
     return f"""\
 -- ============================================
--- tx_account_anchor_{nn}: 交易锚点注册表
--- 分片：按 related_request_id FNV-1a 哈希到 100 片（与 account_transaction 对齐）
--- 不变量：(related_request_id, logical_account_id) 唯一
+-- tx_account_anchor_{nn}: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
 -- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
 -- ============================================
 CREATE TABLE IF NOT EXISTS `tx_account_anchor_{nn}` (
     `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
-    `related_request_id` VARCHAR(64) NOT NULL COMMENT '业务幂等键（=TCC tx 标识）',
-    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
-    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
     `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
     `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
     `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
@@ -80,11 +84,44 @@ CREATE TABLE IF NOT EXISTS `tx_account_anchor_{nn}` (
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     PRIMARY KEY (`id`),
-    UNIQUE KEY `uk_req_logical` (`related_request_id`, `logical_account_id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
     KEY `idx_account_status` (`account_no`, `status`),
-    KEY `idx_logical_status_lastpost` (`logical_account_id`, `status`, `last_posting_at`),
     KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='交易锚点注册表（轮换路由用）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+"""
+
+
+def route_table_ddl(nn: str) -> str:
+    """Generate CREATE TABLE for flow_anchor_route_NN — routing index for direction B."""
+    return f"""\
+-- ============================================
+-- flow_anchor_route_{nn}: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_{nn}` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
 """
 
 
@@ -143,17 +180,23 @@ def inject_account_columns(sql: str, nn: str) -> tuple[str, bool]:
 
 def append_anchor_tables(sql: str, db_idx: int) -> tuple[str, int]:
     """
-    Append CREATE TABLE tx_account_anchor_NN blocks at end of file for shard db.
+    Append CREATE TABLE tx_account_anchor_NN + flow_anchor_route_NN blocks at end of file.
     Returns (new_sql, n_appended). Idempotent.
+
+    方向 B：每个分片同时包含 anchor 表（按 account_no 分片）和 route 表（按 flow_id 分片）。
+    虽然两者分片键不同，但 schema-wise 我们让每个 init.sql 文件包含同 NN 的两张表
+    便于运维（按 NN 编号能找到这一分片的所有相关表）。
     """
     appended = 0
     pieces = []
     for tbl_idx in range(10):
         nn = f"{db_idx * 10 + tbl_idx:02d}"
-        if f"`tx_account_anchor_{nn}`" in sql:
-            continue
-        pieces.append(anchor_table_ddl(nn))
-        appended += 1
+        if f"`tx_account_anchor_{nn}`" not in sql:
+            pieces.append(anchor_table_ddl(nn))
+            appended += 1
+        if f"`flow_anchor_route_{nn}`" not in sql:
+            pieces.append(route_table_ddl(nn))
+            appended += 1
     if not pieces:
         return sql, 0
     # ensure trailing newline before appending
@@ -164,16 +207,17 @@ def append_anchor_tables(sql: str, db_idx: int) -> tuple[str, int]:
 
 
 def append_shadow_anchor_likes(sql: str, db_idx: int) -> tuple[str, int]:
-    """Append `tx_account_anchor_NN_shadow LIKE tx_account_anchor_NN` lines."""
+    """Append shadow LIKE rows for tx_account_anchor_NN and flow_anchor_route_NN."""
     appended = 0
     lines = []
     for tbl_idx in range(10):
         nn = f"{db_idx * 10 + tbl_idx:02d}"
-        line = f"CREATE TABLE IF NOT EXISTS `tx_account_anchor_{nn}_shadow` LIKE `tx_account_anchor_{nn}`;"
-        if line in sql:
-            continue
-        lines.append(line)
-        appended += 1
+        for base in (f"tx_account_anchor_{nn}", f"flow_anchor_route_{nn}"):
+            line = f"CREATE TABLE IF NOT EXISTS `{base}_shadow` LIKE `{base}`;"
+            if line in sql:
+                continue
+            lines.append(line)
+            appended += 1
     if not lines:
         return sql, 0
     if not sql.endswith("\n"):
