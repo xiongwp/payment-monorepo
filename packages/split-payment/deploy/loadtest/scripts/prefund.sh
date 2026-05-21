@@ -20,7 +20,7 @@ MYSQL_PWD="${MYSQL_PWD:-password}"
 TARGET_BALANCE="${TARGET_BALANCE:-1000000000000000}"  # 1e15 minor units
 
 # accounting 的 mysql 用 10 shard，每个 shard 容器名 accounting-mysql-N
-# 每个容器里有 1 个 db (accountingdb_N) × 100 个 account_NN 子表。
+# 每个容器里有 1 个 db (accounting_db_N) × 100 个 account_NN 子表。
 green()  { printf "\033[32m%s\033[0m\n" "$*"; }
 yellow() { printf "\033[33m%s\033[0m\n" "$*"; }
 red()    { printf "\033[31m%s\033[0m\n" "$*"; }
@@ -45,7 +45,7 @@ for i in $(seq 0 9); do
       SEPARATOR ' '
     )
     FROM information_schema.tables
-    WHERE table_schema LIKE 'accountingdb_%'
+    WHERE table_schema LIKE 'accounting_db_%'
       AND table_name REGEXP '^account_[0-9]+\$';
   " 2>/dev/null || true)
 
@@ -70,7 +70,7 @@ for i in $(seq 0 9); do
           AND t2.table_name = t.table_name
       ) AS cnt
       FROM information_schema.tables t
-      WHERE t.table_schema LIKE 'accountingdb_%'
+      WHERE t.table_schema LIKE 'accounting_db_%'
         AND t.table_name REGEXP '^account_[0-9]+\$'
     ) x;
   " 2>/dev/null || echo 0)
@@ -90,7 +90,7 @@ if [[ -s "${POOL_FILE}" ]]; then
       [[ -z "${SHARD}" ]] && continue
       # 在所有 account_NN 表里找
       BAL=$(docker exec "${SHARD}" sh -c "
-        for db in \$(mysql -uroot -p${MYSQL_PWD} -N -se 'SHOW DATABASES' 2>/dev/null | grep accountingdb_); do
+        for db in \$(mysql -uroot -p${MYSQL_PWD} -N -se 'SHOW DATABASES' 2>/dev/null | grep accounting_db_); do
           mysql -uroot -p${MYSQL_PWD} -N -se \"
             SELECT CONCAT(table_name, '|', balance) FROM \$db.account_00 WHERE account_no='${SAMPLE}' LIMIT 1
             UNION ALL
@@ -112,7 +112,7 @@ if [[ -s "${POOL_FILE}" ]]; then
         SHARD=$(docker ps --format '{{.Names}}' | grep -E "accounting.*mysql-${i}\b|mysql-${i}-1" | head -1)
         [[ -z "${SHARD}" ]] && continue
         BAL=$(docker exec "${SHARD}" sh -c "
-          for db in \$(mysql -uroot -p${MYSQL_PWD} -N -se 'SHOW DATABASES' 2>/dev/null | grep accountingdb_); do
+          for db in \$(mysql -uroot -p${MYSQL_PWD} -N -se 'SHOW DATABASES' 2>/dev/null | grep accounting_db_); do
             for tbl in \$(mysql -uroot -p${MYSQL_PWD} -N -se \"
               SELECT table_name FROM information_schema.tables
               WHERE table_schema='\$db' AND table_name REGEXP '^account_[0-9]+\$'

@@ -205,7 +205,7 @@ else
           WHERE t2.table_schema=t.table_schema AND t2.table_name=t.table_name
         ) c
         FROM information_schema.tables t
-        WHERE t.table_schema LIKE 'accountingdb_%'
+        WHERE t.table_schema LIKE 'accounting_db_%'
           AND t.table_name REGEXP '^transaction_order_[0-9]+\$'
       ) x;
     " 2>/dev/null || echo 0)
@@ -214,7 +214,7 @@ else
       mysql -uroot -p${MYSQL_PWD} -N -se \"
         SELECT GROUP_CONCAT(CONCAT('SELECT COUNT(*) FROM \`', table_schema, '\`.\`', table_name, '\`') SEPARATOR ' UNION ALL ')
         FROM information_schema.tables
-        WHERE table_schema LIKE 'accountingdb_%'
+        WHERE table_schema LIKE 'accounting_db_%'
           AND table_name REGEXP '^transaction_order_[0-9]+\$';
       \" 2>/dev/null | head -c 100000 > /tmp/q.sql
       if [[ -s /tmp/q.sql ]]; then
