@@ -168,10 +168,11 @@ EXTRA=()
 [[ -n "${CONCURRENCY}" ]] && EXTRA+=("--concurrency=${CONCURRENCY}")
 
 echo ">>> 跑 loadtest，输出实时打屏 + 落盘 ${LOG_FILE}"
+# `${EXTRA[@]:-}` 形式：数组空时安全展开成空（绕开 set -u "unbound variable" 报错）
 docker compose run --rm loadtest \
   /usr/local/bin/loadtest \
   --config=/loadtest/config.yaml \
-  "${EXTRA[@]}" 2>&1 | tee -a "${LOG_FILE}"
+  ${EXTRA[@]+"${EXTRA[@]}"} 2>&1 | tee -a "${LOG_FILE}"
 
 # ─── Step 4: 验证 mysql 真有 booking 行 ──────────────────────────────────
 if [[ ${SKIP_VERIFY} -eq 1 ]]; then
