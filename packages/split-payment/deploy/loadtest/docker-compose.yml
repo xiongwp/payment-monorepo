@@ -60,10 +60,17 @@ services:
     container_name: loadtest-split-payment
     environment:
       SPLIT_PAYMENT_LOG_DEV: "false"
+      # kitexutil 直接读的 global env（无前缀），用于 etcd 服务发现 + 自注册
+      REGISTRY_ENDPOINTS: "etcd:2379"
+      ADVERTISE_HOST: "loadtest-split-payment"
+      # viper 前缀 = SPLIT_PAYMENT_；config 路径 accounting.grpc_addr → 这个 env name。
+      SPLIT_PAYMENT_ACCOUNTING_GRPC_ADDR: "accounting-service:50051"
       SPLIT_PAYMENT_REGISTRY_ENDPOINTS: "etcd:2379"
-      # 注意：accounting-system 在它自己的 compose 里 EtcdRegistrar 注册为
-      # "accounting-service"。这里用容器 DNS 直连。
-      SPLIT_PAYMENT_ACCOUNTING_ENDPOINT: "accounting-service:50051"
+      # 启动期自动 seed 资金流 graph（4 个：topup/payment/transfer/withdraw）
+      # internal/config.go 把 seed.graph_dir 绑到 MONEYFLOW_SEED_DIR 这个 env 上
+      MONEYFLOW_SEED_DIR: "/loadtest/graphs"
+    volumes:
+      - ./graphs:/loadtest/graphs:ro
     ports:
       - "19098:9098"   # gRPC
       - "19099:9099"   # admin HTTP

@@ -1,0 +1,53 @@
+{
+  "key": "user-withdraw-v1",
+  "name": "用户提现（loadtest 简化版）",
+  "version": "1.0.0",
+  "status": "active",
+  "spec": {
+    "scenario": "user_withdraw",
+    "charge_strategy": "separate",
+    "triggers": [
+      { "event": "user.withdraw" }
+    ],
+    "guards": [
+      { "kind": "amount_min", "value": 1, "msg": "提现金额必须 > 0" }
+    ],
+    "nodes": [
+      {
+        "id": "user_wallet",
+        "type": "account",
+        "label": "用户钱包",
+        "account_id_attr": "user_account"
+      },
+      {
+        "id": "withdraw_pending",
+        "type": "intermediate",
+        "label": "提现待打款（中转）",
+        "account_id_attr": "withdraw_pending_account",
+        "auto_clear": true
+      },
+      {
+        "id": "channel_payable",
+        "type": "output",
+        "label": "应付渠道",
+        "account_id_attr": "channel_payable_account"
+      }
+    ],
+    "edges": [
+      {
+        "from": "user_wallet",
+        "to": "withdraw_pending",
+        "kind": "transfer",
+        "event_code": "withdraw_user_to_pending",
+        "rule": { "type": "remainder" }
+      },
+      {
+        "from": "withdraw_pending",
+        "to": "channel_payable",
+        "kind": "transfer",
+        "event_code": "withdraw_pending_to_channel",
+        "rule": { "type": "remainder" }
+      }
+    ]
+  }
+}

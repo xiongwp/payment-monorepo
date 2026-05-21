@@ -285,18 +285,53 @@ func (w *worker) dispatch(ctx context.Context, flow flowKind) error {
 		graphKey = "user-" + string(flow) + "-v1"
 	}
 
-	// event_json 是业务事件载荷；具体字段由 split-payment 的 graph 定义。
-	// 这里给一个通用 shape，包括所有 4 种资金流可能用到的字段。
+	// event_json 是业务事件载荷；graph 期望 <node_id>_account / _amount / _currency
+	// 三元组字段（见 seed/scenarios/user_topup.graph.json 的 _sample_trigger_payload）。
+	//
+	// 为简化端到端压测，每种 flow 的 graph 都是固定结构 → 这里硬编码字段集。
+	// 业务侧不严谨（账户号是 fake 的）但 rotation 路径会完整走一遍：
+	//   booking router → flow_anchor_route → tx_account_anchor → DoubleEntryBooking
+	cur := w.cfg.Flow.Currency
+	amtStr := fmt.Sprintf("%d", amount)
+	peerUserID := int64(w.rng.Intn(maxOr(w.cfg.Flow.UserCount, 1)))
+
 	event := map[string]any{
-		"flow_id":     flowID,           // 业务 flow_id（rotation 锚定的核心 ID）
-		"user_id":     userID,
-		"channel_id":  channelID,
-		"amount":      amount,
-		"currency":    w.cfg.Flow.Currency,
-		"flow_type":   string(flow),
+		"flow_id":      flowID,
 		"requested_at": time.Now().UTC().Format(time.RFC3339Nano),
-		// 针对 transfer 增加 peer
-		"peer_user_id": int64(w.rng.Intn(maxOr(w.cfg.Flow.UserCount, 1))),
+	}
+
+	// 每个 graph 的字段集
+	switch flow {
+	case flowTopup:
+		// graph topup.json: channel_receivable → suspense → user_wallet, fee_clearing → channel_payable, platform_revenue
+		net := amount - 100 // 留 100 分手续费
+		if net < 1 {
+			net = 1
+		}
+		event["channel_receivable_account"], event["channel_receivable_account_amount"], event["channel_receivable_account_currency"] = fmt.Sprintf("ch-%d/recv", channelID), amtStr, cur
+		event["channel_suspense_account"], event["channel_suspense_account_amount"], event["channel_suspense_account_currency"] = fmt.Sprintf("ch-%d/suspense", channelID), amtStr, cur
+		event["user_id_account"], event["user_id_account_amount"], event["user_id_account_currency"] = fmt.Sprintf("%d", userID), fmt.Sprintf("%d", net), cur
+		event["fee_clearing_account"], event["fee_clearing_account_amount"], event["fee_clearing_account_currency"] = "platform/fee_clearing", "100", cur
+		event["channel_fee_account"], event["channel_fee_account_amount"], event["channel_fee_account_currency"] = fmt.Sprintf("ch-%d/fee", channelID), "60", cur
+		event["fee_account"], event["fee_account_amount"], event["fee_account_currency"] = "platform/fee_revenue", "40", cur
+
+	case flowPayment:
+		// graph payment.json: user_wallet → merchant_pending → merchant_wallet
+		merchantID := w.rng.Intn(100) + 1
+		event["payer_account"], event["payer_account_amount"], event["payer_account_currency"] = fmt.Sprintf("%d", userID), amtStr, cur
+		event["merchant_pending_account"], event["merchant_pending_account_amount"], event["merchant_pending_account_currency"] = fmt.Sprintf("m-%d/pending", merchantID), amtStr, cur
+		event["merchant_account"], event["merchant_account_amount"], event["merchant_account_currency"] = fmt.Sprintf("m-%d", merchantID), amtStr, cur
+
+	case flowTransfer:
+		// graph transfer.json: from_wallet → to_wallet
+		event["from_account"], event["from_account_amount"], event["from_account_currency"] = fmt.Sprintf("%d", userID), amtStr, cur
+		event["to_account"], event["to_account_amount"], event["to_account_currency"] = fmt.Sprintf("%d", peerUserID), amtStr, cur
+
+	case flowWithdraw:
+		// graph withdraw.json: user_wallet → withdraw_pending → channel_payable
+		event["user_account"], event["user_account_amount"], event["user_account_currency"] = fmt.Sprintf("%d", userID), amtStr, cur
+		event["withdraw_pending_account"], event["withdraw_pending_account_amount"], event["withdraw_pending_account_currency"] = "platform/withdraw_pending", amtStr, cur
+		event["channel_payable_account"], event["channel_payable_account_amount"], event["channel_payable_account_currency"] = fmt.Sprintf("ch-%d/payable", channelID), amtStr, cur
 	}
 	payload, err := json.Marshal(event)
 	if err != nil {

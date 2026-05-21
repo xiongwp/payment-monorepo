@@ -37,6 +37,8 @@ flow:
   amount_minor_range: [100, 100000]   # 金额范围（分）—— 100 = ¥1.00，100000 = ¥1000.00
   currency: "PHP"
   # 资金流的 graph_key 由 split-payment 端预注册（见 scripts/bootstrap-logical-accounts.sh）
+  # 这些 key 跟 deploy/loadtest/graphs/*.json 里的 "key" 字段一一对应。
+  # split-payment 启动期通过 MONEYFLOW_SEED_DIR=/loadtest/graphs 自动 seed。
   graph_keys:
     topup:    "user-topup-v1"
     payment:  "user-balance-payment-v1"

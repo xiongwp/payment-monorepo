@@ -123,14 +123,21 @@ fi
 echo ">>> Step 2/2: 起 loadtest 栈（etcd + split-payment + loadtest）"
 docker compose up -d --build etcd split-payment
 
-echo ">>> 等 split-payment 健康..."
+echo ">>> 等 split-payment 健康（/healthz）..."
+SP_OK=0
 for i in $(seq 1 90); do
-  if docker compose exec -T split-payment /bin/sh -c 'wget -q -O- http://localhost:9099/admin/health 2>/dev/null' >/dev/null 2>&1; then
+  # split-payment admin HTTP 默认 :9099，端点是 /healthz（不是 /admin/health）
+  if curl -sf http://localhost:19099/healthz >/dev/null 2>&1; then
     echo "    split-payment OK (${i}s)"
+    SP_OK=1
     break
   fi
   sleep 1
 done
+if [[ ${SP_OK} -ne 1 ]]; then
+  echo "WARN: split-payment /healthz 90s 内没通；可能 admin port 未暴露或服务正在重试连 accounting。"
+  echo "      看日志：docker logs loadtest-split-payment --tail 50"
+fi
 
 # ─── Bootstrap LA + rotation policy ──────────────────────────────────────
 echo ">>> 预注册 logical_accounts + rotation policy ..."

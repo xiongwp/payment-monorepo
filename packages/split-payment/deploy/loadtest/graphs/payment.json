@@ -1,0 +1,53 @@
+{
+  "key": "user-balance-payment-v1",
+  "name": "用户余额支付（loadtest 简化版）",
+  "version": "1.0.0",
+  "status": "active",
+  "spec": {
+    "scenario": "user_balance_payment",
+    "charge_strategy": "separate",
+    "triggers": [
+      { "event": "user.payment" }
+    ],
+    "guards": [
+      { "kind": "amount_min", "value": 1, "msg": "支付金额必须 > 0" }
+    ],
+    "nodes": [
+      {
+        "id": "user_wallet",
+        "type": "account",
+        "label": "用户钱包（付方）",
+        "account_id_attr": "payer_account"
+      },
+      {
+        "id": "merchant_pending",
+        "type": "intermediate",
+        "label": "商户待结算（loadtest 中转）",
+        "account_id_attr": "merchant_pending_account",
+        "auto_clear": true
+      },
+      {
+        "id": "merchant_wallet",
+        "type": "account",
+        "label": "商户钱包（收方）",
+        "account_id_attr": "merchant_account"
+      }
+    ],
+    "edges": [
+      {
+        "from": "user_wallet",
+        "to": "merchant_pending",
+        "kind": "transfer",
+        "event_code": "payment_user_to_pending",
+        "rule": { "type": "remainder" }
+      },
+      {
+        "from": "merchant_pending",
+        "to": "merchant_wallet",
+        "kind": "transfer",
+        "event_code": "payment_pending_to_merchant",
+        "rule": { "type": "remainder" }
+      }
+    ]
+  }
+}
