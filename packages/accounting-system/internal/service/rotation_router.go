@@ -354,6 +354,8 @@ func (r *router) Resolve(ctx context.Context, req *ResolveRequest) (*Resolution,
 }
 
 // resolveExistingFlow 已有 routing → 走 UpdatePosting 路径
+// 关键 edge case：routing 存在但 anchor 不存在（两步事务中间崩溃）→ 走恢复路径
+// 重新生成 anchor Insert plan，让 caller 完成原先失败的 anchor 写入。
 func (r *router) resolveExistingFlow(
 	ctx context.Context, req *ResolveRequest, la *model.LogicalAccount, route *model.FlowAnchorRoute,
 ) (*Resolution, error) {
@@ -363,8 +365,9 @@ func (r *router) resolveExistingFlow(
 		return nil, fmt.Errorf("router: get anchor by (flow, account): %w", err)
 	}
 	if anchor == nil {
-		return nil, fmt.Errorf("router: routing record exists but anchor missing (flow=%s, account=%s) — likely incomplete first-time anchor write",
-			req.FlowID, accountNo)
+		// 恢复路径：routing 已写但 anchor 没写（两步事务中间崩溃）
+		// 让 caller 在 account_no 分片再次尝试写入 anchor，routing 不重写。
+		return r.resolveAnchorRecovery(ctx, req, la, accountNo)
 	}
 
 	// 跟随 migration chain（如有）
@@ -409,6 +412,62 @@ func (r *router) resolveExistingFlow(
 			UpdateNewMask:         newMask,
 		},
 		// RoutePlan nil — routing 已存在
+	}, nil
+}
+
+// resolveAnchorRecovery routing 已存在但 anchor 缺失的恢复路径。
+// 这通常发生在两步事务中间崩溃（routing 写成功，anchor 写失败）。
+// 业务方 retry 时进入此路径，重新生成 anchor Insert plan。
+func (r *router) resolveAnchorRecovery(
+	ctx context.Context, req *ResolveRequest, la *model.LogicalAccount, accountNo string,
+) (*Resolution, error) {
+	acc, err := r.accounts.GetByAccountNo(ctx, accountNo)
+	if err != nil {
+		return nil, fmt.Errorf("router: get account=%s during recovery: %w", accountNo, err)
+	}
+	if acc == nil {
+		return nil, fmt.Errorf("router: account=%s missing during anchor recovery", accountNo)
+	}
+	// 即使是恢复路径也要走 phase 守卫——instance 可能已经轮换到 draining/frozen
+	if err := r.checkPhaseGuard(acc, req.BookingType); err != nil {
+		return nil, err
+	}
+
+	now := r.clock()
+	_, anchorGtbl := r.anchors.RouteByAccountNo(accountNo)
+	_, routeGtbl := r.routes.RouteByFlowID(req.FlowID)
+
+	newAnchor := &model.TxAccountAnchor{
+		FlowID:           req.FlowID,
+		LogicalAccountID: la.ID,
+		AccountNo:        accountNo,
+		AnchoredAt:       now,
+		LastPostingAt:    now,
+		PostingCount:     1,
+		Status:           model.AnchorStatusTrying,
+		ReuseSource:      model.AnchorReuseSourcePrimary,
+	}
+	switch req.Direction {
+	case BookingDirectionDebit:
+		newAnchor.DirectionMask = newAnchor.DirectionMask.WithDebit()
+	case BookingDirectionCredit:
+		newAnchor.DirectionMask = newAnchor.DirectionMask.WithCredit()
+	}
+	if req.BookingType == BookingTypeNormal {
+		newAnchor.Status = model.AnchorStatusActive
+	}
+
+	return &Resolution{
+		LogicalAccount:         la,
+		AccountNo:              accountNo,
+		AnchorGlobalTableIndex: anchorGtbl,
+		RouteGlobalTableIndex:  routeGtbl,
+		IsLegacy:               false,
+		AnchorPlan: &AnchorPlan{
+			Op:        AnchorOpInsert,
+			NewAnchor: newAnchor,
+		},
+		// RoutePlan nil — routing 已存在，不要重写
 	}, nil
 }
 
