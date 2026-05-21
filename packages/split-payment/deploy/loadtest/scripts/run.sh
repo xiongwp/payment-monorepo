@@ -180,6 +180,12 @@ fi
 
 # ─── 跑压测 ──────────────────────────────────────────────────────────────
 if [[ "${DO_LOADTEST}" -eq 1 ]]; then
+  # 每次都重建 loadtest 镜像 —— `docker compose run` 不带 --build，且没有
+  # 用 up 拉起 loadtest（它本来就是按需 run --rm），所以 cmd/loadtest/main.go
+  # 的修改不会自动进镜像。这里强制 build，避免改了代码却跑了旧 binary。
+  echo ">>> 重建 loadtest 镜像（每次都做，确保 cmd/loadtest 改动生效）"
+  docker compose build loadtest
+
   echo ">>> 启动压测..."
   EXTRA=()
   [[ -n "${LT_MODE}" ]] && EXTRA+=("--mode=${LT_MODE}")
