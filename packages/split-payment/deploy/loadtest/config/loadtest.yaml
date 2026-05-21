@@ -21,16 +21,17 @@ target:
 load:
   # ──── Plan A tuning ─────────────────────────────────────────────────────
   # prefund 之后所有 4 个 flow 都能跑（没 insufficient balance 问题）。
-  # 50 并发：之前 DoubleEntryBooking 直打 ~300 TPS，split-payment 5-leg topup 理论
-  # 上限 60 TPS × 5 = 300 leg/sec，跟 baseline 对得上。50 并发给 split-payment
-  # 翻译开销 + Kitex 序列化留余地。
-  # 如果 connection-closed-by-peer 还在 → accounting 连接池 / retry 配置需要调；
-  # 如果干干净净 → 50 → 100 → 200 往上推找拐点。
+  # Plan D — 切到最简单的 1-leg transfer flow，对比 DoubleEntryBooking baseline (300+ TPS)。
+  # transfer.json 只有 1 个 edge (from_wallet → to_wallet) → 1 个 leg →
+  # split-payment 单笔 ≈ 1 个 accounting RPC + 翻译开销 (~5ms)。
+  # 跟 baseline 最接近的对照组。如果这里还到不了 200+，说明 split-payment 翻译层有
+  # 隐性开销需要 profile；如果到 200+，说明之前 mixed mode 的低 TPS 主要是 multi-leg
+  # 串行 + Kitex retry 放大造成的。
   concurrency: 50
   duration: 60s
   rate_limit_qps: 0         # 0 = 不限速；>0 = 全局令牌桶
   warmup: 5s
-  mode: "mixed"             # topup | payment | transfer | withdraw | mixed | router-only
+  mode: "transfer"          # topup | payment | transfer | withdraw | mixed | router-only
   mix_ratio:                # mixed 模式下的权重；和不必为 100
     topup: 30
     payment: 40
