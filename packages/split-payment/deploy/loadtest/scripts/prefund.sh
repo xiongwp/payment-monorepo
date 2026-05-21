@@ -6,8 +6,11 @@
 # 校验（不管账户是 Asset/Liability，TCC 的可用余额是统一概念）。新建账户初始余额是 0，
 # 跑 loadtest 时所有 debit 都会被 "insufficient available balance" 拒绝。
 #
-# accounting 没暴露 HTTP adjust 端点（adjustment_service 只在 internal/service 里），
-# 所以最干净的办法是直接 mysql UPDATE。
+# accounting 没暴露 HTTP adjust 端点，所以最干净的办法是直接 mysql UPDATE。
+#
+# 实现细节：先用 information_schema 找出每个 shard 的所有 account_NN 表，再用
+# 多语句 SQL 一次性发过去（mysql -e 接 stdin 的 SQL stream）。避开了 GROUP_CONCAT
+# 默认 1024 字节截断坑（100 张表 × ~150 字节 SQL = 15KB 远超）。
 #
 # 用法：
 #   ./scripts/prefund.sh             # 用默认 mysql 密码 password
@@ -19,15 +22,13 @@ set -euo pipefail
 MYSQL_PWD="${MYSQL_PWD:-password}"
 TARGET_BALANCE="${TARGET_BALANCE:-1000000000000000}"  # 1e15 minor units
 
-# accounting 的 mysql 用 10 shard，每个 shard 容器名 accounting-mysql-N
-# 每个容器里有 1 个 db (accounting_db_N) × 100 个 account_NN 子表。
 green()  { printf "\033[32m%s\033[0m\n" "$*"; }
 yellow() { printf "\033[33m%s\033[0m\n" "$*"; }
 red()    { printf "\033[31m%s\033[0m\n" "$*"; }
 
 echo ">>> 给所有 account_NN 表里 balance=0 的账户充 ${TARGET_BALANCE} 余额"
 
-UPDATED_TOTAL=0
+UPDATED_TOTAL_ROWS=0
 for i in $(seq 0 9); do
   SHARD=$(docker ps --format '{{.Names}}' | grep -E "accounting.*mysql-${i}\b|mysql-${i}-1" | head -1)
   if [[ -z "${SHARD}" ]]; then
@@ -35,105 +36,70 @@ for i in $(seq 0 9); do
     continue
   fi
 
-  # 用 information_schema 动态找出所有 account_NN 表（排除 account_transaction /
-  # account_log / account_business_type_info 等同前缀的兄弟表）。
-  GEN_SQL=$(docker exec "${SHARD}" mysql -uroot -p"${MYSQL_PWD}" -N -se "
-    SELECT GROUP_CONCAT(
-      CONCAT('UPDATE \`', table_schema, '\`.\`', table_name, '\`',
-             ' SET balance=${TARGET_BALANCE}, available_balance=${TARGET_BALANCE}',
-             ' WHERE balance=0;')
-      SEPARATOR ' '
-    )
+  # 1) 列出所有 account_NN 表（每行一条 "db.table" 字符串）
+  TABLES=$(docker exec "${SHARD}" mysql -uroot -p"${MYSQL_PWD}" -N -se "
+    SELECT CONCAT(table_schema, '.', table_name)
     FROM information_schema.tables
     WHERE table_schema LIKE 'accounting_db_%'
       AND table_name REGEXP '^account_[0-9]+\$';
   " 2>/dev/null || true)
 
-  if [[ -z "${GEN_SQL}" || "${GEN_SQL}" == "NULL" ]]; then
+  if [[ -z "${TABLES}" ]]; then
     yellow "  shard-${i} (${SHARD}): 没找到 account_NN 表"
     continue
   fi
 
-  # 执行批量 UPDATE
-  RC=0
-  docker exec "${SHARD}" mysql -uroot -p"${MYSQL_PWD}" -e "${GEN_SQL}" 2>/dev/null || RC=$?
-  if [[ ${RC} -ne 0 ]]; then
-    yellow "  shard-${i} (${SHARD}): UPDATE 部分失败 (rc=${RC})"
-  fi
+  NUM_TABLES=$(echo "${TABLES}" | wc -l | tr -d ' ')
 
-  # 统计 balance > 0 的账户数
-  CNT=$(docker exec "${SHARD}" mysql -uroot -p"${MYSQL_PWD}" -N -se "
-    SELECT COALESCE(SUM(cnt), 0) FROM (
-      SELECT (
-        SELECT COUNT(*) FROM information_schema.tables t2
-        WHERE t2.table_schema = t.table_schema
-          AND t2.table_name = t.table_name
-      ) AS cnt
-      FROM information_schema.tables t
-      WHERE t.table_schema LIKE 'accounting_db_%'
-        AND t.table_name REGEXP '^account_[0-9]+\$'
-    ) x;
-  " 2>/dev/null || echo 0)
-  printf "  shard-%d (%s): %s 张 account_NN 表已 UPDATE\n" "${i}" "${SHARD}" "${CNT}"
-  UPDATED_TOTAL=$((UPDATED_TOTAL + 1))
+  # 2) 拼接成多条 UPDATE 一次性发，避免每张表一次 docker exec 的开销
+  #    bash 变量没有 1024 字节限制，mysql 客户端也接受任意长度 stdin
+  SQL=""
+  while IFS= read -r tbl; do
+    [[ -z "${tbl}" ]] && continue
+    SQL+="UPDATE \`${tbl%%.*}\`.\`${tbl##*.}\` SET balance=${TARGET_BALANCE}, available_balance=${TARGET_BALANCE} WHERE balance=0; "
+  done <<< "${TABLES}"
+
+  # 3) 把 SQL 喂进 mysql。-v 打 "Rows matched: N Changed: M Warnings: 0" 一行一表，
+  #    grep 出来总 Changed 数。
+  CHANGED=$(docker exec -i "${SHARD}" mysql -uroot -p"${MYSQL_PWD}" -v 2>/dev/null <<< "${SQL}" \
+            | grep -oE 'Changed: [0-9]+' \
+            | awk '{sum+=$2} END {print sum+0}')
+  CHANGED=${CHANGED:-0}
+
+  printf "  shard-%d (%s): %s 张 account_NN 表，UPDATE 改了 %s 行\n" "${i}" "${SHARD}" "${NUM_TABLES}" "${CHANGED}"
+  UPDATED_TOTAL_ROWS=$((UPDATED_TOTAL_ROWS + CHANGED))
 done
+
+green ">>> prefund 完成：共改了 ${UPDATED_TOTAL_ROWS} 行"
 
 # 抽检：第一个 user 账户的余额
 POOL_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)/output/account_pool.json"
 if [[ -s "${POOL_FILE}" ]]; then
   SAMPLE=$(python3 -c "import json; print(json.load(open('${POOL_FILE}'))['users'][0])" 2>/dev/null || echo "")
   if [[ -n "${SAMPLE}" ]]; then
-    echo ">>> 抽检 user[0]=${SAMPLE}"
+    echo ">>> 抽检 pool.users[0]=${SAMPLE}"
     FOUND=0
     for i in $(seq 0 9); do
       SHARD=$(docker ps --format '{{.Names}}' | grep -E "accounting.*mysql-${i}\b|mysql-${i}-1" | head -1)
       [[ -z "${SHARD}" ]] && continue
-      # 在所有 account_NN 表里找
-      BAL=$(docker exec "${SHARD}" sh -c "
-        for db in \$(mysql -uroot -p${MYSQL_PWD} -N -se 'SHOW DATABASES' 2>/dev/null | grep accounting_db_); do
+      # 遍历这个 shard 所有 account_NN 表找它
+      HIT=$(docker exec "${SHARD}" sh -c "
+        for tbl in \$(mysql -uroot -p${MYSQL_PWD} -N -se \"
+          SELECT CONCAT(table_schema,'.',table_name) FROM information_schema.tables
+          WHERE table_schema LIKE 'accounting_db_%' AND table_name REGEXP '^account_[0-9]+\$'\" 2>/dev/null); do
           mysql -uroot -p${MYSQL_PWD} -N -se \"
-            SELECT CONCAT(table_name, '|', balance) FROM \$db.account_00 WHERE account_no='${SAMPLE}' LIMIT 1
-            UNION ALL
-            SELECT CONCAT(table_name, '|', balance) FROM information_schema.tables t
-              JOIN \$db.account_00 a ON a.account_no='${SAMPLE}'
-              WHERE t.table_schema='\$db' AND t.table_name REGEXP '^account_[0-9]+\$' LIMIT 1;
-          \" 2>/dev/null
+            SELECT CONCAT('\$tbl|balance=', balance, '|available=', available_balance)
+            FROM \$tbl WHERE account_no='${SAMPLE}' LIMIT 1\" 2>/dev/null
         done
       " 2>/dev/null | head -1 || echo "")
-      if [[ -n "${BAL}" ]]; then
-        green "  ✓ shard-${i}: ${BAL}"
+      if [[ -n "${HIT}" ]]; then
+        green "  ✓ shard-${i}: ${HIT}"
         FOUND=1
         break
       fi
     done
     if [[ ${FOUND} -ne 1 ]]; then
-      # 兜底：直接遍历所有可能的子表查
-      for i in $(seq 0 9); do
-        SHARD=$(docker ps --format '{{.Names}}' | grep -E "accounting.*mysql-${i}\b|mysql-${i}-1" | head -1)
-        [[ -z "${SHARD}" ]] && continue
-        BAL=$(docker exec "${SHARD}" sh -c "
-          for db in \$(mysql -uroot -p${MYSQL_PWD} -N -se 'SHOW DATABASES' 2>/dev/null | grep accounting_db_); do
-            for tbl in \$(mysql -uroot -p${MYSQL_PWD} -N -se \"
-              SELECT table_name FROM information_schema.tables
-              WHERE table_schema='\$db' AND table_name REGEXP '^account_[0-9]+\$'
-            \" 2>/dev/null); do
-              mysql -uroot -p${MYSQL_PWD} -N -se \"
-                SELECT CONCAT('\$db.\$tbl|', balance) FROM \$db.\$tbl WHERE account_no='${SAMPLE}' LIMIT 1;
-              \" 2>/dev/null
-            done
-          done
-        " 2>/dev/null | head -1 || echo "")
-        if [[ -n "${BAL}" ]]; then
-          green "  ✓ shard-${i}: ${BAL}"
-          FOUND=1
-          break
-        fi
-      done
-    fi
-    if [[ ${FOUND} -ne 1 ]]; then
-      yellow "  ⚠ pool sample account_no=${SAMPLE} 在所有 shard 都没找到 —— 检查 account_no 编码 / shard 路由"
+      yellow "  ⚠ ${SAMPLE} 在 10 shards 都没找到 —— 可能 account_no 编码路由到了未预期 shard"
     fi
   fi
 fi
-
-green ">>> prefund 完成 (覆盖了 ${UPDATED_TOTAL} 个 shard)"
