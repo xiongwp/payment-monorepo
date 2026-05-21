@@ -540,3 +540,280 @@ func contains(s, sub string) bool {
 var _ = ptrInt
 var _ = ptrStr
 var _ = fmt.Sprint
+
+// ============================================================================
+// EDGE CASES — 补充覆盖
+// ============================================================================
+
+// nil clock 必须 fallback 到 time.Now
+func TestNewInstanceStateMachine_NilClockFallsBack(t *testing.T) {
+	sm := NewInstanceStateMachine(
+		&fakeAccountReader{},
+		&fakeAnchorReader{},
+		&fakePolicyReader{},
+		&fakeAnchorShards{},
+		nil, // 不能 panic
+	)
+	now := sm.clock()
+	if now.IsZero() {
+		t.Fatal("nil clock fallback should return real time, got zero")
+	}
+	// 应该在合理范围内（最近 10 秒）
+	if time.Since(now) > 10*time.Second || time.Since(now) < 0 {
+		t.Errorf("clock fallback returned suspicious time: %v", now)
+	}
+}
+
+// guardEnterFrozen: drain age 精确边界
+// age == drain_p99 → 允许（>= 不是严格 >）
+// age == drain_p99 - 1 second → 拒
+func TestGuardEnterFrozen_DrainAgePrecision(t *testing.T) {
+	now := time.Now()
+	sm, _, _, pr := newFixture(now)
+	pr.policy.DrainP99Seconds = 86400 // 1 day
+
+	// 恰好 1 天前
+	acc := mkAccount("A001", 42, model.LifecyclePhaseDraining)
+	acc.DrainingStartedAt = ptrTime(now.Add(-86400 * time.Second))
+	acc.Balance = 0
+	r, _ := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
+	if !r.Allowed {
+		t.Errorf("age == drain_p99 must be allowed (boundary >=), got %q", r.Reason)
+	}
+
+	// 比 1 天少 1 秒
+	acc2 := mkAccount("A001", 42, model.LifecyclePhaseDraining)
+	acc2.DrainingStartedAt = ptrTime(now.Add(-86399 * time.Second))
+	acc2.Balance = 0
+	r2, _ := sm.CheckTransition(context.Background(), acc2, model.LifecyclePhaseFrozen)
+	if r2.Allowed {
+		t.Errorf("age = drain_p99 - 1s must be blocked")
+	}
+}
+
+// guardEnterFrozen: balance 边界
+//  balance=0 → 允（其他条件满足时）
+//  balance=1 → 拒
+//  balance=-1 → 拒（负余额也是非零，是 anomaly）
+//  balance=MaxInt64 → 拒
+func TestGuardEnterFrozen_BalanceBoundaries(t *testing.T) {
+	now := time.Now()
+	sm, _, _, _ := newFixture(now)
+	for _, b := range []int64{1, -1, 100, -100, 1 << 62} {
+		acc := mkDrainingAccount(now, 8, b)
+		r, _ := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
+		if r.Allowed {
+			t.Errorf("balance=%d should block frozen", b)
+		}
+	}
+	// balance=0 满足其他条件 → 允
+	accZero := mkDrainingAccount(now, 8, 0)
+	r, _ := sm.CheckTransition(context.Background(), accZero, model.LifecyclePhaseFrozen)
+	if !r.Allowed {
+		t.Errorf("balance=0 should allow (when other conditions met), got %q", r.Reason)
+	}
+}
+
+// guardEnterFrozen: 部分 shard IO 失败必须传播错误（不能用"部分数据"判定收敛）
+func TestGuardEnterFrozen_PartialShardFailurePropagates(t *testing.T) {
+	now := time.Now()
+
+	failingAnchor := &flakyAnchorReader{
+		// shard 50 失败，其余成功
+		failOnShard: 50,
+	}
+	sm := NewInstanceStateMachine(
+		&fakeAccountReader{},
+		failingAnchor,
+		&fakePolicyReader{
+			policy: &model.LogicalAccountRotationPolicy{
+				LogicalAccountID:     42,
+				DrainP99Seconds:      1,
+				DrainHardTimeoutSecs: 100,
+				ArchiveGraceSecs:     0,
+				PeriodUnit:           model.PeriodUnitMonth,
+				PeriodCount:          1,
+				RotationAnchorTZ:     "UTC",
+			},
+		},
+		&fakeAnchorShards{ids: []int{0, 1, 50, 99}},
+		func() time.Time { return now },
+	)
+	acc := mkDrainingAccount(now, 100, 0)
+	_, err := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
+	if err == nil {
+		t.Fatal("partial shard failure must propagate; absence implies dangerous default")
+	}
+}
+
+// flakyAnchorReader 实现 AnchorReaderForPhase：在指定 shard 报错。
+type flakyAnchorReader struct {
+	failOnShard int
+}
+
+func (f *flakyAnchorReader) CountOpenByAccountNo(_ context.Context, _ string, gtbl int) (int64, error) {
+	if gtbl == f.failOnShard {
+		return 0, errors.New("shard read timeout")
+	}
+	return 0, nil
+}
+
+func (f *flakyAnchorReader) CountStuckByAccountNo(_ context.Context, _ string, gtbl int) (int64, error) {
+	if gtbl == f.failOnShard {
+		return 0, errors.New("shard read timeout")
+	}
+	return 0, nil
+}
+
+func (f *flakyAnchorReader) OldestOpenAnchoredAt(_ context.Context, _ string, _ int) (*time.Time, error) {
+	return nil, nil
+}
+
+// guardEnterActive: PeriodStart 精确等于 now → 允许（不超前即允）
+func TestGuardEnterActive_PeriodStartExactlyNow(t *testing.T) {
+	now := time.Now()
+	sm, _, _, _ := newFixture(now)
+	acc := mkAccount("A001", 42, model.LifecyclePhaseProvisioned)
+	acc.PeriodStart = ptrTime(now)
+	r, err := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseActive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Allowed {
+		t.Errorf("period_start == now should be allowed, got %q", r.Reason)
+	}
+}
+
+// guardEnterActive: I1 不变量 — 更高 active 计数也要拒
+func TestGuardEnterActive_I1MultipleActiveBlocks(t *testing.T) {
+	now := time.Now()
+	for _, cnt := range []int{1, 2, 5, 100} {
+		sm, ar, _, _ := newFixture(now)
+		ar.activeCountByLogical[42] = cnt
+		acc := mkAccount("A002", 42, model.LifecyclePhaseProvisioned)
+		r, _ := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseActive)
+		if r.Allowed {
+			t.Errorf("active count=%d must block (I1)", cnt)
+		}
+	}
+}
+
+// guardEnterArchived: archive_grace=0 → 即时归档允许
+func TestGuardEnterArchived_ZeroGraceImmediateArchive(t *testing.T) {
+	now := time.Now()
+	sm, _, _, pr := newFixture(now)
+	pr.policy.ArchiveGraceSecs = 0
+
+	acc := mkFrozenAccount(now, 0, 0) // frozen 0 hours ago, balance=0, grace=0
+	r, _ := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseArchived)
+	if !r.Allowed {
+		t.Errorf("archive_grace=0 should allow immediate archive, got %q", r.Reason)
+	}
+}
+
+// guardEnterArchived: grace 精确边界（now == frozen + grace → 允；now < → 拒）
+func TestGuardEnterArchived_GracePrecision(t *testing.T) {
+	now := time.Now()
+	sm, _, _, pr := newFixture(now)
+	pr.policy.ArchiveGraceSecs = 3600 // 1 hour
+
+	// 恰好 1 小时前 frozen
+	acc := mkAccount("A001", 42, model.LifecyclePhaseFrozen)
+	acc.FrozenAt = ptrTime(now.Add(-3600 * time.Second))
+	acc.Balance = 0
+	r, _ := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseArchived)
+	if !r.Allowed {
+		t.Errorf("now == frozen+grace boundary should allow, got %q", r.Reason)
+	}
+
+	// 1 小时 - 1 毫秒前 frozen
+	acc2 := mkAccount("A001", 42, model.LifecyclePhaseFrozen)
+	acc2.FrozenAt = ptrTime(now.Add(-3600*time.Second + time.Millisecond))
+	acc2.Balance = 0
+	r2, _ := sm.CheckTransition(context.Background(), acc2, model.LifecyclePhaseArchived)
+	if r2.Allowed {
+		t.Errorf("grace - 1ms should block")
+	}
+}
+
+// 没有 anchor shard 配置（空切片）—— sumAnchorCounters 返回 0,0
+// 验证 frozen 允许（其他条件满足时）。这是 ops 在极端情况下手动配置的可能。
+func TestGuardEnterFrozen_EmptyShardList(t *testing.T) {
+	now := time.Now()
+	emptyShards := &fakeAnchorShards{ids: []int{}}
+	sm := NewInstanceStateMachine(
+		&fakeAccountReader{},
+		&fakeAnchorReader{},
+		&fakePolicyReader{
+			policy: &model.LogicalAccountRotationPolicy{
+				LogicalAccountID: 42, DrainP99Seconds: 1, DrainHardTimeoutSecs: 1,
+				ArchiveGraceSecs: 0, PeriodUnit: model.PeriodUnitDay, PeriodCount: 1,
+				RotationAnchorTZ: "UTC",
+			},
+		},
+		emptyShards,
+		func() time.Time { return now },
+	)
+	acc := mkDrainingAccount(now, 100, 0)
+	r, err := sm.CheckTransition(context.Background(), acc, model.LifecyclePhaseFrozen)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !r.Allowed {
+		t.Errorf("empty shard list should allow (vacuously zero anchors), got %q", r.Reason)
+	}
+}
+
+// CheckTransition 自环（from==to）必须拒（不允许自反转换，与 model 层一致）
+func TestCheckTransition_SelfLoopRejected(t *testing.T) {
+	now := time.Now()
+	sm, _, _, _ := newFixture(now)
+	for _, phase := range []model.LifecyclePhase{
+		model.LifecyclePhaseActive,
+		model.LifecyclePhaseDraining,
+		model.LifecyclePhaseFrozen,
+	} {
+		acc := mkAccount("A001", 42, phase)
+		r, _ := sm.CheckTransition(context.Background(), acc, phase)
+		if r.Allowed {
+			t.Errorf("self-loop %s->%s must be rejected", phase, phase)
+		}
+	}
+}
+
+// WrapGuardError: 验证可被 errors.Is 检测且保留 Reason
+func TestWrapGuardError_PreservesChain(t *testing.T) {
+	err := WrapGuardError(PhaseGuardResult{Allowed: false, Reason: "some detail"})
+	// 可被 errors.Is 识别
+	if !errors.Is(err, ErrTransitionGuardRejected) {
+		t.Error("must be detectable via errors.Is")
+	}
+	// Reason 保留
+	if !contains(err.Error(), "some detail") {
+		t.Errorf("error should preserve Reason, got %q", err.Error())
+	}
+	// 可以再 wrap 一层不丢
+	wrapped := fmt.Errorf("upstream context: %w", err)
+	if !errors.Is(wrapped, ErrTransitionGuardRejected) {
+		t.Error("wrap chain should preserve ErrTransitionGuardRejected detection")
+	}
+}
+
+// AnchorStateMachine 全 5x5 矩阵穷举
+func TestAnchorStateMachine_FullMatrix(t *testing.T) {
+	sm := NewAnchorStateMachine()
+	all := []model.AnchorStatus{
+		model.AnchorStatusTrying, model.AnchorStatusActive,
+		model.AnchorStatusSettled, model.AnchorStatusMigrated, model.AnchorStatusStuck,
+	}
+	for _, f := range all {
+		for _, to := range all {
+			expected := model.CanTransitionAnchor(f, to)
+			got := sm.CheckTransition(f, to)
+			if got.Allowed != expected {
+				t.Errorf("service.CheckTransition(%s,%s)=%v but model.CanTransitionAnchor=%v",
+					f, to, got.Allowed, expected)
+			}
+		}
+	}
+}

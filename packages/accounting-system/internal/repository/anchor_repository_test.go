@@ -157,3 +157,127 @@ func TestShardTableName_AcceptsValid(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// EDGE CASES — 补充覆盖
+// ============================================================================
+
+// FNV-1a 在单调递增输入上不应出现退化（避免相邻请求落同一片）。
+// 这种模式实际发生在：用 timestamp 后缀的 request_id，多笔交易聚集在毫秒级。
+func TestHash_SequentialInputsNoSamePartitionRun(t *testing.T) {
+	// 模拟 1000 个相邻 timestamp 的 reqID，检查任意 50 个连续中不会全落同片
+	const N = 1000
+	const windowSize = 50
+	const maxSameShard = 8 // 同片不超过 8/50 = 16%（随机分布期望 0.5 ≈ 1）
+	buckets := make([]int, N)
+	for i := 0; i < N; i++ {
+		buckets[i] = hashStringMod100(fmt.Sprintf("PAY_1748880000%06d", i))
+	}
+	for start := 0; start+windowSize < N; start++ {
+		freq := make(map[int]int)
+		for j := 0; j < windowSize; j++ {
+			freq[buckets[start+j]]++
+		}
+		for shard, cnt := range freq {
+			if cnt > maxSameShard {
+				t.Errorf("hash sequential input degenerate: window=[%d..%d] shard=%d count=%d (max allowed=%d)",
+					start, start+windowSize, shard, cnt, maxSameShard)
+				return // 一次失败就够诊断
+			}
+		}
+	}
+}
+
+// FNV-1a 对 UUID 样式输入分布均匀
+func TestHash_UUIDStyleDistribution(t *testing.T) {
+	// 生成 5000 个 UUID 风格的 reqID
+	const N = 5000
+	buckets := make([]int, sharding.ShardTableTotal)
+	for i := 0; i < N; i++ {
+		req := fmt.Sprintf("%08x-%04x-4%03x-%04x-%012x",
+			i, i*7, i*13, i*17, i*23)
+		_, gtbl := (&anchorRepository{}).RouteByRequestID(req)
+		buckets[gtbl]++
+	}
+	exp := N / sharding.ShardTableTotal
+	for tbl, cnt := range buckets {
+		if cnt < exp/2 || cnt > exp*2 {
+			t.Errorf("UUID-style shard %d cnt=%d expected ~%d", tbl, cnt, exp)
+		}
+	}
+}
+
+// isDuplicateKeyErr 必须能识别 fmt.Errorf("...: %w", innerErr) 这种 wrapped error。
+// 因为 GORM 在内部经常 wrap driver 错误，我们的判别必须穿透。
+func TestIsDuplicateKeyErr_WrappedErrors(t *testing.T) {
+	inner := errors.New("Error 1062: Duplicate entry 'PAY_001-42' for key 'uk_req_logical'")
+	wrapped := fmt.Errorf("repository.Anchor.Insert: %w", inner)
+	if !isDuplicateKeyErr(wrapped) {
+		t.Error("must detect 1062 even when wrapped by fmt.Errorf %w")
+	}
+
+	// 双层包装
+	doubleWrapped := fmt.Errorf("service.Book: %w", wrapped)
+	if !isDuplicateKeyErr(doubleWrapped) {
+		t.Error("must detect 1062 through multiple wrap layers")
+	}
+
+	// 错误链里既有 1062 字样又有别的：仍判 true
+	mixed := errors.New("connection ok, then Error 1062: Duplicate entry; retrying")
+	if !isDuplicateKeyErr(mixed) {
+		t.Error("must detect 1062 substring even mixed with other text")
+	}
+}
+
+// shardTableName 极端边界 + 0/99
+func TestShardTableName_ExtremeBoundaries(t *testing.T) {
+	r := &anchorRepository{router: sharding.NewRouter()}
+	// MinInt / MaxInt 必须拒，不能 panic
+	for _, bad := range []int{-2147483648, 2147483647} {
+		_, err := r.shardTableName(nil, bad) //nolint:staticcheck
+		if err == nil {
+			t.Errorf("extreme value %d should error", bad)
+		}
+		if !errors.Is(err, ErrAnchorShardMisrouted) {
+			t.Errorf("extreme value %d should ErrAnchorShardMisrouted, got %v", bad, err)
+		}
+	}
+}
+
+// dbForShard 同样的边界
+func TestDBForShard_ExtremeBoundaries(t *testing.T) {
+	r := &anchorRepository{router: sharding.NewRouter()}
+	for _, bad := range []int{-1, sharding.ShardTableTotal, 9999} {
+		_, err := r.dbForShard(bad)
+		if err == nil {
+			t.Errorf("dbForShard(%d) should error", bad)
+		}
+		if !errors.Is(err, ErrAnchorShardMisrouted) {
+			t.Errorf("dbForShard(%d): expected ErrAnchorShardMisrouted, got %v", bad, err)
+		}
+	}
+}
+
+// RouteByRequestID 必须返回的 (dbIdx, gtblIdx) 满足 dbIdx = gtblIdx / 10
+// 在 10000 个随机请求里穷举验证（防止未来 sharding.Router 调整时本约定漂移）。
+func TestRouteByRequestID_DbIdxConsistentWithGTbl(t *testing.T) {
+	r := &anchorRepository{}
+	for i := 0; i < 10000; i++ {
+		req := fmt.Sprintf("REQ%d", i)
+		dbIdx, gtblIdx := r.RouteByRequestID(req)
+		if dbIdx != gtblIdx/sharding.ShardTablePerDB {
+			t.Errorf("req=%q dbIdx=%d gtbl=%d: db should be gtbl/%d=%d",
+				req, dbIdx, gtblIdx, sharding.ShardTablePerDB, gtblIdx/sharding.ShardTablePerDB)
+		}
+	}
+}
+
+// contains 多字节字符 / unicode 边界（虽然 anchor 错误检测主要是 ASCII，但稳健性测试）
+func TestContains_Unicode(t *testing.T) {
+	if !contains("Error 1062: 重复键值 'foo'", "1062") {
+		t.Error("must detect 1062 in unicode-containing string")
+	}
+	if !contains("Duplicate entry", "Dup") {
+		t.Error("prefix match")
+	}
+}

@@ -598,3 +598,282 @@ func TestPolicyValidate_TimezoneEdgeCases(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// EDGE CASES — 补充覆盖
+// ============================================================================
+
+// LogicalAccount RotationEnabled 仅 0/1 合法；其他值不应被认为是"rotating"。
+// 防御 DB 数据污染或反序列化错误。
+func TestLogicalAccount_IsRotating_NonBinaryValues(t *testing.T) {
+	cases := []struct {
+		v    int8
+		want bool
+	}{
+		{0, false},
+		{1, true},
+		{2, false}, // 不能把任意非零都当 true，否则未来加新值会破坏语义
+		{-1, false},
+		{127, false},
+	}
+	for _, c := range cases {
+		la := &LogicalAccount{RotationEnabled: c.v}
+		if got := la.IsRotating(); got != c.want {
+			t.Errorf("RotationEnabled=%d IsRotating=%v want %v", c.v, got, c.want)
+		}
+	}
+}
+
+// Account IsLegacy/IsRotating 在脏数据组合下也要给出确定性答案。
+// 不允许 panic，不允许两个方法同时返回 true。
+func TestAccount_LegacyRotatingCombinations(t *testing.T) {
+	la := int64(42)
+	cases := []struct {
+		name        string
+		laID        *int64
+		phase       LifecyclePhase
+		wantLegacy  bool
+		wantRotate  bool
+	}{
+		{"nil + legacy (旧账户经典)", nil, LifecyclePhaseLegacy, true, false},
+		{"nil + active (数据污染)", nil, LifecyclePhaseActive, true, false},
+		{"set + legacy (数据污染)", &la, LifecyclePhaseLegacy, true, false},
+		{"set + active (轮换正常)", &la, LifecyclePhaseActive, false, true},
+		{"set + draining", &la, LifecyclePhaseDraining, false, true},
+		{"set + frozen", &la, LifecyclePhaseFrozen, false, true},
+		{"set + archived", &la, LifecyclePhaseArchived, false, true},
+		{"set + quarantined", &la, LifecyclePhaseQuarantined, false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := &Account{LogicalAccountID: c.laID, LifecyclePhase: c.phase}
+			gotLegacy := a.IsLegacy()
+			gotRotate := a.IsRotating()
+			if gotLegacy != c.wantLegacy {
+				t.Errorf("IsLegacy=%v want %v", gotLegacy, c.wantLegacy)
+			}
+			if gotRotate != c.wantRotate {
+				t.Errorf("IsRotating=%v want %v", gotRotate, c.wantRotate)
+			}
+			// 互斥
+			if gotLegacy && gotRotate {
+				t.Errorf("must not be both legacy AND rotating")
+			}
+		})
+	}
+}
+
+// Account.AcceptsNewAnchoring / AcceptsFollowupPosting 在 legacy 情况下永远 false。
+func TestAccount_AcceptsLegacyAlwaysFalse(t *testing.T) {
+	a := &Account{LifecyclePhase: LifecyclePhaseLegacy} // 无 logical_account_id
+	if a.AcceptsNewAnchoring() {
+		t.Error("legacy must NOT accept new anchoring")
+	}
+	if a.AcceptsFollowupPosting() {
+		t.Error("legacy must NOT accept followup posting via rotation path")
+	}
+}
+
+// ValidateLogicalAccountKey 控制字符与 ASCII 边界。
+//  - 0x20 (space) → 拒（属于 whitespace 范畴）
+//  - 0x21 (!) → 允（最低可打印字符，但仍需前缀匹配）
+//  - 0x7E (~) → 允
+//  - 0x7F (DEL) → 拒
+//  - 0x00 (NUL) → 拒
+func TestValidateLogicalAccountKey_AsciiBoundaries(t *testing.T) {
+	withChar := func(c byte) string {
+		return "transit:" + string(c)
+	}
+	cases := []struct {
+		c     byte
+		valid bool
+	}{
+		{0x00, false}, // NUL
+		{0x09, false}, // TAB
+		{0x0A, false}, // LF
+		{0x1F, false}, // unit separator
+		{0x20, false}, // space
+		{0x21, true},  // '!'
+		{0x7E, true},  // '~'
+		{0x7F, false}, // DEL
+		{0x80, false}, // 高位 — non-ASCII
+		{0xFF, false},
+	}
+	for _, c := range cases {
+		key := withChar(c.c)
+		err := ValidateLogicalAccountKey(key)
+		if c.valid && err != nil {
+			t.Errorf("char 0x%02X should be valid in key, got err: %v", c.c, err)
+		}
+		if !c.valid && err == nil {
+			t.Errorf("char 0x%02X should be REJECTED in key, got nil err", c.c)
+		}
+	}
+}
+
+// AnchorDirectionMask 位运算在脏数据上也要表现稳定。
+func TestAnchorDirectionMask_DirtyValues(t *testing.T) {
+	// mask=3 = both bits set
+	both := AnchorDirectionMask(3)
+	if !both.HasDebit() || !both.HasCredit() {
+		t.Errorf("mask=3 should report both bits, got debit=%v credit=%v",
+			both.HasDebit(), both.HasCredit())
+	}
+	// 高位脏数据，但仍能正确判断低位
+	dirty := AnchorDirectionMask(127)
+	if !dirty.HasDebit() || !dirty.HasCredit() {
+		t.Errorf("mask=127 has all low bits, should report both")
+	}
+	// mask 仅高位污染，低位为 0
+	highOnly := AnchorDirectionMask(0x7C) // 0b01111100，低 2 位 = 0
+	if highOnly.HasDebit() || highOnly.HasCredit() {
+		t.Errorf("mask=0x7C with low bits=0 should report no flags; got debit=%v credit=%v",
+			highOnly.HasDebit(), highOnly.HasCredit())
+	}
+}
+
+// LifecyclePhase.String 在 int8 极限值下不能 panic。
+func TestLifecyclePhase_String_ExtremeValues(t *testing.T) {
+	values := []LifecyclePhase{-128, -1, 0, 1, 9, 100, 127}
+	for _, v := range values {
+		// 不能 panic
+		got := v.String()
+		if got == "" {
+			t.Errorf("phase=%d String() empty", v)
+		}
+	}
+}
+
+// AnchorStatus.String 同上。
+func TestAnchorStatus_String_ExtremeValues(t *testing.T) {
+	values := []AnchorStatus{-128, -1, 0, 1, 4, 99, 127}
+	for _, v := range values {
+		got := v.String()
+		if got == "" {
+			t.Errorf("status=%d String() empty", v)
+		}
+	}
+}
+
+// AnchorReuseSource.String 同上。
+func TestAnchorReuseSource_String_ExtremeValues(t *testing.T) {
+	for _, v := range []AnchorReuseSource{-1, 0, 1, 2, 3, 127} {
+		got := v.String()
+		if got == "" {
+			t.Errorf("reuse_source=%d String() empty", v)
+		}
+	}
+}
+
+// EffectiveAccountNo 在 migrated 但 migrated_to_account_no=nil 时不能 panic，
+// 必须回退到 AccountNo。AccountNo 为空时返回空字符串（防御性）。
+func TestTxAccountAnchor_EffectiveAccountNo_EmptyOriginal(t *testing.T) {
+	a := &TxAccountAnchor{AccountNo: "", Status: AnchorStatusActive}
+	if got := a.EffectiveAccountNo(); got != "" {
+		t.Errorf("empty AccountNo should yield empty; got %q", got)
+	}
+	// migrated 状态但 migrated_to=nil 且 AccountNo="" — 也是空
+	a2 := &TxAccountAnchor{AccountNo: "", Status: AnchorStatusMigrated}
+	if got := a2.EffectiveAccountNo(); got != "" {
+		t.Errorf("migrated with nil migrated_to and empty AccountNo: got %q", got)
+	}
+}
+
+// Policy.Validate: 极限数值
+func TestPolicyValidate_ExtremeNumericValues(t *testing.T) {
+	// MaxInt 边界（用 32 位上限避免平台差异）
+	const maxInt32 = 2147483647
+	p := &LogicalAccountRotationPolicy{
+		PeriodUnit:           PeriodUnitMonth,
+		PeriodCount:          maxInt32,
+		RotationAnchorTZ:     "UTC",
+		DrainP99Seconds:      maxInt32 - 1,
+		DrainHardTimeoutSecs: maxInt32,
+		ArchiveGraceSecs:     maxInt32,
+		ProvisionLeadSecs:    maxInt32,
+	}
+	if err := p.Validate(); err != nil {
+		t.Errorf("MaxInt32 boundary should pass validate, got %v", err)
+	}
+
+	// drain_hard == p99（等于也允许，严格 < 才拒）
+	p2 := &LogicalAccountRotationPolicy{
+		PeriodUnit:           PeriodUnitMonth,
+		PeriodCount:          1,
+		RotationAnchorTZ:     "UTC",
+		DrainP99Seconds:      100,
+		DrainHardTimeoutSecs: 100,
+	}
+	if err := p2.Validate(); err != nil {
+		t.Errorf("drain_hard == p99 should be valid (equal), got %v", err)
+	}
+
+	// archive_grace = 0（即时归档，允许）
+	p3 := &LogicalAccountRotationPolicy{
+		PeriodUnit:           PeriodUnitMonth,
+		PeriodCount:          1,
+		RotationAnchorTZ:     "UTC",
+		DrainP99Seconds:      1,
+		DrainHardTimeoutSecs: 1,
+		ArchiveGraceSecs:     0,
+	}
+	if err := p3.Validate(); err != nil {
+		t.Errorf("archive_grace=0 should be valid (immediate archive), got %v", err)
+	}
+}
+
+// PeriodUnit 大小写敏感
+func TestPeriodUnit_CaseSensitive(t *testing.T) {
+	if PeriodUnit("month").IsValid() {
+		t.Error("lowercase 'month' must NOT be valid (case sensitive)")
+	}
+	if PeriodUnit("MONTH").IsValid() == false {
+		t.Error("uppercase MONTH must be valid")
+	}
+}
+
+// 全 5x5 anchor 转换矩阵穷举（除了 trying/active 起点已在 allowed 表中，其余都应拒）
+func TestAnchorTransitions_ExhaustiveMatrix(t *testing.T) {
+	all := []AnchorStatus{
+		AnchorStatusTrying, AnchorStatusActive,
+		AnchorStatusSettled, AnchorStatusMigrated, AnchorStatusStuck,
+	}
+	allowed := map[[2]AnchorStatus]bool{
+		{AnchorStatusTrying, AnchorStatusActive}:    true,
+		{AnchorStatusTrying, AnchorStatusSettled}:   true,
+		{AnchorStatusTrying, AnchorStatusStuck}:     true,
+		{AnchorStatusActive, AnchorStatusSettled}:   true,
+		{AnchorStatusActive, AnchorStatusMigrated}:  true,
+		{AnchorStatusActive, AnchorStatusStuck}:     true,
+	}
+	for _, f := range all {
+		for _, t2 := range all {
+			want := allowed[[2]AnchorStatus{f, t2}]
+			got := CanTransitionAnchor(f, t2)
+			if got != want {
+				t.Errorf("CanTransitionAnchor(%s,%s) = %v, want %v", f, t2, got, want)
+			}
+		}
+	}
+}
+
+// hasPrefix（rotation.go 里的本地辅助）边界
+func TestHasPrefix_Boundaries(t *testing.T) {
+	cases := []struct {
+		s, prefix string
+		want      bool
+	}{
+		{"", "", true},
+		{"", "x", false},
+		{"x", "", true},
+		{"x", "x", true},
+		{"abc", "abcd", false},
+		{"abcd", "abc", true},
+		{"a", "A", false}, // 大小写敏感
+	}
+	for _, c := range cases {
+		if got := hasPrefix(c.s, c.prefix); got != c.want {
+			t.Errorf("hasPrefix(%q, %q) = %v, want %v", c.s, c.prefix, got, c.want)
+		}
+	}
+}
