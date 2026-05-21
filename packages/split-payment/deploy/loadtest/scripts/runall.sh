@@ -160,6 +160,14 @@ else
   green "  ✓ pool 写出：${POOL_FILE}"
 fi
 
+# ─── Step 2.5: 预充值（mysql UPDATE balance=1e15）────────────────────────
+# accounting 没暴露 HTTP adjust，所以直接 mysql UPDATE。不充值 → TCC try 全报
+# "insufficient available balance"（debit 校验可用余额是 TCC 设计的核心约束）。
+# 幂等：UPDATE ... WHERE balance=0 只动初始账户，重跑不影响有交易的账户。
+step "Step 2.5 / 5  预充值（mysql UPDATE 把所有 balance=0 账户撑到 1e15）"
+bash "${DIR}/scripts/prefund.sh" 2>&1 | tee -a "${LOG_FILE}" || \
+  yellow "  ⚠ prefund 部分失败，loadtest 可能仍报 insufficient balance"
+
 # ─── Step 3: 跑 loadtest ─────────────────────────────────────────────────
 step "Step 3 / 5  跑压测"
 
@@ -181,28 +189,42 @@ else
   step "Step 4 / 5  验证 mysql 落账"
 
   TOTAL_ORDERS=0
-  echo ">>> transaction_order 行数（10 个 shard）"
+  MYSQL_PWD="${MYSQL_PWD:-password}"
+  echo ">>> transaction_order 行数（10 个 shard，每个 shard 100 张 transaction_order_NN 子表）"
   for i in $(seq 0 9); do
     SHARD_CTR=$(docker ps --format '{{.Names}}' | grep -E "accounting.*mysql-${i}\b|mysql-${i}-1" | head -1)
     if [[ -z "${SHARD_CTR}" ]]; then
       yellow "  shard-${i}: 容器找不到"
       continue
     fi
-    # 尝试不同的常见 root 密码
-    CNT=""
-    for pw in "root" "rootroot" "accounting" ""; do
-      CNT=$(docker exec "${SHARD_CTR}" mysql -uroot -p"${pw}" \
-            -se "SELECT COUNT(*) FROM accountingdb_${i}.transaction_order" 2>/dev/null || true)
-      [[ -n "${CNT}" ]] && break
-    done
-    if [[ -z "${CNT}" ]]; then
-      # 兜底：探一下能用哪个 DB / table
-      CNT=$(docker exec "${SHARD_CTR}" sh -c \
-            "mysql -uroot -se 'SHOW DATABASES;' 2>/dev/null | grep -E '^accounting' | head -1" 2>/dev/null || true)
-      yellow "  shard-${i} (${SHARD_CTR}): mysql 探测失败，可能密码不对；可用 DB: ${CNT:-none}"
-      continue
-    fi
-    printf "  shard-%d (%s): %s rows\n" "${i}" "${SHARD_CTR}" "${CNT}"
+    # 用 information_schema 把所有 transaction_order_NN 子表 sum 起来
+    CNT=$(docker exec "${SHARD_CTR}" mysql -uroot -p"${MYSQL_PWD}" -N -se "
+      SELECT COALESCE(SUM(c), 0) FROM (
+        SELECT (
+          SELECT COUNT(*) FROM information_schema.tables t2
+          WHERE t2.table_schema=t.table_schema AND t2.table_name=t.table_name
+        ) c
+        FROM information_schema.tables t
+        WHERE t.table_schema LIKE 'accountingdb_%'
+          AND t.table_name REGEXP '^transaction_order_[0-9]+\$'
+      ) x;
+    " 2>/dev/null || echo 0)
+    # 上面那个 trick 只是数 table 个数，实际行数要 SUM(COUNT(*)) 每张表。改用动态 SQL：
+    CNT=$(docker exec "${SHARD_CTR}" sh -c "
+      mysql -uroot -p${MYSQL_PWD} -N -se \"
+        SELECT GROUP_CONCAT(CONCAT('SELECT COUNT(*) FROM \`', table_schema, '\`.\`', table_name, '\`') SEPARATOR ' UNION ALL ')
+        FROM information_schema.tables
+        WHERE table_schema LIKE 'accountingdb_%'
+          AND table_name REGEXP '^transaction_order_[0-9]+\$';
+      \" 2>/dev/null | head -c 100000 > /tmp/q.sql
+      if [[ -s /tmp/q.sql ]]; then
+        echo \"SELECT SUM(c) FROM (\$(cat /tmp/q.sql)) x(c);\" | mysql -uroot -p${MYSQL_PWD} -N 2>/dev/null
+      else
+        echo 0
+      fi
+    " 2>/dev/null | tail -1)
+    CNT=${CNT:-0}
+    printf "  shard-%d (%s): %s rows (across all transaction_order_NN)\n" "${i}" "${SHARD_CTR}" "${CNT}"
     TOTAL_ORDERS=$((TOTAL_ORDERS + CNT))
   done
   hr
