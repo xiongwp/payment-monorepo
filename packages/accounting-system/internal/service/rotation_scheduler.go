@@ -317,6 +317,119 @@ func (s *Scheduler) swap(
 	return nil
 }
 
+// ============================================================================
+// 手动操作（admin-web 调用入口）
+// ============================================================================
+
+// ForceSwitch 运维强制切换：跳过时间检查，立即把 logical_account 的当前 active
+// 转为 draining，并把 provisioned 提升为 active。
+//
+// 调用前提（caller / admin-web 责任）：
+//   - 已经过 ops 双人复核
+//   - operator + reason 字段必填，写入 audit log
+//   - 已经预先 ensureProvisioned 过（或本方法内部 ensure）
+//
+// 失败模式：
+//   - 锁竞争 → 立即返回错误（不等）
+//   - 无 provisioned → 返回错误（caller 应先调 ForceProvision）
+//   - CAS 冲突（其他 worker 已切）→ 视为成功（幂等）
+func (s *Scheduler) ForceSwitch(
+	ctx context.Context, logicalAccountID int64, operator, reason string,
+) error {
+	if operator == "" || reason == "" {
+		return errors.New("ForceSwitch: operator and reason required for audit")
+	}
+
+	release, err := s.locks.AcquireForLogical(ctx, logicalAccountID, s.owner+"|manual:"+operator)
+	if err != nil {
+		return fmt.Errorf("force switch: acquire lock: %w", err)
+	}
+	defer release()
+
+	policy, err := s.policies.GetPolicy(ctx, logicalAccountID)
+	if err != nil {
+		return fmt.Errorf("force switch: get policy: %w", err)
+	}
+	if policy == nil {
+		return errors.New("force switch: no rotation policy")
+	}
+
+	active, err := s.instances.GetActiveInstance(ctx, logicalAccountID)
+	if err != nil {
+		return fmt.Errorf("force switch: get active: %w", err)
+	}
+	if active == nil {
+		return errors.New("force switch: no active instance to switch from")
+	}
+
+	now := s.clock()
+	// 用一个伪 LA wrapper 调用 swap（需要 LA 的 Version 信息）
+	// 这里简化：调用方应预先传入 LA；为接口简单起见，重新读一次
+	// （生产实现可以传 LA 进来，这里为单一职责保持精简）
+	la, err := s.findLogical(ctx, logicalAccountID)
+	if err != nil {
+		return err
+	}
+
+	result := &TickResult{}
+	if err := s.swap(ctx, la, active, policy, now, result); err != nil {
+		return fmt.Errorf("force switch swap: %w", err)
+	}
+	return nil
+}
+
+// ForceProvision 运维强制预创建下一期 provisioned instance（不切换）。
+// 用于：scheduler 未及时跑 / 故障恢复后预先建好下一期。
+func (s *Scheduler) ForceProvision(
+	ctx context.Context, logicalAccountID int64, operator, reason string,
+) error {
+	if operator == "" || reason == "" {
+		return errors.New("ForceProvision: operator and reason required")
+	}
+
+	release, err := s.locks.AcquireForLogical(ctx, logicalAccountID, s.owner+"|manual:"+operator)
+	if err != nil {
+		return fmt.Errorf("force provision: acquire lock: %w", err)
+	}
+	defer release()
+
+	policy, err := s.policies.GetPolicy(ctx, logicalAccountID)
+	if err != nil {
+		return fmt.Errorf("force provision: get policy: %w", err)
+	}
+	if policy == nil {
+		return errors.New("force provision: no policy")
+	}
+
+	active, err := s.instances.GetActiveInstance(ctx, logicalAccountID)
+	if err != nil {
+		return fmt.Errorf("force provision: get active: %w", err)
+	}
+
+	la, err := s.findLogical(ctx, logicalAccountID)
+	if err != nil {
+		return err
+	}
+
+	result := &TickResult{}
+	return s.ensureProvisioned(ctx, la, policy, active, s.clock(), result)
+}
+
+// findLogical 内部辅助：通过 lister 找到 LA。
+// 注：生产实现可以让 LogicalAccountLister 提供 GetByID。这里临时遍历 list。
+func (s *Scheduler) findLogical(ctx context.Context, id int64) (*model.LogicalAccount, error) {
+	las, err := s.logicals.ListRotating(ctx, 1000)
+	if err != nil {
+		return nil, fmt.Errorf("list rotating: %w", err)
+	}
+	for _, la := range las {
+		if la.ID == id {
+			return la, nil
+		}
+	}
+	return nil, fmt.Errorf("logical_account id=%d not found in rotating list", id)
+}
+
 // computeNextPeriod 根据 policy 计算下一期 [start, end)。
 // 若 currentActive 为 nil（首次激活）→ start=now，end=now+周期。
 // 否则 start=currentActive.PeriodEnd，end=start+周期。
