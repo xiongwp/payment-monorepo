@@ -1,18 +1,27 @@
 # ============================================================================
-# 轮换账户 End-to-End 压测栈
+# 轮换账户 End-to-End 压测栈 — 纯加法模式
 #
-# 包含：
-#   - 11 个 MySQL（10 shards + 1 metadb，accounting-system 用）
+# 这份 compose 只包含 loadtest 需要、但 accounting-system 自己的 compose 没起的：
 #   - etcd（服务发现）
-#   - accounting-system（含 rotation 特性）
-#   - split-payment
-#   - loadtest 客户端
+#   - split-payment（业务编排层）
+#   - loadtest（Go 压测客户端）
 #
-# 启动：
-#   GITHUB_TOKEN=ghp_xxx docker compose up -d
-#   docker compose run --rm loadtest /loadtest/run.sh
+# 真正的 accounting-system 栈（10 个 mysql 分库 + redis + kafka + accounting-service
+# 自身）由 packages/accounting-system/docker-compose.yml 起。
+# 通过共享的 payment-stack 外部网络互通：
 #
-# 网络：使用 payment-stack 外部网络（与 monorepo 其他服务一致）
+#   accounting-service:50051   ← split-payment 调
+#   accounting-redis:6379      ← accounting-service 用
+#   accounting-mysql-{0..9}    ← accounting-service 用
+#   accounting_meta            ← accounting-service 用
+#
+# 启动顺序（scripts/run.sh 自动按这个顺序）：
+#   1. docker compose -f packages/accounting-system/docker-compose.yml up -d
+#   2. docker compose -f packages/split-payment/deploy/loadtest/docker-compose.yml up -d
+#
+# 前置：
+#   docker network create payment-stack       （只跑一次）
+#   export GITHUB_TOKEN=ghp_xxx                （build 镜像需要）
 # ============================================================================
 
 networks:
@@ -20,61 +29,11 @@ networks:
     name: ${SHARED_DB_NETWORK:-payment-stack}
     external: true
 
-# ─── MySQL 基础配置 ──────────────────────────────────────────────────────────
-x-mysql-common: &mysql-common
-  image: mysql:8.0
-  command: >
-    --default-authentication-plugin=mysql_native_password
-    --character-set-server=utf8mb4
-    --collation-server=utf8mb4_unicode_ci
-    --max_connections=500
-    --innodb_buffer_pool_size=512M
-    --innodb_log_file_size=256M
-  environment:
-    MYSQL_ROOT_PASSWORD: password
-  healthcheck:
-    test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ppassword"]
-    interval: 10s
-    timeout: 5s
-    retries: 30
-    start_period: 60s
-
 services:
-  # ─── MySQL metadata + 10 shards ────────────────────────────────────────
-  mysql-meta:
-    <<: *mysql-common
-    container_name: loadtest-mysql-meta
-    environment:
-      MYSQL_ROOT_PASSWORD: password
-      MYSQL_DATABASE: account_meta
-    ports:
-      - "13316:3306"
-    volumes:
-      - mysql-meta-data:/var/lib/mysql
-      - ../../../accounting-system/database/metadb/init/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
-      - ../../../accounting-system/database/metadb/init/init_shadow.sql:/docker-entrypoint-initdb.d/02-init_shadow.sql:ro
-
-  # 为节省 compose 行数，10 个 shard 用一个生成模板 — 实际部署需要展开
-  mysql-0:
-    <<: *mysql-common
-    container_name: loadtest-mysql-0
-    environment:
-      MYSQL_ROOT_PASSWORD: password
-      MYSQL_DATABASE: accounting_db_0
-    ports:
-      - "13306:3306"
-    volumes:
-      - mysql-0-data:/var/lib/mysql
-      - ../../../accounting-system/database/accountingdb/init/0_init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
-      - ../../../accounting-system/database/accountingdb/init/0_init_tmp.sql:/docker-entrypoint-initdb.d/02-tmp.sql:ro
-      - ../../../accounting-system/database/accountingdb/init/0_init_shadow.sql:/docker-entrypoint-initdb.d/03-shadow.sql:ro
-
-  # ... mysql-1 至 mysql-9 同样模式（为简短此处省略，运维用 helm/script 展开）
-  # 完整 10 shard 见 packages/accounting-system/docker-compose.yml
-
-  # ─── etcd（服务发现 + config-center）──────────────────────────────────
+  # ─── etcd（服务发现 + config-center）─────────────────────────────────────
+  # accounting-system 自己的 compose 已显式不含 etcd（注释 "ETCD-CLEAN: 已删,
+  # 用 risk-stack 的 etcd"），所以由 loadtest 这边补上。
   etcd:
-    # bitnami/etcd 老 tag 已从 dockerhub 下架；改用官方 quay 镜像。
     image: quay.io/coreos/etcd:v3.5.16
     container_name: loadtest-etcd
     environment:
@@ -89,106 +48,28 @@ services:
     ports:
       - "12379:2379"
 
-  # ─── Redis（hot account 缓存）────────────────────────────────────────
-  redis:
-    image: redis:7-alpine
-    container_name: loadtest-redis
-    ports:
-      - "16379:6379"
-    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
-
-  # ─── Kafka（Outbox 事件流）── 简化为单 broker (KRaft，无 zookeeper)
-  # bitnami/kafka 老 tag 已下架；改用 apache 官方镜像 (env 变量同样是 KAFKA_*)
-  kafka:
-    image: apache/kafka:3.8.0
-    container_name: loadtest-kafka
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: "controller,broker"
-      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
-      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
-      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
-      # KRaft 集群 ID（任意 22 位 base64-url 字符串；固定一次启动用）
-      CLUSTER_ID: "loadtest-cluster-001234567890"
-    ports:
-      - "19092:9092"
-
-  # id-generator 服务：从压测栈里去掉。
-  # accounting-system 用的是 internal/idgen 包（DB-backed Leaf 号段），不依赖外部 service；
-  # split-payment 也没引用它。保留只会带来 build 错（id-generator 包目前有 stale import：
-  # cmd/server/main.go 引 idgen/v1/idgenservice，但磁盘上只有 idgen/v1/idservice）。
-
-  # ─── accounting-system（含 rotation 特性）───────────────────────────
-  accounting-system:
-    build:
-      context: ../../../accounting-system
-      dockerfile: Dockerfile
-      additional_contexts:
-        payment-util:        ../../../payment-util
-        accounting-grpc-api: ../../../accounting-grpc-api
-      secrets:
-        - GITHUB_TOKEN
-    image: accounting-system:rotation-loadtest
-    container_name: loadtest-accounting
-    depends_on:
-      mysql-meta:
-        condition: service_healthy
-      mysql-0:
-        condition: service_healthy
-      etcd:
-        condition: service_started
-      redis:
-        condition: service_started
-    environment:
-      ACCOUNTING_LOG_DEV: "false"
-      ACCOUNTING_REGISTRY_ENDPOINTS: "etcd:2379"
-      ACCOUNTING_DB_META_DSN: "root:password@tcp(mysql-meta:3306)/account_meta?charset=utf8mb4&parseTime=True&loc=UTC"
-      ACCOUNTING_DB_SHARD_PREFIX: "root:password@tcp(mysql-{shard}:3306)/accounting_db_{shard}?charset=utf8mb4&parseTime=True&loc=UTC"
-      ACCOUNTING_REDIS_ADDR: "redis:6379"
-      ACCOUNTING_KAFKA_BROKERS: "kafka:9092"
-      # accounting-system 用内部 idgen 包，不需要外部 id-generator endpoint
-      # rotation 特性开关
-      ACCOUNTING_ROTATION_ENABLED: "true"
-      ACCOUNTING_ROTATION_SCHEDULER_TICK: "10s"
-    ports:
-      - "10051:50051"  # gRPC
-      - "19091:9090"   # /metrics
-      - "19094:9092"   # admin HTTP（host 19094 → 容器 9092；避开 kafka 的 19092）
-
   # ─── split-payment（业务编排层）───────────────────────────────────────
-  # split-payment 的 Dockerfile 用 `COPY packages/X/...` 写死了路径，
-  # 所以 build context 必须 = monorepo 根（../../../../ 从 loadtest 目录算）。
-  # 它的 Dockerfile 不靠 additional_contexts，所以这里不需要 inject 兄弟仓。
+  # context = monorepo 根（split-payment Dockerfile 用 `COPY packages/X/...`）。
   split-payment:
     build:
-      context: ../../../../             # = payment-monorepo/
+      context: ../../../../
       dockerfile: packages/split-payment/Dockerfile
       secrets:
         - GITHUB_TOKEN
     image: split-payment:rotation-loadtest
     container_name: loadtest-split-payment
-    depends_on:
-      accounting-system:
-        condition: service_started
     environment:
       SPLIT_PAYMENT_LOG_DEV: "false"
       SPLIT_PAYMENT_REGISTRY_ENDPOINTS: "etcd:2379"
-      SPLIT_PAYMENT_ACCOUNTING_ENDPOINT: "accounting-system:50051"
-      # split-payment 没显式依赖 id-generator service
+      # 注意：accounting-system 在它自己的 compose 里 EtcdRegistrar 注册为
+      # "accounting-service"。这里用容器 DNS 直连。
+      SPLIT_PAYMENT_ACCOUNTING_ENDPOINT: "accounting-service:50051"
     ports:
       - "19098:9098"   # gRPC
       - "19099:9099"   # admin HTTP
 
   # ─── loadtest 客户端 ────────────────────────────────────────────────
-  # 复用 split-payment 的 go.mod，binary 源码 = packages/split-payment/cmd/loadtest/main.go
-  # NOTE: additional_contexts 路径是从 **compose 文件所在目录**（loadtest/）算的，
-  # 所以指向 packages/X 需要 ../../../X，不是 ../X。
+  # binary 源 = packages/split-payment/cmd/loadtest/main.go（复用 split-payment 的 go.mod）
   loadtest:
     build:
       context: ../../                                       # = packages/split-payment 根
@@ -202,29 +83,21 @@ services:
     image: rotation-loadtest:latest
     container_name: loadtest-client
     depends_on:
-      accounting-system:
-        condition: service_started
-      split-payment:
-        condition: service_started
+      - split-payment
     environment:
       LOADTEST_TARGET_SPLIT_PAYMENT_ENDPOINT: "split-payment:9098"
-      LOADTEST_TARGET_ACCOUNTING_ENDPOINT:    "accounting-system:50051"
-      LOADTEST_TARGET_ACCOUNTING_ADMIN_HTTP:  "http://accounting-system:9092"
+      LOADTEST_TARGET_ACCOUNTING_ENDPOINT:    "accounting-service:50051"
+      LOADTEST_TARGET_ACCOUNTING_ADMIN_HTTP:  "http://accounting-service:8888"
       LOADTEST_REPORT_OUTPUT_PATH:            "/output/loadtest-report.json"
     volumes:
       - ./config/loadtest.yaml:/loadtest/config.yaml:ro
       - ./scripts:/loadtest/scripts:ro
       - ./output:/output
-    # 默认参数 = 跑一次 60s mixed（CI 友好）；
-    # 交互式压测：docker compose run --rm loadtest --mode=topup --duration=30s
+    # 默认参数 = 跑 60s mixed（CI 友好）；
+    # 交互式：docker compose run --rm loadtest --mode=topup --duration=30s
     command: ["--config=/loadtest/config.yaml"]
 
 # BuildKit secrets：从环境变量读取 GITHUB_TOKEN
 secrets:
   GITHUB_TOKEN:
     environment: GITHUB_TOKEN
-
-volumes:
-  mysql-meta-data:
-  mysql-0-data:
-  # mysql-1-data ~ mysql-9-data 省略
