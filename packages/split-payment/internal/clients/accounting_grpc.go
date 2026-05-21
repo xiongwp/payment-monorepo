@@ -85,8 +85,9 @@ func NewAccountingGRPCClient(endpoint string) (*AccountingGRPCClient, error) {
 		// 强制 gRPC over HTTP/2 over TCP, 避开 Kitex netpoll 把 host:port 当 unix
 		// socket 路径解读的 "dial unix ...: no such file or directory" 陷阱.
 		client.WithTransportProtocol(transport.GRPC),
-		// 10s 给真实 mysql + redis 慢写留 buffer（retry 已禁掉所以不会被放大）。
-		client.WithRPCTimeout(10*time.Second),
+		// 2s inner timeout：loadtest 外层 3s，内层短 1s 让单 leg 先 fail-fast，
+		// 整笔 TriggerEvent 不被一条慢 leg 拖死。retry 已禁掉，不会被放大。
+		client.WithRPCTimeout(2*time.Second),
 		client.WithFailureRetry(noRetryPolicy),
 	)
 	cli, err := transactionservice.NewClient("accounting-service", opts...)
@@ -95,7 +96,7 @@ func NewAccountingGRPCClient(endpoint string) (*AccountingGRPCClient, error) {
 	}
 	return &AccountingGRPCClient{
 		cli:        cli,
-		Timeout:    10 * time.Second,
+		Timeout:    2 * time.Second,
 		rulesCache: map[string][]*TransactionRule{},
 		rulesExp:   map[string]time.Time{},
 	}, nil

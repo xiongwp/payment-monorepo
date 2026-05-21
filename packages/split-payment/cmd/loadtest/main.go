@@ -672,10 +672,10 @@ func main() {
 	spClient, err := spadminsvc.NewClient(
 		"split-payment",
 		client.WithHostPorts(cfg.Target.SplitPaymentEndpoint),
-		// 压测 tuning：原来 30s 会让 50 worker 全部卡在慢请求上 30s 不释放，
-		// 累计 ops 看起来"涨不动"。5s 让卡住的 worker 快速 fail-fast 释放，下一笔
-		// 立刻接上。代价是 errs 会显示更多 timeout 类错，但 TPS 是真实的尝试速率。
-		client.WithRPCTimeout(5*time.Second),
+		// 压测 tuning：3s outer timeout —— worker 等不到结果就 fail-fast 释放，
+		// 立刻发下一笔。inner（split-payment → accounting）配 2s，保证内层先死
+		// 让外层拿到明确错。
+		client.WithRPCTimeout(3*time.Second),
 	)
 	if err != nil {
 		fatal("create split-payment client: %v", err)
