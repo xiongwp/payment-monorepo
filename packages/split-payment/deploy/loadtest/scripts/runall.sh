@@ -165,8 +165,42 @@ fi
 # "insufficient available balance"（debit 校验可用余额是 TCC 设计的核心约束）。
 # 幂等：UPDATE ... WHERE balance=0 只动初始账户，重跑不影响有交易的账户。
 step "Step 2.5 / 5  预充值（mysql UPDATE 把所有 balance=0 账户撑到 1e15）"
-bash "${DIR}/scripts/prefund.sh" 2>&1 | tee -a "${LOG_FILE}" || \
-  yellow "  ⚠ prefund 部分失败，loadtest 可能仍报 insufficient balance"
+PREFUND_RC=0
+bash "${DIR}/scripts/prefund.sh" 2>&1 | tee -a "${LOG_FILE}" || PREFUND_RC=$?
+if [[ ${PREFUND_RC} -ne 0 ]]; then
+  red "ERROR: prefund 失败 (rc=${PREFUND_RC}) — 不充值跑压测一定报 insufficient balance"
+  echo "  手动跑诊断："
+  echo "    bash -x ${DIR}/scripts/prefund.sh 2>&1 | tail -50"
+  exit 1
+fi
+# 抽检：第一个 user 余额应该 > 0
+SAMPLE_USER=$(python3 -c "import json; print(json.load(open('${POOL_FILE}'))['users'][0])" 2>/dev/null || echo "")
+if [[ -n "${SAMPLE_USER}" ]]; then
+  FOUND_BALANCE=0
+  for i in $(seq 0 9); do
+    SHARD=$(docker ps --format '{{.Names}}' | grep -E "accounting.*mysql-${i}\b|mysql-${i}-1" | head -1)
+    [[ -z "${SHARD}" ]] && continue
+    BAL=$(docker exec "${SHARD}" sh -c "
+      for tbl in \$(mysql -uroot -ppassword -N -se \"
+        SELECT CONCAT(table_schema,'.',table_name) FROM information_schema.tables
+        WHERE table_schema LIKE 'accounting_db_%' AND table_name REGEXP '^account_[0-9]+\$'
+      \" 2>/dev/null); do
+        mysql -uroot -ppassword -N -se \"
+          SELECT balance FROM \$tbl WHERE account_no='${SAMPLE_USER}' AND balance>0 LIMIT 1
+        \" 2>/dev/null
+      done
+    " 2>/dev/null | head -1)
+    if [[ -n "${BAL}" && "${BAL}" != "0" ]]; then
+      green "  ✓ user[0]=${SAMPLE_USER} 在 shard-${i} balance=${BAL}"
+      FOUND_BALANCE=1
+      break
+    fi
+  done
+  if [[ ${FOUND_BALANCE} -ne 1 ]]; then
+    red "ERROR: prefund 跑完了但 user[0] balance 仍然是 0，压测会全失败"
+    exit 1
+  fi
+fi
 
 # ─── Step 3: 跑 loadtest ─────────────────────────────────────────────────
 step "Step 3 / 5  跑压测"
