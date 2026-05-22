@@ -36,6 +36,8 @@ func (s *Server) registerRotationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/rotation/register", s.handleRegister)                    // POST {logical_account_key, account_type, account_business_type, currency, rotation_enabled, operator, ...}
 	mux.HandleFunc("/admin/rotation/manual-switch", s.handleManualSwitch)           // POST {logical_account_key, operator, reason}
 	mux.HandleFunc("/admin/rotation/manual-provision", s.handleManualProvision)     // POST {logical_account_key, operator, reason}
+	mux.HandleFunc("/admin/rotation/resolve-fleet-sub", s.handleResolveFleetSub)    // GET ?logical_account_key=&flow_id=
+	mux.HandleFunc("/admin/rotation/fleet-book", s.handleFleetTestBook)             // POST { src_logical_account_key | src_account_no, dst_account_no, amount, currency, flow_id, business_type, operator }
 }
 
 // rotationAdminUnavailable 写 503 + 提示信息。
@@ -333,4 +335,90 @@ func (s *Server) handleManualProvision(w http.ResponseWriter, r *http.Request) {
 		"logical_account_key": req.LogicalAccountKey,
 		"operator":            req.Operator,
 	})
+}
+
+// handleResolveFleetSub GET /admin/rotation/resolve-fleet-sub?logical_account_key=...&flow_id=...
+//
+// 复刻 rotation_router.go 里 fleet branch 的路由逻辑，返回选中的 sub-account（含
+// account_no / sub_idx / group / phase）。用于运维排障 + UI demo。
+func (s *Server) handleResolveFleetSub(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.rotationAdminSvc == nil {
+		s.rotationAdminUnavailable(w)
+		return
+	}
+	key := r.URL.Query().Get("logical_account_key")
+	flowID := r.URL.Query().Get("flow_id")
+	if key == "" || flowID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "logical_account_key and flow_id are required",
+		})
+		return
+	}
+	resolution, err := s.rotationAdminSvc.ResolveFleetSubAccount(r.Context(), key, flowID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resolution)
+}
+
+// fleetTestBookReq POST /admin/rotation/fleet-book 入参。
+// 跟 service.FleetTestBookRequest 同 shape。
+type fleetTestBookReq struct {
+	SrcLogicalAccountKey string `json:"src_logical_account_key,omitempty"`
+	SrcAccountNo         string `json:"src_account_no,omitempty"`
+	DstAccountNo         string `json:"dst_account_no"`
+	Amount               int64  `json:"amount"`
+	Currency             string `json:"currency"`
+	FlowID               string `json:"flow_id"`
+	BusinessType         string `json:"business_type"`
+	Operator             string `json:"operator"`
+}
+
+// handleFleetTestBook POST /admin/rotation/fleet-book
+//
+// 端到端 demo：fleet routing → 双分录记账。
+// 源账户来自 src_logical_account_key（走 fleet routing 选 sub-account）或 src_account_no 直填。
+// 目标账户直接给 dst_account_no（不走 fleet routing，简化 demo）。
+func (s *Server) handleFleetTestBook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.rotationAdminSvc == nil {
+		s.rotationAdminUnavailable(w)
+		return
+	}
+	var req fleetTestBookReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
+		return
+	}
+	// 必填校验放 service 层做精确，HTTP 这里只做基本 sanity
+	if req.FlowID == "" || req.Operator == "" || req.Amount <= 0 ||
+		req.DstAccountNo == "" || (req.SrcLogicalAccountKey == "" && req.SrcAccountNo == "") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "flow_id/operator/amount(>0)/dst_account_no required; need src_logical_account_key or src_account_no",
+		})
+		return
+	}
+	resp, err := s.rotationAdminSvc.FleetTestBook(r.Context(), service.FleetTestBookRequest{
+		SrcLogicalAccountKey: req.SrcLogicalAccountKey,
+		SrcAccountNo:         req.SrcAccountNo,
+		DstAccountNo:         req.DstAccountNo,
+		Amount:               req.Amount,
+		Currency:             req.Currency,
+		FlowID:               req.FlowID,
+		BusinessType:         req.BusinessType,
+		Operator:             req.Operator,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

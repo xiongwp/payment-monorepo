@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"time"
 
 	"github.com/xiongwp/accounting-system/internal/domain/model"
@@ -60,8 +61,10 @@ type AccountAdminReader interface {
 
 // BookingInvoker fleet booking demo 用 — 仅暴露 DoubleEntryBooking。
 // 生产 caller 走 gRPC.CreateTransaction；admin HTTP 测试端点走这个接口。
+//
+// 签名跟 accountingService.DoubleEntryBooking 一致：(voucherNo, txIDs, err)。
 type BookingInvoker interface {
-	DoubleEntryBooking(ctx context.Context, req *DoubleEntryBookingRequest) (voucherNo string, transactionIDs []string, err error)
+	DoubleEntryBooking(ctx context.Context, req *DoubleEntryBookingRequest) (string, []string, error)
 }
 
 // LogicalAccountBalanceSummary admin / 对账接口的 LA 余额聚合视图。
@@ -531,4 +534,177 @@ func (s *AdminService) RegisterLogicalAccount(
 		}
 	}
 	return created, nil
+}
+
+// ============================================================================
+// 7. Fleet 路由 demo —— /admin/rotation/resolve-fleet-sub + /admin/rotation/fleet-book
+//
+// 给运维 / 演示用的两个端点：
+//   1. ResolveFleetSubAccount：给定 LA key + flow_id，返回 fleet routing 选中的
+//      sub-account（含 account_no, sub_idx, group, phase），便于排查"为啥这单写到了
+//      这个 sub-account 上"。
+//   2. FleetTestBook：在 admin 后端直接发起一次双分录记账，绕过 gRPC，源账户走 fleet
+//      routing 选中的 sub-account；演示从 LA 抽象到具体 sub-account 的端到端链路。
+// ============================================================================
+
+// FleetSubResolution fleet 路由结果。
+type FleetSubResolution struct {
+	LogicalAccountID  int64  `json:"logical_account_id"`
+	LogicalAccountKey string `json:"logical_account_key"`
+	FlowID            string `json:"flow_id"`
+	SubIdx            int    `json:"sub_idx"`            // hash(flow_id) % 100
+	AccountNo         string `json:"account_no"`
+	AccountGroup      string `json:"account_group"`      // "A" / "B"
+	LifecyclePhase    int8   `json:"lifecycle_phase"`
+	LifecyclePhaseStr string `json:"lifecycle_phase_str"`
+	Balance           int64  `json:"balance"`
+	Currency          string `json:"currency"`
+}
+
+// ResolveFleetSubAccount 复刻 rotation_router.go 里 fleet branch 的逻辑，返回选中的 sub-account。
+// 用途：admin UI / 运维排障 / e2e demo。
+//
+// 算法（必须跟 rotation_router.Resolve 保持一致）：
+//   1. sub_idx = fnv32a(flow_id) % 100
+//   2. 在 LA 的 100 个 active sub 中找 user_id=sub_idx 那个
+//   3. 找不到（rotation 中、未建好）→ 报错（生产代码会 fallback 到 anchor，这里 demo
+//      返回明确错误便于运维定位）
+func (s *AdminService) ResolveFleetSubAccount(
+	ctx context.Context, logicalAccountKey, flowID string,
+) (*FleetSubResolution, error) {
+	if logicalAccountKey == "" || flowID == "" {
+		return nil, errors.New("logical_account_key and flow_id required")
+	}
+	la, err := s.logicals.GetByKey(ctx, logicalAccountKey)
+	if err != nil {
+		return nil, fmt.Errorf("lookup LA: %w", err)
+	}
+	if la == nil {
+		return nil, fmt.Errorf("%w: %s", model.ErrLogicalAccountNotRegistered, logicalAccountKey)
+	}
+
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(flowID))
+	subIdx := int(h.Sum32() % 100)
+
+	sub, err := s.accounts.GetActiveSubAccount(ctx, la.ID, subIdx)
+	if err != nil {
+		return nil, fmt.Errorf("GetActiveSubAccount(la=%d, sub=%d): %w", la.ID, subIdx, err)
+	}
+	if sub == nil {
+		return nil, fmt.Errorf("no active sub at idx=%d for LA %s (fleet not provisioned or rotation in progress)",
+			subIdx, logicalAccountKey)
+	}
+
+	return &FleetSubResolution{
+		LogicalAccountID:  la.ID,
+		LogicalAccountKey: la.LogicalAccountKey,
+		FlowID:            flowID,
+		SubIdx:            subIdx,
+		AccountNo:         sub.AccountNo,
+		AccountGroup:      sub.AccountGroup,
+		LifecyclePhase:    int8(sub.LifecyclePhase),
+		LifecyclePhaseStr: sub.LifecyclePhase.String(),
+		Balance:           sub.Balance,
+		Currency:          sub.Currency,
+	}, nil
+}
+
+// FleetTestBookRequest admin 测试用的简化双分录入参。
+//
+// 业务字段：
+//   - SrcLogicalAccountKey: 源 LA（走 fleet routing 选中 sub-account 作 Debit 方）
+//   - SrcAccountNo: 直填源 account_no（跟 SrcLogicalAccountKey 二选一）
+//   - DstAccountNo: 目标 account_no（直接给，不走 fleet routing，便于 demo 简化；Credit 方）
+//   - Amount: 金额（最小单位）；Debit src，Credit dst
+//   - Currency: ISO-4217 3 字母
+//   - FlowID: 用作 RequestID（幂等键）+ BusinessNo + fleet routing hash
+//   - BusinessType: BusinessType 字符串，对应 model.BusinessType*
+//   - Operator: 必填，作为 description 一部分写入审计
+type FleetTestBookRequest struct {
+	SrcLogicalAccountKey string `json:"src_logical_account_key,omitempty"`
+	SrcAccountNo         string `json:"src_account_no,omitempty"`
+	DstAccountNo         string `json:"dst_account_no"`
+	Amount               int64  `json:"amount"`
+	Currency             string `json:"currency"`
+	FlowID               string `json:"flow_id"`
+	BusinessType         string `json:"business_type"`
+	Operator             string `json:"operator"`
+}
+
+// FleetTestBookResponse 记账结果 + fleet routing 过程信息。
+type FleetTestBookResponse struct {
+	VoucherNo      string              `json:"voucher_no"`
+	TransactionIDs []string            `json:"transaction_ids"`
+	SrcResolution  *FleetSubResolution `json:"src_resolution,omitempty"` // fleet routing 选中的 sub
+	BookingTime    time.Time           `json:"booking_time"`
+}
+
+// FleetTestBook 端到端 demo：fleet routing → 双分录记账。
+//
+// 流程：
+//   1. 校验入参（operator/flow_id 必填；amount > 0）
+//   2. 解析源账户：
+//      a. 给了 src_logical_account_key → 走 fleet routing → 返回 sub_account_no
+//      b. 给了 src_account_no → 直接用
+//   3. 构造 DoubleEntryBookingRequest，调 booker.DoubleEntryBooking
+//   4. 返回 voucher_no + transaction_ids + 路由过程信息
+//
+// 注意：这是 admin demo 端点，不做生产级幂等（依赖 booking_request_no = flow_id 兜底）。
+func (s *AdminService) FleetTestBook(
+	ctx context.Context, req FleetTestBookRequest,
+) (*FleetTestBookResponse, error) {
+	if s.booker == nil {
+		return nil, errors.New("booking invoker not wired in this build")
+	}
+	if req.Operator == "" {
+		return nil, errors.New("operator required (审计字段不能空)")
+	}
+	if req.FlowID == "" {
+		return nil, errors.New("flow_id required (用于幂等 + fleet routing hash)")
+	}
+	if req.Amount <= 0 {
+		return nil, errors.New("amount must be > 0")
+	}
+	if req.DstAccountNo == "" {
+		return nil, errors.New("dst_account_no required")
+	}
+	if req.SrcLogicalAccountKey == "" && req.SrcAccountNo == "" {
+		return nil, errors.New("must provide src_logical_account_key or src_account_no")
+	}
+
+	resp := &FleetTestBookResponse{BookingTime: s.clock()}
+
+	srcAccountNo := req.SrcAccountNo
+	if req.SrcLogicalAccountKey != "" {
+		resolved, err := s.ResolveFleetSubAccount(ctx, req.SrcLogicalAccountKey, req.FlowID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve fleet src: %w", err)
+		}
+		resp.SrcResolution = resolved
+		srcAccountNo = resolved.AccountNo
+	}
+
+	bizType := model.BusinessType(req.BusinessType)
+	if bizType == "" {
+		bizType = model.BusinessTypeTransfer
+	}
+	bookReq := &DoubleEntryBookingRequest{
+		RequestID:    req.FlowID, // 幂等键
+		BusinessNo:   req.FlowID,
+		BusinessType: bizType,
+		Currency:     req.Currency,
+		Description:  fmt.Sprintf("fleet-test-book via admin (operator=%s)", req.Operator),
+		Entries: []AccountingEntry{
+			{AccountNo: srcAccountNo, DebitAmount: req.Amount, Description: "fleet src"},
+			{AccountNo: req.DstAccountNo, CreditAmount: req.Amount, Description: "fleet dst"},
+		},
+	}
+	voucherNo, txIDs, err := s.booker.DoubleEntryBooking(ctx, bookReq)
+	if err != nil {
+		return nil, fmt.Errorf("double entry booking: %w", err)
+	}
+	resp.VoucherNo = voucherNo
+	resp.TransactionIDs = txIDs
+	return resp, nil
 }

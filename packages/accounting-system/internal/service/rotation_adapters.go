@@ -109,6 +109,13 @@ func (a *adminAccountReaderAdapter) GetByAccountNo(ctx context.Context, accountN
 	return a.accounts.GetAccountByNo(ctx, accountNo)
 }
 
+// GetActiveSubAccount 实现 AccountAdminReader.GetActiveSubAccount — 给 fleet 测试端点用。
+func (a *adminAccountReaderAdapter) GetActiveSubAccount(
+	ctx context.Context, logicalAccountID int64, subIdx int,
+) (*model.Account, error) {
+	return a.instances.GetActiveSubAccount(ctx, logicalAccountID, subIdx)
+}
+
 // SumBalanceByLogical 适配 repo.SumBalanceByLogical → service 层视图。
 func (a *adminAccountReaderAdapter) SumBalanceByLogical(ctx context.Context, logicalAccountID int64) (LogicalAccountBalanceSummary, error) {
 	repoOut, err := a.instances.SumBalanceByLogical(ctx, logicalAccountID)

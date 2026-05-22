@@ -130,13 +130,24 @@ func NewRotationSchedulerCommand(sch *service.Scheduler) service.SchedulerComman
 	return service.NewAdminSchedulerCommandAdapter(sch)
 }
 
+// NewRotationBookingInvoker fx provider — 把 service.AccountingService 适配为
+// service.BookingInvoker（仅 DoubleEntryBooking 方法），注入 AdminService 给
+// /admin/rotation/fleet-book demo 端点用。
+//
+// AccountingService 的 DoubleEntryBooking 签名跟 BookingInvoker 一致 → 直接返回。
+func NewRotationBookingInvoker(svc service.AccountingService) service.BookingInvoker {
+	return svc
+}
+
 // NewRotationAdminService fx provider — 组装 service.AdminService。
 // registrar 走 LogicalAccountRepository.Register（已含前缀白名单 + unique 冲突保护）。
+// booker 来自 NewRotationBookingInvoker，供 fleet-book demo 端点用；不可空。
 func NewRotationAdminService(
 	logicals service.LogicalAccountAdminReader,
 	registrar service.LogicalAccountAdminRegistrar,
 	accounts service.AccountAdminReader,
 	scheduler service.SchedulerCommand,
+	booker service.BookingInvoker,
 ) *service.AdminService {
-	return service.NewAdminService(logicals, registrar, accounts, scheduler, nil /* clock=time.Now */)
+	return service.NewAdminService(logicals, registrar, accounts, scheduler, booker, nil /* clock=time.Now */)
 }
