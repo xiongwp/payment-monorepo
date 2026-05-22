@@ -32,6 +32,13 @@ type LogicalAccountAdminReader interface {
 	ListByPrefix(ctx context.Context, prefix string, limit int) ([]*model.LogicalAccount, error)
 }
 
+// LogicalAccountAdminRegistrar 管理员接口：写（注册新 LA）。
+// 实现走 repository.LogicalAccountRepository.Register（含命名前缀白名单校验 +
+// unique key 冲突保护，详见 model.ValidateLogicalAccountKey）。
+type LogicalAccountAdminRegistrar interface {
+	Register(ctx context.Context, la *model.LogicalAccount) (*model.LogicalAccount, error)
+}
+
 // AccountAdminReader 管理员接口：读账户实例。
 type AccountAdminReader interface {
 	// ListByLogical 返回 LA 下所有 instance（所有 phase），按 period_start 升序。
@@ -51,14 +58,16 @@ type SchedulerCommand interface {
 // AdminService admin-web 后端服务。
 type AdminService struct {
 	logicals  LogicalAccountAdminReader
+	registrar LogicalAccountAdminRegistrar // 可空 → RegisterLogicalAccount 返回明确错误
 	accounts  AccountAdminReader
 	scheduler SchedulerCommand
 	clock     func() time.Time
 }
 
-// NewAdminService 构造。
+// NewAdminService 构造。registrar 传 nil 时写端点降级（返回 "not wired"），不 panic。
 func NewAdminService(
 	logicals LogicalAccountAdminReader,
+	registrar LogicalAccountAdminRegistrar,
 	accounts AccountAdminReader,
 	scheduler SchedulerCommand,
 	clock func() time.Time,
@@ -68,6 +77,7 @@ func NewAdminService(
 	}
 	return &AdminService{
 		logicals:  logicals,
+		registrar: registrar,
 		accounts:  accounts,
 		scheduler: scheduler,
 		clock:     clock,
@@ -367,4 +377,61 @@ func (s *AdminService) GetInstanceDetail(ctx context.Context, accountNo string) 
 		}
 	}
 	return detail, nil
+}
+
+// ============================================================================
+// 6. 注册新 LogicalAccount — admin-web "创建 LA" 表单后端
+// ============================================================================
+
+// RegisterLogicalAccountRequest "创建 LA" 表单参数。
+//
+// 字段含义：
+//   - LogicalAccountKey: 业务侧稳定 key，必须以 model.AllowedKeyPrefixes 之一开头
+//   - AccountType / AccountBusinessType: 见 model.AccountType / AccountBusinessType
+//   - Currency: ISO-4217 3 字母（USD/PHP/CNY/...）
+//   - Description: 可选人类可读描述
+//   - RotationEnabled: true → 启用轮换；false → 跑 legacy 单 instance 路径
+//   - Operator: 必填，写入 registered_by 字段做审计
+type RegisterLogicalAccountRequest struct {
+	LogicalAccountKey   string `json:"logical_account_key"`
+	AccountType         int8   `json:"account_type"`
+	AccountBusinessType int8   `json:"account_business_type"`
+	Currency            string `json:"currency"`
+	Description         string `json:"description,omitempty"`
+	RotationEnabled     bool   `json:"rotation_enabled"`
+	Operator            string `json:"operator"`
+}
+
+// RegisterLogicalAccount 注册一个新 LA。
+// 验证由 repo.Register 完成（前缀白名单、unique key 冲突、必填字段）。
+// 返回完整的新 LA（含 id / created_at / 默认值）。
+func (s *AdminService) RegisterLogicalAccount(
+	ctx context.Context, req RegisterLogicalAccountRequest,
+) (*model.LogicalAccount, error) {
+	if s.registrar == nil {
+		return nil, errors.New("logical_account registrar not wired in this build")
+	}
+	if req.Operator == "" {
+		return nil, errors.New("operator required (审计字段不能空)")
+	}
+	rotationEnabled := int8(0)
+	if req.RotationEnabled {
+		rotationEnabled = 1
+	}
+	var desc *string
+	if req.Description != "" {
+		d := req.Description
+		desc = &d
+	}
+	la := &model.LogicalAccount{
+		LogicalAccountKey:   req.LogicalAccountKey,
+		AccountType:         model.AccountType(req.AccountType),
+		AccountBusinessType: model.AccountBusinessType(req.AccountBusinessType),
+		Currency:            req.Currency,
+		Description:         desc,
+		RotationEnabled:     rotationEnabled,
+		Status:              model.LogicalAccountStatusEnabled,
+		RegisteredBy:        req.Operator,
+	}
+	return s.registrar.Register(ctx, la)
 }

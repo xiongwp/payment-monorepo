@@ -138,6 +138,7 @@ func main() {
 	r.HandleFunc("/v1/rotation/logical-accounts", instanceH.RotationListLogicalAccounts).Methods(http.MethodGet)
 	r.HandleFunc("/v1/rotation/instance-history", instanceH.RotationInstanceHistory).Methods(http.MethodGet)
 	r.HandleFunc("/v1/rotation/instance-detail", instanceH.RotationInstanceDetail).Methods(http.MethodGet)
+	r.HandleFunc("/v1/rotation/register", instanceH.RotationRegister).Methods(http.MethodPost)
 	r.HandleFunc("/v1/rotation/manual-switch", instanceH.RotationManualSwitch).Methods(http.MethodPost)
 	r.HandleFunc("/v1/rotation/manual-provision", instanceH.RotationManualProvision).Methods(http.MethodPost)
 

@@ -123,6 +123,7 @@ func main() {
 			NewRotationLogicalAccountRepository,
 			NewRotationAccountInstanceManager,
 			NewRotationLogicalAccountAdminReader,
+			NewRotationLogicalAccountAdminRegistrar,
 			NewRotationAccountAdminReader,
 			NewStubSchedulerCommand, // TODO: 等完整 Scheduler 接线后换 NewAdminSchedulerCommandAdapter
 			NewRotationAdminService,

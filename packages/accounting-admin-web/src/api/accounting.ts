@@ -605,3 +605,12 @@ export function rotationManualProvision(
 ): Promise<RotationManualOpResponse> {
   return request({ method: 'POST', url: '/v1/rotation/manual-provision', data: req });
 }
+
+/** 注册新 LogicalAccount —— admin-web "创建 LA" 表单。
+ *  key 已存在返回 409；前缀不在白名单 / 必填缺失返 400。
+ */
+export function rotationRegisterLogicalAccount(
+  req: RotationRegisterRequest,
+): Promise<RotationRegisterResponse> {
+  return request({ method: 'POST', url: '/v1/rotation/register', data: req });
+}

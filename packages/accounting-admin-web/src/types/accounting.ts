@@ -543,3 +543,30 @@ export interface RotationManualOpResponse {
   operator: string;
 }
 
+/** 注册新 LA 请求 —— "创建 LA" 表单提交体。
+ *
+ *  字段约束：
+ *   - logical_account_key: 必须以 model.AllowedKeyPrefixes 之一开头
+ *     ('transit:', 'channel-payable:', 'channel-receivable:', ...)，长度 ∈ [8, 64]，ASCII 可见字符
+ *   - account_type / account_business_type: 见 AccountType / AccountBusinessType 枚举（int8）
+ *   - rotation_enabled: false → legacy 单 instance 路径；true → 启用轮换
+ */
+export interface RotationRegisterRequest {
+  logical_account_key: string;
+  account_type: number;
+  account_business_type: number;
+  currency: string;
+  description?: string;
+  rotation_enabled: boolean;
+  operator: string;
+}
+
+/** 注册成功响应 */
+export interface RotationRegisterResponse {
+  message: string;
+  logical_account_key: string;
+  id: number;
+  rotation_enabled: boolean;
+  registered_by: string;
+}
+

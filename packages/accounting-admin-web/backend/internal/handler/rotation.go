@@ -9,10 +9,11 @@ import (
 // ============================================================================
 // 轮换账户管理 HTTP 代理 — 转发到 accounting-system 的 /admin/rotation/* 端点
 //
-// 5 个端点：
+// 6 个端点：
 //   GET  /v1/rotation/logical-accounts          → /admin/rotation/logical-accounts
 //   GET  /v1/rotation/instance-history          → /admin/rotation/instance-history
 //   GET  /v1/rotation/instance-detail           → /admin/rotation/instance-detail
+//   POST /v1/rotation/register                  → /admin/rotation/register
 //   POST /v1/rotation/manual-switch             → /admin/rotation/manual-switch
 //   POST /v1/rotation/manual-provision          → /admin/rotation/manual-provision
 //
@@ -47,6 +48,23 @@ func (h *InstanceHandler) RotationInstanceHistory(w http.ResponseWriter, r *http
 func (h *InstanceHandler) RotationInstanceDetail(w http.ResponseWriter, r *http.Request) {
 	url := h.seedAddr + "/admin/rotation/instance-detail?" + r.URL.RawQuery
 	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
+	h.proxyTo(w, req)
+}
+
+// RotationRegister POST /v1/rotation/register
+//
+// Body: {logical_account_key, account_type, account_business_type, currency,
+//        description, rotation_enabled, operator}
+// 成功 200；key 已存在 409；前缀不合法 / 必填缺失 400。
+func (h *InstanceHandler) RotationRegister(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodPost,
+		h.seedAddr+"/admin/rotation/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	h.proxyTo(w, req)
 }
 

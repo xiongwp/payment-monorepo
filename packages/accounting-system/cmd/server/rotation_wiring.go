@@ -50,6 +50,14 @@ func NewRotationLogicalAccountAdminReader(
 	return laRepo
 }
 
+// NewRotationLogicalAccountAdminRegistrar 适配 LogicalAccountRepository → service.LogicalAccountAdminRegistrar
+// Register 方法签名一致，直接复用同一份 repo 实现。
+func NewRotationLogicalAccountAdminRegistrar(
+	laRepo repository.LogicalAccountRepository,
+) service.LogicalAccountAdminRegistrar {
+	return laRepo
+}
+
 // NewRotationAccountAdminReader 适配 instance manager + account repo → service.AccountAdminReader
 func NewRotationAccountAdminReader(
 	instances repository.AccountInstanceManager,
@@ -79,10 +87,12 @@ func (stubSchedulerCommand) ForceProvision(_ context.Context, _ int64, _, _ stri
 }
 
 // NewRotationAdminService fx provider — 组装 service.AdminService。
+// registrar 走 LogicalAccountRepository.Register（已含前缀白名单 + unique 冲突保护）。
 func NewRotationAdminService(
 	logicals service.LogicalAccountAdminReader,
+	registrar service.LogicalAccountAdminRegistrar,
 	accounts service.AccountAdminReader,
 	scheduler service.SchedulerCommand,
 ) *service.AdminService {
-	return service.NewAdminService(logicals, accounts, scheduler, nil /* clock=time.Now */)
+	return service.NewAdminService(logicals, registrar, accounts, scheduler, nil /* clock=time.Now */)
 }

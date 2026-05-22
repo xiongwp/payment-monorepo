@@ -338,10 +338,28 @@ const (
 
 // AllowedKeyPrefixes logical_account_key 命名空间白名单（§3.1 防 typo 创建幽灵账户）。
 // 注册接口 RegisterLogicalAccount 必须校验前缀。
+//
+// 设计原则：所有"平台账户 / 中间账户"都支持轮换。普通业务账户（user-/merchant-）
+// 是按 owner_id 自然分散的，不进 LA 体系。
+//
+// 命名规则：<域>-<语义>:<标识>  / 或 <域>:<标识> 二段式。
 var AllowedKeyPrefixes = []string{
-	"transit:",            // 通用中间账户 (account_type=9)
-	"channel-payable:",    // 渠道应付款  (account_type=6)
-	"channel-receivable:", // 渠道应收款  (account_type=5)
+	// ── 通用兜底 ────────────────────────────────────────────────
+	"transit:", // 通用中间挂账   (account_type=9)
+
+	// ── 渠道侧账户 4 子类 (recv/suspense/fee/payable) ──────────
+	"channel-receivable:", // 渠道应收款        (account_type=5)
+	"channel-suspense:",   // 渠道入金挂账      (account_type=9)
+	"channel-fee:",        // 渠道手续费应付    (account_type=7)
+	"channel-payable:",    // 渠道应付款        (account_type=6)
+
+	// ── 平台侧账户 3 子类 ───────────────────────────────────────
+	"platform-fee-clearing:",     // 平台待清算费用 (account_type=4)
+	"platform-fee-revenue:",      // 平台手续费收入 (account_type=4)
+	"platform-withdraw-pending:", // 平台提现挂账   (account_type=9)
+
+	// ── 用户侧中间账户 ─────────────────────────────────────────
+	"user-suspense:", // 用户挂账   (account_type=9)
 }
 
 // ValidateLogicalAccountKey 检查 key 是否符合命名规范。

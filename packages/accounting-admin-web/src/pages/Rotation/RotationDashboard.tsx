@@ -15,12 +15,15 @@ import {
   Col,
   Tooltip,
   Alert,
+  Select,
+  Switch,
 } from 'antd'
 import {
   SearchOutlined,
   ReloadOutlined,
   SwapOutlined,
   PlusCircleOutlined,
+  PlusOutlined,
   InfoCircleOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
@@ -29,8 +32,12 @@ import {
   listRotationLogicalAccounts,
   rotationManualSwitch,
   rotationManualProvision,
+  rotationRegisterLogicalAccount,
 } from '../../api/accounting'
-import type { RotationLogicalAccountRow } from '../../types/accounting'
+import type {
+  RotationLogicalAccountRow,
+  RotationRegisterRequest,
+} from '../../types/accounting'
 import { display as displayMoney } from '../../utils/money'
 
 const { Title, Paragraph, Text } = Typography
@@ -149,6 +156,201 @@ function ManualOpModal(p: ManualOpModalProps) {
   )
 }
 
+// ────────────────────────────────────────────────────────────────
+// "创建 LA" 表单常量
+// ────────────────────────────────────────────────────────────────
+
+// AllowedKeyPrefixes — 跟 accounting-system model.AllowedKeyPrefixes 对齐
+// 每个 prefix 配一个推荐的 account_type（见 model.AccountType 枚举）。
+//
+// 原则：所有"平台/中间账户"都支持轮换。后端 model.AllowedKeyPrefixes 是 source of truth；
+// 这里只是 UI 推荐选项，新增 / 删除 prefix 时两边都要改。
+const KEY_PREFIX_OPTIONS = [
+  // 渠道侧（4 子类）
+  { prefix: 'channel-receivable:',       label: 'channel-receivable: 渠道应收款',        suggestedAccountType: 5 },
+  { prefix: 'channel-suspense:',         label: 'channel-suspense: 渠道入金挂账',        suggestedAccountType: 9 },
+  { prefix: 'channel-fee:',              label: 'channel-fee: 渠道手续费应付',           suggestedAccountType: 7 },
+  { prefix: 'channel-payable:',          label: 'channel-payable: 渠道应付款',           suggestedAccountType: 6 },
+  // 平台侧
+  { prefix: 'platform-fee-clearing:',    label: 'platform-fee-clearing: 平台待清算费用', suggestedAccountType: 4 },
+  { prefix: 'platform-fee-revenue:',     label: 'platform-fee-revenue: 平台手续费收入',  suggestedAccountType: 4 },
+  { prefix: 'platform-withdraw-pending:',label: 'platform-withdraw-pending: 平台提现挂账', suggestedAccountType: 9 },
+  // 用户侧中间
+  { prefix: 'user-suspense:',            label: 'user-suspense: 用户挂账',               suggestedAccountType: 9 },
+  // 通用兜底
+  { prefix: 'transit:',                  label: 'transit: 通用中间账户',                  suggestedAccountType: 9 },
+]
+
+// AccountType 枚举 — 跟 accounting-system model.AccountType 对齐
+// 完整枚举见 internal/domain/model/account.go；这里只列 LA 常用的几个
+const ACCOUNT_TYPE_OPTIONS = [
+  { value: 5, label: '5 - 渠道应收 (channel receivable)' },
+  { value: 6, label: '6 - 渠道应付 (channel payable)' },
+  { value: 7, label: '7 - 手续费 (fee)' },
+  { value: 8, label: '8 - 平台收入 (revenue)' },
+  { value: 9, label: '9 - 中间挂账 (suspense / transit)' },
+]
+
+// AccountBusinessType 枚举 — 通用 1=资产 / 2=负债 / 3=权益 / 4=收入 / 5=费用
+const ACCOUNT_BUSINESS_TYPE_OPTIONS = [
+  { value: 1, label: '1 - 资产 (asset)' },
+  { value: 2, label: '2 - 负债 (liability)' },
+  { value: 3, label: '3 - 权益 (equity)' },
+  { value: 4, label: '4 - 收入 (revenue)' },
+  { value: 5, label: '5 - 费用 (expense)' },
+]
+
+const CURRENCY_OPTIONS = ['USD', 'PHP', 'CNY', 'HKD', 'SGD', 'JPY', 'EUR']
+
+interface RegisterLAModalProps {
+  open: boolean
+  onClose: () => void
+  onDone: () => void
+}
+
+function RegisterLAModal(p: RegisterLAModalProps) {
+  const [form] = Form.useForm()
+  const [loading, setLoading] = useState(false)
+  const [prefix, setPrefix] = useState<string>(KEY_PREFIX_OPTIONS[0].prefix)
+  const [keySuffix, setKeySuffix] = useState<string>('')
+
+  const fullKey = useMemo(() => `${prefix}${keySuffix.trim()}`, [prefix, keySuffix])
+
+  const submit = async () => {
+    try {
+      const values = await form.validateFields()
+      if (!keySuffix.trim()) {
+        message.error('请填写 logical_account_key 后缀')
+        return
+      }
+      if (fullKey.length < 8 || fullKey.length > 64) {
+        message.error(`完整 key 长度需在 [8, 64]: 当前 ${fullKey.length}`)
+        return
+      }
+      setLoading(true)
+      const req: RotationRegisterRequest = {
+        logical_account_key:   fullKey,
+        account_type:          values.account_type,
+        account_business_type: values.account_business_type,
+        currency:              values.currency,
+        description:           values.description || undefined,
+        rotation_enabled:      !!values.rotation_enabled,
+        operator:              values.operator,
+      }
+      await rotationRegisterLogicalAccount(req)
+      message.success(`已创建 ${fullKey}`)
+      form.resetFields()
+      setKeySuffix('')
+      p.onClose()
+      p.onDone()
+    } catch (e) {
+      if ((e as { errorFields?: unknown }).errorFields) return // form 校验失败
+      message.error(e instanceof Error ? e.message : '创建失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // prefix 切换时自动 suggest 一个 account_type
+  const onPrefixChange = (v: string) => {
+    setPrefix(v)
+    const hit = KEY_PREFIX_OPTIONS.find((o) => o.prefix === v)
+    if (hit) form.setFieldValue('account_type', hit.suggestedAccountType)
+  }
+
+  return (
+    <Modal
+      title="创建 LogicalAccount"
+      open={p.open}
+      onCancel={p.onClose}
+      onOk={submit}
+      confirmLoading={loading}
+      okText="创建"
+      cancelText="取消"
+      width={640}
+      destroyOnClose
+    >
+      <Alert
+        message="LA 是业务侧稳定的账户键，背后挂多个 instance 按周期轮换。注册后 status=enabled；若 rotation_enabled=true，还需点击「预创建」+「立即切换」启动首个 active instance。"
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+      />
+      <Form
+        form={form}
+        layout="vertical"
+        preserve={false}
+        initialValues={{
+          account_type: KEY_PREFIX_OPTIONS[0].suggestedAccountType,
+          account_business_type: 2, // 负债（中间账户多数是负债）
+          currency: 'PHP',
+          rotation_enabled: true,
+        }}
+      >
+        <Form.Item label="logical_account_key 前缀" required>
+          <Select
+            value={prefix}
+            onChange={onPrefixChange}
+            options={KEY_PREFIX_OPTIONS.map((o) => ({ value: o.prefix, label: o.label }))}
+            style={{ width: '100%' }}
+          />
+        </Form.Item>
+        <Form.Item
+          label={`完整 key: ${fullKey || '(填后缀)'}`}
+          required
+          help="拼接：前缀 + 后缀。完整长度 ∈ [8, 64]，ASCII 可见字符（不含空格）"
+        >
+          <Input
+            value={keySuffix}
+            onChange={(e) => setKeySuffix(e.target.value)}
+            placeholder="e.g. alipay / wechatpay-cn / merchant-12345"
+            addonBefore={prefix}
+          />
+        </Form.Item>
+        <Form.Item
+          label="account_type"
+          name="account_type"
+          rules={[{ required: true, message: '必填' }]}
+        >
+          <Select options={ACCOUNT_TYPE_OPTIONS} />
+        </Form.Item>
+        <Form.Item
+          label="account_business_type"
+          name="account_business_type"
+          rules={[{ required: true, message: '必填' }]}
+        >
+          <Select options={ACCOUNT_BUSINESS_TYPE_OPTIONS} />
+        </Form.Item>
+        <Form.Item
+          label="币种 (currency)"
+          name="currency"
+          rules={[{ required: true, message: '必填' }]}
+        >
+          <Select options={CURRENCY_OPTIONS.map((c) => ({ value: c, label: c }))} />
+        </Form.Item>
+        <Form.Item
+          label="启用轮换 (rotation_enabled)"
+          name="rotation_enabled"
+          valuePropName="checked"
+          tooltip="false → 单 instance 兼容模式；true → 启用轮换，可点「预创建」「立即切换」"
+        >
+          <Switch />
+        </Form.Item>
+        <Form.Item label="描述 (可选)" name="description">
+          <Input.TextArea rows={2} placeholder="e.g. 支付宝渠道应付款主账户" />
+        </Form.Item>
+        <Form.Item
+          label="Operator (操作人邮箱 / 工号)"
+          name="operator"
+          rules={[{ required: true, message: '必填，写入 registered_by 做审计' }]}
+        >
+          <Input placeholder="e.g. ops-alice@example.com" />
+        </Form.Item>
+      </Form>
+    </Modal>
+  )
+}
+
 export default function RotationDashboard() {
   const navigate = useNavigate()
   const [rows, setRows] = useState<RotationLogicalAccountRow[]>([])
@@ -159,6 +361,7 @@ export default function RotationDashboard() {
     action: 'switch' | 'provision'
     key: string
   }>({ open: false, action: 'switch', key: '' })
+  const [registerOpen, setRegisterOpen] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -365,6 +568,16 @@ export default function RotationDashboard() {
               刷新
             </Button>
           </Form.Item>
+          <Form.Item>
+            <Button
+              type="primary"
+              ghost
+              icon={<PlusOutlined />}
+              onClick={() => setRegisterOpen(true)}
+            >
+              创建 LA
+            </Button>
+          </Form.Item>
         </Form>
       </Card>
 
@@ -376,6 +589,12 @@ export default function RotationDashboard() {
         dataSource={rows}
         pagination={{ pageSize: 25, showSizeChanger: true }}
         scroll={{ x: 1300, y: 560 }}
+      />
+
+      <RegisterLAModal
+        open={registerOpen}
+        onClose={() => setRegisterOpen(false)}
+        onDone={load}
       />
 
       <ManualOpModal

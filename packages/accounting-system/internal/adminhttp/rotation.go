@@ -32,6 +32,7 @@ func (s *Server) registerRotationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/rotation/logical-accounts", s.handleListLogicalAccounts) // GET ?prefix=&limit=
 	mux.HandleFunc("/admin/rotation/instance-history", s.handleInstanceHistory)     // GET ?logical_account_key=
 	mux.HandleFunc("/admin/rotation/instance-detail", s.handleInstanceDetail)       // GET ?account_no=
+	mux.HandleFunc("/admin/rotation/register", s.handleRegister)                    // POST {logical_account_key, account_type, account_business_type, currency, rotation_enabled, operator, ...}
 	mux.HandleFunc("/admin/rotation/manual-switch", s.handleManualSwitch)           // POST {logical_account_key, operator, reason}
 	mux.HandleFunc("/admin/rotation/manual-provision", s.handleManualProvision)     // POST {logical_account_key, operator, reason}
 }
@@ -158,6 +159,108 @@ func (s *Server) handleManualSwitch(w http.ResponseWriter, r *http.Request) {
 		"logical_account_key": req.LogicalAccountKey,
 		"operator":            req.Operator,
 	})
+}
+
+// registerLAReq POST /admin/rotation/register 入参 — 跟 service.RegisterLogicalAccountRequest 同 shape。
+type registerLAReq struct {
+	LogicalAccountKey   string `json:"logical_account_key"`
+	AccountType         int8   `json:"account_type"`
+	AccountBusinessType int8   `json:"account_business_type"`
+	Currency            string `json:"currency"`
+	Description         string `json:"description,omitempty"`
+	RotationEnabled     bool   `json:"rotation_enabled"`
+	Operator            string `json:"operator"`
+}
+
+// handleRegister POST /admin/rotation/register —— 创建新 LogicalAccount.
+// 前缀必须命中 model.AllowedKeyPrefixes (transit: / channel-payable: / channel-receivable: ...)
+// key 已存在返回 409；其它错误 400 / 500。
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.rotationAdminSvc == nil {
+		s.rotationAdminUnavailable(w)
+		return
+	}
+	var req registerLAReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
+		return
+	}
+	// 业务必填校验（key/account_type/business_type/currency/operator）
+	missing := []string{}
+	if req.LogicalAccountKey == "" {
+		missing = append(missing, "logical_account_key")
+	}
+	if req.AccountType == 0 {
+		missing = append(missing, "account_type")
+	}
+	if req.AccountBusinessType == 0 {
+		missing = append(missing, "account_business_type")
+	}
+	if req.Currency == "" {
+		missing = append(missing, "currency")
+	}
+	if req.Operator == "" {
+		missing = append(missing, "operator")
+	}
+	if len(missing) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":  "missing required fields",
+			"fields": missing,
+		})
+		return
+	}
+
+	la, err := s.rotationAdminSvc.RegisterLogicalAccount(r.Context(), service.RegisterLogicalAccountRequest{
+		LogicalAccountKey:   req.LogicalAccountKey,
+		AccountType:         req.AccountType,
+		AccountBusinessType: req.AccountBusinessType,
+		Currency:            req.Currency,
+		Description:         req.Description,
+		RotationEnabled:     req.RotationEnabled,
+		Operator:            req.Operator,
+	})
+	if err != nil {
+		// key 已存在 → 409 Conflict (前端弹"已存在"提示更友好)
+		// 前缀不合法 → 400
+		// 其它（DB 故障等）→ 500
+		msg := err.Error()
+		status := http.StatusInternalServerError
+		switch {
+		case containsAny(msg, "already exists", "key exists", "lost race"):
+			status = http.StatusConflict
+		case containsAny(msg, "does not match any allowed prefix", "out of range", "non-ASCII", "required", "invalid logical_account_key"):
+			status = http.StatusBadRequest
+		}
+		writeJSON(w, status, map[string]string{"error": msg})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":             "logical_account registered",
+		"logical_account_key": la.LogicalAccountKey,
+		"id":                  la.ID,
+		"rotation_enabled":    la.RotationEnabled == 1,
+		"registered_by":       la.RegisteredBy,
+	})
+}
+
+// containsAny 小工具：判断 s 是否含任意一个 needle 子串。
+// 不引入额外 import；adminhttp 已有 strings 用的话改成 strings.Contains 即可。
+func containsAny(s string, needles ...string) bool {
+	for _, n := range needles {
+		if len(n) == 0 || len(s) < len(n) {
+			continue
+		}
+		for i := 0; i+len(n) <= len(s); i++ {
+			if s[i:i+len(n)] == n {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // handleManualProvision POST /admin/rotation/manual-provision
