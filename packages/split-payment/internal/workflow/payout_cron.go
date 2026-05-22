@@ -241,7 +241,8 @@ func DefaultHoldUnstickConfig() HoldUnstickConfig {
 type PendingHoldsRepo interface {
 	ListExpiredHolds(ctx context.Context, now time.Time, limit int) ([]*domain.RunPlan, error)
 	// MarkHoldReleased 标行 hold_released=1; 重复调用幂等 (返 ErrNotFound 表示已被别人处理).
-	MarkHoldReleased(ctx context.Context, runID int64) error
+	// DB-split: chargeID 用来路由到对应 shard。
+	MarkHoldReleased(ctx context.Context, runID int64, chargeID string) error
 }
 
 // HoldReleaser SP-FIN-3 把 hold 期资金搬到正式账户的执行器.
@@ -277,7 +278,9 @@ func (NoopPendingHoldsRepo) ListExpiredHolds(_ context.Context, _ time.Time, _ i
 }
 
 // MarkHoldReleased noop.
-func (NoopPendingHoldsRepo) MarkHoldReleased(_ context.Context, _ int64) error { return nil }
+func (NoopPendingHoldsRepo) MarkHoldReleased(_ context.Context, _ int64, _ string) error {
+	return nil
+}
 
 // Run 阻塞 ticker.
 func (w *HoldUnstickWorker) Run(ctx context.Context) {
@@ -322,7 +325,8 @@ func (w *HoldUnstickWorker) tick(ctx context.Context) {
 			}
 		}
 		// SP-AC-7 PH3-7: 真接 repo 标 hold_released=1, 防重复扫.
-		if err := w.Plans.MarkHoldReleased(ctx, p.ID); err != nil {
+		// chargeID 用来在 DB-split 后路由到正确 shard。
+		if err := w.Plans.MarkHoldReleased(ctx, p.ID, p.ChargeID); err != nil {
 			// ErrNotFound = 别的副本/tick 已标过, 不算错; 其它错误降级 warn.
 			w.Log.Warn("hold unstick: mark released failed",
 				zap.Int64("plan_id", p.ID), zap.Error(err))

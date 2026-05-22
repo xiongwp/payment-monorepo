@@ -527,5 +527,4 @@ func bumpPatch(v string) string {
 	return fmt.Sprintf("%s.%d", v[:idx], patch+1)
 }
 
-// ErrNotFound 没找到行的 sentinel error.
-var ErrNotFound = errors.New("not found")
+// ErrNotFound 定义在 memory.go（同包共用 sentinel）。
