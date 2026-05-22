@@ -51,9 +51,11 @@ fi
 
 echo
 echo ">>> split-payment 错误分布 Top 10"
-SP_CTR=$(docker ps --format '{{.Names}}' | grep -E '^stack-split-payment(-[0-9]+)?$|^split-payment(-[0-9]+)?$' | head -1)
+# deploy.sh 模式下 compose 名是 'split-payment-split-payment-1'（project-service-idx）
+# stack 模式下是 'stack-split-payment-1'；裸名 split-payment（如果 override 写了 container_name）也兜底
+SP_CTR=$(docker ps --format '{{.Names}}' | grep -E '(^|-)split-payment(-[0-9]+)?$' | head -1)
 if [[ -z "${SP_CTR}" ]]; then
-  yellow "  split-payment 容器找不到（按 'stack-split-payment-1' / 'split-payment' 都没匹配）"
+  yellow "  split-payment 容器找不到"
 else
   docker logs "${SP_CTR}" 2>&1 \
     | grep -oE '"error":"[^"]+"' \

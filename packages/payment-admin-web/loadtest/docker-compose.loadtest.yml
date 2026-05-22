@@ -1,17 +1,16 @@
 # ============================================================================
-# loadtest 容器 —— 加入 payment-admin-web stack 的 payment-stack 网络
+# loadtest 容器 —— 加入 payment-admin-web 的 payment-stack 网络
 #
-# 前提：payment-admin-web/stack/deploy.sh up 已起好全栈
-#   - redis-sentinel-1/2/3 + redis-master + 2 replica
-#   - shared-meta + shared-shard-0..9
-#   - kafka + zookeeper
-#   - etcd
+# 前提：payment-admin-web/deploy.sh up 已起好全栈
+#   - shared-meta + shared-shard-0..9 (mysql, deploy/shared-db/)
+#   - risk-redis  (单实例 redis，accounting 用，deploy/overrides/risk-stack.yml)
+#   - kafka, etcd, kms-manage, ...（各 service override）
 #   - accounting-service (DNS: accounting-service:50051 / :8888)
 #   - split-payment (DNS: split-payment:9098)
 #
 # 这个 compose 只新增 loadtest + loadtest-bootstrap 两个一次性容器（用 docker
-# compose run --rm 跑）。镜像 build 引用 split-payment 的 Dockerfile（Go binary
-# 真正源码住在 packages/split-payment/cmd/loadtest{,-bootstrap}）。
+# compose run --rm 跑）。Go binary 源码在 packages/split-payment/cmd/loadtest{,
+# -bootstrap}/main.go；Dockerfile 在本目录 Dockerfile.loadtest。
 #
 # 调用：
 #   cd packages/payment-admin-web/loadtest

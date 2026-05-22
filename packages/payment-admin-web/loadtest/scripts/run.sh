@@ -21,7 +21,8 @@
 # 前置（只跑一次）：
 #   docker network create payment-stack
 #   export GITHUB_TOKEN=ghp_xxx
-#   cd ../stack && bash deploy.sh up           # 起全栈
+#   cd .. && bash deploy.sh init-kms             # 第一次：产 KMS master key
+#   cd .. && bash deploy.sh up                   # 起全栈
 # ============================================================================
 
 set -euo pipefail
@@ -79,12 +80,19 @@ else
   green "  ✓ GITHUB_TOKEN 已设置"
 fi
 
-# 这些容器必须都在跑（来自 payment-admin-web/stack）
-REQUIRED=( accounting-service split-payment redis-sentinel-1 shared-shard-0 )
+# 这些容器必须都在跑（payment-admin-web/deploy.sh up 模式下应该都有）
+#
+# 命名约定（deploy.sh 每个服务自己一个 compose -p project，所以容器名是
+# `<project>-<service>-<idx>`；带 explicit container_name 的就是裸名）：
+#   shared-shard-0..9    : 裸名（explicit container_name）
+#   shared-meta          : 裸名
+#   risk-redis           : ${project}-risk-redis-1 （单实例 redis，accounting 用）
+#   accounting-service   : ${project}-accounting-service-1..N
+#   split-payment        : ${project}-split-payment-1..N
+REQUIRED=( accounting-service split-payment risk-redis shared-shard-0 shared-meta )
 MISSING=()
 for c in "${REQUIRED[@]}"; do
-  # 容器名可能带 stack 前缀（compose v2 默认 ${project}-${name}-${idx}），
-  # 用模糊匹配兜底
+  # `(^|-)X(-[0-9]+)?$` 同时匹配裸名 X 和 prefix-X-1 形式
   if ! docker ps --format '{{.Names}}' | grep -qE "(^|-)${c}(-[0-9]+)?\$"; then
     MISSING+=("${c}")
   fi
@@ -92,10 +100,10 @@ done
 if [[ ${#MISSING[@]} -gt 0 ]]; then
   red "ERROR: 关键容器没在跑：${MISSING[*]}"
   echo "  先起全栈："
-  echo "    cd ../stack && bash deploy.sh up"
+  echo "    cd $(cd "${DIR}/.." && pwd) && bash deploy.sh up"
   exit 1
 fi
-green "  ✓ payment-admin-web stack 关键容器都在跑"
+green "  ✓ payment-admin-web 全栈关键容器都在跑"
 
 # ─── Step 1: build loadtest 镜像 ─────────────────────────────────────────
 step "Step 1 / 5  build loadtest 镜像（复用 split-payment binary）"

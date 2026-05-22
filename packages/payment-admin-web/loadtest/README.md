@@ -1,6 +1,6 @@
 # payment-admin-web/loadtest
 
-端到端压测，跑在 `payment-admin-web/stack` 全栈上。测的是从 `split-payment.TriggerEvent` 进、到 `accounting.transaction_order` 落库的端到端 TPS 和错误率。
+端到端压测，跑在 `payment-admin-web/deploy.sh up` 起的全栈上。测的是从 `split-payment.TriggerEvent` 进、到 `accounting.transaction_order` 落库的端到端 TPS 和错误率。
 
 ## 与旧压测的关系
 
@@ -9,7 +9,7 @@
 - accounting-system 单独 compose 用单 redis（`accounting-redis`），但 `config.docker.yaml` 配的是 sentinel 模式 → 不兼容
 - 跟 payment-admin-web 共享 db（DB-split Batch 6）的方向不一致
 
-这个新压测复用 payment-admin-web stack 已经起来的全部基础设施（redis-sentinel 集群 + shared-meta + shared-shard-0..9 + kafka + etcd + accounting + split-payment），只新增一个 loadtest 容器跑客户端。
+新压测复用 `payment-admin-web/deploy.sh up` 已经起来的基础设施（shared-meta + shared-shard-0..9 + risk-redis + accounting-service + split-payment + …），只新增一个 loadtest 容器跑客户端。
 
 旧目录**暂时保留**做 dev/debug 用，但 CI 和 baseline benchmark 都切到这里。
 
@@ -20,15 +20,15 @@ loadtest (这个 dir 起的容器)
    │
    │  gRPC TriggerEvent
    ▼
-split-payment:9098  ←─── payment-admin-web/stack 起的（golang:1.25 bind-mount monorepo 源码）
+split-payment:9098  ←─── payment-admin-web/deploy.sh up 起的（golang:1.25 bind-mount monorepo 源码）
    │
    │  gRPC CreateTransaction（按 leg 串行 + abort-on-failure）
    ▼
-accounting-service:50051  ←── payment-admin-web/stack 起的
+accounting-service:50051  ←── payment-admin-web/deploy.sh up 起的（复用 risk-redis 单实例）
    │
    │  TCC try/commit
    ▼
-shared-shard-0..9 (mysql)  ←── payment-admin-web/stack 起的（accounting + split-payment 共用）
+shared-shard-0..9 (mysql)  ←── deploy/shared-db/ 起的（accounting + split-payment 共用 schema）
    │
    └─ accounting_db_N.transaction_order_NN  (端到端 ground truth)
 ```
@@ -39,10 +39,13 @@ shared-shard-0..9 (mysql)  ←── payment-admin-web/stack 起的（accounting
 
 ```bash
 docker network create payment-stack
-export GITHUB_TOKEN=ghp_xxx                 # 私仓 build 必需
-cd packages/payment-admin-web/stack
-bash deploy.sh up                           # 起全栈，30-60s
-bash deploy.sh status                       # 看每个服务在不在
+export GITHUB_TOKEN=ghp_xxx                          # 私仓 build 必需
+
+cd packages/payment-admin-web
+bash deploy.sh init-kms                              # 首次：产 KMS master key（已有可跳过）
+bash deploy.sh up                                    # 起全栈，60-120s（含 build）
+bash deploy.sh status                                # 看每个服务在不在
+bash deploy.sh check                                 # tcp 探活各 gRPC 端口
 ```
 
 ### 跑压测
