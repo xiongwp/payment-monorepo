@@ -83,30 +83,36 @@ type PlatformAccounts struct {
 // 旧版用连续 id（1..100, 100_000_001..100_000_100），结果 mod 1000 全落在 [0, 99]
 // → dbIdx=0 → 100% 数据挤在 shard-0。
 //
-// 新版：每个相邻账户的 owner_id step=100，覆盖所有 dbIdx：
-//   第 i 个账户 owner_id = base + i*100 + sub_offset
-//   - base 控制账户大类
-//   - sub_offset 控制同一渠道的不同子账户类型（recv/suspense/fee/payable）
-//   - i*100 让 mod 1000 在 i=0..9 时遍历 0/100/200/.../900，正好 10 个 dbIdx
-//   - 100 账户 → 10 个一组循环 → 每个 shard 10 个账户
+// 渠道账户 owner_id 受 accounting 的 platform reserved range [1, 10_000] 约束。
+//   第 i 个 channel 的 owner_id = channelOwnerStart + sub_offset + i*channelOwnerStep
+//
+// 设计原则：
+//   - step 跟 10 (shard 数) 互质 → 散布到 10 个 shard 均匀（不只 mod-10 一种 routing
+//     可能性，但互质始终安全）
+//   - 4 个 sub_offset {0,10,20,30} 跟 step 模数都不同 → 4 段子表互不冲突
+//   - 最大 channel 数 N 受 reserved range 限制：
+//        channelOwnerStart + 30 + (N-1)*step < 10_000
+//        N=1000, step=9 → max = 1+30+999*9 = 9002 ✓
+//        N=100,  step=100 → max = 9931 ✓（老配置，留给小规模兼容）
+//   - 想要更大规模？要扩 accounting 的 reserved range（>10_000）或换 step。
 const (
-	// 渠道 4 个子类，sub_offset 用 10 步长避免相邻冲突，i*100 让 dbIdx 均匀散布
-	channelRecvOffset     = 0     // 1, 101, 201, ..., 9901 → 100 channels, dbIdx均匀
-	channelSuspenseOffset = 10    // 11, 111, 211, ..., 9911
-	channelFeeOffset      = 20    // 21, 121, ..., 9921
-	channelPayableOffset  = 30    // 31, 131, ..., 9931
-	channelOwnerStep      = 100   // 相邻 channel 间隔 100，使 dbIdx 循环遍历 0..9
-	channelOwnerStart     = 1     // 第一个 channel 起始 owner_id
+	channelRecvOffset     = 0
+	channelSuspenseOffset = 10
+	channelFeeOffset      = 20
+	channelPayableOffset  = 30
+	// step=9 跟 shard 数 10 互质 → 散布均匀；1000 channel × 9 < 9000 < 10_000 reserved。
+	// 历史值 100 只够 100 channel（卡 reserved range）；中规模 1000 channel 必须切到 9。
+	channelOwnerStep  = 9
+	channelOwnerStart = 1
 
-	// 平台账户：放到很大的 id（同时离 channel 段 1..9930 远），避开冲突
-	// 9101/9201/9301 — 同样让它们各自落在不同 db
+	// 平台账户放到 reserved range 顶部附近，离 channel 段（1..9002）够远，不会撞
 	platformFeeClearingOwnerID     = 9101
 	platformFeeRevenueOwnerID      = 9201
 	platformWithdrawPendingOwnerID = 9301
 
 	userOwnerBase     = 100_000_000 // user_i = 100_000_000 + i*100
 	merchantOwnerBase = 900_000_000 // merchant_i = 900_000_000 + i*100
-	bizOwnerStep      = 100         // user/merchant 相邻 owner_id 间隔 100
+	bizOwnerStep      = 100         // user/merchant 没有 reserved range 限制，保留 step=100
 )
 
 // ─── flags ────────────────────────────────────────────────────────────────
@@ -295,7 +301,9 @@ func createChannels(httpC *http.Client, pool *AccountPool) error {
 		s := s // capture
 		first := channelOwnerStart + s.offset                                    // i=0 时的 owner_id
 		last := channelOwnerStart + s.offset + (*flagNumChannels-1)*channelOwnerStep // i=N-1 时的 owner_id
-		fmt.Printf("    channel-%s: type=%d  owner_id step=100, %d..%d (散到 10 shards)\n",
+		fmt.Printf("    channel-%s: type=%d  owner_id step=%d, %d..%d (散到 10 shards)\n",
+			s.name, s.accType, channelOwnerStep, first, last)
+		_ = first; _ = last // 兼容老格式不再传 first/last (printf 上面已经用过)
 			s.name, s.accType, first, last)
 		if err := parallelCreate(*flagNumChannels, *flagWorkers, func(i int) error {
 			// owner_id = start + offset + i*step → 相邻 channel 间隔 100，循环遍历 db=0..9
