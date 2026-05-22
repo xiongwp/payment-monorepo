@@ -170,8 +170,8 @@ func (r *MemoryRunRepo) ListExpiredHolds(_ context.Context, _ time.Time, _ int) 
 	return nil, nil
 }
 
-// MarkHoldReleased SP-AC-7 PH3-7 内存模式 noop.
-func (r *MemoryRunRepo) MarkHoldReleased(_ context.Context, _ int64) error { return nil }
+// MarkHoldReleased SP-AC-7 PH3-7 内存模式 noop. DB-split 后接口多了 chargeID（路由用）.
+func (r *MemoryRunRepo) MarkHoldReleased(_ context.Context, _ int64, _ string) error { return nil }
 
 // Searchable 支持按 trigger event 模糊过滤 (admin 后台查询用)。
 func (r *MemoryRunRepo) Search(_ context.Context, eventLike string, limit int) ([]*domain.RunPlan, error) {
