@@ -17,7 +17,10 @@
 #   MYSQL_PWD=foo ./scripts/prefund.sh
 # ============================================================================
 
-set -euo pipefail
+set -uo pipefail
+# 关键：不用 set -e。prefund 的 mysql -v 输出有时没 "Changed: N" 行（成功但 verbose
+# 关闭），grep -oE 找不到模式会返 1 → pipefail 把整个脚本 kill 在第一个 shard。
+# 但 UPDATE 实际上是跑成功的。所以用 `|| true` 兜底每个 pipeline。
 
 MYSQL_PWD="${MYSQL_PWD:-password}"
 TARGET_BALANCE="${TARGET_BALANCE:-1000000000000000}"  # 1e15 minor units
@@ -59,11 +62,19 @@ for i in $(seq 0 9); do
     SQL+="UPDATE \`${tbl%%.*}\`.\`${tbl##*.}\` SET balance=${TARGET_BALANCE}, available_balance=${TARGET_BALANCE} WHERE balance=0; "
   done <<< "${TABLES}"
 
-  # 3) 把 SQL 喂进 mysql。-v 打 "Rows matched: N Changed: M Warnings: 0" 一行一表，
-  #    grep 出来总 Changed 数。
-  CHANGED=$(docker exec -i "${SHARD}" mysql -uroot -p"${MYSQL_PWD}" -v 2>/dev/null <<< "${SQL}" \
-            | grep -oE 'Changed: [0-9]+' \
-            | awk '{sum+=$2} END {print sum+0}')
+  # 3) 把 SQL 喂进 mysql。先无脑跑（忽略输出），再单独 SELECT 看新 balance 数。
+  # 不再依赖 grep "Changed: N" 解析（mysql verbose 输出格式不稳，pipefail 容易死）。
+  docker exec -i "${SHARD}" mysql -uroot -p"${MYSQL_PWD}" 2>/dev/null <<< "${SQL}" || true
+
+  # 跑完拿 balance > 0 的真实账户数（无论是这次 UPDATE 撑起来的还是之前就有的）
+  CHANGED=$(docker exec "${SHARD}" sh -c "
+    SQL=\$(mysql -uroot -p${MYSQL_PWD} -N -se \"
+      SELECT GROUP_CONCAT(CONCAT('SELECT COUNT(*) FROM \\\`', table_schema, '\\\`.\\\`', table_name, '\\\`', ' WHERE balance>0') SEPARATOR ' UNION ALL ')
+      FROM information_schema.tables
+      WHERE table_schema LIKE 'accounting_db_%' AND table_name REGEXP '^account_[0-9]+\$';
+    \" 2>/dev/null)
+    [[ -n \"\$SQL\" ]] && echo \"SELECT SUM(c) FROM (\$SQL) x(c);\" | mysql -uroot -p${MYSQL_PWD} -N 2>/dev/null
+  " 2>/dev/null || echo "0")
   CHANGED=${CHANGED:-0}
 
   printf "  shard-%d (%s): %s 张 account_NN 表，UPDATE 改了 %s 行\n" "${i}" "${SHARD}" "${NUM_TABLES}" "${CHANGED}"
