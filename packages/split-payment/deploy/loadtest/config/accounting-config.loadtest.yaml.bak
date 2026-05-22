@@ -30,53 +30,53 @@ database:
     # paychan_db_N / order_db_N / accounting_db_N。
     - name: accounting_db_0
       dsn: "root:password@tcp(accounting-mysql-0:3306)/accounting_db_0?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
-      max_open_conns: 200
-      max_idle_conns: 50
+      max_open_conns: 100
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: accounting_db_1
       dsn: "root:password@tcp(accounting-mysql-1:3306)/accounting_db_1?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
-      max_open_conns: 200
-      max_idle_conns: 50
+      max_open_conns: 100
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: accounting_db_2
       dsn: "root:password@tcp(accounting-mysql-2:3306)/accounting_db_2?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
-      max_open_conns: 200
-      max_idle_conns: 50
+      max_open_conns: 100
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: accounting_db_3
       dsn: "root:password@tcp(accounting-mysql-3:3306)/accounting_db_3?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
-      max_open_conns: 200
-      max_idle_conns: 50
+      max_open_conns: 100
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: accounting_db_4
       dsn: "root:password@tcp(accounting-mysql-4:3306)/accounting_db_4?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
-      max_open_conns: 200
-      max_idle_conns: 50
+      max_open_conns: 100
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: accounting_db_5
       dsn: "root:password@tcp(accounting-mysql-5:3306)/accounting_db_5?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
-      max_open_conns: 200
-      max_idle_conns: 50
+      max_open_conns: 100
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: accounting_db_6
       dsn: "root:password@tcp(accounting-mysql-6:3306)/accounting_db_6?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
-      max_open_conns: 200
-      max_idle_conns: 50
+      max_open_conns: 100
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: accounting_db_7
       dsn: "root:password@tcp(accounting-mysql-7:3306)/accounting_db_7?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
-      max_open_conns: 200
-      max_idle_conns: 50
+      max_open_conns: 100
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: accounting_db_8
       dsn: "root:password@tcp(accounting-mysql-8:3306)/accounting_db_8?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
-      max_open_conns: 200
-      max_idle_conns: 50
+      max_open_conns: 100
+      max_idle_conns: 10
       conn_max_lifetime: 3600
     - name: accounting_db_9
       dsn: "root:password@tcp(accounting-mysql-9:3306)/accounting_db_9?charset=utf8mb4&parseTime=True&loc=Local&clientFoundRows=true"
-      max_open_conns: 200
-      max_idle_conns: 50
+      max_open_conns: 100
+      max_idle_conns: 10
       conn_max_lifetime: 3600
 
 # loadtest 用 accounting-system 自己的 docker-compose.yml 起的单 Redis
