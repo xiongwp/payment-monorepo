@@ -26,7 +26,11 @@ import (
 )
 
 const (
-	familyRuns = "moneyflow_runs" // family 前缀，跟 DDL gen.sh 对齐
+	// DB-split Batch 7 极简版：唯一 shard 表族叫 moneyflow_event_NN
+	// （统一存所有事件：trigger / saga / outbox / 等）。
+	familyEvent = "moneyflow_event"
+	// 兼容老代码引用：familyRuns 别名指 familyEvent，下一波 commit 整体删
+	familyRuns = familyEvent
 )
 
 // ─── Graph repo (走 metaDB, 表名 moneyflow_graphs 不变) ────────────────
@@ -231,35 +235,9 @@ func (r *MySQLRunRepo) GetByCharge(ctx context.Context, chargeID string) ([]*dom
 	return collectRuns(rows)
 }
 
-// MarkHoldReleased 标 hold_released=1. 加 chargeID 参数用来路由.
-func (r *MySQLRunRepo) MarkHoldReleased(ctx context.Context, runID int64, chargeID string) error {
-	db, tbl := r.shardOf(ctx, chargeID)
-	res, err := db.ExecContext(ctx, `
-		UPDATE `+tbl+`
-		   SET hold_released = 1
-		 WHERE id = ?
-		   AND hold_released = 0`, runID)
-	if err != nil {
-		return fmt.Errorf("mark hold released (tbl=%s): %w", tbl, err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// SetHoldUntil 给 run plan 设 hold 到期时间. 加 chargeID 参数用来路由.
-func (r *MySQLRunRepo) SetHoldUntil(ctx context.Context, runID int64, chargeID string, holdUntil time.Time) error {
-	db, tbl := r.shardOf(ctx, chargeID)
-	_, err := db.ExecContext(ctx, `
-		UPDATE `+tbl+` SET hold_until = ? WHERE id = ?`,
-		holdUntil.UTC(), runID)
-	if err != nil {
-		return fmt.Errorf("set hold_until (tbl=%s): %w", tbl, err)
-	}
-	return nil
-}
+// MarkHoldReleased / SetHoldUntil / ListExpiredHolds 等 hold-period 方法已删除
+// （DB-split Batch 7 极简版 → split-payment 不再做 hold/payout 调度逻辑，那些
+// 业务在 accounting 侧或独立服务实现）。
 
 // GetByID 单条查。不知道 chargeID 时退化到全 shard 扫（性能差但兼容）.
 // 推荐 caller 用 GetByChargeAndID 直接定位 shard.
@@ -307,24 +285,6 @@ func (r *MySQLRunRepo) GetByChargeAndID(ctx context.Context, chargeID string, id
 }
 
 // ─── Cross-shard scan 方法（worker / admin 用，性能差但要全扫）────────
-
-// ListExpiredHolds 跨所有 shard 拉到期未释放的 hold.
-func (r *MySQLRunRepo) ListExpiredHolds(ctx context.Context, now time.Time, limit int) ([]*domain.RunPlan, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 100
-	}
-	return r.scanAllShards(ctx, `
-		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
-		       amount_minor, currency, attributes_json, movements_json,
-		       status, voucher_no, error_msg, trace_id, created_at
-		  FROM %s
-		 WHERE hold_released = 0
-		   AND hold_until IS NOT NULL
-		   AND hold_until <= ?
-		   AND status = 'completed'
-		 ORDER BY hold_until ASC
-		 LIMIT ?`, []any{now.UTC(), limit}, limit)
-}
 
 // ListByStatus 跨所有 shard 列指定 status.
 func (r *MySQLRunRepo) ListByStatus(ctx context.Context, status string, limit int) ([]*domain.RunPlan, error) {

@@ -165,13 +165,8 @@ func (r *MemoryRunRepo) GetByCharge(_ context.Context, chargeID string) ([]*doma
 	return out, nil
 }
 
-// ListExpiredHolds SP-AC-7 PH3-7 内存模式: 永远返空 (dev 不真跑 hold).
-func (r *MemoryRunRepo) ListExpiredHolds(_ context.Context, _ time.Time, _ int) ([]*domain.RunPlan, error) {
-	return nil, nil
-}
-
-// MarkHoldReleased SP-AC-7 PH3-7 内存模式 noop. DB-split 后接口多了 chargeID（路由用）.
-func (r *MemoryRunRepo) MarkHoldReleased(_ context.Context, _ int64, _ string) error { return nil }
+// ListExpiredHolds / MarkHoldReleased / SetHoldUntil 已删除 (DB-split Batch 7
+// 极简版 → 不再做 hold-period 调度)。
 
 // Searchable 支持按 trigger event 模糊过滤 (admin 后台查询用)。
 func (r *MemoryRunRepo) Search(_ context.Context, eventLike string, limit int) ([]*domain.RunPlan, error) {
