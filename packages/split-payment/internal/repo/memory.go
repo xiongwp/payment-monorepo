@@ -165,6 +165,33 @@ func (r *MemoryRunRepo) GetByCharge(_ context.Context, chargeID string) ([]*doma
 	return out, nil
 }
 
+// GetByID 按主键查（DB-split Batch 7 后 EventRepo 接口要求）。内存模式 O(1) map 查找.
+func (r *MemoryRunRepo) GetByID(_ context.Context, id int64) (*domain.RunPlan, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.runs[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return p, nil
+}
+
+// ListByStatus 按 status 列。内存模式简化实现，跑遍 map。
+func (r *MemoryRunRepo) ListByStatus(_ context.Context, status string, limit int) ([]*domain.RunPlan, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*domain.RunPlan, 0)
+	for _, p := range r.runs {
+		if p.Status == status {
+			out = append(out, p)
+			if len(out) >= limit && limit > 0 {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
 // ListExpiredHolds / MarkHoldReleased / SetHoldUntil 已删除 (DB-split Batch 7
 // 极简版 → 不再做 hold-period 调度)。
 

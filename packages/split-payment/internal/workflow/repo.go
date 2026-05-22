@@ -2,8 +2,8 @@
 //
 // DB-split Batch 7 之后，workflow 包只保留：
 //   - translator.go     graph + event → plan（核心翻译逻辑）
-//   - filter_expr.go    graph guard 表达式求值
 //   - repo.go (本文件)  Graph / Event 仓储接口
+//   - execute.go        历史注释占位（SP-1 时代 Service 已废弃）
 //
 // 删除的（原 engine.go 集合）：
 //   - Engine.Handle / Kafka subscriber 路径（split-payment 不再做事件订阅）
@@ -25,8 +25,9 @@ type GraphRepo interface {
 	Save(ctx context.Context, g *domain.Graph) (int64, error)
 	List(ctx context.Context, status string) ([]*domain.Graph, error)
 	// FindByTrigger 查所有 status=active 且 trigger.event 含此 event 的 graph。
-	// （Kafka subscriber 已废弃，但保留 API 给 grpcsvc 偶尔用）
 	FindByTrigger(ctx context.Context, event string) ([]*domain.Graph, error)
+	// Delete 软删 (admin-web 删 graph 按钮触发，archive 而非物理删).
+	Delete(ctx context.Context, key string) error
 }
 
 // EventRepo moneyflow_event_NN 事件流水仓储（shard DB，分片 by event_id hash）。

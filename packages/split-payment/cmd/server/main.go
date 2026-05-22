@@ -141,10 +141,11 @@ func runAdminGRPCServer(
 	acctCli *clients.AccountingGRPCClient,
 	ruleSync grpcsvc.AccountingRuleSyncer,
 ) {
-	addr := cfg.Server.GRPC.Addr
-	if addr == "" {
-		addr = "0.0.0.0:9098"
+	port := cfg.Server.GRPCPort
+	if port == 0 {
+		port = 9098
 	}
+	addr := fmt.Sprintf("0.0.0.0:%d", port)
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
 		log.Fatal("invalid grpc addr", zap.String("addr", addr), zap.Error(err))
@@ -180,10 +181,11 @@ func runAdminGRPCServer(
 
 // runHealthHTTPServer 起一个简易 HTTP /healthz 端点（admin / liveness probe 用）。
 func runHealthHTTPServer(ctx context.Context, cfg *config.Config, log *zap.Logger) {
-	addr := cfg.Server.Admin.Addr
-	if addr == "" {
-		addr = "0.0.0.0:9099"
+	port := cfg.Admin.HTTPPort
+	if port == 0 {
+		port = 9099
 	}
+	addr := fmt.Sprintf("0.0.0.0:%d", port)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -222,6 +224,9 @@ func (a graphRepoAdapter) List(ctx context.Context, status string) ([]*domain.Gr
 }
 func (a graphRepoAdapter) FindByTrigger(ctx context.Context, event string) ([]*domain.Graph, error) {
 	return a.inner.FindByTrigger(ctx, event)
+}
+func (a graphRepoAdapter) Delete(ctx context.Context, key string) error {
+	return a.inner.Delete(ctx, key)
 }
 
 // acctClientAdapter 把 clients.AccountingGRPCClient 适配成 grpcsvc.AccountingMetaCaller。
@@ -279,6 +284,23 @@ func seedGraphsToRepo(r workflow.GraphRepo, dir string, log *zap.Logger) {
 // 老的 *repo.MemoryGraphRepo 类型签名）.
 func seedExampleGraphs(r *repo.MemoryGraphRepo, dir string, log *zap.Logger) {
 	seedGraphsToRepo(r, dir, log)
+}
+
+// parseLogLevel 把 "info" / "debug" / "warn" / "error" 字符串转 zap.AtomicLevel。
+// providers.go 的 newLogLevelFx 用。
+func parseLogLevel(s string) zap.AtomicLevel {
+	lvl := zap.NewAtomicLevel()
+	switch s {
+	case "debug":
+		lvl.SetLevel(zap.DebugLevel)
+	case "warn":
+		lvl.SetLevel(zap.WarnLevel)
+	case "error":
+		lvl.SetLevel(zap.ErrorLevel)
+	default:
+		lvl.SetLevel(zap.InfoLevel)
+	}
+	return lvl
 }
 
 // maskDSN 把 user:pwd@tcp(host:port)/db 里的 pwd 抹掉，仅留 host:port/db 用于 log.
