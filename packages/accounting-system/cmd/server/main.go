@@ -134,6 +134,7 @@ func main() {
 			NewSchedulerAccountIDGenerator,
 			NewRotationScheduler,
 			NewRotationSchedulerCommand,
+			NewRotationBookingInvoker,
 			NewRotationAdminService,
 		),
 		fx.Provide(NewEtcdClient),
