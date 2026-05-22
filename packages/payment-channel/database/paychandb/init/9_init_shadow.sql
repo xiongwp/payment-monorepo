@@ -39,3 +39,16 @@ CREATE TABLE IF NOT EXISTS `channel_token_96_shadow` LIKE `channel_token_96`;
 
 CREATE TABLE IF NOT EXISTS `acquirer_tx_97_shadow` LIKE `acquirer_tx_97`;
 CREATE TABLE IF NOT EXISTS `webhook_raw_97_shadow` LIKE `webhook_raw_97`;
+CREATE TABLE IF NOT EXISTS `webhook_raw_rejected_97_shadow` LIKE `webhook_raw_rejected_97`;
+CREATE TABLE IF NOT EXISTS `channel_token_97_shadow` LIKE `channel_token_97`;
+
+CREATE TABLE IF NOT EXISTS `acquirer_tx_98_shadow` LIKE `acquirer_tx_98`;
+CREATE TABLE IF NOT EXISTS `webhook_raw_98_shadow` LIKE `webhook_raw_98`;
+CREATE TABLE IF NOT EXISTS `webhook_raw_rejected_98_shadow` LIKE `webhook_raw_rejected_98`;
+CREATE TABLE IF NOT EXISTS `channel_token_98_shadow` LIKE `channel_token_98`;
+
+CREATE TABLE IF NOT EXISTS `acquirer_tx_99_shadow` LIKE `acquirer_tx_99`;
+CREATE TABLE IF NOT EXISTS `webhook_raw_99_shadow` LIKE `webhook_raw_99`;
+CREATE TABLE IF NOT EXISTS `webhook_raw_rejected_99_shadow` LIKE `webhook_raw_rejected_99`;
+CREATE TABLE IF NOT EXISTS `channel_token_99_shadow` LIKE `channel_token_99`;
+
