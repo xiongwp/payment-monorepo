@@ -555,6 +555,8 @@ import type {
   RotationInstanceDetail,
   RotationManualOpRequest,
   RotationManualOpResponse,
+  RotationRegisterRequest,
+  RotationRegisterResponse,
 } from '../types/accounting';
 
 /**
