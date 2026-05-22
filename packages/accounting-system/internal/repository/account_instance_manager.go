@@ -424,13 +424,19 @@ func (m *accountInstanceManager) PromoteAndDrainFleet(
 	return nil
 }
 
-// ListByLogical 实现：用 LA.CurrentActiveAccountNo 推导分片（同 LA 下所有 instance 同分片）；
-// 若不存在，扫全部 100 个分片兜底。本方法面向 admin-web 详情页（低频），可以接受兜底开销。
+// ListByLogical 扫全部 100 分片找属于该 LA 的所有 instance。
+//
+// Fleet × Rotation 模式下，同一 LA 的 100 sub-account 散布在 100 个不同 shard
+// (按 user_id 0..99 路由)。所以必须扫全 100 shard，不能用 LA.current_active_account_no
+// 推导单 shard（那只会返回 anchor sub-account 1 个）。
+//
+// 性能：admin-web 详情页 + 对账接口是低频请求，扫 100 shard 一次几十毫秒可接受。
+// 业务热路径不走本方法（业务下账走 GetByAccountNo 按 account_no 直接定位单 shard）。
 func (m *accountInstanceManager) ListByLogical(
 	ctx context.Context, logicalAccountID int64, limit int,
 ) ([]*model.Account, error) {
 	if limit <= 0 {
-		limit = 200
+		limit = 250
 	}
 	la, err := m.logicalRepo.GetByID(ctx, logicalAccountID)
 	if err != nil {
@@ -461,17 +467,7 @@ func (m *accountInstanceManager) ListByLogical(
 		return rows, nil
 	}
 
-	// 快路径：用 current_active 推导分片
-	if la.CurrentActiveAccountNo != nil && *la.CurrentActiveAccountNo != "" {
-		dbIdx, gtblIdx := m.router.RouteByAccountNo(*la.CurrentActiveAccountNo)
-		rows, err := queryShard(dbIdx, gtblIdx)
-		if err != nil {
-			return nil, fmt.Errorf("aim: list instances: %w", err)
-		}
-		return rows, nil
-	}
-
-	// 兜底：扫所有分片
+	// 扫所有 100 个 shard 表 — fleet 100 sub 散在不同 shard，不能走单 shard 快路径
 	var all []*model.Account
 	for gtblIdx := 0; gtblIdx < sharding.ShardTableTotal; gtblIdx++ {
 		dbIdx := gtblIdx / sharding.ShardTablePerDB
