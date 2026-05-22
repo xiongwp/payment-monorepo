@@ -202,14 +202,14 @@ func TestAudit_MultipleViolations_AllReported(t *testing.T) {
 	r.archivedBad = []*model.Account{
 		{AccountNo: "OLD", LogicalAccountID: &laRef, Balance: 1, LifecyclePhase: model.LifecyclePhaseArchived},
 	}
-	r.migrationSuspenseSum = -10
+	// migrationSuspenseSum 已删除（MigrationSuspense business_type 移除）
 	r.deepAnchors = []*model.TxAccountAnchor{
 		{ID: 1, MigrationChainDepth: 6},
 	}
 
 	res, _ := j.Run(context.Background())
-	// 期望：I1 + LA mismatch + I4 + MS + Chain = 5 violations
-	if len(res.Violations) < 5 {
-		t.Errorf("expected at least 5 violations, got %d: %v", len(res.Violations), res.Violations)
+	// 期望：I1 + LA mismatch + I4 + Chain = 4 violations (原来还有 MS = 5，MS 删除后剩 4)
+	if len(res.Violations) < 4 {
+		t.Errorf("expected at least 4 violations, got %d: %v", len(res.Violations), res.Violations)
 	}
 }
