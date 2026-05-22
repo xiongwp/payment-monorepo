@@ -126,7 +126,7 @@ func newRouterFixture(now time.Time) (
 	ar := &fakeAnchorReaderB{byKey: make(map[string]*model.TxAccountAnchor)}
 	rr := &fakeRouteReader{byKey: make(map[string]*model.FlowAnchorRoute)}
 	accR := &fakeAccountReader{byNo: make(map[string]*model.Account)}
-	r := NewRouter(lr, ar, rr, accR, nil, func() time.Time { return now })
+	r := NewRouter(lr, ar, rr, accR, nil, nil, func() time.Time { return now })
 	return r, lr, ar, rr, accR
 }
 
@@ -141,7 +141,7 @@ func newRouterFixtureWithTx(now time.Time, tx *fakeTransactionReader) (
 	ar := &fakeAnchorReaderB{byKey: make(map[string]*model.TxAccountAnchor)}
 	rr := &fakeRouteReader{byKey: make(map[string]*model.FlowAnchorRoute)}
 	accR := &fakeAccountReader{byNo: make(map[string]*model.Account)}
-	r := NewRouter(lr, ar, rr, accR, tx, func() time.Time { return now })
+	r := NewRouter(lr, ar, rr, accR, nil, tx, func() time.Time { return now })
 	return r, lr, ar, rr, accR
 }
 
@@ -748,6 +748,7 @@ func TestNewRouter_NilClockFallback(t *testing.T) {
 		&fakeAnchorReaderB{byKey: map[string]*model.TxAccountAnchor{}},
 		&fakeRouteReader{byKey: map[string]*model.FlowAnchorRoute{}},
 		&fakeAccountReader{byNo: map[string]*model.Account{}},
+		nil, // fleet reader (Phase 3)
 		nil, // tx reader
 		nil, // clock
 	)

@@ -54,7 +54,7 @@ func buildBenchFixture() (Router, *fakeLogicalReader, *fakeAnchorReaderB, *fakeR
 		lr.byID[i] = la
 		accR.byNo[activeNo] = mkAccountActive(activeNo, i)
 	}
-	r := NewRouter(lr, ar, rr, accR, nil, func() time.Time { return now })
+	r := NewRouter(lr, ar, rr, accR, nil, nil, func() time.Time { return now })
 	return r, lr, ar, rr, accR
 }
 

@@ -76,7 +76,7 @@ func buildMoneyFlowFixture() (
 	lr.byKey["user-balance:CNY"] = ubLA
 	lr.byID[9001] = ubLA
 
-	r := NewRouter(lr, ar, rr, accR, nil, func() time.Time { return now })
+	r := NewRouter(lr, ar, rr, accR, nil, nil, func() time.Time { return now })
 	return r, lr, ar, rr, accR
 }
 

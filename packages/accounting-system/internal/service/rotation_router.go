@@ -4,12 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"sync"
 	"time"
 
 	"github.com/xiongwp/accounting-system/internal/domain/model"
 	"github.com/xiongwp/accounting-system/internal/repository"
 )
+
+// fnvHash32 给 fleet × rotation 路由用：稳定哈希 flow_id → fleet sub_idx (0..99)。
+// 同一 flow 永远落同一个 sub，跟 selfRoute 一旦写入后语义一致。
+func fnvHash32(s string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s))
+	return h.Sum32()
+}
 
 // ============================================================================
 // Booking Router — 方向 B 实现
@@ -679,11 +688,13 @@ func (a *routeReaderAdapter) RouteByFlowID(flowID string) (int, int) {
 }
 
 // NewRouterFromRepos 工厂：用现成 repo 构造路由器（生产路径）。
+// fleet 参数支持 fleet × rotation booking 路由（Phase 3）；nil 退回 anchor 单 sub。
 func NewRouterFromRepos(
 	logicalRepo repository.LogicalAccountRepository,
 	anchorRepo repository.AnchorRepository,
 	routeRepo repository.FlowAnchorRouteRepository,
 	accountReader AccountReaderForRouter,
+	fleet FleetReaderForRouter,
 	transactionReader TransactionReaderForRouter,
 	clock func() time.Time,
 ) Router {
@@ -692,6 +703,7 @@ func NewRouterFromRepos(
 		&anchorReaderAdapter{repo: anchorRepo},
 		&routeReaderAdapter{repo: routeRepo},
 		accountReader,
+		fleet,
 		transactionReader,
 		clock,
 	)
