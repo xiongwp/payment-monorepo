@@ -1,26 +1,29 @@
 -- ============================================================================
--- split_payment_db_{DBIDX} —— 高频流水分片库（10 库 × 10 子表/库 = 100 全局表/族）
--- ⚠ 模板文件。由 ../gen.sh 用 sed 替换 {DBIDX} / {TBLINDICES} 生成 N_init.sql。
+-- split_payment_db_{DBIDX} —— 高频事件流水分片库（DB-split Batch 7 极简版）
+-- ⚠ 模板文件。由 ../gen.sh 用 sed 替换 {DBIDX} + 注入 tables block 生成 N_init.sql。
 --
--- 8 个表族都按 idempotency_key / charge_id hash 路由：
---   hash(key) % 1000 → globalIdx (00..99 实际只用 0..99 因为 table_count=100)
+-- 唯一表族 moneyflow_event_NN —— 按 idempotency_key / charge_id / saga_id hash 路由：
+--   hash(key) % 100 → globalIdx (0..99)
 --   dbIdx   = globalIdx / 10  (0..9)
 --   tblIdx  = globalIdx       (00..99)
--- 这跟 accounting Router (router.go RouteByID) 完全对齐：
---   total = dbCount(10) * tablePerDB(10) = 100, n = id % 100, db=n/10, tbl=n
 --
--- 8 个表族:
---   moneyflow_runs_NN          一次 TriggerEvent 的 RunPlan
---   transfers_NN               Stripe-style transfer
---   application_fees_NN        Stripe-style application fee
---   payouts_NN                 Stripe-style payout
---   reversals_NN               Stripe-style reversal
---   moneyflow_sagas_NN         SP-3A 持久化 saga 状态
---   event_outbox_NN            L5 事件 outbox
---   reversal_retry_outbox_NN   R5 反转重试 outbox
+-- 设计原则：
+--   split-payment **不再存业务账本**（transfers / fees / payouts / reversals 等都
+--   在 accounting-system 已有）。它只关注"事件 / 状态机执行流水"。
 --
--- 注：跨 shard 的 AUTO_INCREMENT 不全局唯一，但每个 graph_run_id 只在同 shard 内被
---    子表引用（同 charge_id hash 必落同 shard），所以 collision 不影响业务。
+-- 同一张表覆盖 4 种 event_type：
+--   trigger          一次 TriggerEvent 触发的 RunPlan 执行记录（原 moneyflow_runs）
+--   saga             SaveGraph / refund / payout 等 saga 的状态机持久化（原 moneyflow_sagas）
+--   outbox           可靠事件发布的待发队列（原 event_outbox）
+--   reversal_retry   退款失败的重试队列（原 reversal_retry_outbox）
+--
+-- 字段按"通用执行状态" + "按 type 含义的可选字段" 设计：
+--   通用：id / event_type / event_id / status / retry_count / max_retry /
+--          payload_json / error_msg / next_retry_at / hold_until / 时间戳
+--   特定：graph_id / graph_version / charge_id / merchant_id / amount_minor /
+--          currency / plan_json / voucher_no / trace_id / correlation_id /
+--          current_step / steps_json
+--   (event_type 不需要的字段填 NULL/0; 不浪费多少空间)
 -- ============================================================================
 
 CREATE DATABASE IF NOT EXISTS split_payment_db_{DBIDX} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
