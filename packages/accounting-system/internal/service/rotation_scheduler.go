@@ -421,12 +421,12 @@ func (s *Scheduler) ForceSwitch(
 		return errors.New("force switch: no rotation policy")
 	}
 
+	// active 可能为 nil — 首次激活场景：刚 ForceProvision 完，还没有 active，
+	// 现在要把 provisioned 提升为 active（没有"老 active"可切到 draining）。
+	// swap() 内部支持 currentActive=nil（OldGroup="" 表示首次）。
 	active, err := s.instances.GetActiveInstance(ctx, logicalAccountID)
 	if err != nil {
 		return fmt.Errorf("force switch: get active: %w", err)
-	}
-	if active == nil {
-		return errors.New("force switch: no active instance to switch from")
 	}
 
 	now := s.clock()
