@@ -63,6 +63,11 @@ type AccountInstanceManager interface {
 	// active + draining 同时存在是正常的，应当一起算。
 	// 用于对账：第三方对账时拿到的"LA key 当前余额"应该是 fleet 全部 sub 的 SUM。
 	SumBalanceByLogical(ctx context.Context, logicalAccountID int64) (LogicalAccountBalanceSummary, error)
+
+	// GetActiveSubAccount 找 fleet 中 user_id=subIdx 的当前 active sub-account。
+	// 用于 booking router 按 hash(flow_id) % 100 选 fleet sub 落账 (Phase 3 fleet 路由)。
+	// 返回 nil 表示该 sub_idx 上没有 active 的 instance（可能在切换瞬态或 fleet 未完整）。
+	GetActiveSubAccount(ctx context.Context, logicalAccountID int64, subIdx int) (*model.Account, error)
 }
 
 // LogicalAccountBalanceSummary LA 余额聚合视图。
@@ -548,4 +553,38 @@ func (m *accountInstanceManager) SumBalanceByLogical(
 		}
 	}
 	return out, nil
+}
+
+// GetActiveSubAccount 找 fleet 中 user_id=subIdx 的当前 active sub-account。
+//
+// 路由：subIdx 决定 shard（跟 fleet 创建时 user_id=subIdx 一致），单 shard 查询。
+// 查询条件：logical_account_id=X AND user_id=subIdx AND lifecycle_phase=active
+//
+// 用于 booking router fleet 路由（按 hash(flow_id) % 100 选 sub）。
+// 切换瞬态某 sub 还没切完时返回 nil（caller 应回退到 anchor 兜底）。
+func (m *accountInstanceManager) GetActiveSubAccount(
+	ctx context.Context, logicalAccountID int64, subIdx int,
+) (*model.Account, error) {
+	if subIdx < 0 || subIdx >= 100 {
+		return nil, fmt.Errorf("aim: invalid sub_idx=%d (must be 0..99)", subIdx)
+	}
+	dbIdx, gtblIdx := m.router.RouteByUserID(int64(subIdx))
+	db, err := m.dbManager.GetDB(dbIdx)
+	if err != nil {
+		return nil, err
+	}
+	tableName := m.router.TableName(ctx, "account", gtblIdx)
+	var row model.Account
+	res := db.WithContext(ctx).Table(tableName).
+		Where("logical_account_id = ? AND user_id = ? AND lifecycle_phase = ?",
+			logicalAccountID, subIdx, model.LifecyclePhaseActive).
+		Limit(1).
+		Take(&row)
+	if res.Error != nil {
+		if errors.Is(res.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("aim: get active sub %d: %w", subIdx, res.Error)
+	}
+	return &row, nil
 }

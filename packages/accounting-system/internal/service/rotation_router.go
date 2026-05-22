@@ -195,6 +195,12 @@ type AccountReaderForRouter interface {
 	GetByAccountNo(ctx context.Context, accountNo string) (*model.Account, error)
 }
 
+// FleetReaderForRouter Phase 3: fleet × rotation 路由 — 按 sub_idx 找 active sub-account。
+// 可为 nil，表示该 router 实例不支持 fleet 路由（退回到 anchor 单 sub 落账）。
+type FleetReaderForRouter interface {
+	GetActiveSubAccount(ctx context.Context, logicalAccountID int64, subIdx int) (*model.Account, error)
+}
+
 // TransactionReaderForRouter 方向 2 用：tx_id → flow_id 解析。可为 nil 表示仅支持方向 1。
 type TransactionReaderForRouter interface {
 	GetFlowIDByTransactionID(ctx context.Context, transactionID string) (string, error)
@@ -205,6 +211,7 @@ type router struct {
 	anchors      AnchorReader
 	routes       RouteReader
 	accounts     AccountReaderForRouter
+	fleet        FleetReaderForRouter // Phase 3：nil 时退回到 anchor 单 sub
 	transactions TransactionReaderForRouter
 	clock        func() time.Time
 
@@ -212,11 +219,13 @@ type router struct {
 }
 
 // NewRouter 构造默认路由器。
+// fleet 参数 nil 时回退到老的 anchor 单 sub 路由（适配 legacy）。
 func NewRouter(
 	logicals LogicalAccountReader,
 	anchors AnchorReader,
 	routes RouteReader,
 	accounts AccountReaderForRouter,
+	fleet FleetReaderForRouter,
 	transactions TransactionReaderForRouter,
 	clock func() time.Time,
 ) Router {
@@ -228,6 +237,7 @@ func NewRouter(
 		anchors:      anchors,
 		routes:       routes,
 		accounts:     accounts,
+		fleet:        fleet,
 		transactions: transactions,
 		clock:        clock,
 		cache:        newLogicalAccountCache(5 * time.Second),
@@ -270,12 +280,27 @@ func (r *router) Resolve(ctx context.Context, req *ResolveRequest) (*Resolution,
 		return nil, err
 	}
 
-	// 3b. 否则用 current_active_account_no
+	// 3b. 否则按 fleet × rotation 选 sub-account（Phase 3 路由）：
+	//     hash(flow_id) % 100 → fleet 中 user_id=subIdx 的 active sub-account。
+	//     fleet=nil 时退回到 anchor 单 sub（legacy / fleet 未启用场景）。
 	if srcAccountNo == "" {
-		if la.CurrentActiveAccountNo == nil || *la.CurrentActiveAccountNo == "" {
-			return nil, fmt.Errorf("%w: logical=%s", model.ErrNoActiveInstance, la.LogicalAccountKey)
+		if r.fleet != nil {
+			subIdx := int(fnvHash32(req.FlowID) % 100)
+			sub, ferr := r.fleet.GetActiveSubAccount(ctx, la.ID, subIdx)
+			if ferr != nil {
+				return nil, fmt.Errorf("router: fleet get sub %d: %w", subIdx, ferr)
+			}
+			if sub != nil {
+				srcAccountNo = sub.AccountNo
+			}
 		}
-		srcAccountNo = *la.CurrentActiveAccountNo
+		// 兜底（fleet 没找到 sub，或 fleet 未注入）→ 用 anchor
+		if srcAccountNo == "" {
+			if la.CurrentActiveAccountNo == nil || *la.CurrentActiveAccountNo == "" {
+				return nil, fmt.Errorf("%w: logical=%s", model.ErrNoActiveInstance, la.LogicalAccountKey)
+			}
+			srcAccountNo = *la.CurrentActiveAccountNo
+		}
 	}
 
 	// 4. 校验目标 account 的 phase 允许接收
