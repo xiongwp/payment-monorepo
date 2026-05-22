@@ -1,0 +1,118 @@
+# ============================================================================
+# split-payment 联栈模式 config（DB-split 后版本）
+# 由 deploy/overrides/split-payment.yml mount 进容器 /workspace/.../config/config.yaml
+#
+# 跟 split-payment/config/config.yaml 默认值的差异：
+#   - database.meta_database + database.databases[10] 指 shared-db 的 1 meta + 10 shard
+#     network alias: shared-meta / shared-shard-0..9
+#   - legacy database.dsn 也指 shared-meta（过渡期给 stripe/outbox/saga 未迁移 repo 用）
+#   - kafka / accounting endpoint 用容器 DNS
+# ============================================================================
+
+log:
+  level: info
+
+server:
+  grpc:
+    addr: "0.0.0.0:9098"
+  admin:
+    addr: "0.0.0.0:9099"
+
+mtls:
+  enabled: false
+  server_cert: ""
+  server_key: ""
+  ca_cert: ""
+
+# ─── DB (DB-split: 1 meta + 10 shards) ────────────────────────────────
+database:
+  # legacy DSN：未迁移的 repo (stripe_entities / outbox×2 / saga_store) 用。
+  # 暂指 split_payment_meta（含 transition fallback 表），下一波迁完后会改成走 shard。
+  dsn: "split_user:password@tcp(shared-meta:3306)/split_payment_meta?parseTime=true&charset=utf8mb4"
+  max_open_conns: 50
+  max_idle_conns: 20
+  conn_max_lifetime: 30m
+
+  meta_database:
+    dsn: "split_user:password@tcp(shared-meta:3306)/split_payment_meta?parseTime=true&charset=utf8mb4"
+    max_open_conns: 50
+    max_idle_conns: 20
+    conn_max_lifetime: 30m
+
+  databases:
+    - name: "split_payment_db_0"
+      dsn: "split_user:password@tcp(shared-shard-0:3306)/split_payment_db_0?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_1"
+      dsn: "split_user:password@tcp(shared-shard-1:3306)/split_payment_db_1?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_2"
+      dsn: "split_user:password@tcp(shared-shard-2:3306)/split_payment_db_2?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_3"
+      dsn: "split_user:password@tcp(shared-shard-3:3306)/split_payment_db_3?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_4"
+      dsn: "split_user:password@tcp(shared-shard-4:3306)/split_payment_db_4?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_5"
+      dsn: "split_user:password@tcp(shared-shard-5:3306)/split_payment_db_5?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_6"
+      dsn: "split_user:password@tcp(shared-shard-6:3306)/split_payment_db_6?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_7"
+      dsn: "split_user:password@tcp(shared-shard-7:3306)/split_payment_db_7?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_8"
+      dsn: "split_user:password@tcp(shared-shard-8:3306)/split_payment_db_8?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_9"
+      dsn: "split_user:password@tcp(shared-shard-9:3306)/split_payment_db_9?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+
+# ─── accounting-system ────────────────────────────────────────────────
+accounting:
+  grpc_addr: "accounting-service:50051"
+  http_url: "http://accounting-service:8888"
+
+# ─── 服务发现 (etcd, 由 risk-stack 起) ────────────────────────────────
+registry:
+  endpoints:
+    - "etcd:2379"
+
+# ─── Kafka (refund subscriber 用 risk-stack 的 kafka) ─────────────────
+kafka:
+  brokers:
+    - "risk-kafka:9092"
+  event_topic: "split-payment.events"
+  audit_topic: "split-payment.audit"
+  refund:
+    topic: "recon.refund.events"
+    dlq_topic: ""
+    group: "split-payment-refund"
+    max_retry: 5
+
+# ─── Seed (loadtest 4 graphs auto-load on startup) ────────────────────
+seed:
+  graph_dir: "/loadtest/graphs"
