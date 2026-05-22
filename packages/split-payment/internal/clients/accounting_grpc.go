@@ -146,8 +146,15 @@ func (c *AccountingGRPCClient) CreateTransaction(ctx context.Context, req *domai
 			EdgeToNode:    leg.EdgeToNode,
 		})
 	}
+	// 注意 BusinessNo vs OrderNo 语义分离：
+	//   BusinessNo: 业务订单号 = chargeID（同一笔业务跨多 leg 一致），accounting 用作
+	//               shard routing key → 必须用 req.BusinessNo，不是 req.OrderNo
+	//   OrderNo  / IdempotencyKey: 单 leg 维度的请求 id（chargeID + event_code 拼成），
+	//               accounting 用来去重幂等
+	// 历史 bug：曾把 req.OrderNo 错塞进 BusinessNo，导致 OrderNo 里有下划线 / 字母
+	// → accounting RouteByNumericStr ParseInt 失败 → 全部路由到 (0,0) → 单 shard 跑满。
 	wireReq := &accountingv1.CreateTransactionRequest{
-		BusinessNo:     req.OrderNo,
+		BusinessNo:     req.BusinessNo,
 		ProductCode:    req.ProductCode,
 		EventCode:      req.EventCode,
 		IdempotencyKey: req.OrderNo, // 业务 id 兼任幂等 key

@@ -3,6 +3,7 @@ package sharding
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"strconv"
 
 	"github.com/xiongwp/payment-util/shadow"
@@ -117,14 +118,24 @@ func (r *Router) RouteByID(id int64) (dbIndex, globalTableIndex int) {
 	return n / r.tablePerDB, n
 }
 
-// RouteByNumericStr 将字符串解析为 int64 后调用 RouteByID。
-// 非数字字符串优雅降级，返回 (0, 0)。
+// RouteByNumericStr 把字符串当 routing key 解析。
+//
+//   - 数字字符串 → ParseInt 后走 RouteByID（保持向后兼容，跟历史 numeric-only business_no 一致）
+//   - 非数字字符串 → FNV-1a 32-bit hash 散布到全 100 个 shard
+//
+// 历史坑：原实现非数字直接返回 (0,0)，外部 caller 一旦传了带字母/下划线/横杠的 ID
+// （e.g. UUID、snowflake-as-string、split-payment 的 chargeID）就全部堆 shard-0 = 单点。
+// 看 docs/RESHARDING.md 关于 routing key 约束的讨论。
 func (r *Router) RouteByNumericStr(s string) (dbIndex, globalTableIndex int) {
-	id, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return 0, 0
+	if id, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return r.RouteByID(id)
 	}
-	return r.RouteByID(id)
+	// 非数字 fallback：FNV-1a 32-bit，% 100 后跟 RouteByID 的 layout 一致
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s))
+	total := int64(r.dbCount * r.tablePerDB)
+	n := int(int64(h.Sum32()) % total)
+	return n / r.tablePerDB, n
 }
 
 // RouteByUserID 按用户 ID 路由（alias for RouteByID）

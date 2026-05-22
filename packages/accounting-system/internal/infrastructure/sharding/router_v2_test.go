@@ -46,16 +46,43 @@ func TestRouterV2_RouteByID(t *testing.T) {
 
 func TestRouterV2_RouteByNumericStr(t *testing.T) {
 	r := NewRouterV2()
-	// 合法
+	// 数字字符串：保留向后兼容，结果跟 RouteByID 一致
 	db1, tbl1 := r.RouteByNumericStr("12345")
 	db2, tbl2 := r.RouteByID(12345)
 	if db1 != db2 || tbl1 != tbl2 {
-		t.Fatalf("RouteByNumericStr inconsistent with RouteByID")
+		t.Fatalf("RouteByNumericStr 跟 RouteByID 应一致, got numeric=(%d,%d) byID=(%d,%d)", db1, tbl1, db2, tbl2)
 	}
-	// 非法
-	db, tbl := r.RouteByNumericStr("not-a-number")
-	if db != 0 || tbl != 0 {
-		t.Fatalf("invalid string should route (0,0), got (%d,%d)", db, tbl)
+
+	// 非数字字符串：原行为 (0,0) 是个 footgun（任何非数字 caller 全堆 shard-0 = 单点）。
+	// 新行为：fallback 到 FNV hash，落进合法 shard 范围。
+	// 这里只校验"落在合法范围 + 不全是 0"。
+	nonNumericKeys := []string{
+		"lttf3a4b2c19ab8de2f",     // split-payment chargeID 格式
+		"order-2026-05-22-001",    // dash 分隔
+		"uuid:550e8400-e29b-41d4", // uuid 风格
+		"abc-def-ghi-jkl",
+		"X",
+	}
+	seenShards := map[int]bool{}
+	for _, k := range nonNumericKeys {
+		db, tbl := r.RouteByNumericStr(k)
+		if db < 0 || db >= ShardDBCount || tbl < 0 || tbl >= ShardTableTotal {
+			t.Fatalf("非数字 key %q 路由 OOR: (%d,%d)", k, db, tbl)
+		}
+		seenShards[db] = true
+	}
+	// 5 个不同字符串应该至少散到 2 个 shard（FNV 散布性的弱校验）
+	if len(seenShards) < 2 {
+		t.Fatalf("非数字 keys 全部堆在单 shard, 散布失效: %v", seenShards)
+	}
+
+	// 同一字符串多次调用必须稳定路由（deterministic）
+	for _, k := range nonNumericKeys {
+		db1, tbl1 := r.RouteByNumericStr(k)
+		db2, tbl2 := r.RouteByNumericStr(k)
+		if db1 != db2 || tbl1 != tbl2 {
+			t.Fatalf("非数字 key %q 路由不稳定: (%d,%d) vs (%d,%d)", k, db1, tbl1, db2, tbl2)
+		}
 	}
 }
 
