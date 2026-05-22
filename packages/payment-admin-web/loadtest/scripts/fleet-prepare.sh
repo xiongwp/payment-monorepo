@@ -44,17 +44,22 @@ PLATFORM_PREFIXES=(
 )
 
 # prefix → 推荐 account_type（跟 UI KEY_PREFIX_OPTIONS 一致）
-declare -A PREFIX_ACCOUNT_TYPE=(
-  ["channel-receivable:"]=5
-  ["channel-payable:"]=6
-  ["channel-suspense:"]=9
-  ["channel-fee:"]=7
-  ["platform-fee-clearing:"]=4
-  ["platform-fee-revenue:"]=4
-  ["platform-withdraw-pending:"]=9
-  ["user-suspense:"]=9
-  ["transit:"]=9
-)
+# 不用 declare -A，因为 macOS 默认 bash 3.2 不支持 associative array。
+account_type_for_prefix() {
+  case "$1" in
+    "channel-receivable:")        echo 5 ;;
+    "channel-payable:")           echo 6 ;;
+    "channel-suspense:")          echo 9 ;;
+    "channel-fee:")               echo 7 ;;
+    "platform-fee-clearing:")     echo 4 ;;
+    "platform-fee-revenue:")      echo 4 ;;
+    "platform-withdraw-pending:") echo 9 ;;
+    "user-suspense:")             echo 9 ;;
+    "transit:")                   echo 9 ;;
+    *)                            echo 9 ;;
+  esac
+}
+
 # account_business_type 用 1（GENERAL）即可
 ABT=1
 
@@ -158,14 +163,14 @@ for chan in "${CHAN_ARR[@]}"; do
   [[ -z "${chan}" ]] && continue
   for p in "${CHANNEL_PREFIXES[@]}"; do
     key="${p}${chan}"
-    register_and_provision "${key}" "${PREFIX_ACCOUNT_TYPE[${p}]}" || true
+    register_and_provision "${key}" "$(account_type_for_prefix "${p}")" || true
   done
 done
 
 # 平台/通用：每个 prefix 一个 LA（用 "default" 后缀，可按需扩展）
 for p in "${PLATFORM_PREFIXES[@]}"; do
   key="${p}default"
-  register_and_provision "${key}" "${PREFIX_ACCOUNT_TYPE[${p}]}" || true
+  register_and_provision "${key}" "$(account_type_for_prefix "${p}")" || true
 done
 
 green ""
