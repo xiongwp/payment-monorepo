@@ -12,9 +12,8 @@ type fakeAuditReader struct {
 	las                  []*model.LogicalAccount
 	activeCountByLA      map[int64]int
 	actualActiveByLA     map[int64]string
-	archivedBad          []*model.Account
-	migrationSuspenseSum int64
-	deepAnchors          []*model.TxAccountAnchor
+	archivedBad []*model.Account
+	deepAnchors []*model.TxAccountAnchor
 }
 
 func (f *fakeAuditReader) ListAllRotatingLAs(_ context.Context, _ int) ([]*model.LogicalAccount, error) {
@@ -31,9 +30,6 @@ func (f *fakeAuditReader) GetActiveAccountNoForLogical(_ context.Context, laID i
 }
 func (f *fakeAuditReader) ListArchivedNonZeroBalance(_ context.Context, _ int) ([]*model.Account, error) {
 	return f.archivedBad, nil
-}
-func (f *fakeAuditReader) SumMigrationSuspenseBalance(_ context.Context) (int64, error) {
-	return f.migrationSuspenseSum, nil
 }
 func (f *fakeAuditReader) ListAnchorsWithChainDepthExceeded(_ context.Context, _ int8, _ int) ([]*model.TxAccountAnchor, error) {
 	return f.deepAnchors, nil
@@ -176,25 +172,7 @@ func TestAudit_ArchivedNonZero(t *testing.T) {
 	}
 }
 
-// MigrationSuspense 净额非零 → P0
-func TestAudit_MigrationSuspenseNonZero(t *testing.T) {
-	j, r, _ := newAuditFixture()
-	r.migrationSuspenseSum = 50
-
-	res, _ := j.Run(context.Background())
-	found := false
-	for _, v := range res.Violations {
-		if v.Type == ViolationMigrationSuspenseNonZero {
-			found = true
-			if v.Severity != "P0" {
-				t.Errorf("severity should be P0")
-			}
-		}
-	}
-	if !found {
-		t.Error("should report MS violation")
-	}
-}
+// TestAudit_MigrationSuspenseNonZero 已删除（MigrationSuspense business_type 移除，I-MS 不变量随之删除）
 
 // Chain depth 超限 → P1, auto-quarantine
 func TestAudit_ChainDepthExceeded_AutoQuarantines(t *testing.T) {

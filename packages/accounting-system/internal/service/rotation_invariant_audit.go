@@ -15,8 +15,10 @@ import (
 //   I1: 同 logical 下至多 1 个 active instance
 //   I3: archived instance balance ≠ 0（异常）
 //   I-LA: LA.current_active_account_no 与实际 phase=active 的 instance 一致
-//   I-MS: MigrationSuspense 业务类型账户净额 = 0
 //   I-Chain: anchor.migration_chain_depth > 5 → 应当 quarantined
+//
+// 历史 I-MS（MigrationSuspense 净额=0）已删除：MigrationSuspense business_type 不再
+// 占用 registry 名额，相关 migration 流程若需过渡科目应在代码内部用专用编码处理。
 //
 // 周期：每小时跑一次（频率低但全面）
 //
@@ -34,8 +36,8 @@ const (
 	ViolationI1MultipleActive         InvariantViolationType = "I1_MULTIPLE_ACTIVE"
 	ViolationI4ArchivedNonZeroBalance InvariantViolationType = "I4_ARCHIVED_NONZERO"
 	ViolationLAActiveMismatch         InvariantViolationType = "LA_ACTIVE_MISMATCH"
-	ViolationMigrationSuspenseNonZero InvariantViolationType = "MIGRATION_SUSPENSE_NONZERO"
 	ViolationChainDepthExceeded       InvariantViolationType = "CHAIN_DEPTH_EXCEEDED"
+	// ViolationMigrationSuspenseNonZero 已删除（MigrationSuspense business_type 移除）
 )
 
 // InvariantViolation 单次违反记录。
@@ -65,8 +67,7 @@ type InvariantAuditReader interface {
 	// ListArchivedNonZeroBalance 找所有 phase=archived 且 balance≠0 的 instance。
 	ListArchivedNonZeroBalance(ctx context.Context, limit int) ([]*model.Account, error)
 
-	// SumMigrationSuspenseBalance 全局 MigrationSuspense 业务类型余额总和（应=0）。
-	SumMigrationSuspenseBalance(ctx context.Context) (int64, error)
+	// SumMigrationSuspenseBalance 已删除（MigrationSuspense business_type 移除）
 
 	// ListAnchorsWithChainDepthExceeded 找 migration_chain_depth > maxDepth 的 anchor。
 	ListAnchorsWithChainDepthExceeded(ctx context.Context, maxDepth int8, limit int) ([]*model.TxAccountAnchor, error)
@@ -190,17 +191,7 @@ func (j *InvariantAuditJob) Run(ctx context.Context) (*AuditResult, error) {
 		}
 	}
 
-	// 3. MigrationSuspense 全局净额 = 0
-	msBalance, err := j.reader.SumMigrationSuspenseBalance(ctx)
-	if err == nil && msBalance != 0 {
-		result.Violations = append(result.Violations, InvariantViolation{
-			Type:       ViolationMigrationSuspenseNonZero,
-			Detail:     fmt.Sprintf("global MigrationSuspense balance=%d (must be 0)", msBalance),
-			Severity:   "P0",
-			DetectedAt: now,
-		})
-		result.UnhealedNum++
-	}
+	// I-MS check 已删除（MigrationSuspense business_type 移除）
 
 	// 4. Migration chain depth > 5 → 应当 quarantined
 	deepAnchors, err := j.reader.ListAnchorsWithChainDepthExceeded(ctx, 5, 1000)

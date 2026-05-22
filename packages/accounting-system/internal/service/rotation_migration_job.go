@@ -20,7 +20,8 @@ import (
 //   1. 找到 logical 当前 active instance（迁移目标）
 //   2. 在源 instance 上 mark anchor.status=migrated, migrated_to=新 instance, chain_depth++
 //   3. 同步更新 flow_anchor_route.account_no = 新 instance, chain_depth++
-//   4. 生成迁移凭证（借: MigrationSuspense, 贷: 源 instance；新 instance 接收）
+//   4. 生成迁移凭证（借: 内部过渡科目, 贷: 源 instance；新 instance 接收）
+//      —— 原 MigrationSuspense business_type 已删除，过渡科目改用代码内部专用编码
 //
 // 【方向 B 关键】anchor 和 routing 在不同分片：
 //   - anchor 在 source account_no 分片
