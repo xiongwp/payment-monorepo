@@ -162,6 +162,40 @@ func (s *Server) handleManualSwitch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleBalanceSummary GET /admin/rotation/balance-summary?logical_account_key=...
+// 对账接口：返回 LA 维度的聚合余额（fleet 全 sub 之和，分组/分 phase breakdown）。
+func (s *Server) handleBalanceSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.rotationAdminSvc == nil {
+		s.rotationAdminUnavailable(w)
+		return
+	}
+	key := r.URL.Query().Get("logical_account_key")
+	idStr := r.URL.Query().Get("logical_account_id")
+	var id int64
+	if idStr != "" {
+		parsed, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid logical_account_id"})
+			return
+		}
+		id = parsed
+	}
+	if key == "" && id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "logical_account_key or logical_account_id required"})
+		return
+	}
+	summary, err := s.rotationAdminSvc.GetBalanceSummary(r.Context(), key, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
 // registerLAReq POST /admin/rotation/register 入参 — 跟 service.RegisterLogicalAccountRequest 同 shape。
 type registerLAReq struct {
 	LogicalAccountKey   string `json:"logical_account_key"`
