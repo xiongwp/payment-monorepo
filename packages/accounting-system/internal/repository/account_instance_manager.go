@@ -55,10 +55,25 @@ type AccountInstanceManager interface {
 	PromoteToFrozen(ctx context.Context, accountNo string, expectedVersion int64, frozenAt time.Time) error
 
 	// ListByLogical 返回 logical_account_id 下所有 phase 的 instance（按 period_start 升序）。
-	// 同 LA 下所有 instance 共享 user_id → 同一物理分片，单分片查询即可。
-	// 兜底：若 LA 没有 current_active_account_no（首次启用 rotation），扫所有 100 个分片。
-	// 用于 admin-web 详情页查询历史 instance + 余额。limit<=0 默认 200。
+	// Fleet × Rotation 场景下可能返回 100~200 个 sub-account。limit<=0 默认 250。
 	ListByLogical(ctx context.Context, logicalAccountID int64, limit int) ([]*model.Account, error)
+
+	// SumBalanceByLogical 聚合 LA 全部 instance 的余额。
+	// 默认排除 archived (phase=4)；其它 phase 都算 — fleet × rotation 切换窗口里
+	// active + draining 同时存在是正常的，应当一起算。
+	// 用于对账：第三方对账时拿到的"LA key 当前余额"应该是 fleet 全部 sub 的 SUM。
+	SumBalanceByLogical(ctx context.Context, logicalAccountID int64) (LogicalAccountBalanceSummary, error)
+}
+
+// LogicalAccountBalanceSummary LA 余额聚合视图。
+type LogicalAccountBalanceSummary struct {
+	LogicalAccountID  int64           `json:"logical_account_id"`
+	Total             int64           `json:"total_balance"`     // 跨所有非 archived instance
+	InstanceCount     int             `json:"instance_count"`
+	ByGroup           map[string]int64 `json:"by_group"`         // "A" / "B" → balance sum
+	ByPhase           map[int]int64    `json:"by_phase"`         // lifecycle_phase int → balance sum
+	GroupCounts       map[string]int   `json:"group_counts"`     // 每 group 多少 sub
+	PhaseCounts       map[int]int      `json:"phase_counts"`     // 每 phase 多少 sub
 }
 
 // AIMPromoteParams 切换参数（service 层用 PromoteAndDrainParams，repo 用本类型避免循环）。
@@ -498,4 +513,43 @@ func (m *accountInstanceManager) PromoteToFrozen(
 			ErrInstancePromoteCASConflict, accountNo, expectedVersion)
 	}
 	return nil
+}
+
+// SumBalanceByLogical 聚合 LA 全部 instance 的余额。
+//
+// 实现：复用 ListByLogical 拿所有 sub-account 再客户端聚合 — 同 LA 的 instance
+// 一定共享相同 logical_account_id，所以 ListByLogical 已经够。
+// 排除 archived (phase=4) 因为已归档不参与对账。
+func (m *accountInstanceManager) SumBalanceByLogical(
+	ctx context.Context, logicalAccountID int64,
+) (LogicalAccountBalanceSummary, error) {
+	out := LogicalAccountBalanceSummary{
+		LogicalAccountID: logicalAccountID,
+		ByGroup:          make(map[string]int64),
+		ByPhase:          make(map[int]int64),
+		GroupCounts:      make(map[string]int),
+		PhaseCounts:      make(map[int]int),
+	}
+
+	instances, err := m.ListByLogical(ctx, logicalAccountID, 1000) // fleet × rotation 上限 ~300 (100 active + 100 draining + 100 provisioned)
+	if err != nil {
+		return out, fmt.Errorf("aim sum-balance: list: %w", err)
+	}
+
+	for _, inst := range instances {
+		phase := int(inst.LifecyclePhase)
+		// 跳过 archived (4)：已归档不参与余额对账
+		if inst.LifecyclePhase == model.LifecyclePhaseArchived {
+			continue
+		}
+		out.Total += inst.Balance
+		out.InstanceCount++
+		out.ByPhase[phase] += inst.Balance
+		out.PhaseCounts[phase]++
+		if inst.AccountGroup != "" {
+			out.ByGroup[inst.AccountGroup] += inst.Balance
+			out.GroupCounts[inst.AccountGroup]++
+		}
+	}
+	return out, nil
 }

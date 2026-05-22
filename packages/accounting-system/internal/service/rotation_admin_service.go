@@ -132,36 +132,44 @@ func (s *AdminService) ListCurrentActiveInstances(
 			RotationEnabled:   la.IsRotating(),
 		}
 
-		// 反范式化字段直接读
+		// Anchor sub-account（fleet 中 user_id=0 那个，用于 UI 显示一个代表性 account_no）
 		if la.CurrentActiveAccountNo != nil && *la.CurrentActiveAccountNo != "" {
 			row.ActiveAccountNo = *la.CurrentActiveAccountNo
-
-			// 加载 instance 拿余额
-			acc, err := s.accounts.GetByAccountNo(ctx, *la.CurrentActiveAccountNo)
-			if err == nil && acc != nil {
-				row.ActiveAccountBalance = acc.Balance
-				row.ActiveIsZero = acc.Balance == 0
-				if acc.PeriodStart != nil {
-					row.PeriodStart = *acc.PeriodStart
-				}
-				if acc.PeriodEnd != nil {
-					row.PeriodEnd = *acc.PeriodEnd
-					row.TimeToEndSeconds = int64(acc.PeriodEnd.Sub(now).Seconds())
-				}
-			}
 		}
 
-		// 检查是否有 provisioned ready
-		if la.IsRotating() {
-			instances, err := s.accounts.ListByLogical(ctx, la.ID, 50)
-			if err == nil {
-				for _, inst := range instances {
-					if inst.LifecyclePhase == model.LifecyclePhaseProvisioned {
+		// fleet × rotation：余额要 SUM 整个 active fleet（100 sub），而不是只看 anchor。
+		// ListByLogical 拉到的是该 LA 全部 instance（含 GroupA + GroupB 所有 phase）。
+		// 这里做客户端聚合：phase=active 算总 balance；同时找 provisioned 标"下期已就绪"；
+		// period_start/end 取 active fleet 任意一个 sub 的值（fleet 同步建，period 一致）。
+		instances, err := s.accounts.ListByLogical(ctx, la.ID, 250) // 100 active + 100 provisioned + 一些 draining
+		if err == nil && len(instances) > 0 {
+			var activeSum int64
+			activeCount := 0
+			for _, inst := range instances {
+				switch inst.LifecyclePhase {
+				case model.LifecyclePhaseActive:
+					activeSum += inst.Balance
+					activeCount++
+					// 第一次遇到 active 时记录 period
+					if activeCount == 1 {
+						if inst.PeriodStart != nil {
+							row.PeriodStart = *inst.PeriodStart
+						}
+						if inst.PeriodEnd != nil {
+							row.PeriodEnd = *inst.PeriodEnd
+							row.TimeToEndSeconds = int64(inst.PeriodEnd.Sub(now).Seconds())
+						}
+					}
+				case model.LifecyclePhaseProvisioned:
+					if !row.ProvisionedReady {
 						row.ProvisionedReady = true
 						row.ProvisionedAccountNo = inst.AccountNo
-						break
 					}
 				}
+			}
+			if activeCount > 0 {
+				row.ActiveAccountBalance = activeSum
+				row.ActiveIsZero = activeSum == 0
 			}
 		}
 		out = append(out, row)

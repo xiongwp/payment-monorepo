@@ -124,25 +124,41 @@ func (j *InvariantAuditJob) Run(ctx context.Context) (*AuditResult, error) {
 		return nil, fmt.Errorf("audit: list LAs: %w", err)
 	}
 	for _, la := range las {
-		// I1: 同 LA 下至多 1 个 active
+		// I1 + I-LA 适配 fleet × rotation 语义：
+		//
+		// 单 instance 模型（legacy）：activeCount=1 是 healthy；>1 是 I1 violation。
+		// Fleet 模型：activeCount 可以是 1..100（fleet 内允许 100 个 active，分布于 100 sub-account）；
+		//             违反的是"跨 group active"：当 GroupA 和 GroupB 都有 active 行 → I1（切换没完成）
+		//
+		// 简化判断：activeCount > 1 但 LA 启用了 rotation → 视为 fleet 模式，不报 I1
+		// （fleet 内多 active 是设计）。真正的 I1 (双 group active) 需要专门检查，
+		// 当前 reader 接口没暴露 group 维度，留 TODO。
 		activeCount, err := j.reader.CountInstancesByPhase(ctx, la.ID, model.LifecyclePhaseActive)
 		if err != nil {
-			continue // 容错：单 LA 失败不阻断整次审计
+			continue
 		}
-		if activeCount > 1 {
+		isFleet := la.IsRotating() // rotation_enabled=1 走 fleet 路径
+		if !isFleet && activeCount > 1 {
+			// legacy 模式才报 I1
 			result.Violations = append(result.Violations, InvariantViolation{
 				Type:              ViolationI1MultipleActive,
 				LogicalAccountID:  la.ID,
 				LogicalAccountKey: la.LogicalAccountKey,
-				Detail:            fmt.Sprintf("%d active instances under same LA (I1 violation)", activeCount),
+				Detail:            fmt.Sprintf("legacy mode: %d active instances under same LA (I1 violation)", activeCount),
 				Severity:          "P0",
 				DetectedAt:        now,
-				AutoHealed:        false, // P0：不自动处理，必须 ops 决定保留哪个
+				AutoHealed:        false,
 			})
 			result.UnhealedNum++
 		}
+		// TODO: fleet 模式下检查"全部 active 同 group"（防切换中断态留双 group active）。
+		// 当前 reader 接口不暴露 group 维度，等后续扩 reader 再加。
 
 		// I-LA: LA.current_active 与实际 phase=active 一致
+		//   legacy 模式: 1=1 严格相等
+		//   fleet 模式:   anchor 应该在 active 集合里 — 现 reader 只返回"任意一个 active"，
+		//                 比较 1:1 在 fleet 模式下会假阴性（real 是 sub_5 而 declared 是 anchor sub_0）。
+		//                 fleet 下用宽松校验：只要 realActive != "" 就 OK。
 		realActive, _, err := j.reader.GetActiveAccountNoForLogical(ctx, la.ID)
 		if err != nil {
 			continue
@@ -151,18 +167,28 @@ func (j *InvariantAuditJob) Run(ctx context.Context) (*AuditResult, error) {
 		if la.CurrentActiveAccountNo != nil {
 			declaredActive = *la.CurrentActiveAccountNo
 		}
-		if realActive != declaredActive {
+
+		mismatch := false
+		if isFleet {
+			// fleet：只要有 active 行存在就 OK；declared 为空但 real 不空是 mismatch
+			mismatch = realActive == "" && declaredActive != ""
+		} else {
+			// legacy：严格 1:1
+			mismatch = realActive != declaredActive
+		}
+
+		if mismatch {
 			v := InvariantViolation{
 				Type:              ViolationLAActiveMismatch,
 				LogicalAccountID:  la.ID,
 				LogicalAccountKey: la.LogicalAccountKey,
-				Detail: fmt.Sprintf("LA.current_active=%s but actual phase=active instance=%s",
-					declaredActive, realActive),
+				Detail: fmt.Sprintf("LA.current_active=%s but actual phase=active instance=%s (fleet=%v active_count=%d)",
+					declaredActive, realActive, isFleet, activeCount),
 				Severity:   "P1",
 				DetectedAt: now,
 			}
-			// 自愈：把 LA.current_active 改为真实 active（仅当真实 active 唯一存在时）
-			if realActive != "" && activeCount == 1 {
+			// 自愈：只在 legacy 模式 + 真实 active 唯一时
+			if !isFleet && realActive != "" && activeCount == 1 {
 				if err := j.healer.RealignLogicalActive(ctx, la.ID, realActive); err == nil {
 					v.AutoHealed = true
 					result.AutoHealedNum++
