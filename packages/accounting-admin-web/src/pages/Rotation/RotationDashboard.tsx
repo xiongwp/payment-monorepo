@@ -33,10 +33,15 @@ import {
   rotationManualSwitch,
   rotationManualProvision,
   rotationRegisterLogicalAccount,
+  listBusinessTypes,
+  CATEGORY_BY_ACCOUNT_TYPE,
+  CATEGORY_LABEL,
+  ACCOUNT_TYPE_LABEL,
 } from '../../api/accounting'
 import type {
   RotationLogicalAccountRow,
   RotationRegisterRequest,
+  BusinessTypeInfo,
 } from '../../types/accounting'
 import { display as displayMoney } from '../../utils/money'
 
@@ -181,24 +186,12 @@ const KEY_PREFIX_OPTIONS = [
   { prefix: 'transit:',                  label: 'transit: 通用中间账户',                  suggestedAccountType: 9 },
 ]
 
-// AccountType 枚举 — 跟 accounting-system model.AccountType 对齐
-// 完整枚举见 internal/domain/model/account.go；这里只列 LA 常用的几个
-const ACCOUNT_TYPE_OPTIONS = [
-  { value: 5, label: '5 - 渠道应收 (channel receivable)' },
-  { value: 6, label: '6 - 渠道应付 (channel payable)' },
-  { value: 7, label: '7 - 手续费 (fee)' },
-  { value: 8, label: '8 - 平台收入 (revenue)' },
-  { value: 9, label: '9 - 中间挂账 (suspense / transit)' },
-]
-
-// AccountBusinessType 枚举 — 通用 1=资产 / 2=负债 / 3=权益 / 4=收入 / 5=费用
-const ACCOUNT_BUSINESS_TYPE_OPTIONS = [
-  { value: 1, label: '1 - 资产 (asset)' },
-  { value: 2, label: '2 - 负债 (liability)' },
-  { value: 3, label: '3 - 权益 (equity)' },
-  { value: 4, label: '4 - 收入 (revenue)' },
-  { value: 5, label: '5 - 费用 (expense)' },
-]
+// business_type / account_type / category 的关系（见"业务类型管理"页面）：
+//   business_type (registry 主键, 1-999) ──查表──→ account_type (1-9)
+//   account_type ──CATEGORY_BY_ACCOUNT_TYPE 派生──→ category (ASSET / LIABILITY / EQUITY / REVENUE / EXPENSE)
+//
+// 创建 LA 表单：用户只选 business_type；account_type 自动从 registry 推；
+// category 派生展示。category 不存表，只是 UI 提示用户"这是什么会计本质"。
 
 const CURRENCY_OPTIONS = ['USD', 'PHP', 'CNY', 'HKD', 'SGD', 'JPY', 'EUR']
 
@@ -214,6 +207,39 @@ function RegisterLAModal(p: RegisterLAModalProps) {
   const [prefix, setPrefix] = useState<string>(KEY_PREFIX_OPTIONS[0].prefix)
   const [keySuffix, setKeySuffix] = useState<string>('')
 
+  // business_type registry（来自 /v1/business-types），首次打开 modal 时拉取
+  const [btRegistry, setBtRegistry] = useState<BusinessTypeInfo[]>([])
+  const [btLoading, setBtLoading] = useState(false)
+  const [selectedBT, setSelectedBT] = useState<number | undefined>(undefined)
+
+  useEffect(() => {
+    if (!p.open || btRegistry.length > 0) return
+    setBtLoading(true)
+    listBusinessTypes()
+      .then((rows) => {
+        // 只显示 enabled=1 的，禁用的不让选
+        setBtRegistry(rows.filter((r) => r.enabled === 1))
+      })
+      .catch((e) => message.error(e instanceof Error ? e.message : '加载 business_type registry 失败'))
+      .finally(() => setBtLoading(false))
+  }, [p.open, btRegistry.length])
+
+  // 选中 business_type 时派生 account_type + category（不让用户手填，避免 schema drift）
+  const derived = useMemo(() => {
+    if (selectedBT === undefined) return null
+    const hit = btRegistry.find((r) => r.business_type === selectedBT)
+    if (!hit) return null
+    const accountType = hit.account_type
+    const categoryNum = CATEGORY_BY_ACCOUNT_TYPE[accountType] ?? 0
+    return {
+      accountType,
+      accountTypeLabel: ACCOUNT_TYPE_LABEL[accountType] || `account_type=${accountType}`,
+      category: CATEGORY_LABEL[categoryNum] || 'UNKNOWN',
+      code: hit.business_type_code,
+      description: hit.description ?? '',
+    }
+  }, [selectedBT, btRegistry])
+
   const fullKey = useMemo(() => `${prefix}${keySuffix.trim()}`, [prefix, keySuffix])
 
   const submit = async () => {
@@ -227,11 +253,15 @@ function RegisterLAModal(p: RegisterLAModalProps) {
         message.error(`完整 key 长度需在 [8, 64]: 当前 ${fullKey.length}`)
         return
       }
+      if (!derived) {
+        message.error('请选择 business_type')
+        return
+      }
       setLoading(true)
       const req: RotationRegisterRequest = {
         logical_account_key:   fullKey,
-        account_type:          values.account_type,
-        account_business_type: values.account_business_type,
+        account_type:          derived.accountType,         // 派生，不让用户填
+        account_business_type: values.business_type,        // 用户选
         currency:              values.currency,
         description:           values.description || undefined,
         rotation_enabled:      !!values.rotation_enabled,
@@ -241,6 +271,7 @@ function RegisterLAModal(p: RegisterLAModalProps) {
       message.success(`已创建 ${fullKey}`)
       form.resetFields()
       setKeySuffix('')
+      setSelectedBT(undefined)
       p.onClose()
       p.onDone()
     } catch (e) {
@@ -251,11 +282,16 @@ function RegisterLAModal(p: RegisterLAModalProps) {
     }
   }
 
-  // prefix 切换时自动 suggest 一个 account_type
-  const onPrefixChange = (v: string) => {
-    setPrefix(v)
-    const hit = KEY_PREFIX_OPTIONS.find((o) => o.prefix === v)
-    if (hit) form.setFieldValue('account_type', hit.suggestedAccountType)
+  // category 字符串 → tag 颜色
+  const categoryColor = (cat: string): string => {
+    switch (cat) {
+      case 'ASSET':     return 'blue'
+      case 'LIABILITY': return 'green'
+      case 'EQUITY':    return 'purple'
+      case 'REVENUE':   return 'orange'
+      case 'EXPENSE':   return 'red'
+      default:          return 'default'
+    }
   }
 
   return (
@@ -267,11 +303,11 @@ function RegisterLAModal(p: RegisterLAModalProps) {
       confirmLoading={loading}
       okText="创建"
       cancelText="取消"
-      width={640}
+      width={680}
       destroyOnClose
     >
       <Alert
-        message="LA 是业务侧稳定的账户键，背后挂多个 instance 按周期轮换。注册后 status=enabled；若 rotation_enabled=true，还需点击「预创建」+「立即切换」启动首个 active instance。"
+        message="LA 是业务侧稳定的账户键，背后挂多个 instance 按周期轮换。注册后 status=enabled；若 rotation_enabled=true，还需点「预创建」+「立即切换」启动首个 active instance。"
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
@@ -281,8 +317,6 @@ function RegisterLAModal(p: RegisterLAModalProps) {
         layout="vertical"
         preserve={false}
         initialValues={{
-          account_type: KEY_PREFIX_OPTIONS[0].suggestedAccountType,
-          account_business_type: 2, // 负债（中间账户多数是负债）
           currency: 'PHP',
           rotation_enabled: true,
         }}
@@ -290,7 +324,7 @@ function RegisterLAModal(p: RegisterLAModalProps) {
         <Form.Item label="logical_account_key 前缀" required>
           <Select
             value={prefix}
-            onChange={onPrefixChange}
+            onChange={setPrefix}
             options={KEY_PREFIX_OPTIONS.map((o) => ({ value: o.prefix, label: o.label }))}
             style={{ width: '100%' }}
           />
@@ -308,19 +342,47 @@ function RegisterLAModal(p: RegisterLAModalProps) {
           />
         </Form.Item>
         <Form.Item
-          label="account_type"
-          name="account_type"
-          rules={[{ required: true, message: '必填' }]}
+          label="业务类型 (business_type)"
+          name="business_type"
+          rules={[{ required: true, message: '必选；新渠道请先去「业务类型管理」页注册' }]}
+          tooltip="account_type / category 由 business_type 自动派生，避免人工填错。要加新渠道请走「业务类型管理」页的注册流程"
         >
-          <Select options={ACCOUNT_TYPE_OPTIONS} />
+          <Select
+            loading={btLoading}
+            placeholder="选择已注册的 business_type；账户类型 / 会计科目会自动派生"
+            showSearch
+            optionFilterProp="label"
+            onChange={(v: number) => setSelectedBT(v)}
+            options={btRegistry.map((r) => ({
+              value: r.business_type,
+              label: `${r.business_type} - ${r.business_type_code} (${ACCOUNT_TYPE_LABEL[r.account_type] || `type=${r.account_type}`})`,
+            }))}
+          />
         </Form.Item>
-        <Form.Item
-          label="account_business_type"
-          name="account_business_type"
-          rules={[{ required: true, message: '必填' }]}
-        >
-          <Select options={ACCOUNT_BUSINESS_TYPE_OPTIONS} />
-        </Form.Item>
+        {derived && (
+          <Alert
+            type="success"
+            showIcon={false}
+            message={
+              <Space size="middle" wrap>
+                <span>
+                  <Text type="secondary">account_type:</Text>{' '}
+                  <Tag color="cyan">{derived.accountType} - {derived.accountTypeLabel}</Tag>
+                </span>
+                <span>
+                  <Text type="secondary">category (派生):</Text>{' '}
+                  <Tag color={categoryColor(derived.category)}>{derived.category}</Tag>
+                </span>
+                {derived.description && (
+                  <span>
+                    <Text type="secondary">说明:</Text> <Text>{derived.description}</Text>
+                  </span>
+                )}
+              </Space>
+            }
+            style={{ marginBottom: 16 }}
+          />
+        )}
         <Form.Item
           label="币种 (currency)"
           name="currency"
