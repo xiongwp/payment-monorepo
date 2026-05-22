@@ -590,7 +590,7 @@ CREATE TABLE IF NOT EXISTS `service_instance` (
 --           路由层热路径只查本表即可，避免跨片 account 表 scan。
 -- ============================================
 CREATE TABLE IF NOT EXISTS `logical_account` (
-    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键（AUTO_INCREMENT；原设计 Leaf 号段，但低频表 AUTO_INCREMENT 也够）',
     `logical_account_key` VARCHAR(64) NOT NULL COMMENT '业务稳定 key（命名前缀白名单见 rotation.go AllowedKeyPrefixes）',
     `account_type` TINYINT NOT NULL COMMENT '复用 AccountType (期望值 5/6/9)',
     `account_business_type` SMALLINT NOT NULL COMMENT '复用 AccountBusinessType (1-999)',
