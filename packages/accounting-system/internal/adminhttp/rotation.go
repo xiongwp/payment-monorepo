@@ -32,6 +32,7 @@ func (s *Server) registerRotationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/rotation/logical-accounts", s.handleListLogicalAccounts) // GET ?prefix=&limit=
 	mux.HandleFunc("/admin/rotation/instance-history", s.handleInstanceHistory)     // GET ?logical_account_key=
 	mux.HandleFunc("/admin/rotation/instance-detail", s.handleInstanceDetail)       // GET ?account_no=
+	mux.HandleFunc("/admin/rotation/balance-summary", s.handleBalanceSummary)       // GET ?logical_account_key= 对账接口
 	mux.HandleFunc("/admin/rotation/register", s.handleRegister)                    // POST {logical_account_key, account_type, account_business_type, currency, rotation_enabled, operator, ...}
 	mux.HandleFunc("/admin/rotation/manual-switch", s.handleManualSwitch)           // POST {logical_account_key, operator, reason}
 	mux.HandleFunc("/admin/rotation/manual-provision", s.handleManualProvision)     // POST {logical_account_key, operator, reason}

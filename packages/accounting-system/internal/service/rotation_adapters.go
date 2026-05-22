@@ -109,6 +109,23 @@ func (a *adminAccountReaderAdapter) GetByAccountNo(ctx context.Context, accountN
 	return a.accounts.GetAccountByNo(ctx, accountNo)
 }
 
+// SumBalanceByLogical 适配 repo.SumBalanceByLogical → service 层视图。
+func (a *adminAccountReaderAdapter) SumBalanceByLogical(ctx context.Context, logicalAccountID int64) (LogicalAccountBalanceSummary, error) {
+	repoOut, err := a.instances.SumBalanceByLogical(ctx, logicalAccountID)
+	if err != nil {
+		return LogicalAccountBalanceSummary{}, err
+	}
+	return LogicalAccountBalanceSummary{
+		LogicalAccountID: repoOut.LogicalAccountID,
+		Total:            repoOut.Total,
+		InstanceCount:    repoOut.InstanceCount,
+		ByGroup:          repoOut.ByGroup,
+		ByPhase:          repoOut.ByPhase,
+		GroupCounts:      repoOut.GroupCounts,
+		PhaseCounts:      repoOut.PhaseCounts,
+	}, nil
+}
+
 // adminSchedulerCommandAdapter 让 *Scheduler 满足 SchedulerCommand 接口（接口签名
 // 已经完全一致，但拿到的是 struct 不是 interface，包一层）。
 type adminSchedulerCommandAdapter struct {

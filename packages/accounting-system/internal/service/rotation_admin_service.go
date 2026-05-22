@@ -48,6 +48,24 @@ type AccountAdminReader interface {
 
 	// GetByAccountNo 单 instance 详情。
 	GetByAccountNo(ctx context.Context, accountNo string) (*model.Account, error)
+
+	// SumBalanceByLogical 聚合 LA 全部 instance 的余额（fleet 全部 sub 之和；排除 archived）。
+	// 用于对账 + admin UI 显示 LA 维度总余额。
+	SumBalanceByLogical(ctx context.Context, logicalAccountID int64) (LogicalAccountBalanceSummary, error)
+}
+
+// LogicalAccountBalanceSummary admin / 对账接口的 LA 余额聚合视图。
+// 跟 repository.LogicalAccountBalanceSummary 同 shape；这里复制一份避免 service 层依赖 repo 类型。
+type LogicalAccountBalanceSummary struct {
+	LogicalAccountID  int64            `json:"logical_account_id"`
+	LogicalAccountKey string           `json:"logical_account_key,omitempty"`
+	Currency          string           `json:"currency,omitempty"`
+	Total             int64            `json:"total_balance"`
+	InstanceCount     int              `json:"instance_count"`
+	ByGroup           map[string]int64 `json:"by_group"`
+	ByPhase           map[int]int64    `json:"by_phase"`
+	GroupCounts       map[string]int   `json:"group_counts"`
+	PhaseCounts       map[int]int      `json:"phase_counts"`
 }
 
 // SchedulerCommand 让 admin service 调用 scheduler 的强制操作。
@@ -410,6 +428,36 @@ type RegisterLogicalAccountRequest struct {
 	Description         string `json:"description,omitempty"`
 	RotationEnabled     bool   `json:"rotation_enabled"`
 	Operator            string `json:"operator"`
+}
+
+// GetBalanceSummary 取 LA 维度的余额聚合（用于对账接口 + admin UI）。
+// 通过 logical_account_key 或 logical_account_id 任一查询；优先 key（用户友好）。
+func (s *AdminService) GetBalanceSummary(
+	ctx context.Context, logicalAccountKey string, logicalAccountID int64,
+) (LogicalAccountBalanceSummary, error) {
+	var la *model.LogicalAccount
+	var err error
+	switch {
+	case logicalAccountKey != "":
+		la, err = s.logicals.GetByKey(ctx, logicalAccountKey)
+	case logicalAccountID > 0:
+		la, err = s.logicals.GetByID(ctx, logicalAccountID)
+	default:
+		return LogicalAccountBalanceSummary{}, errors.New("must provide logical_account_key or logical_account_id")
+	}
+	if err != nil {
+		return LogicalAccountBalanceSummary{}, fmt.Errorf("lookup LA: %w", err)
+	}
+	if la == nil {
+		return LogicalAccountBalanceSummary{}, errors.New("logical_account not found")
+	}
+	summary, err := s.accounts.SumBalanceByLogical(ctx, la.ID)
+	if err != nil {
+		return LogicalAccountBalanceSummary{}, fmt.Errorf("sum balance: %w", err)
+	}
+	summary.LogicalAccountKey = la.LogicalAccountKey
+	summary.Currency = la.Currency
+	return summary, nil
 }
 
 // RegisterLogicalAccount 注册一个新 LA。
