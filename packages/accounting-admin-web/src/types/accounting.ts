@@ -572,3 +572,54 @@ export interface RotationRegisterResponse {
   registered_by: string;
 }
 
+// ────────────────────────────────────────────────────────────────
+// Fleet routing 测试 — /admin/rotation/resolve-fleet-sub + /admin/rotation/fleet-book
+// ────────────────────────────────────────────────────────────────
+
+/** Fleet routing 路由解析结果 — 给 UI 测试面板显示路由出了哪个 sub。 */
+export interface FleetSubResolution {
+  logical_account_id: number;
+  logical_account_key: string;
+  flow_id: string;
+  sub_idx: number;                // fnv32(flow_id) % 100
+  account_no: string;
+  account_group: string;          // "A" / "B"
+  lifecycle_phase: number;
+  lifecycle_phase_str: string;
+  balance: number;                // 当前余额（minor units）
+  currency: string;
+}
+
+/** Fleet booking 测试入参（src 二选一：走 fleet routing or 直填 account_no） */
+export interface FleetTestBookRequest {
+  src_logical_account_key?: string;
+  src_account_no?: string;
+  dst_account_no: string;
+  amount: number;
+  currency: string;
+  flow_id: string;
+  business_type: string;          // "TRANSFER" / "PAYMENT" / ...
+  operator: string;
+}
+
+/** Fleet booking 测试响应 */
+export interface FleetTestBookResponse {
+  voucher_no: string;
+  transaction_ids: string[];
+  src_resolution?: FleetSubResolution;
+  booking_time: string;           // RFC3339
+}
+
+/** LA 维度余额聚合（fleet 全 sub 之和 + group/phase 分布） */
+export interface RotationBalanceSummary {
+  logical_account_id: number;
+  logical_account_key: string;
+  currency: string;
+  total_balance: number;
+  instance_count: number;
+  by_group: Record<string, number>;        // {"A": 100, "B": -100}
+  by_phase: Record<string, number>;        // {"1": 0}  key 是 phase code as string
+  group_counts: Record<string, number>;    // {"A": 100, "B": 100}
+  phase_counts: Record<string, number>;    // {"1": 100, "2": 100}
+}
+

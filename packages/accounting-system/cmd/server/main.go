@@ -259,7 +259,18 @@ func NewShardingRouter(v *viper.Viper) *sharding.Router {
 	return sharding.NewRouterWithConfig(dbCount, tablePerDB)
 }
 
-func StartGRPCServer(lc fx.Lifecycle, srv *grpcserver.Server, v *viper.Viper, logger *zap.Logger) {
+func StartGRPCServer(
+	lc fx.Lifecycle,
+	srv *grpcserver.Server,
+	rotationAdmin *service.AdminService, // Fleet × Rotation 路由解析
+	v *viper.Viper,
+	logger *zap.Logger,
+) {
+	// 让 gRPC handler 能在 AccountingEntry.LogicalAccountKey 非空时走 rotation_router
+	// 解析到具体 sub-account。注入失败（nil）只影响 fleet routing 路径，legacy
+	// account_no 流量不受影响。
+	srv.WithRotationAdmin(rotationAdmin)
+
 	port := v.GetInt("server.grpc_port")
 	if port == 0 {
 		port = 50051

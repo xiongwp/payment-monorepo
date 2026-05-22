@@ -21,6 +21,7 @@ import SystemConfig from './pages/SystemConfig/SystemConfig'
 import RedisRebuild from './pages/RedisRebuild/RedisRebuild'
 import RotationDashboard from './pages/Rotation/RotationDashboard'
 import RotationDetail from './pages/Rotation/RotationDetail'
+import FleetRoutingTest from './pages/Rotation/FleetRoutingTest'
 import { loadAccountTypeRegistry } from './api/accounting'
 import { useEffect } from 'react'
 import './App.css'
@@ -56,6 +57,7 @@ function App() {
         <Route path="redis-rebuild" element={<RedisRebuild />} />
         {/* 轮换账户管理（rotation feature） */}
         <Route path="rotation" element={<RotationDashboard />} />
+        <Route path="rotation/fleet-test" element={<FleetRoutingTest />} />
         <Route path="rotation/:key" element={<RotationDetail />} />
       </Route>
     </Routes>

@@ -31,6 +31,7 @@ var precisionMap = map[string]int{
 	"AUD": 2, // 澳大利亚元 Australian Dollar
 	"CAD": 2, // 加拿大元 Canadian Dollar
 	"CHF": 2, // 瑞士法郎 Swiss Franc
+	"CNY": 2, // 人民币 Chinese Yuan
 	"MYR": 2, // 马来西亚林吉特 Malaysian Ringgit
 	"THB": 2, // 泰铢 Thai Baht
 	"INR": 2, // 印度卢比 Indian Rupee

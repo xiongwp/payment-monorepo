@@ -557,6 +557,10 @@ import type {
   RotationManualOpResponse,
   RotationRegisterRequest,
   RotationRegisterResponse,
+  FleetSubResolution,
+  FleetTestBookRequest,
+  FleetTestBookResponse,
+  RotationBalanceSummary,
 } from '../types/accounting';
 
 /**
@@ -615,4 +619,34 @@ export function rotationRegisterLogicalAccount(
   req: RotationRegisterRequest,
 ): Promise<RotationRegisterResponse> {
   return request({ method: 'POST', url: '/v1/rotation/register', data: req });
+}
+
+/** Fleet routing 解析 — 给定 LA key + flow_id，返回路由命中的 sub-account。 */
+export function rotationResolveFleetSub(
+  logicalAccountKey: string,
+  flowID: string,
+): Promise<FleetSubResolution> {
+  return request({
+    method: 'GET',
+    url: '/v1/rotation/resolve-fleet-sub',
+    params: { logical_account_key: logicalAccountKey, flow_id: flowID },
+  });
+}
+
+/** Fleet booking 端到端 demo —— src 走 fleet routing，dst 直填 account_no。 */
+export function rotationFleetBook(
+  req: FleetTestBookRequest,
+): Promise<FleetTestBookResponse> {
+  return request({ method: 'POST', url: '/v1/rotation/fleet-book', data: req });
+}
+
+/** LA 维度的余额聚合（fleet 全 sub 之和；group/phase 分布）。 */
+export function rotationBalanceSummary(
+  logicalAccountKey: string,
+): Promise<RotationBalanceSummary> {
+  return request({
+    method: 'GET',
+    url: '/v1/rotation/balance-summary',
+    params: { logical_account_key: logicalAccountKey },
+  });
 }

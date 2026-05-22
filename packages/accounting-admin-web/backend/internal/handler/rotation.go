@@ -98,3 +98,41 @@ func (h *InstanceHandler) RotationManualProvision(w http.ResponseWriter, r *http
 	req.Header.Set("Content-Type", "application/json")
 	h.proxyTo(w, req)
 }
+
+// RotationResolveFleetSub GET /v1/rotation/resolve-fleet-sub?logical_account_key=&flow_id=
+//
+// Fleet routing 测试端点 — 复刻 rotation_router.go fleet branch 的算法，给定 LA key
+// + flow_id，返回选中的 sub-account（含 account_no, sub_idx, group, phase, balance）。
+// UI "Fleet 路由测试" 面板调用。
+func (h *InstanceHandler) RotationResolveFleetSub(w http.ResponseWriter, r *http.Request) {
+	url := h.seedAddr + "/admin/rotation/resolve-fleet-sub?" + r.URL.RawQuery
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
+	h.proxyTo(w, req)
+}
+
+// RotationFleetBook POST /v1/rotation/fleet-book
+//
+// 端到端 fleet booking demo — body: {src_logical_account_key | src_account_no,
+// dst_account_no, amount, currency, flow_id, business_type, operator}
+// 返回 {voucher_no, transaction_ids, src_resolution, booking_time}
+func (h *InstanceHandler) RotationFleetBook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodPost,
+		h.seedAddr+"/admin/rotation/fleet-book", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	h.proxyTo(w, req)
+}
+
+// RotationBalanceSummary GET /v1/rotation/balance-summary?logical_account_key=
+//
+// LA 维度的余额聚合视图（fleet 全 sub 总余额 + group/phase 分布）。
+// UI 测试面板 / 对账页面用。
+func (h *InstanceHandler) RotationBalanceSummary(w http.ResponseWriter, r *http.Request) {
+	url := h.seedAddr + "/admin/rotation/balance-summary?" + r.URL.RawQuery
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
+	h.proxyTo(w, req)
+}
