@@ -103,6 +103,13 @@ if [[ -s "${POOL_FILE}" ]]; then
         break
       fi
     done
-    [[ ${FOUND} -ne 1 ]] && yellow "  ⚠ ${SAMPLE} 在 10 个 shard 都没找到（account_no 编码路由可能不是 0..9 简单 mod？）"
+    # 注意：不能写 `[[ ${FOUND} -ne 1 ]] && yellow ...` 当末位语句 —— 当 FOUND=1
+    # 时这个表达式 rc=1，会污染整个脚本的退出码。必须用 if/fi 显式块。
+    if [[ ${FOUND} -ne 1 ]]; then
+      yellow "  ⚠ ${SAMPLE} 在 10 个 shard 都没找到（account_no 编码路由可能不是 0..9 简单 mod？）"
+    fi
   fi
 fi
+
+# 显式 exit 0 — 防止上面任何条件分支的 rc 漏到脚本退出码
+exit 0

@@ -303,8 +303,6 @@ func createChannels(httpC *http.Client, pool *AccountPool) error {
 		last := channelOwnerStart + s.offset + (*flagNumChannels-1)*channelOwnerStep // i=N-1 时的 owner_id
 		fmt.Printf("    channel-%s: type=%d  owner_id step=%d, %d..%d (散到 10 shards)\n",
 			s.name, s.accType, channelOwnerStep, first, last)
-		_ = first; _ = last // 兼容老格式不再传 first/last (printf 上面已经用过)
-			s.name, s.accType, first, last)
 		if err := parallelCreate(*flagNumChannels, *flagWorkers, func(i int) error {
 			// owner_id = start + offset + i*step → 相邻 channel 间隔 100，循环遍历 db=0..9
 			reservedID := int64(channelOwnerStart + s.offset + i*channelOwnerStep)
