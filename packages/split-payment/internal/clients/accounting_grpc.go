@@ -144,6 +144,11 @@ func (c *AccountingGRPCClient) CreateTransaction(ctx context.Context, req *domai
 			Currency:      leg.Currency,
 			EdgeFromNode:  leg.EdgeFromNode,
 			EdgeToNode:    leg.EdgeToNode,
+			// Fleet × Rotation 字段（任一侧填了 LA key 就让 server 端走 fleet routing）
+			FromLogicalAccountKey: leg.FromLogicalAccountKey,
+			FromFlowId:            leg.FromFlowID,
+			ToLogicalAccountKey:   leg.ToLogicalAccountKey,
+			ToFlowId:              leg.ToFlowID,
 		})
 	}
 	// 注意 BusinessNo vs OrderNo 语义分离：
