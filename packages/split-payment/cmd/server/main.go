@@ -31,10 +31,12 @@ import (
 
 	"github.com/xiongwp/split-payment/internal/clients"
 	"github.com/xiongwp/split-payment/internal/config"
+	"github.com/xiongwp/split-payment/internal/database"
 	"github.com/xiongwp/split-payment/internal/domain"
 	"github.com/xiongwp/split-payment/internal/grpcsvc"
 	"github.com/xiongwp/split-payment/internal/observability"
 	"github.com/xiongwp/split-payment/internal/repo"
+	"github.com/xiongwp/split-payment/internal/sharding"
 	"github.com/xiongwp/split-payment/internal/workflow"
 
 	_ "github.com/go-sql-driver/mysql"             // MF-1: mysql driver
@@ -66,6 +68,8 @@ func wireAll(
 	log *zap.Logger,
 	logLevel zap.AtomicLevel,
 	db *sql.DB,
+	dbMgr *database.Manager, // DB-split: 新分片 manager（cfg.database.meta_database 空时为 nil）
+	shardRouter *sharding.Router, // DB-split: 默认 10×10 router
 	accountingGRPCCli *clients.AccountingGRPCClient,
 ) error {
 	// SP-AC-7 P10: OTel trace context propagation (W3C traceparent). 当前用 noop tracer.
@@ -101,10 +105,16 @@ func wireAll(
 		cronPoRepo  workflow.PayoutInserterRepo
 	)
 	if db != nil {
-		// Schema 由 packages/split-payment/database/metadb/init/*.sql 在 MySQL 容器
-		// 启动时自动灌入 (跟 card-center / order-core 一致); 应用层不再做 DDL.
-		graphRepo = repo.NewMySQLGraphRepo(db)
-		runRepo = repo.NewMySQLRunRepo(db)
+		// Schema 由 packages/split-payment/database/{metadb,shardb}/init/*.sql 在 MySQL
+		// 容器启动时自动灌入 (跟 card-center / order-core 一致); 应用层不再做 DDL.
+		//
+		// DB-split: GraphRepo / RunRepo 优先用 dbMgr（新分片）。
+		// 老配置只配 cfg.database.dsn 时 dbMgr 为 nil，退回单 DB 模式（暂不再支持，会 panic）。
+		if dbMgr == nil {
+			return fmt.Errorf("dbMgr is nil — 请在 config.yaml 配 database.meta_database + database.databases[10]")
+		}
+		graphRepo = repo.NewMySQLGraphRepo(dbMgr)
+		runRepo = repo.NewMySQLRunRepo(dbMgr, shardRouter)
 
 		accRepo := repo.NewAccountRepo(db)
 		trRepo := repo.NewTransferRepo(db)

@@ -1,12 +1,14 @@
-// mysql.go — MoneyFlow Graph + RunPlan MySQL 仓储 (MF-1).
+// mysql.go — MoneyFlow Graph + RunPlan MySQL 仓储 (MF-1, DB-split).
 //
-// 表:
-//   moneyflow_graphs  (id PK, key UNIQUE, spec_json JSON, ...)
-//   moneyflow_runs    (id PK, graph_id FK, charge_id INDEX, ...)
+// DB-split Batch 3 重构：
+//   moneyflow_graphs   → split_payment_meta 库（不分片，meta）
+//   moneyflow_runs     → split_payment_db_0..9 × 10 张子表/库 = 100 张全局子表
+//                        分片 key = charge_id（同一 charge 的 run 都在同 shard）
 //
 // 用 stdlib database/sql + mysql driver, 不引 GORM, 跟现有 monorepo 风格对齐.
 //
-// 启动期 EnsureSchema() 自动建表 (dev/staging); 生产用 migrate 工具.
+// 启动期 EnsureSchema 不再用（DDL 已挪到 database/{metadb,shardb}/init/*.sql，由
+// docker entrypoint 灌入）。本文件只剩 CRUD 代码。
 package repo
 
 import (
@@ -15,103 +17,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+	"sync"
 	"time"
 
+	"github.com/xiongwp/split-payment/internal/database"
 	"github.com/xiongwp/split-payment/internal/domain"
+	"github.com/xiongwp/split-payment/internal/sharding"
 )
 
-// ─── Graph repo ────────────────────────────────────────────────────────
+const (
+	familyRuns = "moneyflow_runs" // family 前缀，跟 DDL gen.sh 对齐
+)
+
+// ─── Graph repo (走 metaDB, 表名 moneyflow_graphs 不变) ────────────────
 
 // MySQLGraphRepo MySQL 实现.
 type MySQLGraphRepo struct {
-	db *sql.DB
+	mgr *database.Manager
 }
 
-// NewMySQLGraphRepo 构造. db 由 caller 准备 (dsn=user:pass@tcp(host:3306)/dbname).
-func NewMySQLGraphRepo(db *sql.DB) *MySQLGraphRepo { return &MySQLGraphRepo{db: db} }
-
-// EnsureSchema 启动期自建表 (idempotent). dev/staging 用; 生产建议 migrate 工具.
-func EnsureSchema(ctx context.Context, db *sql.DB) error {
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS moneyflow_graphs (
-			id          BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-			` + "`key`" + `       VARCHAR(128) NOT NULL,
-			name        VARCHAR(256) NOT NULL,
-			version     VARCHAR(32)  NOT NULL DEFAULT '1.0.0',
-			status      VARCHAR(32)  NOT NULL DEFAULT 'draft',
-			owner_type  VARCHAR(32)  DEFAULT NULL,
-			owner_id    VARCHAR(128) DEFAULT NULL,
-			spec_json   JSON         NOT NULL,
-			created_at  DATETIME     NOT NULL,
-			updated_at  DATETIME     NOT NULL,
-			UNIQUE KEY uk_key (` + "`key`" + `),
-			KEY idx_status (status)
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-
-		`CREATE TABLE IF NOT EXISTS moneyflow_runs (
-			id              BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-			graph_id        BIGINT NOT NULL,
-			graph_version   VARCHAR(32),
-			trigger_event   VARCHAR(64)  NOT NULL,
-			charge_id       VARCHAR(128) DEFAULT NULL,
-			merchant_id     VARCHAR(128) DEFAULT NULL,
-			amount_minor    BIGINT NOT NULL DEFAULT 0,
-			currency        VARCHAR(8)   DEFAULT NULL,
-			attributes_json JSON         DEFAULT NULL,
-			movements_json  JSON         DEFAULT NULL,
-			status          VARCHAR(32)  NOT NULL DEFAULT 'created',
-			voucher_no      VARCHAR(64)  DEFAULT NULL,
-			error_msg       TEXT         DEFAULT NULL,
-			trace_id        VARCHAR(64)  DEFAULT NULL,
-			-- SP-AC-7 PH3-7: hold-period 字段供 HoldUnstickWorker 用.
-			hold_until      DATETIME     DEFAULT NULL,
-			hold_released   TINYINT(1)   NOT NULL DEFAULT 0,
-			created_at      DATETIME     NOT NULL,
-			KEY idx_charge (charge_id),
-			KEY idx_graph (graph_id),
-			KEY idx_event_created (trigger_event, created_at),
-			KEY idx_hold_expired (hold_released, hold_until)
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-	}
-	for _, s := range stmts {
-		if _, err := db.ExecContext(ctx, s); err != nil {
-			return fmt.Errorf("ensure schema: %w", err)
-		}
-	}
-	// 老库升级 (新加列): IF NOT EXISTS 需要 MySQL 8.0.29+ / MariaDB 10.0.2+;
-	// 兼容更老版本: try ALTER + 忽略 1060 duplicate column 错.
-	for _, alter := range []string{
-		`ALTER TABLE moneyflow_runs ADD COLUMN hold_until DATETIME DEFAULT NULL`,
-		`ALTER TABLE moneyflow_runs ADD COLUMN hold_released TINYINT(1) NOT NULL DEFAULT 0`,
-	} {
-		if _, err := db.ExecContext(ctx, alter); err != nil {
-			// 1060 = "Duplicate column name" → 列已存在, 忽略.
-			// 其它错 → 真问题, 报出来.
-			if !isDuplicateColumnErr(err) {
-				return fmt.Errorf("ensure schema (alter): %w", err)
-			}
-		}
-	}
-	return nil
+// NewMySQLGraphRepo 构造. 走 metaDB.
+func NewMySQLGraphRepo(mgr *database.Manager) *MySQLGraphRepo {
+	return &MySQLGraphRepo{mgr: mgr}
 }
 
-// isDuplicateColumnErr 检测 MySQL/MariaDB error 1060 (Duplicate column name).
-// 不依赖 go-sql-driver/mysql.MySQLError 类型断言, 用字符串匹配兼容多 driver.
-func isDuplicateColumnErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "Error 1060") ||
-		strings.Contains(msg, "Duplicate column name") ||
-		strings.Contains(msg, "duplicate column")
-}
-
-// Save 创建或更新. key 已存在 → 升 version 字段 (按 semver) + UPDATE; 否则 INSERT.
-//
-// 调用方控制 status (draft / active / archived). 同 key 永远只一行 (用 versions 表
-// 做历史快照可后续加).
+// Save 创建或更新.
 func (r *MySQLGraphRepo) Save(ctx context.Context, g *domain.Graph) (int64, error) {
 	if g.Key == "" {
 		return 0, errors.New("graph.key required")
@@ -128,13 +58,12 @@ func (r *MySQLGraphRepo) Save(ctx context.Context, g *domain.Graph) (int64, erro
 		g.Status = "draft"
 	}
 
-	// upsert: 优先按 key 找
+	db := r.mgr.Meta()
 	var existingID int64
-	err = r.db.QueryRowContext(ctx, "SELECT id FROM moneyflow_graphs WHERE `key`=? LIMIT 1", g.Key).Scan(&existingID)
+	err = db.QueryRowContext(ctx, "SELECT id FROM moneyflow_graphs WHERE `key`=? LIMIT 1", g.Key).Scan(&existingID)
 	switch {
 	case err == sql.ErrNoRows:
-		// insert
-		res, err := r.db.ExecContext(ctx, `
+		res, err := db.ExecContext(ctx, `
 			INSERT INTO moneyflow_graphs (`+"`key`"+`, name, version, status, owner_type, owner_id, spec_json, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			g.Key, g.Name, g.Version, g.Status,
@@ -152,11 +81,10 @@ func (r *MySQLGraphRepo) Save(ctx context.Context, g *domain.Graph) (int64, erro
 		return 0, fmt.Errorf("lookup graph by key: %w", err)
 	}
 
-	// update
 	g.ID = existingID
 	g.Version = bumpPatch(g.Version)
 	g.UpdatedAt = now
-	_, err = r.db.ExecContext(ctx, `
+	_, err = db.ExecContext(ctx, `
 		UPDATE moneyflow_graphs
 		   SET name=?, version=?, status=?, owner_type=?, owner_id=?, spec_json=?, updated_at=?
 		 WHERE id=?`,
@@ -171,18 +99,15 @@ func (r *MySQLGraphRepo) Save(ctx context.Context, g *domain.Graph) (int64, erro
 
 // GetByKey 按业务键查.
 func (r *MySQLGraphRepo) GetByKey(ctx context.Context, key string) (*domain.Graph, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.mgr.Meta().QueryRowContext(ctx, `
 		SELECT id, `+"`key`"+`, name, version, status, owner_type, owner_id, spec_json, created_at, updated_at
 		  FROM moneyflow_graphs WHERE `+"`key`"+`=? LIMIT 1`, key)
 	return scanGraph(row)
 }
 
 // FindByTrigger 列 status='active' 且 spec 里 triggers 含此 event 的 graph.
-//
-// 用 JSON_CONTAINS 跑 MySQL 端过滤. 老 MySQL (<5.7) 没 JSON 函数时退化为
-// 拉全部 active 再代码侧过滤 (没接 fallback, 默认 MySQL ≥ 8).
 func (r *MySQLGraphRepo) FindByTrigger(ctx context.Context, event string) ([]*domain.Graph, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.mgr.Meta().QueryContext(ctx, `
 		SELECT id, `+"`key`"+`, name, version, status, owner_type, owner_id, spec_json, created_at, updated_at
 		  FROM moneyflow_graphs
 		 WHERE status='active'
@@ -194,10 +119,9 @@ func (r *MySQLGraphRepo) FindByTrigger(ctx context.Context, event string) ([]*do
 	return collectGraphs(rows)
 }
 
-// Delete soft-delete: 把 graph 状态置为 "archived". 物理删会破坏历史 run_plan
-// 关联, 因此只做软删. key 不存在 → 返 nil (idempotent), 与 grpcsvc 注释对齐.
+// Delete soft-delete: archive.
 func (r *MySQLGraphRepo) Delete(ctx context.Context, key string) error {
-	_, err := r.db.ExecContext(ctx,
+	_, err := r.mgr.Meta().ExecContext(ctx,
 		"UPDATE moneyflow_graphs SET status='archived', updated_at=NOW() WHERE `key`=?", key)
 	if err != nil {
 		return fmt.Errorf("delete (archive) graph %q: %w", key, err)
@@ -205,16 +129,17 @@ func (r *MySQLGraphRepo) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// List 按状态列. status="" 或 "all" 返全部.
+// List 按状态列.
 func (r *MySQLGraphRepo) List(ctx context.Context, status string) ([]*domain.Graph, error) {
+	db := r.mgr.Meta()
 	var rows *sql.Rows
 	var err error
 	if status == "" || status == "all" {
-		rows, err = r.db.QueryContext(ctx, `
+		rows, err = db.QueryContext(ctx, `
 			SELECT id, `+"`key`"+`, name, version, status, owner_type, owner_id, spec_json, created_at, updated_at
 			  FROM moneyflow_graphs ORDER BY updated_at DESC`)
 	} else {
-		rows, err = r.db.QueryContext(ctx, `
+		rows, err = db.QueryContext(ctx, `
 			SELECT id, `+"`key`"+`, name, version, status, owner_type, owner_id, spec_json, created_at, updated_at
 			  FROM moneyflow_graphs WHERE status=? ORDER BY updated_at DESC`, status)
 	}
@@ -225,17 +150,28 @@ func (r *MySQLGraphRepo) List(ctx context.Context, status string) ([]*domain.Gra
 	return collectGraphs(rows)
 }
 
-// ─── Run repo ──────────────────────────────────────────────────────────
+// ─── Run repo (走 shardDB, 分片 key=charge_id, 子表 moneyflow_runs_NN) ──
 
 // MySQLRunRepo MySQL 实现.
 type MySQLRunRepo struct {
-	db *sql.DB
+	mgr    *database.Manager
+	router *sharding.Router
 }
 
-// NewMySQLRunRepo 构造.
-func NewMySQLRunRepo(db *sql.DB) *MySQLRunRepo { return &MySQLRunRepo{db: db} }
+// NewMySQLRunRepo 构造. 路由由 router 提供。
+func NewMySQLRunRepo(mgr *database.Manager, router *sharding.Router) *MySQLRunRepo {
+	return &MySQLRunRepo{mgr: mgr, router: router}
+}
 
-// Save 插入新 run plan.
+// shardOf 按 ctx + chargeID 解析出 (shard db, 全局 table name).
+// 从 ctx 读 shadow flag，自动拼 _shadow 后缀（全链路压测影子流量）.
+// chargeID 空 → 退化到 db_0 / table_00（兼容 caller 不传时的旧行为；prod 应该总传 chargeID）.
+func (r *MySQLRunRepo) shardOf(ctx context.Context, chargeID string) (*sql.DB, string) {
+	dbIdx, tblIdx := r.router.RouteByString(chargeID)
+	return r.mgr.Shard(dbIdx), r.router.TableNameCtx(ctx, familyRuns, tblIdx)
+}
+
+// Save 插入新 run plan. 必须先填 p.ChargeID 用来路由.
 func (r *MySQLRunRepo) Save(ctx context.Context, p *domain.RunPlan) (int64, error) {
 	attrJSON, _ := json.Marshal(p.Attributes)
 	movJSON, _ := json.Marshal(p.Movements)
@@ -245,8 +181,9 @@ func (r *MySQLRunRepo) Save(ctx context.Context, p *domain.RunPlan) (int64, erro
 	if p.Status == "" {
 		p.Status = "created"
 	}
-	res, err := r.db.ExecContext(ctx, `
-		INSERT INTO moneyflow_runs
+	db, tbl := r.shardOf(ctx, p.ChargeID)
+	res, err := db.ExecContext(ctx, `
+		INSERT INTO `+tbl+`
 		(graph_id, graph_version, trigger_event, charge_id, merchant_id,
 		 amount_minor, currency, attributes_json, movements_json,
 		 status, voucher_no, error_msg, trace_id, created_at)
@@ -255,130 +192,106 @@ func (r *MySQLRunRepo) Save(ctx context.Context, p *domain.RunPlan) (int64, erro
 		p.AmountMinor, nullable(p.Currency), attrJSON, movJSON,
 		p.Status, nullable(p.VoucherNo), nullable(p.ErrorMsg), nullable(p.TraceID), p.CreatedAt)
 	if err != nil {
-		return 0, fmt.Errorf("insert run: %w", err)
+		return 0, fmt.Errorf("insert run (tbl=%s): %w", tbl, err)
 	}
 	id, _ := res.LastInsertId()
 	p.ID = id
 	return id, nil
 }
 
-// Update 更新已存 run (status / voucher_no / movements / error_msg 常变).
+// Update 更新已存 run. 入参用 *RunPlan（必须含 ChargeID 用来路由 + ID 用来定位行）.
 func (r *MySQLRunRepo) Update(ctx context.Context, p *domain.RunPlan) error {
 	movJSON, _ := json.Marshal(p.Movements)
-	_, err := r.db.ExecContext(ctx, `
-		UPDATE moneyflow_runs
+	db, tbl := r.shardOf(ctx, p.ChargeID)
+	_, err := db.ExecContext(ctx, `
+		UPDATE `+tbl+`
 		   SET status=?, voucher_no=?, error_msg=?, movements_json=?
 		 WHERE id=?`,
 		p.Status, nullable(p.VoucherNo), nullable(p.ErrorMsg), movJSON, p.ID)
 	if err != nil {
-		return fmt.Errorf("update run: %w", err)
+		return fmt.Errorf("update run (tbl=%s): %w", tbl, err)
 	}
 	return nil
 }
 
-// GetByCharge 拉同一 charge 关联的所有 run plan (按 created_at desc).
+// GetByCharge 拉同一 charge 关联的所有 run plan. chargeID 路由到唯一 shard.
 func (r *MySQLRunRepo) GetByCharge(ctx context.Context, chargeID string) ([]*domain.RunPlan, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	db, tbl := r.shardOf(ctx, chargeID)
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
 		       amount_minor, currency, attributes_json, movements_json,
 		       status, voucher_no, error_msg, trace_id, created_at
-		  FROM moneyflow_runs
+		  FROM `+tbl+`
 		 WHERE charge_id=?
 		 ORDER BY created_at DESC`, chargeID)
 	if err != nil {
-		return nil, fmt.Errorf("get runs by charge: %w", err)
+		return nil, fmt.Errorf("get runs by charge (tbl=%s): %w", tbl, err)
 	}
 	defer rows.Close()
 	return collectRuns(rows)
 }
 
-// SP-AC-7 PH3-7: ListExpiredHolds 拉到期未释放的 hold (hold_released=0 AND hold_until<=now),
-// HoldUnstickWorker 用 — 把 unsettled 资金搬到正式账户.
-//
-// 只查 status=completed 的 plan (失败/进行中的 plan 不会有真 unsettled 资金).
-// idx_hold_expired(hold_released, hold_until) 走索引扫描, limit 默认 100.
-func (r *MySQLRunRepo) ListExpiredHolds(ctx context.Context, now time.Time, limit int) ([]*domain.RunPlan, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 100
-	}
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
-		       amount_minor, currency, attributes_json, movements_json,
-		       status, voucher_no, error_msg, trace_id, created_at
-		  FROM moneyflow_runs
-		 WHERE hold_released = 0
-		   AND hold_until IS NOT NULL
-		   AND hold_until <= ?
-		   AND status = 'completed'
-		 ORDER BY hold_until ASC
-		 LIMIT ?`, now.UTC(), limit)
-	if err != nil {
-		return nil, fmt.Errorf("list expired holds: %w", err)
-	}
-	defer rows.Close()
-	return collectRuns(rows)
-}
-
-// SP-AC-7 PH3-7: MarkHoldReleased 标 hold_released=1, 防 worker 重复扫.
-// CAS 风格 — 只翻 0→1, 防多副本竞争 (虽然外层已有 lease, 仍是双保险).
-func (r *MySQLRunRepo) MarkHoldReleased(ctx context.Context, runID int64) error {
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE moneyflow_runs
+// MarkHoldReleased 标 hold_released=1. 加 chargeID 参数用来路由.
+func (r *MySQLRunRepo) MarkHoldReleased(ctx context.Context, runID int64, chargeID string) error {
+	db, tbl := r.shardOf(ctx, chargeID)
+	res, err := db.ExecContext(ctx, `
+		UPDATE `+tbl+`
 		   SET hold_released = 1
 		 WHERE id = ?
 		   AND hold_released = 0`, runID)
 	if err != nil {
-		return fmt.Errorf("mark hold released: %w", err)
+		return fmt.Errorf("mark hold released (tbl=%s): %w", tbl, err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		// 别的 worker 已经处理或行不存在 — 当作非错(幂等).
 		return ErrNotFound
 	}
 	return nil
 }
 
-// SP-AC-7 PH3-7: SetHoldUntil 给 run plan 设 hold 到期时间.
-// 用法: engine.Handle 在创建 plan 时如果场景有 hold 期 (e.g. marketplace_split
-// 配 hold_days=7), 调本方法填 hold_until = now + N days.
-//
-// 不动 hold_released — 默认为 0 (新行).
-func (r *MySQLRunRepo) SetHoldUntil(ctx context.Context, runID int64, holdUntil time.Time) error {
-	_, err := r.db.ExecContext(ctx, `
-		UPDATE moneyflow_runs SET hold_until = ? WHERE id = ?`,
+// SetHoldUntil 给 run plan 设 hold 到期时间. 加 chargeID 参数用来路由.
+func (r *MySQLRunRepo) SetHoldUntil(ctx context.Context, runID int64, chargeID string, holdUntil time.Time) error {
+	db, tbl := r.shardOf(ctx, chargeID)
+	_, err := db.ExecContext(ctx, `
+		UPDATE `+tbl+` SET hold_until = ? WHERE id = ?`,
 		holdUntil.UTC(), runID)
 	if err != nil {
-		return fmt.Errorf("set hold_until: %w", err)
+		return fmt.Errorf("set hold_until (tbl=%s): %w", tbl, err)
 	}
 	return nil
 }
 
-// ListByStatus SP-FIN-4 4-eyes approval 列表用 — 拉指定 status 的 plan, created_at desc.
-func (r *MySQLRunRepo) ListByStatus(ctx context.Context, status string, limit int) ([]*domain.RunPlan, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 100
+// GetByID 单条查。不知道 chargeID 时退化到全 shard 扫（性能差但兼容）.
+// 推荐 caller 用 GetByChargeAndID 直接定位 shard.
+func (r *MySQLRunRepo) GetByID(ctx context.Context, id int64) (*domain.RunPlan, error) {
+	// 全 shard 扫 — 每个 shard 的 100 / shardCount 张表都查一遍
+	for _, st := range r.router.AllTables(ctx, familyRuns) {
+		db := r.mgr.Shard(st.DBIdx)
+		rows, err := db.QueryContext(ctx, `
+			SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
+			       amount_minor, currency, attributes_json, movements_json,
+			       status, voucher_no, error_msg, trace_id, created_at
+			  FROM `+st.TableName+` WHERE id=? LIMIT 1`, id)
+		if err != nil {
+			continue
+		}
+		list, err := collectRuns(rows)
+		rows.Close()
+		if err == nil && len(list) > 0 {
+			return list[0], nil
+		}
 	}
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
-		       amount_minor, currency, attributes_json, movements_json,
-		       status, voucher_no, error_msg, trace_id, created_at
-		  FROM moneyflow_runs
-		 WHERE status=?
-		 ORDER BY created_at DESC LIMIT ?`, status, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list by status: %w", err)
-	}
-	defer rows.Close()
-	return collectRuns(rows)
+	return nil, ErrNotFound
 }
 
-// GetByID 单条.
-func (r *MySQLRunRepo) GetByID(ctx context.Context, id int64) (*domain.RunPlan, error) {
-	rows, err := r.db.QueryContext(ctx, `
+// GetByChargeAndID 推荐使用：chargeID 路由 + id 定位，O(1) 查询.
+func (r *MySQLRunRepo) GetByChargeAndID(ctx context.Context, chargeID string, id int64) (*domain.RunPlan, error) {
+	db, tbl := r.shardOf(ctx, chargeID)
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
 		       amount_minor, currency, attributes_json, movements_json,
 		       status, voucher_no, error_msg, trace_id, created_at
-		  FROM moneyflow_runs WHERE id=? LIMIT 1`, id)
+		  FROM `+tbl+` WHERE id=? LIMIT 1`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -393,39 +306,125 @@ func (r *MySQLRunRepo) GetByID(ctx context.Context, id int64) (*domain.RunPlan, 
 	return list[0], nil
 }
 
-// Search adminhttp 用 — eventLike 在 trigger_event LIKE %x%, limit 默认 100.
+// ─── Cross-shard scan 方法（worker / admin 用，性能差但要全扫）────────
+
+// ListExpiredHolds 跨所有 shard 拉到期未释放的 hold.
+func (r *MySQLRunRepo) ListExpiredHolds(ctx context.Context, now time.Time, limit int) ([]*domain.RunPlan, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	return r.scanAllShards(ctx, `
+		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
+		       amount_minor, currency, attributes_json, movements_json,
+		       status, voucher_no, error_msg, trace_id, created_at
+		  FROM %s
+		 WHERE hold_released = 0
+		   AND hold_until IS NOT NULL
+		   AND hold_until <= ?
+		   AND status = 'completed'
+		 ORDER BY hold_until ASC
+		 LIMIT ?`, []any{now.UTC(), limit}, limit)
+}
+
+// ListByStatus 跨所有 shard 列指定 status.
+func (r *MySQLRunRepo) ListByStatus(ctx context.Context, status string, limit int) ([]*domain.RunPlan, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	return r.scanAllShards(ctx, `
+		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
+		       amount_minor, currency, attributes_json, movements_json,
+		       status, voucher_no, error_msg, trace_id, created_at
+		  FROM %s
+		 WHERE status=?
+		 ORDER BY created_at DESC LIMIT ?`, []any{status, limit}, limit)
+}
+
+// Search adminhttp 用. eventLike 在 trigger_event LIKE %x%.
 func (r *MySQLRunRepo) Search(ctx context.Context, eventLike string, limit int) ([]*domain.RunPlan, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	q := `
+	if eventLike == "" {
+		return r.scanAllShards(ctx, `
+			SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
+			       amount_minor, currency, attributes_json, movements_json,
+			       status, voucher_no, error_msg, trace_id, created_at
+			  FROM %s
+			 ORDER BY created_at DESC LIMIT ?`, []any{limit}, limit)
+	}
+	return r.scanAllShards(ctx, `
 		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
 		       amount_minor, currency, attributes_json, movements_json,
 		       status, voucher_no, error_msg, trace_id, created_at
-		  FROM moneyflow_runs `
-	args := []any{}
-	if eventLike != "" {
-		q += "WHERE trigger_event LIKE ? "
-		args = append(args, "%"+eventLike+"%")
+		  FROM %s
+		 WHERE trigger_event LIKE ?
+		 ORDER BY created_at DESC LIMIT ?`, []any{"%" + eventLike + "%", limit}, limit)
+}
+
+// scanAllShards 并发扫 100 张全局表（10 shard × 10 表/shard），合并结果再按 limit 截断.
+// queryFmt 必须含一个 %s（替换成 table name），后续 args 给 ? 占位符填值.
+func (r *MySQLRunRepo) scanAllShards(ctx context.Context, queryFmt string, args []any, limit int) ([]*domain.RunPlan, error) {
+	tables := r.router.AllTables(ctx, familyRuns)
+	results := make([][]*domain.RunPlan, len(tables))
+	errs := make([]error, len(tables))
+
+	var wg sync.WaitGroup
+	for i, st := range tables {
+		wg.Add(1)
+		go func(i int, st sharding.ShardTable) {
+			defer wg.Done()
+			q := fmt.Sprintf(queryFmt, st.TableName)
+			rows, err := r.mgr.Shard(st.DBIdx).QueryContext(ctx, q, args...)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			defer rows.Close()
+			list, err := collectRuns(rows)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			results[i] = list
+		}(i, st)
 	}
-	q += "ORDER BY created_at DESC LIMIT ?"
-	args = append(args, limit)
-	rows, err := r.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("search runs: %w", err)
+	wg.Wait()
+
+	// 任一 shard 错就报错（保守）
+	for _, err := range errs {
+		if err != nil {
+			return nil, fmt.Errorf("scan all shards: %w", err)
+		}
 	}
-	defer rows.Close()
-	return collectRuns(rows)
+
+	// 合并 + 按 created_at desc 排序 + limit 截断
+	out := make([]*domain.RunPlan, 0)
+	for _, list := range results {
+		out = append(out, list...)
+	}
+	// 简单倒序 by CreatedAt
+	for i := 0; i < len(out)-1; i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j].CreatedAt.After(out[i].CreatedAt) {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 // ─── scan helpers ──────────────────────────────────────────────────────
 
 func scanGraph(row interface{ Scan(...any) error }) (*domain.Graph, error) {
 	var (
-		g          domain.Graph
-		ownerType  sql.NullString
-		ownerID    sql.NullString
-		specJSON   []byte
+		g         domain.Graph
+		ownerType sql.NullString
+		ownerID   sql.NullString
+		specJSON  []byte
 	)
 	err := row.Scan(&g.ID, &g.Key, &g.Name, &g.Version, &g.Status,
 		&ownerType, &ownerID, &specJSON, &g.CreatedAt, &g.UpdatedAt)
@@ -504,17 +503,29 @@ func nullable(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: true}
 }
 
-// bumpPatch semver 1.2.3 → 1.2.4. 解析失败保留原值.
-//
-// 简化:不处理 prerelease (1.0.0-rc1) / build metadata.
+// bumpPatch 升级 semver 的 patch 段.
 func bumpPatch(v string) string {
-	parts := strings.Split(v, ".")
-	if len(parts) != 3 {
-		return v
+	// 简化：1.0.0 → 1.0.1（不解析 semver，最后段 +1）
+	idx := -1
+	for i := len(v) - 1; i >= 0; i-- {
+		if v[i] == '.' {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 || idx == len(v)-1 {
+		return v + ".1"
 	}
 	patch := 0
-	if _, err := fmt.Sscanf(parts[2], "%d", &patch); err != nil {
-		return v
+	for i := idx + 1; i < len(v); i++ {
+		c := v[i]
+		if c < '0' || c > '9' {
+			return v + ".1"
+		}
+		patch = patch*10 + int(c-'0')
 	}
-	return fmt.Sprintf("%s.%s.%d", parts[0], parts[1], patch+1)
+	return fmt.Sprintf("%s.%d", v[:idx], patch+1)
 }
+
+// ErrNotFound 没找到行的 sentinel error.
+var ErrNotFound = errors.New("not found")
