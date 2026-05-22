@@ -1,0 +1,18 @@
+{
+  "build_version": "20260522-060535",
+  "mode": "mixed",
+  "concurrency": 100,
+  "duration_sec": 0.1180135,
+  "total_ops": 0,
+  "total_errs": 0,
+  "err_rate": 0,
+  "tps": 0,
+  "avg_ms": 0,
+  "p50_ms": 0,
+  "p90_ms": 0,
+  "p95_ms": 0,
+  "p99_ms": 0,
+  "per_flow": {},
+  "started_at": "2026-05-22T06:08:50Z",
+  "finished_at": "2026-05-22T06:08:50Z"
+}

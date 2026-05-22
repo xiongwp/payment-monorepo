@@ -23,7 +23,12 @@ services:
     # 不写 container_name：scale=N 时 compose 自动 -1/-2 后缀。
     restart: unless-stopped
     networks:
-      - payment-stack
+      payment-stack:
+        # 显式 alias：跨 compose 项目 DNS 才认这个名字（不指定时 docker 不会跨
+        # project 暴露服务名）。loadtest 在 payment-loadtest project 里调 split-payment:9098。
+        # 多副本时 docker DNS 自动 round-robin 多个 IP，alias 不冲突。
+        aliases:
+          - split-payment
     working_dir: /workspace/packages/split-payment
     volumes:
       # 整个 monorepo 挂进来 (split-payment go.mod 用 replace ../accounting-system 等
@@ -40,6 +45,11 @@ services:
       ADVERTISE_HOST: "split-payment"
       # 启动期 reconcileGraphRules 把 transaction_rule 推到 accounting admin HTTP
       ACCOUNTING_HTTP_URL: "http://accounting-service:8888"
+      # 启动期把 seed/scenarios/*.graph.json 灌进 meta DB（moneyflow_graphs 表）。
+      # 没这个 env，graph 库是空的 → TriggerEvent 全报 "no active graphs / not found"。
+      # /workspace 是 monorepo 挂载点（看上面 volumes）→ seed 路径就在它下面。
+      # 同一份 json loadtest 也 bind-mount 读，单一源头不会跑偏。
+      MONEYFLOW_SEED_DIR: "/workspace/packages/split-payment/seed/scenarios"
       # 关掉 workspace 模式 (monorepo 根 go.work 不含 split-payment)
       GOWORK: "off"
       GOTOOLCHAIN: "auto"
