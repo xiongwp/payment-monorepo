@@ -52,6 +52,16 @@ type AccountAdminReader interface {
 	// SumBalanceByLogical 聚合 LA 全部 instance 的余额（fleet 全部 sub 之和；排除 archived）。
 	// 用于对账 + admin UI 显示 LA 维度总余额。
 	SumBalanceByLogical(ctx context.Context, logicalAccountID int64) (LogicalAccountBalanceSummary, error)
+
+	// GetActiveSubAccount fleet 路由：拿 fleet 中 user_id=subIdx 的当前 active sub-account。
+	// 用于 ResolveFleetSubAccount 和 booking demo。
+	GetActiveSubAccount(ctx context.Context, logicalAccountID int64, subIdx int) (*model.Account, error)
+}
+
+// BookingInvoker fleet booking demo 用 — 仅暴露 DoubleEntryBooking。
+// 生产 caller 走 gRPC.CreateTransaction；admin HTTP 测试端点走这个接口。
+type BookingInvoker interface {
+	DoubleEntryBooking(ctx context.Context, req *DoubleEntryBookingRequest) (voucherNo string, transactionIDs []string, err error)
 }
 
 // LogicalAccountBalanceSummary admin / 对账接口的 LA 余额聚合视图。
@@ -81,15 +91,17 @@ type AdminService struct {
 	registrar LogicalAccountAdminRegistrar // 可空 → RegisterLogicalAccount 返回明确错误
 	accounts  AccountAdminReader
 	scheduler SchedulerCommand
+	booker    BookingInvoker // 可空 → fleet test-book 端点返回 "not wired"
 	clock     func() time.Time
 }
 
-// NewAdminService 构造。registrar 传 nil 时写端点降级（返回 "not wired"），不 panic。
+// NewAdminService 构造。registrar / booker 传 nil 时对应写端点降级（返回 "not wired"），不 panic。
 func NewAdminService(
 	logicals LogicalAccountAdminReader,
 	registrar LogicalAccountAdminRegistrar,
 	accounts AccountAdminReader,
 	scheduler SchedulerCommand,
+	booker BookingInvoker,
 	clock func() time.Time,
 ) *AdminService {
 	if clock == nil {
@@ -100,6 +112,7 @@ func NewAdminService(
 		registrar: registrar,
 		accounts:  accounts,
 		scheduler: scheduler,
+		booker:    booker,
 		clock:     clock,
 	}
 }
