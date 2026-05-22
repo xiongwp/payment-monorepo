@@ -25,12 +25,17 @@
 
 CREATE DATABASE IF NOT EXISTS split_payment_db_5 CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- split_user 在 meta init.sql 里也建一遍；但 shared-db 把每个 shard SQL 灌到不同
+-- mysql 实例（shared-shard-N），mysql user 是 per-instance 的不跨实例共享，所以
+-- 每个 shard 自己也必须 CREATE USER。IF NOT EXISTS 幂等。
+CREATE USER IF NOT EXISTS 'split_user'@'%' IDENTIFIED BY 'password';
+ALTER USER 'split_user'@'%' IDENTIFIED BY 'password';
+
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, REFERENCES
   ON split_payment_db_5.* TO 'split_user'@'%';
 FLUSH PRIVILEGES;
 
 USE split_payment_db_5;
-
 -- ─── moneyflow_runs (10 张主表 + 10 张 _shadow 镜像) ───────────────────────
 
 CREATE TABLE IF NOT EXISTS moneyflow_runs_50 (

@@ -219,10 +219,18 @@ for dbidx in 0 1 2 3 4 5 6 7 8 9; do
     done
   done
 
-  # 写出文件：替换 _template.sql 的 {DBIDX} 和 {TABLES_BLOCK}
-  awk -v dbidx="${dbidx}" -v tblblock="${tables_block}" '
-    { gsub(/\{DBIDX\}/, dbidx); gsub(/\{TABLES_BLOCK\}/, tblblock); print }
-  ' "${TEMPLATE}" > "${outfile}"
+  # 写出文件：用 bash 直接拼装（awk 不支持多行字符串，gsub 会报
+  # "newline in string"；改成 split template 在 marker 前后，bash 把
+  # tables_block 直接 echo 进去）。
+  # _template.sql 中 {TABLES_BLOCK} 作为切分锚点。
+  before_block=$(sed -n '1,/{TABLES_BLOCK}/p' "${TEMPLATE}" | sed '$d')
+  after_block=$(sed -n '/{TABLES_BLOCK}/,$p' "${TEMPLATE}" | sed '1d')
+
+  {
+    echo "${before_block}" | sed "s/{DBIDX}/${dbidx}/g"
+    printf "%s" "${tables_block}"
+    echo "${after_block}" | sed "s/{DBIDX}/${dbidx}/g"
+  } > "${outfile}"
 done
 
 echo ">>> 生成完毕：$(ls "${HERE}"/[0-9]_init.sql | wc -l) 个文件"
