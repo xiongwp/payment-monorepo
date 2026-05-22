@@ -103,6 +103,12 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
+echo ">>> 初始化 split_payment 库（1 meta + 10 shards + 1600 张分片表）"
+if ! bash "${DIR}/scripts/init-split-payment-db.sh" 2>&1 | tee -a "${LOG_FILE}"; then
+  red "ERROR: split-payment DB 初始化失败 — 检查 accounting-mysql-N 容器是否在跑"
+  exit 1
+fi
+
 echo ">>> split-payment (build + start)"
 docker compose up -d --build split-payment >>"${LOG_FILE}" 2>&1
 SP_OK=0

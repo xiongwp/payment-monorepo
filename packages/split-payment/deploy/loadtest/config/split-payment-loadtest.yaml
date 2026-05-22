@@ -1,0 +1,115 @@
+# ============================================================================
+# split-payment loadtest 专用 config（DB-split 后版本）
+#
+# 用法：docker-compose 把这个文件 mount 到容器 /app/config/config.yaml。
+#
+# 跟 packages/split-payment/config/config.yaml 默认值的差异：
+#   - 加了 database.meta_database + database.databases[10] 分片 DSN
+#   - 全部指向 accounting-system 复用的 10 个 mysql 容器（accounting-mysql-N），
+#     在同一个 mysql 实例上新建 split_payment_meta + split_payment_db_0..9 DB
+#   - legacy database.dsn 仍配指向 meta 库，给未迁移的 repo (stripe/outbox/saga) 用
+# ============================================================================
+
+log:
+  level: info
+
+server:
+  grpc:
+    addr: "0.0.0.0:9098"
+  admin:
+    addr: "0.0.0.0:9099"
+
+mtls:
+  enabled: false
+  server_cert: ""
+  server_key: ""
+  ca_cert: ""
+
+# ─── DB ────────────────────────────────────────────────────────────────
+# DB-split: 1 meta + 10 shards
+# - meta_database: split_payment_meta（moneyflow_graphs/versions/cron_lease/connected_accounts）
+# - databases[10]: split_payment_db_0..9（高频流水分片，每库 80 + 80 shadow 表）
+#
+# 都复用 accounting-system 的 10 个 mysql 容器（同 mysql 实例多 database），
+# 通过 docker network 别名 accounting-mysql-N 访问。
+# split_user 由 metadb/init/init.sql + shardb/init/N_init.sql 自动创建。
+
+database:
+  # legacy DSN（未迁移的 repo: stripe_entities / outbox×2 / saga_store 用）
+  # 暂指 meta 库；这些表不分片，跟 RunRepo 不在同一路径。
+  # 注意：DB-split 后这些 repo 的表仍在 split_payment 老库；要么迁移它们要么
+  # 暂时连一个有这些表的库（dev 跑时不一定有这些表，loadtest 不触发也没事）。
+  dsn: "split_user:password@tcp(accounting-mysql-0:3306)/split_payment_meta?parseTime=true&charset=utf8mb4"
+  max_open_conns: 50
+  max_idle_conns: 20
+  conn_max_lifetime: 30m
+
+  meta_database:
+    dsn: "split_user:password@tcp(accounting-mysql-0:3306)/split_payment_meta?parseTime=true&charset=utf8mb4"
+    max_open_conns: 50
+    max_idle_conns: 20
+    conn_max_lifetime: 30m
+
+  databases:
+    - name: "split_payment_db_0"
+      dsn: "split_user:password@tcp(accounting-mysql-0:3306)/split_payment_db_0?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_1"
+      dsn: "split_user:password@tcp(accounting-mysql-1:3306)/split_payment_db_1?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_2"
+      dsn: "split_user:password@tcp(accounting-mysql-2:3306)/split_payment_db_2?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_3"
+      dsn: "split_user:password@tcp(accounting-mysql-3:3306)/split_payment_db_3?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_4"
+      dsn: "split_user:password@tcp(accounting-mysql-4:3306)/split_payment_db_4?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_5"
+      dsn: "split_user:password@tcp(accounting-mysql-5:3306)/split_payment_db_5?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_6"
+      dsn: "split_user:password@tcp(accounting-mysql-6:3306)/split_payment_db_6?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_7"
+      dsn: "split_user:password@tcp(accounting-mysql-7:3306)/split_payment_db_7?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_8"
+      dsn: "split_user:password@tcp(accounting-mysql-8:3306)/split_payment_db_8?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+    - name: "split_payment_db_9"
+      dsn: "split_user:password@tcp(accounting-mysql-9:3306)/split_payment_db_9?parseTime=true&charset=utf8mb4"
+      max_open_conns: 100
+      max_idle_conns: 30
+      conn_max_lifetime: 30m
+
+accounting:
+  grpc_addr: "accounting-service:50051"
+  http_url: "http://accounting-service:8888"
+
+registry:
+  endpoints:
+    - "etcd:2379"
+
+# Seed 资金流 graph（4 个 .json）由 docker-compose mount 进 /loadtest/graphs
+seed:
+  graph_dir: "/loadtest/graphs"

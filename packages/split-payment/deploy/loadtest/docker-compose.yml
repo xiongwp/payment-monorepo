@@ -83,6 +83,12 @@ services:
       MONEYFLOW_SEED_DIR: "/loadtest/graphs"
     volumes:
       - ./graphs:/loadtest/graphs:ro
+      # DB-split: mount loadtest 专用 config（含 1 meta + 10 shard DSN）
+      # 覆盖镜像里的默认 /app/config/config.yaml
+      - ./config/split-payment-loadtest.yaml:/app/config/config.yaml:ro
+      # split-payment 的 metadb + shardb init SQL，bootstrap 时灌进各 mysql 实例
+      - ../../database/metadb/init:/sql-init/metadb:ro
+      - ../../database/shardb/init:/sql-init/shardb:ro
     ports:
       - "19098:9098"   # gRPC
       - "19099:9099"   # admin HTTP

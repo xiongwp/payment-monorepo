@@ -137,6 +137,14 @@ for i in 0 1 2 3 4 5 6 7 8 9; do
       echo "-- ==== card-payment _shadow ===="
       cat "$cp_shadow"
     fi
+    # ── split-payment shard 库（DB-split 后高频流水分片：moneyflow_runs/transfers/...）──
+    # 每个 shard N 含 split_payment_db_N（80 主表 + 80 shadow 表）。
+    sp_init="$ROOT/split-payment/database/shardb/init/${i}_init.sql"
+    if [[ -s "$sp_init" ]]; then
+      echo ""
+      echo "-- ==== split-payment shardb (split_payment_db_${i}) ===="
+      cat "$sp_init"
+    fi
     # ── recon_cdc 用户（reconplatform CDC binlog 订阅必需）──
     # mysql 8.0 默认 caching_sha2_password；canal v1.9 不支持 → 强制
     # mysql_native_password。密码与 reconplatform RECON_CDC_PASS 对齐。
