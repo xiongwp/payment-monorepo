@@ -40,6 +40,18 @@ const (
 // ErrAccountAlreadyExists userId + accountBusinessType 重复时返回此错误（gRPC 层映射为 409）
 var ErrAccountAlreadyExists = errors.New("account already exists")
 
+// AccountGroup 账户分组（fleet × rotation 场景）。
+//   - GroupA = 默认 / 当期 active 那一组（非轮换账户永远是 A）
+//   - GroupB = 轮换预创建的下一组（lifecycle_phase=provisioned；切换后变 active，原 A 退场）
+//
+// 同一 (user_id, account_business_type, currency) 在轮换准备期可以有 GroupA + GroupB 各 1 行，
+// 但 lifecycle_phase IN (0, 1) 的同 (user_id, biz_type, currency) 任意时刻只 1 行
+// （由状态机保证：切换是原子的，不会同时两个 active）。
+const (
+	AccountGroupA = "A"
+	AccountGroupB = "B"
+)
+
 // AccountBusinessTypeInfo 账户业务类型配置（存 account_meta.account_business_type_info）。
 //
 // 承担 business_type registry 职责：(business_type 数字码) ↔ (代码名 / 账户类型)
@@ -103,6 +115,7 @@ type Account struct {
 	FrozenBalance       int64               `db:"frozen_balance"        json:"frozen_balance"`
 	AvailableBalance    int64               `db:"available_balance"     json:"available_balance"`
 	Status              AccountStatus       `db:"status"                json:"status"`
+	AccountGroup        string              `db:"account_group"         gorm:"column:account_group;default:A" json:"account_group"`
 	Version             int64               `db:"version"               json:"version"`
 	CreatedAt           time.Time           `db:"created_at"            json:"created_at"`
 	UpdatedAt           time.Time           `db:"updated_at"            json:"updated_at"`

@@ -35,7 +35,8 @@ type LogicalAccountRepository interface {
 
 	// UpdateCurrentActive scheduler 切换时原子更新反范式化字段。CAS 乐观锁。
 	// version 不匹配返回 ErrLogicalAccountVersionConflict。
-	UpdateCurrentActive(ctx context.Context, id int64, accountNo string, periodEnd time.Time, expectedVersion int64) error
+	// activeGroup="" 时 current_active_group 不动；显式传 "A"/"B" 时同步切换。
+	UpdateCurrentActive(ctx context.Context, id int64, accountNo string, activeGroup string, periodEnd time.Time, expectedVersion int64) error
 
 	// SetRotationEnabled 切换 rotation_enabled。CAS 乐观锁。
 	SetRotationEnabled(ctx context.Context, id int64, enabled bool, expectedVersion int64) error
@@ -43,6 +44,10 @@ type LogicalAccountRepository interface {
 	// ListByPrefix 按 logical_account_key 前缀检索（admin/dashboard 使用）。
 	// limit ≤ 0 时默认 100；最大 1000。
 	ListByPrefix(ctx context.Context, prefix string, limit int) ([]*model.LogicalAccount, error)
+
+	// ListRotating 列所有 rotation_enabled=1 且 status=enabled 的 LA（scheduler Tick 用）。
+	// 顺序：id 升序（确定性）。limit ≤ 0 时默认 1000。
+	ListRotating(ctx context.Context, limit int) ([]*model.LogicalAccount, error)
 
 	// --- Rotation policy ---
 
@@ -179,6 +184,7 @@ func (r *logicalAccountRepository) UpdateCurrentActive(
 	ctx context.Context,
 	id int64,
 	accountNo string,
+	activeGroup string,
 	periodEnd time.Time,
 	expectedVersion int64,
 ) error {
@@ -192,13 +198,18 @@ func (r *logicalAccountRepository) UpdateCurrentActive(
 	if err != nil {
 		return err
 	}
+	updates := map[string]any{
+		"current_active_account_no": accountNo,
+		"current_active_period_end": periodEnd,
+		"version":                   gorm.Expr("version + 1"),
+	}
+	// activeGroup="" 时不动 current_active_group（兼容老 caller / legacy 切换）
+	if activeGroup != "" {
+		updates["current_active_group"] = activeGroup
+	}
 	res := db.Model(&model.LogicalAccount{}).
 		Where("id = ? AND version = ?", id, expectedVersion).
-		Updates(map[string]any{
-			"current_active_account_no":   accountNo,
-			"current_active_period_end":   periodEnd,
-			"version":                     gorm.Expr("version + 1"),
-		})
+		Updates(updates)
 	if res.Error != nil {
 		return fmt.Errorf("logical_account: update current_active: %w", res.Error)
 	}
@@ -257,6 +268,30 @@ func (r *logicalAccountRepository) ListByPrefix(
 	}
 	if err := q.Order("logical_account_key ASC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("logical_account: list by prefix: %w", err)
+	}
+	return rows, nil
+}
+
+func (r *logicalAccountRepository) ListRotating(
+	ctx context.Context, limit int,
+) ([]*model.LogicalAccount, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	if limit > 10000 {
+		limit = 10000
+	}
+	db, err := r.metaDB(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var rows []*model.LogicalAccount
+	if err := db.
+		Where("rotation_enabled = ? AND status = ?", 1, model.LogicalAccountStatusEnabled).
+		Order("id ASC").
+		Limit(limit).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("logical_account: list rotating: %w", err)
 	}
 	return rows, nil
 }

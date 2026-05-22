@@ -82,6 +82,8 @@ export interface Account {
   frozen_balance: string;
   available_balance: string;
   status: AccountStatus;
+  /** 账户分组：A=默认/当期 active；B=轮换预创建的下一组（非轮换账户永远是 A） */
+  account_group: 'A' | 'B';
   version: number;
   created_at: string;
   updated_at: string;

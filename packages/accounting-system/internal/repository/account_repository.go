@@ -209,8 +209,23 @@ func (r *accountRepository) GetAccountByOwnerAndType(ctx context.Context, ownerI
 	return &account, nil
 }
 
-// GetAccountByUserAndBusinessType 根据 userId + businessType 查询账户（唯一键查询）
-// 路由与创建时一致：按 userID 分片
+// GetAccountByUserAndBusinessType 根据 userId + businessType 查询当前可用账户。
+//
+// 路由：按 userID 分片，跟创建时一致。
+//
+// 【fleet × rotation 兼容性】
+// 原 unique key 是 (user_id, business_type, currency)，1:1 唯一。引入 account_group
+// (GroupA / GroupB) 后，unique key 扩成 (user_id, business_type, currency, account_group)：
+//   - 非平台账户（user/merchant）永远是 GroupA → 1 行，行为不变
+//   - 平台账户在轮换预创建期间会有 2 行：GroupA (lifecycle=active) + GroupB (lifecycle=provisioned)
+//
+// 本函数加 lifecycle_phase IN (0,1) 过滤，自动只返回当前可用的那一行：
+//   - phase=0 legacy（非轮换的旧账户）
+//   - phase=1 active（轮换的当期账户，可能是 GroupA 或 GroupB，看 LA.current_active_group）
+//   - phase=2 draining / 5 provisioned / 3 frozen / 4 archived 都不返回
+// 这样老 caller（业务下账等）不感知 fleet 切换，自动拿到当前应该用的账户。
+//
+// 需要看全部 group / phase 的 caller 用 ListAccountsByUserAndBusinessType（不加过滤）。
 func (r *accountRepository) GetAccountByUserAndBusinessType(ctx context.Context, userID int64, businessType model.AccountBusinessType) (*model.Account, error) {
 	dbIndex, tableIndex := r.router.RouteByUserID(userID)
 	tableName := r.router.GetTableName("account", tableIndex)
@@ -222,7 +237,7 @@ func (r *accountRepository) GetAccountByUserAndBusinessType(ctx context.Context,
 
 	var account model.Account
 	result := db.WithContext(ctx).Table(tableName).
-		Where("user_id = ? AND account_business_type = ?", userID, businessType).
+		Where("user_id = ? AND account_business_type = ? AND lifecycle_phase IN (0, 1)", userID, businessType).
 		First(&account)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {

@@ -86,6 +86,21 @@ export default function PlatformBalances() {
     { title: 'User ID (分片)', dataIndex: 'user_id', key: 'user_id', width: 110 },
     { title: '账户号', dataIndex: 'account_no', key: 'account_no', width: 220, ellipsis: true },
     {
+      title: 'Group',
+      dataIndex: 'account_group',
+      key: 'account_group',
+      width: 80,
+      filters: [
+        { text: 'A', value: 'A' },
+        { text: 'B', value: 'B' },
+      ],
+      onFilter: (val, row) => row.account_group === val,
+      render: (g: string) => {
+        if (g === 'B') return <Tag color="orange">B</Tag>
+        return <Tag color="blue">A</Tag> // 空字符串也按 A 显示（兼容老数据）
+      },
+    },
+    {
       title: 'Balance', dataIndex: 'balance', key: 'balance', width: 160, align: 'right',
       render: (v: string, row: Account) => displayMoney(v, row.currency),
     },

@@ -82,6 +82,25 @@ func (f *fakeInstanceManager) PromoteAndDrain(_ context.Context, p PromoteAndDra
 	return nil
 }
 
+// PromoteAndDrainFleet fake：跟 PromoteAndDrain 一样的简化模型（fleet 在 test 里
+// 视作单 instance 切换，方便复用既有断言；实际 prod 跑 100 个 sub 并行）
+func (f *fakeInstanceManager) PromoteAndDrainFleet(_ context.Context, p PromoteAndDrainFleetParams) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.promoteErr != nil {
+		return f.promoteErr
+	}
+	if old := f.activeByLA[p.LogicalAccountID]; old != nil {
+		old.LifecyclePhase = model.LifecyclePhaseDraining
+	}
+	if next := f.provisionedByLA[p.LogicalAccountID]; next != nil {
+		next.LifecyclePhase = model.LifecyclePhaseActive
+		f.activeByLA[p.LogicalAccountID] = next
+		delete(f.provisionedByLA, p.LogicalAccountID)
+	}
+	return nil
+}
+
 type fakePolicyReaderForSched struct {
 	policyByLA map[int64]*model.LogicalAccountRotationPolicy
 	err        error
@@ -129,6 +148,17 @@ func (f *fakeAccountIDGen) NewProvisionedAccountNo(_ context.Context, la *model.
 	defer f.mu.Unlock()
 	f.counter++
 	return formatAccountNo(la.ID, f.counter), nil
+}
+
+func (f *fakeAccountIDGen) NewProvisionedFleetAccountNos(_ context.Context, la *model.LogicalAccount, _ time.Time) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		f.counter++
+		out[i] = formatAccountNo(la.ID, f.counter)
+	}
+	return out, nil
 }
 
 func formatAccountNo(laID, n int64) string {

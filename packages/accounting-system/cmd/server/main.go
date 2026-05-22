@@ -125,7 +125,15 @@ func main() {
 			NewRotationLogicalAccountAdminReader,
 			NewRotationLogicalAccountAdminRegistrar,
 			NewRotationAccountAdminReader,
-			NewStubSchedulerCommand, // TODO: 等完整 Scheduler 接线后换 NewAdminSchedulerCommandAdapter
+			// Scheduler 全套（让 ManualSwitch / ManualProvision 真生效）
+			NewDistributedLockRepositoryFx,
+			NewRotationLockManagerFx,
+			NewSchedulerLogicalLister,
+			NewSchedulerPolicyReader,
+			NewSchedulerInstanceManager,
+			NewSchedulerAccountIDGenerator,
+			NewRotationScheduler,
+			NewRotationSchedulerCommand,
 			NewRotationAdminService,
 		),
 		fx.Provide(NewEtcdClient),

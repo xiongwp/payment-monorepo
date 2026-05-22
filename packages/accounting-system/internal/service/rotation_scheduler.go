@@ -55,6 +55,22 @@ type AccountInstanceManager interface {
 	// 同时把当前 active 降到 draining；同时更新 LA.current_active_account_no。
 	// 三表三 CAS 在同一逻辑事务里（具体跨表协调由 repo 层实现）。
 	PromoteAndDrain(ctx context.Context, params PromoteAndDrainParams) error
+
+	// PromoteAndDrainFleet fleet 模式批量切换（fleet × rotation）。
+	// 跨 100 sub-account 并行：oldGroup all active→draining；newGroup all provisioned→active；
+	// LA.current_active_account_no + current_active_group 同步更新。
+	PromoteAndDrainFleet(ctx context.Context, params PromoteAndDrainFleetParams) error
+}
+
+// PromoteAndDrainFleetParams fleet 切换参数。
+type PromoteAndDrainFleetParams struct {
+	LogicalAccountID      int64
+	OldGroup              string // "" = 首次激活，无旧 fleet
+	NewGroup              string
+	NewActiveAccountNo    string // fleet anchor（取 newGroup 中 user_id=0 的那个）
+	NewActivePeriodEnd    time.Time
+	LogicalAccountVersion int64
+	Now                   time.Time
 }
 
 // PromoteAndDrainParams 原子切换参数。
@@ -64,6 +80,7 @@ type PromoteAndDrainParams struct {
 	OldActiveVersion         int64
 	NewActiveAccountNo       string
 	NewActiveVersion         int64
+	NewActiveGroup           string // "A" / "B"；切换后写到 LogicalAccount.current_active_group
 	NewActivePeriodEnd       time.Time
 	LogicalAccountVersion    int64 // logical_account 表的 CAS 版本
 	Now                      time.Time
@@ -87,6 +104,11 @@ type AccountIDGenerator interface {
 	// NewProvisionedAccountNo 为给定 LA 的下一个 instance 生成 account_no。
 	// 生产实现：使用 EncodeAccountID 同 layout（19 位编码）。
 	NewProvisionedAccountNo(ctx context.Context, la *model.LogicalAccount, periodStart time.Time) (string, error)
+
+	// NewProvisionedFleetAccountNos 为给定 LA 生成 fleet 100 个 sub-account 的 account_no。
+	// 每个 sub_account 的 globalTblIdx = subIdx (0..99)，散布到 100 个 shard 表。
+	// 返回 长度=100 的切片，索引 i 对应 user_id=i 的 sub-account。
+	NewProvisionedFleetAccountNos(ctx context.Context, la *model.LogicalAccount, periodStart time.Time) ([]string, error)
 }
 
 // Scheduler 轮换调度器。
@@ -251,27 +273,60 @@ func (s *Scheduler) ensureProvisioned(
 		return fmt.Errorf("compute period: %w", err)
 	}
 
-	accountNo, err := s.idgen.NewProvisionedAccountNo(ctx, la, periodStart)
+	// 下一期 group：当前是 A → 下一期 B；当前是 B → 下一期 A；首次（NULL）→ A
+	nextGroup := model.AccountGroupA
+	if la.CurrentActiveGroup != nil {
+		if *la.CurrentActiveGroup == model.AccountGroupA {
+			nextGroup = model.AccountGroupB
+		} else {
+			nextGroup = model.AccountGroupA
+		}
+	}
+
+	// fleet 模式：一次建 100 个 sub-account，每个落不同 shard
+	accountNos, err := s.idgen.NewProvisionedFleetAccountNos(ctx, la, periodStart)
 	if err != nil {
-		return fmt.Errorf("alloc account_no: %w", err)
+		return fmt.Errorf("alloc fleet account_nos: %w", err)
+	}
+	if len(accountNos) != 100 {
+		return fmt.Errorf("fleet idgen returned %d nos, expected 100", len(accountNos))
 	}
 
-	newInstance := &model.Account{
-		AccountNo:           accountNo,
-		AccountType:         la.AccountType,
-		AccountBusinessType: la.AccountBusinessType,
-		Currency:            la.Currency,
-		Status:              model.AccountStatusActive,
-		LogicalAccountID:    &la.ID,
-		LifecyclePhase:      model.LifecyclePhaseProvisioned,
-		PeriodStart:         &periodStart,
-		PeriodEnd:           &periodEnd,
+	category, err := CategoryForAccountType(la.AccountType)
+	if err != nil {
+		return fmt.Errorf("category derive: %w", err)
 	}
+
 	configVersion := policy.ConfigVersion
-	newInstance.PolicyVersionAtBirth = &configVersion
-
-	if err := s.instances.CreateProvisioned(ctx, newInstance); err != nil {
-		return fmt.Errorf("create provisioned: %w", err)
+	var createErrs int
+	for i := 0; i < 100; i++ {
+		sub := &model.Account{
+			AccountNo:            accountNos[i],
+			UserID:               int64(i), // fleet sub_idx → user_id
+			AccountType:          la.AccountType,
+			AccountCategory:      category,
+			AccountBusinessType:  la.AccountBusinessType,
+			Currency:             la.Currency,
+			Balance:              0,
+			AvailableBalance:     0,
+			FrozenBalance:        0,
+			Status:               model.AccountStatusActive,
+			AccountGroup:         nextGroup,
+			LogicalAccountID:     &la.ID,
+			LifecyclePhase:       model.LifecyclePhaseProvisioned,
+			PeriodStart:          &periodStart,
+			PeriodEnd:            &periodEnd,
+			PolicyVersionAtBirth: &configVersion,
+			Version:              0,
+		}
+		if err := s.instances.CreateProvisioned(ctx, sub); err != nil {
+			createErrs++
+			// 不 fail-fast：尽量补齐，剩余的下一次 ensureProvisioned 重试
+			continue
+		}
+	}
+	if createErrs > 0 && createErrs == 100 {
+		return fmt.Errorf("fleet provision all 100 failed (first 0 created)")
 	}
 	result.ProvisionedNew++
 	return nil
@@ -300,18 +355,30 @@ func (s *Scheduler) swap(
 		return fmt.Errorf("provisioned instance %s missing period bounds", next.AccountNo)
 	}
 
-	params := PromoteAndDrainParams{
+	// next.AccountGroup 是 provisioned 时由 ensureProvisioned 设置的（A/B 翻转）。
+	newGroup := next.AccountGroup
+	if newGroup == "" {
+		newGroup = model.AccountGroupA
+	}
+
+	// fleet 模式：批量切 100 sub-account
+	// old fleet group：要么是 currentActive.AccountGroup（已有 fleet），要么 ""（首次激活）
+	oldGroup := ""
+	if currentActive != nil {
+		oldGroup = currentActive.AccountGroup
+	}
+
+	params := PromoteAndDrainFleetParams{
 		LogicalAccountID:      la.ID,
-		OldActiveAccountNo:    currentActive.AccountNo,
-		OldActiveVersion:      currentActive.Version,
-		NewActiveAccountNo:    next.AccountNo,
-		NewActiveVersion:      next.Version,
+		OldGroup:              oldGroup,
+		NewGroup:              newGroup,
+		NewActiveAccountNo:    next.AccountNo, // fleet anchor，取 GetProvisionedInstance 返回的那个作 LA 指针
 		NewActivePeriodEnd:    *next.PeriodEnd,
 		LogicalAccountVersion: la.Version,
 		Now:                   now,
 	}
-	if err := s.instances.PromoteAndDrain(ctx, params); err != nil {
-		return fmt.Errorf("promote and drain: %w", err)
+	if err := s.instances.PromoteAndDrainFleet(ctx, params); err != nil {
+		return fmt.Errorf("promote and drain fleet: %w", err)
 	}
 	result.Activated++
 	return nil

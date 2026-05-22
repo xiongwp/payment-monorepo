@@ -186,12 +186,12 @@ func TestUpdateCurrentActive_InvalidArgs(t *testing.T) {
 	r := newRepoNoDB()
 	now := time.Now()
 	// id <= 0
-	err := r.UpdateCurrentActive(context.Background(), 0, "A001", now, 0)
+	err := r.UpdateCurrentActive(context.Background(), 0, "A001", "", now, 0)
 	if err == nil {
 		t.Error("id=0 must error")
 	}
 	// empty account_no
-	err = r.UpdateCurrentActive(context.Background(), 1, "", now, 0)
+	err = r.UpdateCurrentActive(context.Background(), 1, "", "", now, 0)
 	if err == nil {
 		t.Error("empty account_no must error")
 	}

@@ -2582,7 +2582,8 @@ func (s *accountingService) CreateAccount(ctx context.Context, userID int64, acc
 	if err := validateOwnerIDForType(userID, accountType); err != nil {
 		return nil, err
 	}
-	return s.createAccountInternal(ctx, userID, accountBusinessType, accountType, category, currency)
+	// 默认 GroupA；要建 GroupB 用 Scheduler.ForceProvision（fleet 路径）
+	return s.createAccountInternal(ctx, userID, accountBusinessType, accountType, category, currency, model.AccountGroupA)
 }
 
 // CategoryForAccountType 按约定的 1:1 映射返回 AccountType 对应的 AccountCategory。
@@ -2658,7 +2659,7 @@ func (s *accountingService) CreatePlatformAccount(ctx context.Context, reservedI
 	if !ok {
 		return nil, fmt.Errorf("account type %d is not a platform-internal type; use CreateAccount", accountType)
 	}
-	return s.createAccountInternal(ctx, reservedID, spec.BusinessType, accountType, spec.Category, currency)
+	return s.createAccountInternal(ctx, reservedID, spec.BusinessType, accountType, spec.Category, currency, model.AccountGroupA)
 }
 
 // CreateUserScopedPlatformAccount 给具体真实用户挂一个平台类型 business_type 账户.
@@ -2676,7 +2677,7 @@ func (s *accountingService) CreateUserScopedPlatformAccount(ctx context.Context,
 	if !ok {
 		return nil, fmt.Errorf("account type %d is not a platform-internal type", accountType)
 	}
-	return s.createAccountInternal(ctx, userID, spec.BusinessType, accountType, spec.Category, currency)
+	return s.createAccountInternal(ctx, userID, spec.BusinessType, accountType, spec.Category, currency, model.AccountGroupA)
 }
 
 // CreatePlatformChannelRequest Fleet 请求：基于**已登记**的 business_type 批量建 100 账户。
@@ -2689,6 +2690,9 @@ type CreatePlatformChannelRequest struct {
 	AccountType         model.AccountType
 	ChannelBusinessType int
 	Currency            string
+	// Group "A" / "B" / ""（空=A）—— 100 sub-account 全部落同一 group。
+	// "A"：常规渠道注册（默认）；"B"：Scheduler.ForceProvision 预创建下一期 fleet 时用
+	Group               string
 }
 
 // CreatePlatformChannelResult 返回 fleet 创建结果：实际使用的 business_type 数字码 + 100 个账户。
@@ -2751,10 +2755,14 @@ func (s *accountingService) CreatePlatformAccountFleet(ctx context.Context, req 
 	if currency == "" {
 		currency = "PHP"
 	}
+	group := req.Group
+	if group == "" {
+		group = model.AccountGroupA
+	}
 	accounts := make([]*model.Account, 0, 100)
 	var firstErr error
 	for i := int64(0); i < 100; i++ {
-		acc, err := s.createAccountInternal(ctx, i, model.AccountBusinessType(req.ChannelBusinessType), req.AccountType, category, currency)
+		acc, err := s.createAccountInternal(ctx, i, model.AccountBusinessType(req.ChannelBusinessType), req.AccountType, category, currency, group)
 		if err != nil {
 			s.logger.Warn("CreatePlatformAccountFleet: shard failed, continuing",
 				zap.Int64("userID", i), zap.Int("businessType", req.ChannelBusinessType),
@@ -3243,17 +3251,34 @@ func (s *accountingService) allocateNextChannelBusinessType(ctx context.Context)
 }
 
 // createAccountInternal 去掉 owner_id 校验的共享创建逻辑（幂等 + 写库）。
-func (s *accountingService) createAccountInternal(ctx context.Context, userID int64, accountBusinessType model.AccountBusinessType, accountType model.AccountType, category model.AccountCategory, currency string) (*model.Account, error) {
-	// 幂等性按 (user_id, business_type, currency) 三元组判断 —— 这也是 account 表
-	// uk_user_business_type 的实际唯一键。早期实现只按 (user_id, business_type)
-	// 查重，导致"同一用户改个币种再建"被误判成已存在，直接把旧币种账户返回给
-	// 调用方（排查案例：传 USD 却拿到 PHP）。
+// createAccountInternal 创建账户（共享给 CreateAccount / Fleet / Scheduler.ForceProvision）。
+//
+// accountGroup 参数：
+//   - 空字符串或 "A"  → GroupA（默认；非轮换账户、轮换的当期 active）
+//   - "B"             → GroupB（轮换预创建的下一组）
+//
+// 幂等检查按 (user_id, business_type, currency, account_group) 四元组（跟新 unique key 对齐）：
+// 同 (user, biz, currency) 下 GroupA + GroupB 可以共存，分别幂等，不互相影响。
+func (s *accountingService) createAccountInternal(ctx context.Context, userID int64, accountBusinessType model.AccountBusinessType, accountType model.AccountType, category model.AccountCategory, currency string, accountGroup string) (*model.Account, error) {
+	if accountGroup == "" {
+		accountGroup = model.AccountGroupA
+	}
+	if accountGroup != model.AccountGroupA && accountGroup != model.AccountGroupB {
+		return nil, fmt.Errorf("invalid account_group %q (only A/B)", accountGroup)
+	}
+
+	// 幂等检查：找同 (user, biz, currency) 但只看相同 group 的行（unique 4 元组）
+	// 注：ListAccountsByUserAndBusinessType 不带 group 过滤；这里手动 filter
 	existing, err := s.accountRepo.ListAccountsByUserAndBusinessType(ctx, userID, accountBusinessType, currency)
 	if err != nil {
 		return nil, fmt.Errorf("check account existence: %w", err)
 	}
-	if len(existing) > 0 {
-		return existing[0], nil
+	for _, e := range existing {
+		if e.AccountGroup == accountGroup ||
+			(accountGroup == model.AccountGroupA && e.AccountGroup == "") {
+			// "" 兼容已有未填 group 的老行（应该回写但保守起见识别成 A）
+			return e, nil
+		}
 	}
 
 	accountNo, err := s.generateAccountNo(ctx, userID, accountType, accountBusinessType, currency)
@@ -3271,6 +3296,7 @@ func (s *accountingService) createAccountInternal(ctx context.Context, userID in
 		FrozenBalance:       0,
 		AvailableBalance:    0,
 		Status:              model.AccountStatusActive,
+		AccountGroup:        accountGroup,
 		Version:             0,
 	}
 	if err := s.accountRepo.CreateAccount(ctx, account); err != nil {

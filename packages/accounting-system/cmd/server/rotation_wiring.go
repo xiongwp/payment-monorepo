@@ -1,9 +1,10 @@
 package main
 
 import (
-	"context"
-	"errors"
+	"os"
+	"time"
 
+	"github.com/xiongwp/accounting-system/internal/idgen"
 	"github.com/xiongwp/accounting-system/internal/infrastructure/database"
 	"github.com/xiongwp/accounting-system/internal/infrastructure/sharding"
 	"github.com/xiongwp/accounting-system/internal/repository"
@@ -13,19 +14,18 @@ import (
 // ============================================================================
 // 轮换账户管理：fx 接线
 //
-// 把 service.NewAdminService 接进 fx 图，让 adminhttp 的 /admin/rotation/*
-// 端点可用。一次性 wiring 完成：
-//   - LogicalAccountRepository
-//   - AccountInstanceManager（含 ListByLogical）
-//   - AdminAccountReaderAdapter / SchedulerCommand
-//   - service.AdminService
+// 把 service.NewAdminService + 完整 Scheduler 接进 fx 图，让 adminhttp 的
+// /admin/rotation/* 端点全部可用（含 ManualSwitch / ManualProvision）。
 //
-// 注意：ManualSwitch / ManualProvision 需要完整 Scheduler 才能跑。Scheduler
-// 自身依赖 LogicalAccountLister.ListRotating + AccountIDGenerator.NewProvisionedAccountNo
-// 这俩接口目前还没有生产实现（rotation 是新特性，尚未对接 idgen）。
-// 这里给一个 stubSchedulerCommand，让两个写端点直接返回明确的错误而非 nil panic。
-// 等 Scheduler 完整接线（含 background Tick loop）后，把 NewStubSchedulerCommand
-// 换成 NewAdminSchedulerCommandAdapter(scheduler) 即可。
+// Scheduler 依赖链：
+//   LogicalAccountRepository (lister + policy reader + admin reader/registrar)
+//   AccountInstanceManager   (instance phase 变更)
+//   AccountRepository        (account by no)
+//   DistributedLockRepository → RotationLockManager  (logical-level 并发互斥)
+//   idgen.IDGenerator + shadow.EncodeAccountID → AccountIDGenerator (生 account_no)
+//
+// 注：Scheduler.Tick() 定时循环还没在这里 wire（只接了 Force* 路径以满足 admin UI）。
+// 后续要按时间自动轮换的话再加个 fx.Invoke 把 Tick 挂到 context-aware ticker 上。
 // ============================================================================
 
 // NewRotationLogicalAccountRepository fx provider — 单实例。
@@ -66,24 +66,68 @@ func NewRotationAccountAdminReader(
 	return service.NewAdminAccountReaderAdapter(instances, accounts)
 }
 
-// stubSchedulerCommand 临时实现：在 Scheduler 完整接线之前，让 manual-switch/
-// manual-provision 立刻返回明确错误，而不是空 nil panic。
-//
-// 用户在 UI 上点"立即切换" → 看到错误信息 → 知道接线未完成。
-// 等 NewScheduler 完整 wiring 写好后，把这个 stub 换成 NewAdminSchedulerCommandAdapter(sch)。
-type stubSchedulerCommand struct{}
+// ============================================================================
+// Scheduler 接线 — 让 ManualSwitch / ManualProvision 真生效
+// ============================================================================
 
-// NewStubSchedulerCommand fx provider。
-func NewStubSchedulerCommand() service.SchedulerCommand {
-	return stubSchedulerCommand{}
+// NewDistributedLockRepositoryFx fx provider — 跨 shard 锁仓储。
+func NewDistributedLockRepositoryFx(
+	dbm *database.Manager, router *sharding.Router,
+) repository.DistributedLockRepository {
+	return repository.NewDistributedLockRepository(dbm, router)
 }
 
-func (stubSchedulerCommand) ForceSwitch(_ context.Context, _ int64, _, _ string) error {
-	return errors.New("rotation scheduler not wired in this build; ManualSwitch unavailable (需在 cmd/server 接入完整 Scheduler + Tick loop)")
+// NewRotationLockManagerFx fx provider — Scheduler 用的 LockManager。
+// TTL 60s 足以覆盖一次 ManualSwitch / ManualProvision 调用。
+func NewRotationLockManagerFx(
+	lockRepo repository.DistributedLockRepository, router *sharding.Router,
+) service.LockManager {
+	return repository.NewRotationLockManager(lockRepo, router, 60*time.Second)
 }
 
-func (stubSchedulerCommand) ForceProvision(_ context.Context, _ int64, _, _ string) error {
-	return errors.New("rotation scheduler not wired in this build; ManualProvision unavailable (需在 cmd/server 接入完整 Scheduler + Tick loop)")
+// NewSchedulerLogicalLister 把 LogicalAccountRepository 适配为 service.LogicalAccountLister。
+// 跟 NewSchedulerPolicyReader 是同一个底层适配器，但 fx 类型系统要求两个 provider 分开。
+func NewSchedulerLogicalLister(repo repository.LogicalAccountRepository) service.LogicalAccountLister {
+	return service.NewLogicalAccountSchedulerAdapter(repo)
+}
+
+// NewSchedulerPolicyReader 把 LogicalAccountRepository 适配为 service.PolicyReaderForScheduler。
+func NewSchedulerPolicyReader(repo repository.LogicalAccountRepository) service.PolicyReaderForScheduler {
+	return service.NewLogicalAccountSchedulerAdapter(repo)
+}
+
+// NewSchedulerInstanceManager 适配 repo.AccountInstanceManager → service.AccountInstanceManager。
+func NewSchedulerInstanceManager(
+	mgr repository.AccountInstanceManager,
+) service.AccountInstanceManager {
+	return service.NewAccountInstanceManagerAdapter(mgr)
+}
+
+// NewSchedulerAccountIDGenerator 真实 ID 生成器（包 shadow.EncodeAccountID + idgen 号段）。
+func NewSchedulerAccountIDGenerator(g idgen.IDGenerator) service.AccountIDGenerator {
+	return service.NewAccountIDGenerator(g)
+}
+
+// NewRotationScheduler 组装完整 Scheduler。
+// owner 用 HOSTNAME 让多副本之间区分；空字符串走 service.NewScheduler 的默认值。
+func NewRotationScheduler(
+	lister service.LogicalAccountLister,
+	instances service.AccountInstanceManager,
+	policies service.PolicyReaderForScheduler,
+	locks service.LockManager,
+	idgenSvc service.AccountIDGenerator,
+) *service.Scheduler {
+	owner := os.Getenv("HOSTNAME")
+	if owner == "" {
+		owner = "accounting-rotation-scheduler"
+	}
+	return service.NewScheduler(lister, instances, policies, locks, idgenSvc, owner, nil /* clock=Now */)
+}
+
+// NewRotationSchedulerCommand fx provider — 把 Scheduler 适配为 SchedulerCommand
+// 注入 AdminService。现在 ManualSwitch / ManualProvision 真生效（替换了 stub）。
+func NewRotationSchedulerCommand(sch *service.Scheduler) service.SchedulerCommand {
+	return service.NewAdminSchedulerCommandAdapter(sch)
 }
 
 // NewRotationAdminService fx provider — 组装 service.AdminService。

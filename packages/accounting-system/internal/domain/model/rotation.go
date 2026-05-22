@@ -310,6 +310,11 @@ type LogicalAccount struct {
 	// 写入唯一入口：rotation scheduler 的切换事务（见 §5.2.1）。
 	// 路由层热路径只查本表即可，避免跨片 account 表 scan。
 	CurrentActiveAccountNo *string             `db:"current_active_account_no" gorm:"column:current_active_account_no"                 json:"current_active_account_no,omitempty"`
+	// CurrentActiveGroup fleet 模式下指当前 active 的组（"A" 或 "B"，NULL=未轮换的 legacy LA）。
+	// 切换时由 scheduler 在同一事务里跟 CurrentActiveAccountNo 一起翻转。
+	// 业务路由不直接看这个字段（用 phase=active + sub-account 路由）；它主要给 admin UI 展示
+	// 「当前是 GroupA 还是 GroupB」+ scheduler 决定下一期 group 取值（current 翻转）。
+	CurrentActiveGroup     *string             `db:"current_active_group"      gorm:"column:current_active_group"                      json:"current_active_group,omitempty"`
 	// CurrentActivePeriodEnd 当期 active 的 period_end。路由层用它判断"是否在边界附近"
 	// 触发预读下一期 active。
 	CurrentActivePeriodEnd *time.Time          `db:"current_active_period_end" gorm:"column:current_active_period_end"                 json:"current_active_period_end,omitempty"`

@@ -32,15 +32,17 @@ CREATE TABLE IF NOT EXISTS `account_${TABLE}` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前组；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键（轮换场景 GroupA + GroupB 各 1 行）',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_account_group` (`account_group`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================

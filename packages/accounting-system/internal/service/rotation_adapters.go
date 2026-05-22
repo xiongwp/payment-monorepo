@@ -2,10 +2,16 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"hash/fnv"
+	"strconv"
 	"time"
 
 	"github.com/xiongwp/accounting-system/internal/domain/model"
+	"github.com/xiongwp/accounting-system/internal/idgen"
 	"github.com/xiongwp/accounting-system/internal/repository"
+	"github.com/xiongwp/payment-util/money"
+	"github.com/xiongwp/payment-util/shadow"
 )
 
 // ============================================================================
@@ -45,6 +51,19 @@ func (a *accountInstanceManagerAdapter) PromoteAndDrain(ctx context.Context, p P
 		OldActiveVersion:      p.OldActiveVersion,
 		NewActiveAccountNo:    p.NewActiveAccountNo,
 		NewActiveVersion:      p.NewActiveVersion,
+		NewActiveGroup:        p.NewActiveGroup,
+		NewActivePeriodEnd:    p.NewActivePeriodEnd,
+		LogicalAccountVersion: p.LogicalAccountVersion,
+		Now:                   p.Now,
+	})
+}
+
+func (a *accountInstanceManagerAdapter) PromoteAndDrainFleet(ctx context.Context, p PromoteAndDrainFleetParams) error {
+	return a.repo.PromoteAndDrainFleet(ctx, repository.AIMPromoteFleetParams{
+		LogicalAccountID:      p.LogicalAccountID,
+		OldGroup:              p.OldGroup,
+		NewGroup:              p.NewGroup,
+		NewActiveAccountNo:    p.NewActiveAccountNo,
 		NewActivePeriodEnd:    p.NewActivePeriodEnd,
 		LogicalAccountVersion: p.LogicalAccountVersion,
 		Now:                   p.Now,
@@ -111,3 +130,105 @@ func (a *adminSchedulerCommandAdapter) ForceProvision(ctx context.Context, laID 
 
 // LogicalAccountRepository 已经满足 LogicalAccountAdminReader 接口（GetByKey/GetByID/
 // ListByPrefix 签名都一致），所以 fx provider 可以直接传 repo 实例。
+
+// ============================================================================
+// AccountIDGenerator 真实实现 —— scheduler 创建 provisioned instance 时用
+// ============================================================================
+
+// accountIDGeneratorImpl 实现 service.AccountIDGenerator。
+//
+// account_no 19 位 layout（见 payment-util/shadow.EncodeAccountID）：
+//   shadow(1) | currency(3) | accountType(2) | globalTbl(2) | businessType(4) | seq(7)
+//
+// 跟 accounting_service.go:generateAccountNo 一致；区别是这里 globalTblIdx 不走
+// user_id 而是用 LA.ID 散到 0..99（LA 不属于任何用户，独立分片）。
+type accountIDGeneratorImpl struct {
+	idGen idgen.IDGenerator
+}
+
+// NewAccountIDGenerator 工厂。
+func NewAccountIDGenerator(g idgen.IDGenerator) AccountIDGenerator {
+	return &accountIDGeneratorImpl{idGen: g}
+}
+
+func (g *accountIDGeneratorImpl) NewProvisionedAccountNo(
+	ctx context.Context, la *model.LogicalAccount, _ time.Time,
+) (string, error) {
+	if la == nil {
+		return "", fmt.Errorf("NewProvisionedAccountNo: nil LogicalAccount")
+	}
+	// 单 instance 路径（Phase 1 用，Phase 2 fleet 走下面 Fleet 方法）：
+	// 落到 la.ID hash % 100 的固定 shard，方便老的单 instance 操作。
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strconv.FormatInt(la.ID, 10)))
+	globalTblIdx := int(h.Sum32() % 100)
+	return g.encodeAccountNo(ctx, la, globalTblIdx)
+}
+
+func (g *accountIDGeneratorImpl) NewProvisionedFleetAccountNos(
+	ctx context.Context, la *model.LogicalAccount, _ time.Time,
+) ([]string, error) {
+	if la == nil {
+		return nil, fmt.Errorf("NewProvisionedFleetAccountNos: nil LogicalAccount")
+	}
+	out := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		// 第 i 个 sub-account 的 globalTblIdx 直接用 i（散到所有 100 个分片）
+		no, err := g.encodeAccountNo(ctx, la, i)
+		if err != nil {
+			return nil, fmt.Errorf("fleet sub %d: %w", i, err)
+		}
+		out[i] = no
+	}
+	return out, nil
+}
+
+// encodeAccountNo 封装 EncodeAccountID 调用，给定 globalTblIdx 生成对应 shard 的 account_no。
+func (g *accountIDGeneratorImpl) encodeAccountNo(
+	ctx context.Context, la *model.LogicalAccount, globalTblIdx int,
+) (string, error) {
+	currencyNum, err := money.NumericCode(la.Currency)
+	if err != nil {
+		return "", fmt.Errorf("currency %q: %w", la.Currency, err)
+	}
+	seq, err := g.idGen.NextID(ctx, idgen.BizTagAccount)
+	if err != nil {
+		return "", fmt.Errorf("idgen: %w", err)
+	}
+	id, err := shadow.EncodeAccountID(ctx,
+		currencyNum,
+		int(la.AccountType),
+		globalTblIdx,
+		int(la.AccountBusinessType),
+		seq,
+	)
+	if err != nil {
+		return "", fmt.Errorf("encode: %w", err)
+	}
+	return strconv.FormatInt(id, 10), nil
+}
+
+// ============================================================================
+// LogicalAccount 适配器：repo → service.LogicalAccountLister + PolicyReaderForScheduler
+// ============================================================================
+
+// logicalAccountSchedulerAdapter 包 LogicalAccountRepository → service 接口三件套。
+// 同一个 repo 实现 ListRotating（LogicalAccountLister）+ GetPolicy（PolicyReaderForScheduler）。
+type logicalAccountSchedulerAdapter struct {
+	repo repository.LogicalAccountRepository
+}
+
+// NewLogicalAccountSchedulerAdapter 工厂。
+func NewLogicalAccountSchedulerAdapter(repo repository.LogicalAccountRepository) *logicalAccountSchedulerAdapter {
+	return &logicalAccountSchedulerAdapter{repo: repo}
+}
+
+// ListRotating 实现 LogicalAccountLister。
+func (a *logicalAccountSchedulerAdapter) ListRotating(ctx context.Context, limit int) ([]*model.LogicalAccount, error) {
+	return a.repo.ListRotating(ctx, limit)
+}
+
+// GetPolicy 实现 PolicyReaderForScheduler。
+func (a *logicalAccountSchedulerAdapter) GetPolicy(ctx context.Context, logicalAccountID int64) (*model.LogicalAccountRotationPolicy, error) {
+	return a.repo.GetPolicy(ctx, logicalAccountID)
+}
