@@ -1,6 +1,6 @@
 {
-  "key": "user-topup-default",
-  "name": "用户充值标准流程",
+  "key": "user-topup-v1",
+  "name": "用户充值（5 leg: 渠道收款 → 挂账 → 用户钱包 + 渠道手续费分润）",
   "version": "1.0.0",
   "status": "active",
   "spec": {

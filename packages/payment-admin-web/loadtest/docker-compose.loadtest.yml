@@ -27,7 +27,8 @@ services:
     build:
       # context = packages/split-payment（go.mod replace 兄弟仓需要从这里看到 ../*）
       context: ../../split-payment
-      dockerfile: deploy/loadtest/Dockerfile.loadtest
+      # Dockerfile 在 payment-admin-web/loadtest/ 自己一份（用 absolute-ish 相对路径）
+      dockerfile: ../payment-admin-web/loadtest/Dockerfile.loadtest
       additional_contexts:
         payment-util:        ../../payment-util
         accounting-system:   ../../accounting-system
@@ -44,9 +45,9 @@ services:
     volumes:
       - ./config.yaml:/loadtest/config.yaml:ro
       - ./output:/output
-      # 4 个资金流 graph JSON —— loadtest router-only 模式启动期 preload
-      # 复用 split-payment 的 graphs/，避免在 admin-web 又抄一份
-      - ../../split-payment/deploy/loadtest/graphs:/loadtest/graphs:ro
+      # 4 个资金流 graph JSON —— loadtest 启动期 preload，唯一源在 split-payment seed/
+      # split-payment 服务本身也从 seed/scenarios 读 graph（MONEYFLOW_SEED_DIR）
+      - ../../split-payment/seed/scenarios:/loadtest/graphs:ro
     # 默认 entrypoint = /usr/local/bin/loadtest
     # bootstrap / 其它入口用 `docker compose run --rm --entrypoint ...` 切
     command: ["--config=/loadtest/config.yaml"]

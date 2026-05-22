@@ -1,0 +1,65 @@
+{
+  "key": "user-withdraw-v1",
+  "name": "用户提现（2 leg: 用户钱包 → 平台提现挂账 → 应付渠道）",
+  "version": "1.0.0",
+  "status": "active",
+  "spec": {
+    "scenario": "user_withdraw",
+    "charge_strategy": "separate",
+    "triggers": [
+      { "event": "user.withdraw_initiated" }
+    ],
+    "guards": [
+      { "kind": "amount_min", "value": 1, "msg": "提现金额必须 > 0" }
+    ],
+    "nodes": [
+      {
+        "id": "user_wallet",
+        "type": "input",
+        "label": "用户钱包",
+        "account_id_attr": "user_account"
+      },
+      {
+        "id": "withdraw_pending",
+        "type": "intermediate",
+        "label": "平台提现挂账",
+        "account_id_attr": "withdraw_pending_account",
+        "auto_clear": true
+      },
+      {
+        "id": "channel_payable",
+        "type": "output",
+        "label": "应付渠道",
+        "account_id_attr": "channel_payable_account"
+      }
+    ],
+    "edges": [
+      {
+        "from": "user_wallet",
+        "to": "withdraw_pending",
+        "kind": "transfer",
+        "event_code": "user_withdraw_to_pending",
+        "rule": { "type": "remainder" }
+      },
+      {
+        "from": "withdraw_pending",
+        "to": "channel_payable",
+        "kind": "transfer",
+        "event_code": "withdraw_to_channel_payable",
+        "rule": { "type": "remainder" }
+      }
+    ]
+  },
+  "_sample_trigger_payload": {
+    "_doc": "loadtest dispatch() 填 user_account / withdraw_pending_account / channel_payable_account",
+    "user_account":                       "100000001234567890",
+    "user_account_amount":                "5000",
+    "user_account_currency":              "PHP",
+    "withdraw_pending_account":           "PLATFORM_WITHDRAW_PENDING/main",
+    "withdraw_pending_account_amount":    "5000",
+    "withdraw_pending_account_currency":  "PHP",
+    "channel_payable_account":            "alipay_ch_payable/main",
+    "channel_payable_account_amount":     "5000",
+    "channel_payable_account_currency":   "PHP"
+  }
+}
