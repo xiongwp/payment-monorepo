@@ -1,26 +1,24 @@
 #!/usr/bin/env bash
 # ============================================================================
-# prefund.sh — 给所有 account 表里 balance=0 的账户充钱
+# prefund.sh —— 把所有 accounting_db_N.account_NN 表里 balance=0 的账户充满
 #
-# 为啥需要：accounting 的 TCC try 阶段对所有 debit 都做 "available_balance >= amount"
-# 校验（不管账户是 Asset/Liability，TCC 的可用余额是统一概念）。新建账户初始余额是 0，
-# 跑 loadtest 时所有 debit 都会被 "insufficient available balance" 拒绝。
+# 为啥需要：accounting TCC try 阶段对所有 debit 都做 "available_balance >= amount"
+# 校验。bootstrap 新建的账户初始余额是 0，loadtest 第一笔 debit 一定报
+# insufficient available balance。先充 1e15 minor 进去 = 1e13 PHP，够整轮压测花。
 #
-# accounting 没暴露 HTTP adjust 端点，所以最干净的办法是直接 mysql UPDATE。
+# 适配新栈：mysql 不再是 accounting-mysql-N，是 payment-admin-web stack 的
+# shared-shard-N（DB-split Batch 6 切过来的）。
 #
-# 实现细节：先用 information_schema 找出每个 shard 的所有 account_NN 表，再用
-# 多语句 SQL 一次性发过去（mysql -e 接 stdin 的 SQL stream）。避开了 GROUP_CONCAT
-# 默认 1024 字节截断坑（100 张表 × ~150 字节 SQL = 15KB 远超）。
+# 幂等：UPDATE ... WHERE balance=0 只动初始账户，重跑不影响有交易的账户。
 #
 # 用法：
-#   ./scripts/prefund.sh             # 用默认 mysql 密码 password
+#   ./scripts/prefund.sh
 #   MYSQL_PWD=foo ./scripts/prefund.sh
 # ============================================================================
 
 set -uo pipefail
-# 关键：不用 set -e。prefund 的 mysql -v 输出有时没 "Changed: N" 行（成功但 verbose
-# 关闭），grep -oE 找不到模式会返 1 → pipefail 把整个脚本 kill 在第一个 shard。
-# 但 UPDATE 实际上是跑成功的。所以用 `|| true` 兜底每个 pipeline。
+# 不用 set -e：mysql 输出格式不稳，pipefail 容易把成功 update 误判失败。
+# 每条命令显式 `|| true` 兜底。
 
 MYSQL_PWD="${MYSQL_PWD:-password}"
 TARGET_BALANCE="${TARGET_BALANCE:-1000000000000000}"  # 1e15 minor units
@@ -29,17 +27,17 @@ green()  { printf "\033[32m%s\033[0m\n" "$*"; }
 yellow() { printf "\033[33m%s\033[0m\n" "$*"; }
 red()    { printf "\033[31m%s\033[0m\n" "$*"; }
 
-echo ">>> 给所有 account_NN 表里 balance=0 的账户充 ${TARGET_BALANCE} 余额"
+echo ">>> prefund: 给 accounting_db_*.account_* 里 balance=0 的账户充 ${TARGET_BALANCE} minor"
 
 UPDATED_TOTAL_ROWS=0
 for i in $(seq 0 9); do
-  SHARD=$(docker ps --format '{{.Names}}' | grep -E "accounting.*mysql-${i}\b|mysql-${i}-1" | head -1)
-  if [[ -z "${SHARD}" ]]; then
-    yellow "  shard-${i}: 容器找不到，跳过"
+  # payment-admin-web stack 用 shared-shard-N 命名
+  SHARD="shared-shard-${i}"
+  if ! docker ps --format '{{.Names}}' | grep -qx "${SHARD}"; then
+    yellow "  shard-${i}: 容器 ${SHARD} 没在跑，跳过"
     continue
   fi
 
-  # 1) 列出所有 account_NN 表（每行一条 "db.table" 字符串）
   TABLES=$(docker exec "${SHARD}" mysql -uroot -p"${MYSQL_PWD}" -N -se "
     SELECT CONCAT(table_schema, '.', table_name)
     FROM information_schema.tables
@@ -48,25 +46,22 @@ for i in $(seq 0 9); do
   " 2>/dev/null || true)
 
   if [[ -z "${TABLES}" ]]; then
-    yellow "  shard-${i} (${SHARD}): 没找到 account_NN 表"
+    yellow "  ${SHARD}: 没找到 account_NN 表（accounting 是不是还没起？）"
     continue
   fi
 
   NUM_TABLES=$(echo "${TABLES}" | wc -l | tr -d ' ')
 
-  # 2) 拼接成多条 UPDATE 一次性发，避免每张表一次 docker exec 的开销
-  #    bash 变量没有 1024 字节限制，mysql 客户端也接受任意长度 stdin
+  # 拼一发 multi-statement SQL 一次性灌进去
   SQL=""
   while IFS= read -r tbl; do
     [[ -z "${tbl}" ]] && continue
     SQL+="UPDATE \`${tbl%%.*}\`.\`${tbl##*.}\` SET balance=${TARGET_BALANCE}, available_balance=${TARGET_BALANCE} WHERE balance=0; "
   done <<< "${TABLES}"
 
-  # 3) 把 SQL 喂进 mysql。先无脑跑（忽略输出），再单独 SELECT 看新 balance 数。
-  # 不再依赖 grep "Changed: N" 解析（mysql verbose 输出格式不稳，pipefail 容易死）。
   docker exec -i "${SHARD}" mysql -uroot -p"${MYSQL_PWD}" 2>/dev/null <<< "${SQL}" || true
 
-  # 跑完拿 balance > 0 的真实账户数（无论是这次 UPDATE 撑起来的还是之前就有的）
+  # 跑完拿 balance > 0 的真实账户数
   CHANGED=$(docker exec "${SHARD}" sh -c "
     SQL=\$(mysql -uroot -p${MYSQL_PWD} -N -se \"
       SELECT GROUP_CONCAT(CONCAT('SELECT COUNT(*) FROM \\\`', table_schema, '\\\`.\\\`', table_name, '\\\`', ' WHERE balance>0') SEPARATOR ' UNION ALL ')
@@ -77,13 +72,13 @@ for i in $(seq 0 9); do
   " 2>/dev/null || echo "0")
   CHANGED=${CHANGED:-0}
 
-  printf "  shard-%d (%s): %s 张 account_NN 表，UPDATE 改了 %s 行\n" "${i}" "${SHARD}" "${NUM_TABLES}" "${CHANGED}"
+  printf "  %s: %s 张 account_NN 表 → balance>0 的账户 %s 行\n" "${SHARD}" "${NUM_TABLES}" "${CHANGED}"
   UPDATED_TOTAL_ROWS=$((UPDATED_TOTAL_ROWS + CHANGED))
 done
 
-green ">>> prefund 完成：共改了 ${UPDATED_TOTAL_ROWS} 行"
+green ">>> prefund 完成：累计 balance>0 账户 ${UPDATED_TOTAL_ROWS} 行"
 
-# 抽检：第一个 user 账户的余额
+# 抽检：pool 里第一个 user 账户余额
 POOL_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)/output/account_pool.json"
 if [[ -s "${POOL_FILE}" ]]; then
   SAMPLE=$(python3 -c "import json; print(json.load(open('${POOL_FILE}'))['users'][0])" 2>/dev/null || echo "")
@@ -91,9 +86,8 @@ if [[ -s "${POOL_FILE}" ]]; then
     echo ">>> 抽检 pool.users[0]=${SAMPLE}"
     FOUND=0
     for i in $(seq 0 9); do
-      SHARD=$(docker ps --format '{{.Names}}' | grep -E "accounting.*mysql-${i}\b|mysql-${i}-1" | head -1)
-      [[ -z "${SHARD}" ]] && continue
-      # 遍历这个 shard 所有 account_NN 表找它
+      SHARD="shared-shard-${i}"
+      docker ps --format '{{.Names}}' | grep -qx "${SHARD}" || continue
       HIT=$(docker exec "${SHARD}" sh -c "
         for tbl in \$(mysql -uroot -p${MYSQL_PWD} -N -se \"
           SELECT CONCAT(table_schema,'.',table_name) FROM information_schema.tables
@@ -104,13 +98,11 @@ if [[ -s "${POOL_FILE}" ]]; then
         done
       " 2>/dev/null | head -1 || echo "")
       if [[ -n "${HIT}" ]]; then
-        green "  ✓ shard-${i}: ${HIT}"
+        green "  ✓ ${SHARD}: ${HIT}"
         FOUND=1
         break
       fi
     done
-    if [[ ${FOUND} -ne 1 ]]; then
-      yellow "  ⚠ ${SAMPLE} 在 10 shards 都没找到 —— 可能 account_no 编码路由到了未预期 shard"
-    fi
+    [[ ${FOUND} -ne 1 ]] && yellow "  ⚠ ${SAMPLE} 在 10 个 shard 都没找到（account_no 编码路由可能不是 0..9 简单 mod？）"
   fi
 fi

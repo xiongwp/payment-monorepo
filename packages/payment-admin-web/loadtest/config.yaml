@@ -1,0 +1,63 @@
+# ============================================================================
+# loadtest config —— payment-admin-web 全栈版（中规模 1000/1000/1000 × 60s）
+#
+# 调用链：
+#   loadtest → split-payment:9098 (TriggerEvent gRPC)
+#            → translator 翻译 graph DSL 成 leg 序列
+#            → 串行 + abort-on-failure 调 accounting-service:50051 CreateTransaction
+#            → accounting 走 TCC try-commit，落账到 shared-shard-N.transaction_order_NN
+#
+# 端到端 TPS 主要瓶颈：
+#   - split-payment translator 翻译时间
+#   - accounting TCC try (debit 可用余额校验) + commit 锁等
+#   - mysql connection pool 容量（在 split-payment-config.shared.yaml 调）
+# ============================================================================
+
+target:
+  # via-split-payment: 走完整业务流（split-payment → accounting），端到端 TPS
+  # direct-accounting: 跳过 split-payment（路由 baseline，留作对照）
+  mode: "via-split-payment"
+  split_payment_endpoint: "split-payment:9098"
+  accounting_endpoint: "accounting-service:50051"
+  accounting_admin_http: "http://accounting-service:8888"
+  admin_token: ""
+
+load:
+  # 1000 用户池下 50-100 并发足够（再高会被 mysql connection pool 限到）
+  concurrency: 100
+  duration: 60s
+  rate_limit_qps: 0          # 0 = 不限速；ramp 阶段过后跑全速
+  warmup: 10s
+  # mixed = 按 mix_ratio 加权随机抽 4 个 flow；topup/payment/transfer/withdraw 各跑专项时换成对应名字
+  mode: "mixed"
+  mix_ratio:
+    topup: 25      # 用户充值 (channel → user)
+    payment: 35    # 用户消费 (user → merchant_pending + 平台手续费)
+    transfer: 25   # 用户互转 (user → user, 1 leg)
+    withdraw: 15   # 用户提现 (user → channel_payable, 含手续费)
+
+flow:
+  # 必须匹配 bootstrap 创建的池规模 —— dispatch 用 modulo 索引
+  channel_count: 1000
+  user_count: 1000
+  amount_minor_range: [100, 100000]   # ¥1.00 - ¥1000.00
+  currency: "PHP"
+  # graph_key 跟 split-payment 启动期 seed 的 graphs/*.json key 字段对应
+  graph_keys:
+    topup:    "user-topup-v1"
+    payment:  "user-balance-payment-v1"
+    transfer: "user-internal-transfer-v1"
+    withdraw: "user-withdraw-v1"
+
+# rotation 故障注入（默认关）—— 想验证轮换不丢账时开
+chaos:
+  enabled: false
+  force_switch_interval: 0s
+  force_provision_interval: 0s
+
+report:
+  output_path: "/output/loadtest-report.json"
+  # 直方图分桶（毫秒），覆盖 p50/p90/p95/p99；30s 桶留给极长尾
+  latency_buckets_ms: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000]
+  progress_interval: 5s
+  prometheus_pushgateway: ""
