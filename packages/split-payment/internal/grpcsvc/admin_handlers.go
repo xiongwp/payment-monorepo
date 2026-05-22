@@ -431,7 +431,14 @@ func (s *Server) TriggerEvent(ctx context.Context, req *TriggerEventRequest) (*T
 		if acctResp.Error != "" {
 			v.Error = acctResp.Error
 		}
-		if acctResp.Status != 2 /*Success*/ {
+		// 失败判定：accounting Status 语义
+		//   1 = Processing —— TCC try 已落库，confirm 异步进行中（最终会到 2 或 3）
+		//   2 = Success    —— 已 commit
+		//   3 = Failed     —— 真失败（业务拒 / 余额不够 / 系统错）
+		// 之前把 != 2 当 failure 是错的：高并发时 confirm 慢，同步返回 1，但 mysql
+		// 异步真 commit 到 2。压测看到的 100% errs 主要是这个误报。
+		// 修法：只有 status=3 才算真失败。
+		if acctResp.Status == 3 /*Failed*/ {
 			failedFlags[i] = true
 		}
 		observability.VoucherStatusCount.WithLabelValues(
