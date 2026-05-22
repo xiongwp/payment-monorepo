@@ -32,11 +32,13 @@ type LogicalAccountAdminReader interface {
 	ListByPrefix(ctx context.Context, prefix string, limit int) ([]*model.LogicalAccount, error)
 }
 
-// LogicalAccountAdminRegistrar 管理员接口：写（注册新 LA）。
-// 实现走 repository.LogicalAccountRepository.Register（含命名前缀白名单校验 +
-// unique key 冲突保护，详见 model.ValidateLogicalAccountKey）。
+// LogicalAccountAdminRegistrar 管理员接口：写（注册新 LA + 配 policy）。
+// 实现走 repository.LogicalAccountRepository（含命名前缀白名单 + unique 冲突保护）。
 type LogicalAccountAdminRegistrar interface {
 	Register(ctx context.Context, la *model.LogicalAccount) (*model.LogicalAccount, error)
+	// UpsertPolicy 创建或更新 rotation policy。注册 rotation_enabled=true 的 LA 后
+	// AdminService 自动调一次填默认值，避免 ForceProvision 报 no policy。
+	UpsertPolicy(ctx context.Context, p *model.LogicalAccountRotationPolicy) error
 }
 
 // AccountAdminReader 管理员接口：读账户实例。
@@ -433,5 +435,31 @@ func (s *AdminService) RegisterLogicalAccount(
 		Status:              model.LogicalAccountStatusEnabled,
 		RegisteredBy:        req.Operator,
 	}
-	return s.registrar.Register(ctx, la)
+	created, err := s.registrar.Register(ctx, la)
+	if err != nil {
+		return nil, err
+	}
+
+	// rotation_enabled=true 时自动建默认 policy，避免 ForceProvision 报 no policy。
+	// 默认参数：MONTH 周期 / UTC 时区 / 3 天 P99 drain / 7 天 hard timeout / 1 天 provision lead
+	// 运维要改 policy 现阶段直接 mysql UPDATE（未来加 UI 编辑入口）。
+	if req.RotationEnabled {
+		policy := &model.LogicalAccountRotationPolicy{
+			LogicalAccountID:     created.ID,
+			PeriodUnit:           model.PeriodUnitMonth,
+			PeriodCount:          1,
+			RotationAnchorTZ:     "UTC",
+			DrainP99Seconds:      3 * 24 * 3600,  // 3 天
+			DrainHardTimeoutSecs: 7 * 24 * 3600,  // 7 天
+			ArchiveGraceSecs:     7 * 24 * 3600,  // 7 天
+			ProvisionLeadSecs:    24 * 3600,      // 1 天
+			ConfigVersion:        1,
+			EffectiveFrom:        s.clock(),
+		}
+		if err := s.registrar.UpsertPolicy(ctx, policy); err != nil {
+			// LA 已建，policy 失败不回滚（caller 可以重试 register 拿幂等返回 + 手动建 policy）
+			return created, fmt.Errorf("LA created but default policy failed: %w", err)
+		}
+	}
+	return created, nil
 }
