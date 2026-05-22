@@ -107,3 +107,33 @@ func (s *Server) resolveFleetRoutingEntries(
 	}
 	return nil
 }
+
+// resolveLegSide 给 CreateTransaction handler 用：解析 TxnLeg 单侧 (from/to) 的
+// fleet routing 字段为具体 account_no。
+//
+// 参数 side: "from" / "to"，仅用于错误信息文案。
+func (s *Server) resolveLegSide(ctx context.Context, laKey, flowID, side string, legIdx int) (string, error) {
+	if laKey == "" {
+		return "", fmt.Errorf("leg[%d] %s_logical_account_key required when account_no empty", legIdx, side)
+	}
+	if flowID == "" {
+		return "", fmt.Errorf("leg[%d] %s_logical_account_key=%q requires %s_flow_id", legIdx, side, laKey, side)
+	}
+	if s.rotationAdminSvc == nil {
+		return "", fmt.Errorf("leg[%d] fleet routing requires rotation admin service to be wired", legIdx)
+	}
+	res, err := s.rotationAdminSvc.ResolveFleetSubAccount(ctx, laKey, flowID)
+	if err != nil {
+		return "", fmt.Errorf("leg[%d] resolve %s fleet sub: %w", legIdx, side, err)
+	}
+	if res == nil || res.AccountNo == "" {
+		return "", fmt.Errorf("leg[%d] resolve %s fleet sub for la=%q returned empty", legIdx, side, laKey)
+	}
+	s.logger.Debug("leg fleet routing resolved",
+		zap.Int("leg_idx", legIdx), zap.String("side", side),
+		zap.String("logical_account_key", laKey), zap.String("flow_id", flowID),
+		zap.Int("sub_idx", res.SubIdx), zap.String("account_no", res.AccountNo),
+		zap.String("account_group", res.AccountGroup),
+	)
+	return res.AccountNo, nil
+}

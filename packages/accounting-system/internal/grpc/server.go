@@ -1822,18 +1822,42 @@ func (s *Server) CreateTransaction(ctx context.Context, req *accountingv1.Create
 				ErrorMessage: fmt.Sprintf("leg[%d] amount_minor must be > 0", i),
 			}, nil
 		}
-		if leg.GetFromAccountNo() == "" || leg.GetToAccountNo() == "" {
+		// Fleet × Rotation 路由：from / to 任一侧留空 account_no + 给了 LA key + flow_id →
+		// 在此处把 LA 解析为具体 sub-account 写回 leg.From/ToAccountNo。
+		fromNo := leg.GetFromAccountNo()
+		toNo := leg.GetToAccountNo()
+		if fromNo == "" && leg.GetFromLogicalAccountKey() != "" {
+			resolved, rerr := s.resolveLegSide(ctx,
+				leg.GetFromLogicalAccountKey(), leg.GetFromFlowId(), "from", i)
+			if rerr != nil {
+				return &accountingv1.CreateTransactionResponse{
+					OrderNo: req.GetIdempotencyKey(), Status: "failed", ErrorMessage: rerr.Error(),
+				}, nil
+			}
+			fromNo = resolved
+		}
+		if toNo == "" && leg.GetToLogicalAccountKey() != "" {
+			resolved, rerr := s.resolveLegSide(ctx,
+				leg.GetToLogicalAccountKey(), leg.GetToFlowId(), "to", i)
+			if rerr != nil {
+				return &accountingv1.CreateTransactionResponse{
+					OrderNo: req.GetIdempotencyKey(), Status: "failed", ErrorMessage: rerr.Error(),
+				}, nil
+			}
+			toNo = resolved
+		}
+		if fromNo == "" || toNo == "" {
 			return &accountingv1.CreateTransactionResponse{
 				OrderNo:      req.GetIdempotencyKey(),
 				Status:       "failed",
-				ErrorMessage: fmt.Sprintf("leg[%d] from_account_no / to_account_no required", i),
+				ErrorMessage: fmt.Sprintf("leg[%d] from_account_no / to_account_no required (or fill logical_account_key + flow_id)", i),
 			}, nil
 		}
 		serviceLegs = append(serviceLegs, service.TxnLeg{
 			EdgeFromNode:  leg.GetEdgeFromNode(),
 			EdgeToNode:    leg.GetEdgeToNode(),
-			FromAccountID: leg.GetFromAccountNo(),
-			ToAccountID:   leg.GetToAccountNo(),
+			FromAccountID: fromNo,
+			ToAccountID:   toNo,
 			Amount:        strconv.FormatInt(leg.GetAmountMinor(), 10),
 			Currency:      legCur,
 		})
