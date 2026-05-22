@@ -1,9 +1,10 @@
 // mysql.go — MoneyFlow Graph + RunPlan MySQL 仓储 (MF-1, DB-split).
 //
-// DB-split Batch 3 重构：
+// DB-split Batch 7 极简版：
 //   moneyflow_graphs   → split_payment_meta 库（不分片，meta）
-//   moneyflow_runs     → split_payment_db_0..9 × 10 张子表/库 = 100 张全局子表
-//                        分片 key = charge_id（同一 charge 的 run 都在同 shard）
+//   moneyflow_event_NN → split_payment_db_0..9 × 10 主表/库 + 10 shadow 镜像
+//                        = 100 全局子表 (主) + 100 全局子表 (shadow，全链路压测用)
+//                        分片 key = event_id (= charge_id, UNIQUE 幂等键)
 //
 // 用 stdlib database/sql + mysql driver, 不引 GORM, 跟现有 monorepo 风格对齐.
 //
@@ -154,7 +155,7 @@ func (r *MySQLGraphRepo) List(ctx context.Context, status string) ([]*domain.Gra
 	return collectGraphs(rows)
 }
 
-// ─── Run repo (走 shardDB, 分片 key=charge_id, 子表 moneyflow_runs_NN) ──
+// ─── Event repo (走 shardDB, 分片 key=event_id, 子表 moneyflow_event_NN) ──
 
 // MySQLRunRepo MySQL 实现.
 type MySQLRunRepo struct {
@@ -175,7 +176,11 @@ func (r *MySQLRunRepo) shardOf(ctx context.Context, chargeID string) (*sql.DB, s
 	return r.mgr.Shard(dbIdx), r.router.TableNameCtx(ctx, familyRuns, tblIdx)
 }
 
-// Save 插入新 run plan. 必须先填 p.ChargeID 用来路由.
+// Save 插入新 run plan. 必须先填 p.ChargeID 用来路由 + 作 event_id (UNIQUE 幂等键).
+//
+// 注：新 schema (moneyflow_event_NN) 把原 charge_id 字段提升为 event_id 并加 UNIQUE。
+// 同一 charge 重复 trigger 不再写多行（避免重复执行）；如果想保留多次重试历史，得
+// 在 caller 侧给 event_id 加后缀（e.g. chargeID + "#" + retry）。
 func (r *MySQLRunRepo) Save(ctx context.Context, p *domain.RunPlan) (int64, error) {
 	attrJSON, _ := json.Marshal(p.Attributes)
 	movJSON, _ := json.Marshal(p.Movements)
@@ -183,53 +188,62 @@ func (r *MySQLRunRepo) Save(ctx context.Context, p *domain.RunPlan) (int64, erro
 		p.CreatedAt = time.Now().UTC()
 	}
 	if p.Status == "" {
-		p.Status = "created"
+		p.Status = "pending"
 	}
 	db, tbl := r.shardOf(ctx, p.ChargeID)
 	res, err := db.ExecContext(ctx, `
 		INSERT INTO `+tbl+`
-		(graph_id, graph_version, trigger_event, charge_id, merchant_id,
-		 amount_minor, currency, attributes_json, movements_json,
-		 status, voucher_no, error_msg, trace_id, created_at)
-		VALUES (?, ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?, ?)`,
-		p.GraphID, p.GraphVersion, p.TriggerEvent, nullable(p.ChargeID), nullable(p.MerchantID),
+		(event_id, graph_id, graph_version, trigger_event, merchant_id,
+		 amount_minor, currency, trigger_payload_json, plan_json,
+		 status, accounting_voucher_no, error_msg, trace_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?, ?, ?)`,
+		p.ChargeID, p.GraphID, p.GraphVersion, p.TriggerEvent, nullable(p.MerchantID),
 		p.AmountMinor, nullable(p.Currency), attrJSON, movJSON,
-		p.Status, nullable(p.VoucherNo), nullable(p.ErrorMsg), nullable(p.TraceID), p.CreatedAt)
+		p.Status, nullable(p.VoucherNo), nullable(p.ErrorMsg), nullable(p.TraceID), p.CreatedAt, p.CreatedAt)
 	if err != nil {
-		return 0, fmt.Errorf("insert run (tbl=%s): %w", tbl, err)
+		return 0, fmt.Errorf("insert event (tbl=%s): %w", tbl, err)
 	}
 	id, _ := res.LastInsertId()
 	p.ID = id
 	return id, nil
 }
 
-// Update 更新已存 run. 入参用 *RunPlan（必须含 ChargeID 用来路由 + ID 用来定位行）.
+// Update 更新已存 event 行. 入参用 *RunPlan（必须含 ChargeID 用来路由 + ID 用来定位行）.
+// 新 schema: voucher_no → accounting_voucher_no, movements_json → plan_json.
+// 顺手在 status 进入终态时填 completed_at (NULL 表示还在执行/失败可重试)。
 func (r *MySQLRunRepo) Update(ctx context.Context, p *domain.RunPlan) error {
 	movJSON, _ := json.Marshal(p.Movements)
 	db, tbl := r.shardOf(ctx, p.ChargeID)
+	// completed_at: success / failed / cancelled 三态算终态
+	var completedAt sql.NullTime
+	switch p.Status {
+	case "success", "failed", "cancelled", "completed", "reversed":
+		completedAt = sql.NullTime{Time: time.Now().UTC(), Valid: true}
+	}
 	_, err := db.ExecContext(ctx, `
 		UPDATE `+tbl+`
-		   SET status=?, voucher_no=?, error_msg=?, movements_json=?
+		   SET status=?, accounting_voucher_no=?, error_msg=?, plan_json=?, completed_at=COALESCE(?, completed_at)
 		 WHERE id=?`,
-		p.Status, nullable(p.VoucherNo), nullable(p.ErrorMsg), movJSON, p.ID)
+		p.Status, nullable(p.VoucherNo), nullable(p.ErrorMsg), movJSON, completedAt, p.ID)
 	if err != nil {
-		return fmt.Errorf("update run (tbl=%s): %w", tbl, err)
+		return fmt.Errorf("update event (tbl=%s): %w", tbl, err)
 	}
 	return nil
 }
 
-// GetByCharge 拉同一 charge 关联的所有 run plan. chargeID 路由到唯一 shard.
+// GetByCharge 拉同一 charge 关联的事件行. chargeID 即 event_id, UNIQUE 路由到唯一 shard.
+// 新 schema event_id 是 UNIQUE，所以返回值最多 1 行（保持 []*RunPlan 形状是为了不破坏 caller）.
 func (r *MySQLRunRepo) GetByCharge(ctx context.Context, chargeID string) ([]*domain.RunPlan, error) {
 	db, tbl := r.shardOf(ctx, chargeID)
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
-		       amount_minor, currency, attributes_json, movements_json,
-		       status, voucher_no, error_msg, trace_id, created_at
+		SELECT id, graph_id, graph_version, trigger_event, event_id, merchant_id,
+		       amount_minor, currency, trigger_payload_json, plan_json,
+		       status, accounting_voucher_no, error_msg, trace_id, created_at
 		  FROM `+tbl+`
-		 WHERE charge_id=?
+		 WHERE event_id=?
 		 ORDER BY created_at DESC`, chargeID)
 	if err != nil {
-		return nil, fmt.Errorf("get runs by charge (tbl=%s): %w", tbl, err)
+		return nil, fmt.Errorf("get events by event_id (tbl=%s): %w", tbl, err)
 	}
 	defer rows.Close()
 	return collectRuns(rows)
@@ -246,9 +260,9 @@ func (r *MySQLRunRepo) GetByID(ctx context.Context, id int64) (*domain.RunPlan, 
 	for _, st := range r.router.AllTables(ctx, familyRuns) {
 		db := r.mgr.Shard(st.DBIdx)
 		rows, err := db.QueryContext(ctx, `
-			SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
-			       amount_minor, currency, attributes_json, movements_json,
-			       status, voucher_no, error_msg, trace_id, created_at
+			SELECT id, graph_id, graph_version, trigger_event, event_id, merchant_id,
+			       amount_minor, currency, trigger_payload_json, plan_json,
+			       status, accounting_voucher_no, error_msg, trace_id, created_at
 			  FROM `+st.TableName+` WHERE id=? LIMIT 1`, id)
 		if err != nil {
 			continue
@@ -266,9 +280,9 @@ func (r *MySQLRunRepo) GetByID(ctx context.Context, id int64) (*domain.RunPlan, 
 func (r *MySQLRunRepo) GetByChargeAndID(ctx context.Context, chargeID string, id int64) (*domain.RunPlan, error) {
 	db, tbl := r.shardOf(ctx, chargeID)
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
-		       amount_minor, currency, attributes_json, movements_json,
-		       status, voucher_no, error_msg, trace_id, created_at
+		SELECT id, graph_id, graph_version, trigger_event, event_id, merchant_id,
+		       amount_minor, currency, trigger_payload_json, plan_json,
+		       status, accounting_voucher_no, error_msg, trace_id, created_at
 		  FROM `+tbl+` WHERE id=? LIMIT 1`, id)
 	if err != nil {
 		return nil, err
@@ -292,9 +306,9 @@ func (r *MySQLRunRepo) ListByStatus(ctx context.Context, status string, limit in
 		limit = 100
 	}
 	return r.scanAllShards(ctx, `
-		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
-		       amount_minor, currency, attributes_json, movements_json,
-		       status, voucher_no, error_msg, trace_id, created_at
+		SELECT id, graph_id, graph_version, trigger_event, event_id, merchant_id,
+		       amount_minor, currency, trigger_payload_json, plan_json,
+		       status, accounting_voucher_no, error_msg, trace_id, created_at
 		  FROM %s
 		 WHERE status=?
 		 ORDER BY created_at DESC LIMIT ?`, []any{status, limit}, limit)
@@ -307,16 +321,16 @@ func (r *MySQLRunRepo) Search(ctx context.Context, eventLike string, limit int) 
 	}
 	if eventLike == "" {
 		return r.scanAllShards(ctx, `
-			SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
-			       amount_minor, currency, attributes_json, movements_json,
-			       status, voucher_no, error_msg, trace_id, created_at
+			SELECT id, graph_id, graph_version, trigger_event, event_id, merchant_id,
+			       amount_minor, currency, trigger_payload_json, plan_json,
+			       status, accounting_voucher_no, error_msg, trace_id, created_at
 			  FROM %s
 			 ORDER BY created_at DESC LIMIT ?`, []any{limit}, limit)
 	}
 	return r.scanAllShards(ctx, `
-		SELECT id, graph_id, graph_version, trigger_event, charge_id, merchant_id,
-		       amount_minor, currency, attributes_json, movements_json,
-		       status, voucher_no, error_msg, trace_id, created_at
+		SELECT id, graph_id, graph_version, trigger_event, event_id, merchant_id,
+		       amount_minor, currency, trigger_payload_json, plan_json,
+		       status, accounting_voucher_no, error_msg, trace_id, created_at
 		  FROM %s
 		 WHERE trigger_event LIKE ?
 		 ORDER BY created_at DESC LIMIT ?`, []any{"%" + eventLike + "%", limit}, limit)
