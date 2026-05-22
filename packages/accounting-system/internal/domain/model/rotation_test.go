@@ -493,28 +493,9 @@ func TestLogicalAccount_TableName(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// 新预置 AccountBusinessType 常量值稳定性（防止后续误改）
-// ============================================================================
-
-func TestBusinessTypeConstants_Stable(t *testing.T) {
-	// 这些值落到 DB 后变更会破坏对账。一旦合入主干禁止改动。
-	cases := []struct {
-		name string
-		v    AccountBusinessType
-		want AccountBusinessType
-	}{
-		{"MigrationSuspense", AccountBusinessTypeMigrationSuspense, 10},
-		{"ResidualWriteOff", AccountBusinessTypeResidualWriteOff, 11},
-		{"RotationOpsAdjust", AccountBusinessTypeRotationOpsAdjust, 12},
-		{"RotationCarryforward", AccountBusinessTypeRotationCarryforward, 13},
-	}
-	for _, c := range cases {
-		if c.v != c.want {
-			t.Errorf("%s must be %d (DB-stable); got %d", c.name, c.want, c.v)
-		}
-	}
-}
+// TestBusinessTypeConstants_Stable 删除：原来覆盖的 AccountBusinessType 10-13
+// (MigrationSuspense / ResidualWriteOff / RotationOpsAdjust / RotationCarryforward)
+// 已经从 model 删除，不再占 business_type registry 名额。
 
 // ============================================================================
 // 不变量校验工具（被 property-based fuzz 测复用 — Batch 10）
@@ -1008,27 +989,8 @@ func TestAnchorStatus_IsOpenMatchesTransitionMap(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// 业务语义：4 个新预置 business_type 的 account_type 映射
-// ============================================================================
-
-// MigrationSuspense 必须是 type=9 (Transit)；OpsAdjust/WriteOff 必须是 type=4 (P&L)；
-// Carryforward 必须是 type=2 (Liability)。
-// 这是 DB INSERT 的同一映射，但 Go 常量这边要文档化保持一致。
-func TestNewBusinessTypes_DocumentedAccountTypes(t *testing.T) {
-	// 这些映射在 init.sql 里用 INSERT IGNORE 写死；Go 常量不必硬编码 account_type，
-	// 但我们至少要保证常量值稳定（已在 TestBusinessTypeConstants_Stable 覆盖）。
-	// 这里补充：业务码命名规律
-	if AccountBusinessTypeMigrationSuspense >= AccountBusinessTypeResidualWriteOff {
-		t.Error("MigrationSuspense should have lower business_type than ResidualWriteOff (asc order)")
-	}
-	if AccountBusinessTypeResidualWriteOff >= AccountBusinessTypeRotationOpsAdjust {
-		t.Error("ResidualWriteOff < OpsAdjust")
-	}
-	if AccountBusinessTypeRotationOpsAdjust >= AccountBusinessTypeRotationCarryforward {
-		t.Error("OpsAdjust < Carryforward")
-	}
-}
+// TestNewBusinessTypes_DocumentedAccountTypes 删除：覆盖的是已删除的 4 个常量
+// (AccountBusinessType 10-13)。删除原因见 model rotation.go 同位置注释。
 
 // ============================================================================
 // LogicalAccount 严格性：禁止某些组合

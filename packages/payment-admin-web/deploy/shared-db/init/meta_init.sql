@@ -590,7 +590,7 @@ CREATE TABLE IF NOT EXISTS `service_instance` (
 --           路由层热路径只查本表即可，避免跨片 account 表 scan。
 -- ============================================
 CREATE TABLE IF NOT EXISTS `logical_account` (
-    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键（AUTO_INCREMENT；设计本意是号段生成器，但低频表 AUTO_INCREMENT 也够）',
     `logical_account_key` VARCHAR(64) NOT NULL COMMENT '业务稳定 key（命名前缀白名单见 rotation.go AllowedKeyPrefixes）',
     `account_type` TINYINT NOT NULL COMMENT '复用 AccountType (期望值 5/6/9)',
     `account_business_type` SMALLINT NOT NULL COMMENT '复用 AccountBusinessType (1-999)',
@@ -636,14 +636,6 @@ CREATE TABLE IF NOT EXISTS `logical_account_rotation_policy` (
     PRIMARY KEY (`logical_account_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='轮换策略';
 
--- 轮换特性新增预置（10/11/12/13）
-INSERT IGNORE INTO `account_business_type_info`
-    (`business_type`, `business_type_code`, `account_type`, `description`, `enabled`)
-VALUES
-    (10, 'ROTATION_MIGRATION_SUSPENSE',  9, '跨期强制迁移过渡科目，余额恒为 0', 1),
-    (11, 'ROTATION_RESIDUAL_WRITEOFF',   4, '轮换归档残值核销账户', 1),
-    (12, 'ROTATION_OPS_ADJUST',          4, '轮换人工运维调整账户', 1),
-    (13, 'ROTATION_CARRYFORWARD',        2, '轮换跨期结转科目，余额恒为 0', 1);
 
 -- ==== card-center meta (card_center_meta: leaf_alloc + audit_log) ====
 -- card_center_meta：留 leaf_alloc + 全局审计（量小不分片）。

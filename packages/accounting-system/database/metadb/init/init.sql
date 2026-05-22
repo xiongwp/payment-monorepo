@@ -304,11 +304,7 @@ CREATE TABLE IF NOT EXISTS `logical_account_rotation_policy` (
     PRIMARY KEY (`logical_account_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='轮换策略';
 
--- 轮换特性新增预置（10/11/12/13）
-INSERT IGNORE INTO `account_business_type_info`
-    (`business_type`, `business_type_code`, `account_type`, `description`, `enabled`)
-VALUES
-    (10, 'ROTATION_MIGRATION_SUSPENSE',  9, '跨期强制迁移过渡科目，余额恒为 0', 1),
-    (11, 'ROTATION_RESIDUAL_WRITEOFF',   4, '轮换归档残值核销账户', 1),
-    (12, 'ROTATION_OPS_ADJUST',          4, '轮换人工运维调整账户', 1),
-    (13, 'ROTATION_CARRYFORWARD',        2, '轮换跨期结转科目，余额恒为 0', 1);
+-- 注：原 10-13 轮换内部过渡科目（ROTATION_MIGRATION_SUSPENSE / RESIDUAL_WRITEOFF /
+-- OPS_ADJUST / CARRYFORWARD）已删除 — 不在 business_type registry 暴露给运维。
+-- 这些科目是轮换内部 migration / convergence / 归档流程的实现细节，调用方应在代码
+-- 内部用专用编码处理，不占用对外的 1-N business_type 名额。

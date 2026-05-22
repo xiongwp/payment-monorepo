@@ -640,23 +640,13 @@ var (
 )
 
 // ============================================================================
-// 新增预置 AccountBusinessType
+// 历史预置 AccountBusinessType 10-13 已删除：
+//   - AccountBusinessTypeMigrationSuspense (10)  跨期强制迁移过渡科目
+//   - AccountBusinessTypeResidualWriteOff  (11)  归档残值核销账户
+//   - AccountBusinessTypeRotationOpsAdjust (12)  人工运维调整账户
+//   - AccountBusinessTypeRotationCarryforward (13) 跨期结转科目
+//
+// 这些是轮换内部 migration / convergence / 归档流程的实现细节，不应该占用对外
+// account_business_type registry 的名额。若 migration/convergence 流程需要这类
+// 过渡科目，应在代码内部用专用常量处理，不暴露给业务/运维选择。
 // ============================================================================
-
-const (
-	// AccountBusinessTypeMigrationSuspense 跨期强制迁移的过渡科目。
-	// 余额恒为 0（旧/新 instance 上对冲）。account_type=9 (Transit)。
-	AccountBusinessTypeMigrationSuspense AccountBusinessType = 10
-
-	// AccountBusinessTypeResidualWriteOff 归档时核销小额尾差的损益账户。
-	// account_type=4 (Platform P&L)。
-	AccountBusinessTypeResidualWriteOff AccountBusinessType = 11
-
-	// AccountBusinessTypeRotationOpsAdjust 人工运维调整入口（独立科目，便于审计）。
-	// account_type=4 (Platform P&L)。
-	AccountBusinessTypeRotationOpsAdjust AccountBusinessType = 12
-
-	// AccountBusinessTypeRotationCarryforward 跨期结转科目（余额恒为 0）。
-	// account_type=2 (Liability)。仅在显式启用 carryforward 时使用（§11 Phase 2）。
-	AccountBusinessTypeRotationCarryforward AccountBusinessType = 13
-)
