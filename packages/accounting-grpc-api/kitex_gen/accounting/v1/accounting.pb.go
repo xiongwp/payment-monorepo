@@ -593,20 +593,33 @@ func (x *Money) GetCurrency() string {
 // AccountingEntry 记账分录
 type AccountingEntry struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
-	AccountNo string                 `protobuf:"bytes,1,opt,name=account_no,json=accountNo,proto3" json:"account_no,omitempty"` // 账户号
+	AccountNo string                 `protobuf:"bytes,1,opt,name=account_no,json=accountNo,proto3" json:"account_no,omitempty"` // 账户号；与 logical_account_key 二选一
 	// Deprecated: 改用 debit_money / credit_money。老客户端仍可用 string decimal，
 	// 但服务端优先读 Money 字段；两者同时非空时 Money 胜出。
 	//
 	// Deprecated: Marked as deprecated in accounting.proto.
 	DebitAmount string `protobuf:"bytes,2,opt,name=debit_amount,json=debitAmount,proto3" json:"debit_amount,omitempty"`
 	// Deprecated: Marked as deprecated in accounting.proto.
-	CreditAmount  string `protobuf:"bytes,3,opt,name=credit_amount,json=creditAmount,proto3" json:"credit_amount,omitempty"`
-	Description   string `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`                    // 描述
-	DebitMoney    *Money `protobuf:"bytes,5,opt,name=debit_money,json=debitMoney,proto3" json:"debit_money,omitempty"`    // 借方金额（Money），与 debit_amount 二选一
-	CreditMoney   *Money `protobuf:"bytes,6,opt,name=credit_money,json=creditMoney,proto3" json:"credit_money,omitempty"` // 贷方金额（Money），与 credit_amount 二选一
-	// Fleet × Rotation 路由：填了 LogicalAccountKey + FlowId 时，server 端走
-	// rotation_router 算法（fnv32a(flow_id)%100 选 sub-account），替换 AccountNo。
-	// 留空则使用 AccountNo 走 legacy 路径。两者二选一。
+	CreditAmount string `protobuf:"bytes,3,opt,name=credit_amount,json=creditAmount,proto3" json:"credit_amount,omitempty"`
+	Description  string `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`                    // 描述
+	DebitMoney   *Money `protobuf:"bytes,5,opt,name=debit_money,json=debitMoney,proto3" json:"debit_money,omitempty"`    // 借方金额（Money），与 debit_amount 二选一
+	CreditMoney  *Money `protobuf:"bytes,6,opt,name=credit_money,json=creditMoney,proto3" json:"credit_money,omitempty"` // 贷方金额（Money），与 credit_amount 二选一
+	// Fleet × Rotation 路由字段（可选）
+	//
+	// 调用方有两种填法：
+	//
+	//	方式 A (legacy)：直接填 account_no，server 直接用。
+	//	方式 B (fleet routing)：填 logical_account_key + flow_id（leave account_no
+	//	  empty），server 端走 rotation_router：
+	//	    sub_idx = fnv32a(flow_id) % 100
+	//	    account_no := <LA fleet 中 user_id=sub_idx 的 active sub-account>
+	//
+	// 优先级：account_no 非空 → 直接用；否则要求 logical_account_key + flow_id 都
+	// 非空，server 端 routing 失败（LA 不存在 / fleet 未建好 / 锁竞争）→ 返回错误。
+	//
+	// 用途：让 caller 不用关心 fleet 中哪个 sub-account 是 active，只传业务稳定的
+	// LA key + flow id（如 order_no）即可让流量自动散到 100 个 sub-account 上，同时
+	// 在 rotation 切换时自动跟随到新 group。
 	LogicalAccountKey string `protobuf:"bytes,7,opt,name=logical_account_key,json=logicalAccountKey,proto3" json:"logical_account_key,omitempty"`
 	FlowId            string `protobuf:"bytes,8,opt,name=flow_id,json=flowId,proto3" json:"flow_id,omitempty"`
 	unknownFields     protoimpl.UnknownFields
@@ -687,7 +700,6 @@ func (x *AccountingEntry) GetCreditMoney() *Money {
 	return nil
 }
 
-// GetLogicalAccountKey fleet routing 字段 — caller 填了即 server 端走 rotation_router。
 func (x *AccountingEntry) GetLogicalAccountKey() string {
 	if x != nil {
 		return x.LogicalAccountKey
@@ -695,7 +707,6 @@ func (x *AccountingEntry) GetLogicalAccountKey() string {
 	return ""
 }
 
-// GetFlowId fleet routing hash key — 通常用 order_no / business_no。
 func (x *AccountingEntry) GetFlowId() string {
 	if x != nil {
 		return x.FlowId
@@ -4682,7 +4693,7 @@ const file_accounting_proto_rawDesc = "" +
 	"\x05Money\x12\x1f\n" +
 	"\vminor_units\x18\x01 \x01(\x03R\n" +
 	"minorUnits\x12\x1a\n" +
-	"\bcurrency\x18\x02 \x01(\tR\bcurrency\"\x92\x02\n" +
+	"\bcurrency\x18\x02 \x01(\tR\bcurrency\"\xdb\x02\n" +
 	"\x0fAccountingEntry\x12\x1d\n" +
 	"\n" +
 	"account_no\x18\x01 \x01(\tR\taccountNo\x12%\n" +
@@ -4691,7 +4702,9 @@ const file_accounting_proto_rawDesc = "" +
 	"\vdescription\x18\x04 \x01(\tR\vdescription\x125\n" +
 	"\vdebit_money\x18\x05 \x01(\v2\x14.accounting.v1.MoneyR\n" +
 	"debitMoney\x127\n" +
-	"\fcredit_money\x18\x06 \x01(\v2\x14.accounting.v1.MoneyR\vcreditMoney\"\xe9\x04\n" +
+	"\fcredit_money\x18\x06 \x01(\v2\x14.accounting.v1.MoneyR\vcreditMoney\x12.\n" +
+	"\x13logical_account_key\x18\a \x01(\tR\x11logicalAccountKey\x12\x17\n" +
+	"\aflow_id\x18\b \x01(\tR\x06flowId\"\xe9\x04\n" +
 	"\vTransaction\x12%\n" +
 	"\x0etransaction_id\x18\x01 \x01(\tR\rtransactionId\x122\n" +
 	"\x15parent_transaction_id\x18\x02 \x01(\tR\x13parentTransactionId\x12\x1d\n" +
@@ -5118,7 +5131,7 @@ const file_accounting_proto_rawDesc = "" +
 	"\x11ListDayCutHistory\x12'.accounting.v1.ListDayCutHistoryRequest\x1a(.accounting.v1.ListDayCutHistoryResponse\x12f\n" +
 	"\x11ListSnapshotDates\x12'.accounting.v1.ListSnapshotDatesRequest\x1a(.accounting.v1.ListSnapshotDatesResponse\x12\x96\x01\n" +
 	"!ListAccountsByUserAndBusinessType\x127.accounting.v1.ListAccountsByUserAndBusinessTypeRequest\x1a8.accounting.v1.ListAccountsByUserAndBusinessTypeResponse\x12i\n" +
-	"\x12RebuildHotAccounts\x12(.accounting.v1.RebuildHotAccountsRequest\x1a).accounting.v1.RebuildHotAccountsResponseBGZEgithub.com/xiongwp/accounting-grpc-api/gen/accounting/v1;accountingv1b\x06proto3"
+	"\x12RebuildHotAccounts\x12(.accounting.v1.RebuildHotAccountsRequest\x1a).accounting.v1.RebuildHotAccountsResponseBMZKgithub.com/xiongwp/accounting-grpc-api/kitex_gen/accounting/v1;accountingv1b\x06proto3"
 
 var (
 	file_accounting_proto_rawDescOnce sync.Once

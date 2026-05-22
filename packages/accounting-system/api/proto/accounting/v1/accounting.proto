@@ -96,12 +96,17 @@ message Account {
 
 // AccountingEntry 记账分录
 message AccountingEntry {
-  string account_no    = 1; // 账户号
+  string account_no    = 1; // 账户号；与 logical_account_key 二选一
   string debit_amount  = 2; // 借方金额 (legacy string decimal, 保留兼容)
   string credit_amount = 3; // 贷方金额 (legacy string decimal, 保留兼容)
   string description   = 4; // 描述
   Money  debit_money   = 5; // 高精度借方金额
   Money  credit_money  = 6; // 高精度贷方金额
+  // Fleet × Rotation 路由（可选；与 account_no 二选一）
+  // account_no 留空 + logical_account_key 非空 → server 端按 fnv32a(flow_id)%100
+  // 选 fleet sub-account 替换 account_no。需要同时填 flow_id。
+  string logical_account_key = 7;
+  string flow_id             = 8;
 }
 
 // Transaction 账户流水

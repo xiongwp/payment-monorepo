@@ -17,7 +17,7 @@ import (
 	"context"
 	"fmt"
 
-	accountingv1 "github.com/xiongwp/accounting-grpc-api/gen/accounting/v1"
+	accountingv1 "github.com/xiongwp/accounting-system/kitex_gen/accounting/v1"
 	"go.uber.org/zap"
 )
 
