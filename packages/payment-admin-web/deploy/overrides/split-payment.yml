@@ -50,6 +50,14 @@ services:
       # /workspace 是 monorepo 挂载点（看上面 volumes）→ seed 路径就在它下面。
       # 同一份 json loadtest 也 bind-mount 读，单一源头不会跑偏。
       MONEYFLOW_SEED_DIR: "/workspace/packages/split-payment/seed/scenarios"
+      # Fleet × Rotation routing：true → translator 把 channel-*/platform-*/transit:* 等
+      # 中间节点改填 logical_account_key + flow_id（=charge_id），让 accounting 服务端按
+      # fnv32a(flow_id)%100 选 fleet sub-account。
+      #
+      # 启用前需要：① accounting LA 已注册（admin UI / curl /admin/rotation/register）
+      # ② fleet 100 sub 已 provision（manual-provision + manual-switch 各一次到 active）。
+      # 否则 split-payment 调 accounting 会被服务端拒绝（"no active sub" 错）。
+      SPLIT_PAYMENT_FLEET_ROUTING_ENABLED: "true"
       # 关掉 workspace 模式 (monorepo 根 go.work 不含 split-payment)
       GOWORK: "off"
       GOTOOLCHAIN: "auto"
