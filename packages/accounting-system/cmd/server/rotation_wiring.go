@@ -9,6 +9,8 @@ import (
 	"github.com/xiongwp/accounting-system/internal/infrastructure/sharding"
 	"github.com/xiongwp/accounting-system/internal/repository"
 	"github.com/xiongwp/accounting-system/internal/service"
+	"github.com/xiongwp/payment-util/configcenter"
+	"go.uber.org/zap"
 )
 
 // ============================================================================
@@ -110,18 +112,40 @@ func NewSchedulerAccountIDGenerator(g idgen.IDGenerator) service.AccountIDGenera
 
 // NewRotationScheduler 组装完整 Scheduler。
 // owner 用 HOSTNAME 让多副本之间区分；空字符串走 service.NewScheduler 的默认值。
+// fleetCache 用链式 setter 注入；rotation 完成后 push 到 config-center。
 func NewRotationScheduler(
 	lister service.LogicalAccountLister,
 	instances service.AccountInstanceManager,
 	policies service.PolicyReaderForScheduler,
 	locks service.LockManager,
 	idgenSvc service.AccountIDGenerator,
+	fleetCache service.FleetCache, // fx 自动注入；NewFleetCache provider
 ) *service.Scheduler {
 	owner := os.Getenv("HOSTNAME")
 	if owner == "" {
 		owner = "accounting-rotation-scheduler"
 	}
-	return service.NewScheduler(lister, instances, policies, locks, idgenSvc, owner, nil /* clock=Now */)
+	return service.NewScheduler(lister, instances, policies, locks, idgenSvc, owner, nil /* clock=Now */).
+		WithFleetCache(fleetCache)
+}
+
+// NewFleetCache fx provider — fleet routing 本地缓存（接 config-center push）。
+//
+// 依赖：
+//   - *configcenter.Client（已经在跑 watch namespace=accounting-system）
+//   - ACCOUNTING_FLEET_CONFIG_CENTER_URL 环境变量：config-center server 的 HTTP base
+//     e.g. "http://config-center:9690"。空 → 返回 noop cache（兼容老部署）。
+//
+// 没拿到 client 或 URL 时返回 noopFleetCache：Get 永远 miss → 100% DB fallback
+// （功能正常但少了 cache 加速；监控指标会暴露低 hit 率）。
+func NewFleetCache(cli *configcenter.Client, logger *zap.Logger) service.FleetCache {
+	baseURL := os.Getenv("ACCOUNTING_FLEET_CONFIG_CENTER_URL")
+	if baseURL == "" {
+		// 跟 system_config 用同一个 config-center server，复用 env
+		baseURL = os.Getenv("CONFIG_CENTER_URL")
+	}
+	actor := os.Getenv("HOSTNAME")
+	return service.NewFleetCache(cli, baseURL, actor, logger)
 }
 
 // NewRotationSchedulerCommand fx provider — 把 Scheduler 适配为 SchedulerCommand
@@ -142,12 +166,15 @@ func NewRotationBookingInvoker(svc service.AccountingService) service.BookingInv
 // NewRotationAdminService fx provider — 组装 service.AdminService。
 // registrar 走 LogicalAccountRepository.Register（已含前缀白名单 + unique 冲突保护）。
 // booker 来自 NewRotationBookingInvoker，供 fleet-book demo 端点用；不可空。
+// fleetCache 链式注入：ResolveFleetSubAccount 优先查本地 cache。
 func NewRotationAdminService(
 	logicals service.LogicalAccountAdminReader,
 	registrar service.LogicalAccountAdminRegistrar,
 	accounts service.AccountAdminReader,
 	scheduler service.SchedulerCommand,
 	booker service.BookingInvoker,
+	fleetCache service.FleetCache,
 ) *service.AdminService {
-	return service.NewAdminService(logicals, registrar, accounts, scheduler, booker, nil /* clock=time.Now */)
+	return service.NewAdminService(logicals, registrar, accounts, scheduler, booker, nil /* clock=time.Now */).
+		WithFleetCache(fleetCache)
 }

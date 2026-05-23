@@ -135,6 +135,7 @@ func main() {
 			NewRotationScheduler,
 			NewRotationSchedulerCommand,
 			NewRotationBookingInvoker,
+			NewFleetCache,           // fleet routing 本地缓存（config-center push）
 			NewRotationAdminService,
 		),
 		fx.Provide(NewEtcdClient),
@@ -673,6 +674,8 @@ func StartOutboxBackpressureController(lc fx.Lifecycle, srv *grpcserver.Server, 
 						if !shrunk && pending > float64(highThreshold) {
 							srv.SetMaxInflight(shrunkMax)
 							shrunk = true
+							metrics.OutboxBackpressureEngaged.Set(1)
+							metrics.OutboxBackpressureTransitionsTotal.WithLabelValues("engage").Inc()
 							logger.Warn("outbox backpressure ENGAGED: shrinking max_inflight",
 								zap.Float64("pending", pending),
 								zap.Int64("highThreshold", highThreshold),
@@ -682,6 +685,8 @@ func StartOutboxBackpressureController(lc fx.Lifecycle, srv *grpcserver.Server, 
 						} else if shrunk && pending < float64(lowThreshold) {
 							srv.SetMaxInflight(originalMax)
 							shrunk = false
+							metrics.OutboxBackpressureEngaged.Set(0)
+							metrics.OutboxBackpressureTransitionsTotal.WithLabelValues("release").Inc()
 							logger.Info("outbox backpressure RELEASED: restoring max_inflight",
 								zap.Float64("pending", pending),
 								zap.Int64("lowThreshold", lowThreshold),

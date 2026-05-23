@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/xiongwp/accounting-system/internal/domain/model"
+	"go.uber.org/zap"
 )
 
 // ============================================================================
@@ -60,6 +61,13 @@ type AccountInstanceManager interface {
 	// 跨 100 sub-account 并行：oldGroup all active→draining；newGroup all provisioned→active；
 	// LA.current_active_account_no + current_active_group 同步更新。
 	PromoteAndDrainFleet(ctx context.Context, params PromoteAndDrainFleetParams) error
+
+	// ListActiveFleet 拉 logical_account 下所有 phase=active 的 sub-account，
+	// 按 user_id 升序排列（sub_idx=0..99）。fleet 切换 / provisioned 完成后用来
+	// 给 config-center push 当前 active 100-sub 快照。
+	//
+	// 返回 [100]string；某个 idx 没 active sub 时对应元素是空字符串。
+	ListActiveFleet(ctx context.Context, logicalAccountID int64) ([]string, error)
 }
 
 // PromoteAndDrainFleetParams fleet 切换参数。
@@ -120,6 +128,10 @@ type Scheduler struct {
 	idgen     AccountIDGenerator
 	clock     func() time.Time
 	owner     string // 本副本身份（用于 lock 审计）
+	// fleetCache rotation 完成后把新 active 100-sub 推到 config-center
+	// 让所有 accounting 实例本地 cache 立刻拿到新映射，gRPC routing 不用查 DB
+	// nil 安全：不注入时跳过 push（兼容老部署）
+	fleetCache FleetCache
 }
 
 // NewScheduler 构造。clock 可注入；nil 时用 time.Now()。owner 推荐用 hostname + pid。
@@ -146,6 +158,37 @@ func NewScheduler(
 		idgen:     idgen,
 		owner:     owner,
 		clock:     clock,
+	}
+}
+
+// WithFleetCache 注入 fleet cache（config-center push 通道）。链式调用注入。
+// nil 安全：未注入时 swap / ensureProvisioned 完成后不推送 config-center，
+// gRPC routing 100% 走 DB（功能正常但少了 cache 加速）。
+func (s *Scheduler) WithFleetCache(cache FleetCache) *Scheduler {
+	s.fleetCache = cache
+	return s
+}
+
+// pushFleetCacheAfterRotation rotation 完成（swap/ensureProvisioned）后
+// 拉新 active 100 sub-account 推到 config-center。
+// 失败只 warn 不影响主流程（cache miss caller 会 fallback 到 DB）。
+func (s *Scheduler) pushFleetCacheAfterRotation(ctx context.Context, logicalAccountID int64, logger *zap.Logger) {
+	if s.fleetCache == nil {
+		return
+	}
+	subs, err := s.instances.ListActiveFleet(ctx, logicalAccountID)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("fleet cache push: list active fleet failed (cache may be stale)",
+				zap.Int64("la_id", logicalAccountID), zap.Error(err))
+		}
+		return
+	}
+	if pErr := s.fleetCache.Push(ctx, logicalAccountID, subs); pErr != nil {
+		if logger != nil {
+			logger.Warn("fleet cache push failed (cache may be stale, caller fallback to DB)",
+				zap.Int64("la_id", logicalAccountID), zap.Error(pErr))
+		}
 	}
 }
 
@@ -381,6 +424,10 @@ func (s *Scheduler) swap(
 		return fmt.Errorf("promote and drain fleet: %w", err)
 	}
 	result.Activated++
+
+	// rotation 成功后把新 active fleet 推到 config-center，让所有 accounting
+	// 实例本地 cache 立即更新。失败不影响主流程（caller 退化到 DB 查询）。
+	s.pushFleetCacheAfterRotation(ctx, la.ID, nil)
 	return nil
 }
 

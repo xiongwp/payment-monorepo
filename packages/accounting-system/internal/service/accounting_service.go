@@ -1798,15 +1798,8 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 	// TransactionOrder.Extra，从这里通过参数传入。本函数永不调 resolveCutDate
 	// 重算 —— 抗时钟漂移、抗 SystemConfig reload、抗多 pod / DB 重启 / 重试。
 
-	// ── TCC 协调者：写入 TRYING 阶段标记（Risk A 修复）────────────────────────────
-	// RecoveryWorker 依据此记录判断超时事务是 Cancel（TRYING）还是需要告警不取消（CONFIRMING）。
-	// 写入失败为非致命错误：协调者不存在时 RecoveryWorker 退化为原有行为（扫描分支记录）。
-	if s.tccCoordRepo != nil {
-		if coordErr := s.tccCoordRepo.Create(ctx, voucherNo, req.BusinessNo, cutDate, req.Currency, len(req.Entries)); coordErr != nil {
-			s.logger.Warn("tcc coordinator create failed (non-fatal, recovery may fall back to branch scan)",
-				zap.String("voucherNo", voucherNo), zap.Error(coordErr))
-		}
-	}
+	// TCC 协调者写入延后到 dbGroupKeys 算出之后，便于做 fast-path 判定。
+	// 见 line ~1834 之后的 singleDBFastPath 块。
 
 	// shardedEntry 在分组时一并计算路由，消除 goroutine 内重复调用 RouteByAccountNo。
 	type shardedEntry struct {
@@ -1833,6 +1826,26 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 		})
 	}
 
+	// Fast-path 判定：单 DB 组（所有 entries 路由到同一 dbIdx）。
+	// fleet × rotation 同 LA 多 leg 路由同 sub 时常见。
+	// 优化：
+	//   1. 跳过 tcc_coord 写入（meta DB write）— Recovery 仍能通过扫 tcc_branch 完成清理
+	//   2. 跳过 goroutine spawn（WaitGroup 无开销）
+	//   3. Phase 1 Try 直接同步执行
+	//   注意 Confirm 阶段保持，仍写 voucher + transaction 流水（业务正确性需要）
+	singleDBFastPath := len(dbGroupKeys) == 1
+
+	// ── TCC 协调者：写入 TRYING 阶段标记（Risk A 修复）────────────────────────────
+	// RecoveryWorker 依据此记录判断超时事务是 Cancel（TRYING）还是需要告警不取消（CONFIRMING）。
+	// 写入失败为非致命错误：协调者不存在时 RecoveryWorker 退化为原有行为（扫描分支记录）。
+	// Fast-path 单 DB 时跳过此 write — 无跨 DB 协调需要，Recovery 直接扫 tcc_branch。
+	if s.tccCoordRepo != nil && !singleDBFastPath {
+		if coordErr := s.tccCoordRepo.Create(ctx, voucherNo, req.BusinessNo, cutDate, req.Currency, len(req.Entries)); coordErr != nil {
+			s.logger.Warn("tcc coordinator create failed (non-fatal, recovery may fall back to branch scan)",
+				zap.String("voucherNo", voucherNo), zap.Error(coordErr))
+		}
+	}
+
 	// ── Phase 1: 并行 Try（每 DB 一个事务）──────────────────────────────────
 	//
 	// outcomes[i].err == nil 表示第 i 条分录 Try 成功。
@@ -1852,19 +1865,16 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 		balanceDelta int64
 	}
 
-	var wg sync.WaitGroup
-	for _, dbIdx := range dbGroupKeys {
-		dbIdx, group := dbIdx, dbGroupMap[dbIdx]
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			db, err := s.dbManager.GetDB(dbIdx)
-			if err != nil {
-				for _, se := range group {
-					outcomes[se.idx].err = fmt.Errorf("get db[%d]: %w", dbIdx, err)
-				}
-				return
+	// tryGroup 把单 DB 组的 Try 阶段封装；多 DB 路径在 goroutine 里并发跑；
+	// 单 DB fast-path 同步直接调用，省去 goroutine 调度 + WaitGroup 开销。
+	tryGroup := func(dbIdx int, group []shardedEntry) {
+		db, err := s.dbManager.GetDB(dbIdx)
+		if err != nil {
+			for _, se := range group {
+				outcomes[se.idx].err = fmt.Errorf("get db[%d]: %w", dbIdx, err)
 			}
+			return
+		}
 
 			// 包一层 retryOnDeadlock：InnoDB gap-lock 死锁（热点账户 fee / platform 上常见）
 			// 由本函数内部 rollback 释放所有锁 + jitter 退避后重试，整组 Try 再做一遍。
@@ -1911,14 +1921,30 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 				}
 				return
 			}
-			// 整组 Try 成功，填充 meta + balanceDelta（供 Cancel 和 Confirm 使用）
-			for gi, se := range group {
-				outcomes[se.idx].meta = tccBranchMeta{se.dbIdx, pendingDeltas[gi].tableIdx, transactionIDs[se.idx], se.entry}
-				outcomes[se.idx].balanceDelta = pendingDeltas[gi].balanceDelta
-			}
-		}()
+		// 整组 Try 成功，填充 meta + balanceDelta（供 Cancel 和 Confirm 使用）
+		for gi, se := range group {
+			outcomes[se.idx].meta = tccBranchMeta{se.dbIdx, pendingDeltas[gi].tableIdx, transactionIDs[se.idx], se.entry}
+			outcomes[se.idx].balanceDelta = pendingDeltas[gi].balanceDelta
+		}
 	}
-	wg.Wait()
+
+	// Try 执行：单 DB 直接同步调用；多 DB 时 goroutine 并发执行各 DB 组。
+	if singleDBFastPath {
+		dbIdx := dbGroupKeys[0]
+		tryGroup(dbIdx, dbGroupMap[dbIdx])
+		metrics.BookingTotal.WithLabelValues("tcc_single_db").Inc()
+	} else {
+		var wg sync.WaitGroup
+		for _, dbIdx := range dbGroupKeys {
+			dbIdx, group := dbIdx, dbGroupMap[dbIdx]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				tryGroup(dbIdx, group)
+			}()
+		}
+		wg.Wait()
+	}
 
 	// 汇总 Try 结果
 	tried := make([]tccBranchMeta, 0, len(req.Entries))
@@ -1939,7 +1965,8 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 		defer cleanupCancel()
 
 		// 协调者：Try 失败 → 标记 CANCELLED（非致命，失败仅影响 Recovery Worker 判断）
-		if s.tccCoordRepo != nil {
+		// Fast-path 单 DB 时跳过（Create 也没写）。
+		if s.tccCoordRepo != nil && !singleDBFastPath {
 			if cErr := s.tccCoordRepo.TransitionToCancelled(cleanupCtx, voucherNo); cErr != nil {
 				s.logger.Warn("tcc coordinator cancel transition failed",
 					zap.String("voucherNo", voucherNo), zap.Error(cErr))
@@ -1965,7 +1992,8 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 	// recovery worker 已经把 coordinator 改成 CANCELLED 并 cancel 掉了 branch
 	// (释放冻结)。此时再继续 Confirm 等于"释放冻结后又应用余额 = 凭空多钱"，
 	// 资金会不平。**必须 fail-fast 不再继续 Confirm，让调用方拿到 error 重试。**
-	if s.tccCoordRepo != nil {
+	// Fast-path 单 DB 跳过（coord 没创建，CAS 也没必要）。
+	if s.tccCoordRepo != nil && !singleDBFastPath {
 		if cErr := s.tccCoordRepo.TransitionToConfirming(confirmCtx, voucherNo); cErr != nil {
 			s.logger.Error("tcc coordinator confirming CAS failed — aborting confirm to protect fund integrity",
 				zap.String("voucherNo", voucherNo), zap.Error(cErr))
@@ -2059,7 +2087,8 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 	// 协调者：所有 Confirm 成功 → 标记 CONFIRMED。
 	// cut_date 已在 Create 时写入 + propagate 到所有 entry 的 cut_date 列，
 	// 不再需要 finalize fan-out（试算平衡靠 cut_date tag 自然成立）。
-	if s.tccCoordRepo != nil {
+	// Fast-path 单 DB 跳过（coord 没创建）。
+	if s.tccCoordRepo != nil && !singleDBFastPath {
 		if cErr := s.tccCoordRepo.TransitionToConfirmed(confirmCtx, voucherNo); cErr != nil {
 			s.logger.Warn("tcc coordinator confirmed transition failed (non-fatal)",
 				zap.String("voucherNo", voucherNo), zap.Error(cErr))

@@ -70,6 +70,28 @@ func (a *accountInstanceManagerAdapter) PromoteAndDrainFleet(ctx context.Context
 	})
 }
 
+// ListActiveFleet 实现 — 利用现有 repo.ListByLogical 拉所有 instance，过滤 active，
+// 按 user_id 排到 [100]string。空 sub_idx 留空字符串（部分 provision 失败时）。
+func (a *accountInstanceManagerAdapter) ListActiveFleet(ctx context.Context, laID int64) ([]string, error) {
+	instances, err := a.repo.ListByLogical(ctx, laID, 250) // 100 active + 100 draining + 部分 provisioned/frozen
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 100)
+	for _, inst := range instances {
+		if inst.LifecyclePhase != model.LifecyclePhaseActive {
+			continue
+		}
+		// user_id 在 fleet 设计里就是 sub_idx (0..99)
+		idx := int(inst.UserID)
+		if idx < 0 || idx >= 100 {
+			continue
+		}
+		out[idx] = inst.AccountNo
+	}
+	return out, nil
+}
+
 // PromoteToFrozen 适配 InstancePhasePromoter 接口。
 func (a *accountInstanceManagerAdapter) PromoteToFrozen(
 	ctx context.Context, accountNo string, expectedVersion int64, frozenAt time.Time,

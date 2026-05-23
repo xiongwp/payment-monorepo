@@ -95,7 +95,10 @@ type AdminService struct {
 	accounts  AccountAdminReader
 	scheduler SchedulerCommand
 	booker    BookingInvoker // 可空 → fleet test-book 端点返回 "not wired"
-	clock     func() time.Time
+	// fleetCache 接 config-center 的本地 cache + push 通道；nil 时 ResolveFleetSubAccount
+	// 走 DB fallback（兼容老部署）。生产应该总是注入。
+	fleetCache FleetCache
+	clock      func() time.Time
 }
 
 // NewAdminService 构造。registrar / booker 传 nil 时对应写端点降级（返回 "not wired"），不 panic。
@@ -118,6 +121,14 @@ func NewAdminService(
 		booker:    booker,
 		clock:     clock,
 	}
+}
+
+// WithFleetCache 注入 fleet 本地缓存（接 config-center push）。
+// nil 安全：未注入时 ResolveFleetSubAccount 100% 走 DB。
+// fx 在 main 里通过链式调用注入：NewAdminService(...).WithFleetCache(cache)
+func (s *AdminService) WithFleetCache(cache FleetCache) *AdminService {
+	s.fleetCache = cache
+	return s
 }
 
 // ============================================================================
@@ -587,6 +598,26 @@ func (s *AdminService) ResolveFleetSubAccount(
 	_, _ = h.Write([]byte(flowID))
 	subIdx := int(h.Sum32() % 100)
 
+	// 优先查本地 cache（config-center 推过来的，纳秒级 atomic read）
+	// hit 时只返回 account_no，省掉跨 shard SELECT。balance / phase 等字段
+	// 在生产 gRPC 路由（fleet_routing.go）路径其实用不到，只 admin demo 端点用，
+	// 所以 cache hit 时返回轻量字段；caller 真要看 balance 走单独 instance-detail。
+	if s.fleetCache != nil {
+		if accountNo, hit := s.fleetCache.Get(la.ID, subIdx); hit {
+			return &FleetSubResolution{
+				LogicalAccountID:  la.ID,
+				LogicalAccountKey: la.LogicalAccountKey,
+				FlowID:            flowID,
+				SubIdx:            subIdx,
+				AccountNo:         accountNo,
+				// 以下字段从 cache 无法直接拿；admin demo 想看就走 DB fallback
+				// 或单独调 instance-detail 端点。生产 fleet_routing 只用 AccountNo。
+				Currency: la.Currency,
+			}, nil
+		}
+	}
+
+	// cache miss → fallback 到 DB（保证可用性 — cache 还没就绪 / 刚 provision 还没 push）
 	sub, err := s.accounts.GetActiveSubAccount(ctx, la.ID, subIdx)
 	if err != nil {
 		return nil, fmt.Errorf("GetActiveSubAccount(la=%d, sub=%d): %w", la.ID, subIdx, err)
