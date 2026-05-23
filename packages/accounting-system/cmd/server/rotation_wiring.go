@@ -134,7 +134,12 @@ func NewRotationScheduler(
 // 依赖：
 //   - *configcenter.Client（已经在跑 watch namespace=accounting-system）
 //   - ACCOUNTING_FLEET_CONFIG_CENTER_URL 环境变量：config-center server 的 HTTP base
-//     e.g. "http://config-center:9690"。空 → 返回 noop cache（兼容老部署）。
+//     e.g. "http://config-center:9691"。空 → 返回 noop cache（兼容老部署）。
+//
+// 注意 config-center 端口约定：
+//   - 9690 = gRPC（SDK 不用；保留）
+//   - 9691 = HTTP (admin / SDK REST / SSE watch) ★ fleet push 用这个 ★
+//   - 9692 = metrics
 //
 // 没拿到 client 或 URL 时返回 noopFleetCache：Get 永远 miss → 100% DB fallback
 // （功能正常但少了 cache 加速；监控指标会暴露低 hit 率）。
@@ -143,6 +148,10 @@ func NewFleetCache(cli *configcenter.Client, logger *zap.Logger) service.FleetCa
 	if baseURL == "" {
 		// 跟 system_config 用同一个 config-center server，复用 env
 		baseURL = os.Getenv("CONFIG_CENTER_URL")
+	}
+	if baseURL == "" {
+		// 联栈 dev 默认值（生产应该走 env 显式注入）
+		baseURL = "http://config-center:9691"
 	}
 	actor := os.Getenv("HOSTNAME")
 	return service.NewFleetCache(cli, baseURL, actor, logger)
