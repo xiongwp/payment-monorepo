@@ -41,6 +41,7 @@ func TestFleetCache_PushHTTPShape(t *testing.T) {
 		mu          sync.Mutex
 		gotMethod   string
 		gotURLPath  string
+		gotXActor   string
 		gotBody     map[string]interface{}
 		gotJSONMap  map[string]string
 	)
@@ -50,6 +51,7 @@ func TestFleetCache_PushHTTPShape(t *testing.T) {
 		defer mu.Unlock()
 		gotMethod = r.Method
 		gotURLPath = r.URL.Path
+		gotXActor = r.Header.Get("X-Actor")
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &gotBody)
 		if vRaw, ok := gotBody["value"].(string); ok {
@@ -87,6 +89,7 @@ func TestFleetCache_PushHTTPShape(t *testing.T) {
 	defer mu.Unlock()
 	assert.Equal(t, http.MethodPut, gotMethod)
 	assert.Equal(t, "/api/v1/configs/accounting-system/fleet.42", gotURLPath)
+	assert.Equal(t, "test-actor", gotXActor, "X-Actor header required by config-center 审计")
 	assert.Equal(t, "test-actor", gotBody["actor"])
 	assert.Contains(t, gotBody["change_reason"], "la_id=42")
 	assert.Equal(t, "json", gotBody["format"])

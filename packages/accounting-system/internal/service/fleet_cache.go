@@ -149,6 +149,9 @@ func (c *configFleetCache) Push(ctx context.Context, laID int64, subAccounts []s
 		return fmt.Errorf("fleet cache Push: new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// config-center 审计：actor 必须同时放 HTTP header（X-Actor）+ body。
+	// 单放 body 时 server 返 401 "X-Actor required"。
+	req.Header.Set("X-Actor", c.actor)
 
 	resp, err := c.httpc.Do(req)
 	if err != nil {
