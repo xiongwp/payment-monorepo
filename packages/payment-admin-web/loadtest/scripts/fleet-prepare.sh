@@ -19,7 +19,22 @@
 
 set -euo pipefail
 
-ADMIN_HTTP="${ADMIN_HTTP:-http://localhost:8891}"
+# 自动探测 accounting admin port — 每次重启 docker compose 容器端口会飘
+# (compose 在 8890-8897 range 内顺移分配)。直接问 docker 拿现在的 host port。
+autodetect_admin_port() {
+  local p
+  p=$(docker port accounting-system-accounting-service-1 8888/tcp 2>/dev/null | head -1 | awk -F: '{print $NF}')
+  if [[ -z "$p" ]]; then
+    p=$(docker port accounting-system-accounting-service-2 8888/tcp 2>/dev/null | head -1 | awk -F: '{print $NF}')
+  fi
+  echo "$p"
+}
+DETECTED_PORT=$(autodetect_admin_port)
+if [[ -n "$DETECTED_PORT" ]]; then
+  ADMIN_HTTP="${ADMIN_HTTP:-http://localhost:${DETECTED_PORT}}"
+else
+  ADMIN_HTTP="${ADMIN_HTTP:-http://localhost:8891}"   # 兜底（容器不在跑就用 default 让用户看到清晰错误）
+fi
 OPERATOR="${OPERATOR:-loadtest-fleet-prepare}"
 REASON="${REASON:-prepare fleet for loadtest}"
 CURRENCY="${CURRENCY:-PHP}"
@@ -104,6 +119,7 @@ register_and_provision() {
 EOF
 )
   local rc
+  : > /tmp/reg_resp   # 清掉上一次的残留，避免 HTTP 000 时打印错的消息
   rc=$(curl -s -o /tmp/reg_resp -w "%{http_code}" -X POST \
     "${ADMIN_HTTP}/admin/rotation/register" \
     -H 'Content-Type: application/json' \
@@ -111,7 +127,8 @@ EOF
   case "${rc}" in
     200)  green "  ✓ registered (new)" ;;
     409)  yellow "  • already exists, skip register" ;;
-    *)    red "  ✗ register failed (HTTP ${rc}): $(cat /tmp/reg_resp)"; return 1 ;;
+    000)  red "  ✗ connection refused (admin HTTP ${ADMIN_HTTP} unreachable)"; return 1 ;;
+    *)    red "  ✗ register failed (HTTP ${rc}): $(cat /tmp/reg_resp 2>/dev/null)"; return 1 ;;
   esac
 
   # ── 2. manual-provision（建 100 sub）
@@ -120,24 +137,26 @@ EOF
 {"logical_account_key": "${key}", "operator": "${OPERATOR}", "reason": "${REASON}"}
 EOF
 )
+  : > /tmp/prov_resp
   rc=$(curl -s -o /tmp/prov_resp -w "%{http_code}" -X POST \
     "${ADMIN_HTTP}/admin/rotation/manual-provision" \
     -H 'Content-Type: application/json' \
     -d "${op_payload}")
   if [[ "${rc}" -ne 200 ]]; then
-    red "  ✗ manual-provision failed (HTTP ${rc}): $(cat /tmp/prov_resp)"
+    red "  ✗ manual-provision failed (HTTP ${rc}): $(cat /tmp/prov_resp 2>/dev/null)"
     return 1
   fi
   green "  ✓ provisioned (100 sub)"
 
   # ── 3. manual-switch（active → draining 同时 provisioned → active）
   # 首次 active==nil 时 switch 也走 swap 路径，把 provisioned 提到 active
+  : > /tmp/sw_resp
   rc=$(curl -s -o /tmp/sw_resp -w "%{http_code}" -X POST \
     "${ADMIN_HTTP}/admin/rotation/manual-switch" \
     -H 'Content-Type: application/json' \
     -d "${op_payload}")
   if [[ "${rc}" -ne 200 ]]; then
-    red "  ✗ manual-switch failed (HTTP ${rc}): $(cat /tmp/sw_resp)"
+    red "  ✗ manual-switch failed (HTTP ${rc}): $(cat /tmp/sw_resp 2>/dev/null)"
     return 1
   fi
   green "  ✓ switched to active"

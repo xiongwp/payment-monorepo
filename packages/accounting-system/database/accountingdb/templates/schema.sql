@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS `account_${TABLE}` (
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键（轮换场景 GroupA + GroupB 各 1 行）',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键（轮换场景 GroupA + GroupB 各 1 行）',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
     KEY `idx_type_status` (`account_type`, `status`),

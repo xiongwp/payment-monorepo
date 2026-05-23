@@ -22,7 +22,10 @@
 
 set -euo pipefail
 
-ADMIN_HTTP="${ADMIN_HTTP:-http://localhost:8893}"
+# 自动探测 admin port（每次 docker compose 重启端口会飘）
+_p=$(docker port accounting-system-accounting-service-1 8888/tcp 2>/dev/null | head -1 | awk -F: '{print $NF}')
+[[ -z "$_p" ]] && _p=$(docker port accounting-system-accounting-service-2 8888/tcp 2>/dev/null | head -1 | awk -F: '{print $NF}')
+ADMIN_HTTP="${ADMIN_HTTP:-http://localhost:${_p:-8891}}"
 SPLIT_PAYMENT_GRPC="${SPLIT_PAYMENT_GRPC:-localhost:9098}"
 CHANNEL="${CHANNEL:-alipay}"
 AMOUNT="${AMOUNT:-10000}"
