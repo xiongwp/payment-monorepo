@@ -87,7 +87,9 @@ func NewAccountingGRPCClient(endpoint string) (*AccountingGRPCClient, error) {
 		client.WithTransportProtocol(transport.GRPC),
 		// 2s inner timeout：loadtest 外层 3s，内层短 1s 让单 leg 先 fail-fast，
 		// 整笔 TriggerEvent 不被一条慢 leg 拖死。retry 已禁掉，不会被放大。
-		client.WithRPCTimeout(2*time.Second),
+		// Fleet × rotation 启用后每个 leg 多一次 LA→sub_account 解析 +
+		// shard write，资源压力大时 2s 不够 → 调 3s。
+		client.WithRPCTimeout(3*time.Second),
 		client.WithFailureRetry(noRetryPolicy),
 	)
 	cli, err := transactionservice.NewClient("accounting-service", opts...)
@@ -96,7 +98,8 @@ func NewAccountingGRPCClient(endpoint string) (*AccountingGRPCClient, error) {
 	}
 	return &AccountingGRPCClient{
 		cli:        cli,
-		Timeout:    2 * time.Second,
+		Timeout:    3 * time.Second, // 同 WithRPCTimeout — fleet routing 解析 + 多 shard write 需要稍宽
+
 		rulesCache: map[string][]*TransactionRule{},
 		rulesExp:   map[string]time.Time{},
 	}, nil
