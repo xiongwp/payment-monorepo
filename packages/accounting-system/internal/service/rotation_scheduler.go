@@ -128,10 +128,17 @@ type Scheduler struct {
 	idgen     AccountIDGenerator
 	clock     func() time.Time
 	owner     string // 本副本身份（用于 lock 审计）
+	logger    *zap.Logger
 	// fleetCache rotation 完成后把新 active 100-sub 推到 config-center
 	// 让所有 accounting 实例本地 cache 立刻拿到新映射，gRPC routing 不用查 DB
 	// nil 安全：不注入时跳过 push（兼容老部署）
 	fleetCache FleetCache
+}
+
+// WithLogger 注入业务日志。
+func (s *Scheduler) WithLogger(l *zap.Logger) *Scheduler {
+	s.logger = l
+	return s
 }
 
 // NewScheduler 构造。clock 可注入；nil 时用 time.Now()。owner 推荐用 hostname + pid。
@@ -427,7 +434,7 @@ func (s *Scheduler) swap(
 
 	// rotation 成功后把新 active fleet 推到 config-center，让所有 accounting
 	// 实例本地 cache 立即更新。失败不影响主流程（caller 退化到 DB 查询）。
-	s.pushFleetCacheAfterRotation(ctx, la.ID, nil)
+	s.pushFleetCacheAfterRotation(ctx, la.ID, s.logger)
 	return nil
 }
 

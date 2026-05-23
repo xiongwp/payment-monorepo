@@ -120,13 +120,15 @@ func NewRotationScheduler(
 	locks service.LockManager,
 	idgenSvc service.AccountIDGenerator,
 	fleetCache service.FleetCache, // fx 自动注入；NewFleetCache provider
+	logger *zap.Logger,
 ) *service.Scheduler {
 	owner := os.Getenv("HOSTNAME")
 	if owner == "" {
 		owner = "accounting-rotation-scheduler"
 	}
 	return service.NewScheduler(lister, instances, policies, locks, idgenSvc, owner, nil /* clock=Now */).
-		WithFleetCache(fleetCache)
+		WithFleetCache(fleetCache).
+		WithLogger(logger)
 }
 
 // NewFleetCache fx provider — fleet routing 本地缓存（接 config-center push）。
@@ -154,6 +156,13 @@ func NewFleetCache(cli *configcenter.Client, logger *zap.Logger) service.FleetCa
 		baseURL = "http://config-center:9691"
 	}
 	actor := os.Getenv("HOSTNAME")
+	// 启动期日志：明确告知是 noop 还是 real cache，方便排障
+	if logger != nil {
+		logger.Info("fleet cache provider initializing",
+			zap.Bool("configcenter_client_nil", cli == nil),
+			zap.String("base_url", baseURL),
+			zap.String("actor", actor))
+	}
 	return service.NewFleetCache(cli, baseURL, actor, logger)
 }
 
