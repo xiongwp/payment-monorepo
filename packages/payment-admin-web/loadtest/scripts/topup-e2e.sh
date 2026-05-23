@@ -26,7 +26,9 @@ set -euo pipefail
 _p=$(docker port accounting-system-accounting-service-1 8888/tcp 2>/dev/null | head -1 | awk -F: '{print $NF}')
 [[ -z "$_p" ]] && _p=$(docker port accounting-system-accounting-service-2 8888/tcp 2>/dev/null | head -1 | awk -F: '{print $NF}')
 ADMIN_HTTP="${ADMIN_HTTP:-http://localhost:${_p:-8891}}"
-SPLIT_PAYMENT_GRPC="${SPLIT_PAYMENT_GRPC:-localhost:9098}"
+# split-payment gRPC port 也会飘（compose 9098-9107 range）— 自动探测
+_sp_port=$(docker port split-payment-split-payment-1 9098/tcp 2>/dev/null | head -1 | awk -F: '{print $NF}')
+SPLIT_PAYMENT_GRPC="${SPLIT_PAYMENT_GRPC:-localhost:${_sp_port:-9098}}"
 CHANNEL="${CHANNEL:-alipay}"
 AMOUNT="${AMOUNT:-10000}"
 CURRENCY="${CURRENCY:-PHP}"
