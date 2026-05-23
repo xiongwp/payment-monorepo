@@ -44,16 +44,20 @@ type AccountingTxResp struct {
 
 // RuleSpec — SaveGraph saga 推到 accounting 的一条 rule 元数据.
 // 字段跟 accounting.model.TransactionRule 对齐, 由 wire 层翻成 JSON 发出去.
+//
+// JSON tag 必填（snake_case）— accounting 端 /admin/transaction-rules DTO 用
+// snake_case 解码；没有 tag 时 Go 默认 Marshal 成 PascalCase（"ProductCode"），
+// 落到 server 端所有字段为空 → UpsertRule 撞 NOT NULL/UNIQUE 约束 → 502。
 type RuleSpec struct {
-	ProductCode     string
-	EventCode       string
-	HashKey         string
-	DebitSubjectID  string
-	CreditSubjectID string
-	FromDirection   string
-	ToDirection     string
-	TransactionType int
-	BookkeepingMode string
+	ProductCode     string `json:"product_code"`
+	EventCode       string `json:"event_code"`
+	HashKey         string `json:"hash_key"`
+	DebitSubjectID  string `json:"debit_subject_id"`
+	CreditSubjectID string `json:"credit_subject_id"`
+	FromDirection   string `json:"from_direction"`
+	ToDirection     string `json:"to_direction"`
+	TransactionType int    `json:"transaction_type"`
+	BookkeepingMode string `json:"bookkeeping_mode"`
 }
 
 // AccountingRuleSyncer — SaveGraph 时把 graph 派生出的 rules 推到 accounting.
