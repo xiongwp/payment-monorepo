@@ -22,7 +22,7 @@ set -euo pipefail
 ADMIN_HTTP="${ADMIN_HTTP:-http://localhost:8891}"
 OPERATOR="${OPERATOR:-loadtest-fleet-prepare}"
 REASON="${REASON:-prepare fleet for loadtest}"
-CURRENCY="${CURRENCY:-CNY}"
+CURRENCY="${CURRENCY:-PHP}"
 
 # 渠道列表（默认 alipay；多个用逗号分隔）
 CHANNELS="alipay"
