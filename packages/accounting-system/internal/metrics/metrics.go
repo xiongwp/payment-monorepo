@@ -31,7 +31,7 @@ var BookingDuration = prometheus.NewHistogram(
 var BookingTotal = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "accounting_booking_total",
-		Help: "Total double-entry booking requests, labeled by execution path (hot|tcc)",
+		Help: "Total double-entry booking requests, labeled by execution path: hot|tcc|tcc_single_db",
 	},
 	[]string{"path"},
 )
@@ -90,6 +90,27 @@ var OutboxPendingGauge = prometheus.NewGauge(
 		Name: "accounting_outbox_pending_records",
 		Help: "Current number of REDIS_DONE outbox records waiting for MySQL write (lag indicator)",
 	},
+)
+
+// OutboxBackpressureEngaged 当前 backpressure 是否激活
+//   1 = 已收缩 gRPC max_inflight（throttle 状态）
+//   0 = 正常
+// StartOutboxBackpressureController 状态切换时更新此值；监控/告警直接读。
+var OutboxBackpressureEngaged = prometheus.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "accounting_outbox_backpressure_engaged",
+		Help: "1 when outbox backpressure has shrunk gRPC max_inflight; 0 when normal.",
+	},
+)
+
+// OutboxBackpressureTransitionsTotal backpressure engage/release 切换计数。
+// 频繁切换 = 阈值或 outbox worker 吞吐配错；持续 engage = 入口 > outbox 处理能力。
+var OutboxBackpressureTransitionsTotal = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "accounting_outbox_backpressure_transitions_total",
+		Help: "Transitions of outbox backpressure controller; high engage rate indicates under-provisioned outbox writer.",
+	},
+	[]string{"transition"}, // "engage" | "release"
 )
 
 // OutboxOldestPendingAgeSeconds 当前积压队列里最老的 outbox 记录的年龄（秒）。
@@ -390,6 +411,8 @@ func Register() {
 		TccConfirmDuration,
 		TccCancelDuration,
 		WarmAccountFailuresTotal,
+		OutboxBackpressureEngaged,
+		OutboxBackpressureTransitionsTotal,
 	)
 }
 

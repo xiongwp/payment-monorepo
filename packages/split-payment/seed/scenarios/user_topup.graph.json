@@ -1,6 +1,6 @@
 {
-  "key": "user-topup-default",
-  "name": "用户充值标准流程",
+  "key": "user-topup-v1",
+  "name": "用户充值（5 leg: 渠道收款 → 挂账 → 用户钱包 + 渠道手续费分润）",
   "version": "1.0.0",
   "status": "active",
   "spec": {
@@ -94,21 +94,21 @@
     "_doc": "调用时 caller 把每个 node.account_id_attr 对应的 (account_id, amount, currency) 塞进 attributes; convention: <key>_amount / <key>_currency",
     "channel_receivable_account":          "PLATFORM_RECEIVABLE_CHANNEL/sub_42",
     "channel_receivable_account_amount":   "10000",
-    "channel_receivable_account_currency": "CNY",
+    "channel_receivable_account_currency": "PHP",
     "channel_suspense_account":            "PLATFORM_CHANNEL_INBOUND_SUSPENSE/main",
     "channel_suspense_account_amount":     "10000",
-    "channel_suspense_account_currency":   "CNY",
+    "channel_suspense_account_currency":   "PHP",
     "user_id_account":                     "42",
     "user_id_account_amount":              "9900",
-    "user_id_account_currency":            "CNY",
+    "user_id_account_currency":            "PHP",
     "fee_clearing_account":                "PLATFORM_FEE_CLEARING/main",
     "fee_clearing_account_amount":         "100",
-    "fee_clearing_account_currency":       "CNY",
+    "fee_clearing_account_currency":       "PHP",
     "channel_fee_account":                 "alipay_ch_fee/main",
     "channel_fee_account_amount":          "60",
-    "channel_fee_account_currency":        "CNY",
+    "channel_fee_account_currency":        "PHP",
     "fee_account":                         "PLATFORM_FEE_REVENUE/main",
     "fee_account_amount":                  "40",
-    "fee_account_currency":                "CNY"
+    "fee_account_currency":                "PHP"
   }
 }

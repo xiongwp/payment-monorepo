@@ -44,16 +44,20 @@ type AccountingTxResp struct {
 
 // RuleSpec — SaveGraph saga 推到 accounting 的一条 rule 元数据.
 // 字段跟 accounting.model.TransactionRule 对齐, 由 wire 层翻成 JSON 发出去.
+//
+// JSON tag 必填（snake_case）— accounting 端 /admin/transaction-rules DTO 用
+// snake_case 解码；没有 tag 时 Go 默认 Marshal 成 PascalCase（"ProductCode"），
+// 落到 server 端所有字段为空 → UpsertRule 撞 NOT NULL/UNIQUE 约束 → 502。
 type RuleSpec struct {
-	ProductCode     string
-	EventCode       string
-	HashKey         string
-	DebitSubjectID  string
-	CreditSubjectID string
-	FromDirection   string
-	ToDirection     string
-	TransactionType int
-	BookkeepingMode string
+	ProductCode     string `json:"product_code"`
+	EventCode       string `json:"event_code"`
+	HashKey         string `json:"hash_key"`
+	DebitSubjectID  string `json:"debit_subject_id"`
+	CreditSubjectID string `json:"credit_subject_id"`
+	FromDirection   string `json:"from_direction"`
+	ToDirection     string `json:"to_direction"`
+	TransactionType int    `json:"transaction_type"`
+	BookkeepingMode string `json:"bookkeeping_mode"`
 }
 
 // AccountingRuleSyncer — SaveGraph 时把 graph 派生出的 rules 推到 accounting.
@@ -369,20 +373,33 @@ func (s *Server) TriggerEvent(ctx context.Context, req *TriggerEventRequest) (*T
 		return &TriggerEventResponse{Error: "translate: " + err.Error()}, nil
 	}
 
-	// SP-AC-7 resume-aware trigger: 多个 transaction (= 多个 event_code) 不再 break-on-failure.
-	// 关键场景:
-	//   - 单笔 trigger 跑 N 个 tx, 中间某个失败 → 不影响后面已配置的 tx 继续尝试
-	//   - 同 business_no 重新 trigger → 已 Success 的 tx 走 accounting 幂等返 cached
-	//   - 卡 Processing 的 tx → 主动 reset 一次再重试 (resetThenRetry)
-	// 资金安全: accounting CreateTransaction 内部按 order_no 幂等 + status 守门员, 多次调用 0 重复落账.
+	// ★ 资金流必须按 graph 定义的顺序严格串行执行：
+	//   - plan.Transactions[] 已经是 translator 按 edge 顺序产出的有序列表
+	//   - 不能并发（即使 accounting 幂等也违反业务语义；leg N 依赖 leg N-1 落账状态）
+	//   - 任一 leg 失败 (status=3) → 后续 legs 全部 skip，不再调 accounting
+	//     （避免 1/N 成功 N-1/N 失败的 partial booking 灾难）
+	//
+	// 资金安全：accounting CreateTransaction 内部按 order_no 幂等。同 charge_id 重试
+	// 时，已 success 的 leg 走 accounting 缓存返回，不重复落账；卡 processing 的
+	// leg 主动 reset 后再调；新 leg 真发。
 	resp := &TriggerEventResponse{}
 	var failedTx []string
+	abortRemaining := false // ★ 一旦某 leg failed，后续标 skip 不调 accounting
 	for i := range plan.Transactions {
 		tx := &plan.Transactions[i]
 		v := &TxnVoucher{EventCode: tx.EventCode, OrderNo: tx.OrderNo}
 
+		// 前面 leg 失败 → 不再调 accounting，标 skipped
+		if abortRemaining {
+			v.Status = 4 // SKIPPED（split-payment 自定义，accounting 没这个语义）
+			v.Error = "skipped: prior leg in this trigger failed; sequential abort"
+			failedTx = append(failedTx, tx.OrderNo)
+			resp.Vouchers = append(resp.Vouchers, v)
+			continue
+		}
+
 		acctResp, callErr := s.Accounting.CreateTransaction(ctx, tx)
-		// 处理 Processing 卡死: 主动 reset 一次, 再调一次 CreateTransaction.
+		// 处理 Processing 卡死：主动 reset 一次，再调一次 CreateTransaction
 		if callErr == nil && acctResp != nil && acctResp.Status == 1 /*Processing*/ {
 			if s.OrderReset != nil {
 				if rerr := s.OrderReset.ResetOrder(ctx, tx.OrderNo, tx.OrderNo, false); rerr != nil {
@@ -391,7 +408,6 @@ func (s *Server) TriggerEvent(ctx context.Context, req *TriggerEventRequest) (*T
 							zap.String("order_no", tx.OrderNo), zap.Error(rerr))
 					}
 				} else {
-					// reset OK, 再调一次 CreateTransaction (走 Failed → Processing → Confirm 重试分支).
 					if r2, e2 := s.Accounting.CreateTransaction(ctx, tx); e2 == nil && r2 != nil {
 						acctResp, callErr = r2, nil
 					}
@@ -403,8 +419,9 @@ func (s *Server) TriggerEvent(ctx context.Context, req *TriggerEventRequest) (*T
 			v.Status = 3
 			v.Error = callErr.Error()
 			failedTx = append(failedTx, tx.OrderNo)
+			abortRemaining = true // ★ 后续 legs 不再执行
 			if s.Log != nil {
-				s.Log.Error("TriggerEvent: CreateTransaction failed (continuing)",
+				s.Log.Error("TriggerEvent: leg failed → abort subsequent legs",
 					zap.String("graph_key", req.GraphKey),
 					zap.String("event_code", tx.EventCode),
 					zap.String("order_no", tx.OrderNo),
@@ -413,23 +430,34 @@ func (s *Server) TriggerEvent(ctx context.Context, req *TriggerEventRequest) (*T
 					zap.Error(callErr))
 			}
 			resp.Vouchers = append(resp.Vouchers, v)
-			continue // 不 break, 继续跑后续 tx
+			continue
 		}
 		v.VoucherNo = acctResp.VoucherNo
 		v.Status = int32(acctResp.Status)
 		if acctResp.Error != "" {
 			v.Error = acctResp.Error
 		}
-		if acctResp.Status != 2 /*Success*/ {
+		// accounting Status 语义：
+		//   1 = Processing —— TCC try 已落库，confirm 异步进行中（最终会到 2 或 3）
+		//   2 = Success    —— 已 commit
+		//   3 = Failed     —— 真失败（业务拒 / 余额不够 / 系统错）
+		// 严格 ordering：status=3 → abort 后续 leg。status=1（Processing）继续往下走，
+		// 因为它最终会变 2（accounting 内部已经记账，confirm 异步进行）。
+		if acctResp.Status == 3 /*Failed*/ {
 			failedTx = append(failedTx, tx.OrderNo)
+			abortRemaining = true // ★
+			if s.Log != nil {
+				s.Log.Error("TriggerEvent: leg status=Failed → abort subsequent legs",
+					zap.String("graph_key", req.GraphKey),
+					zap.String("event_code", tx.EventCode),
+					zap.String("order_no", tx.OrderNo),
+					zap.String("acct_err", acctResp.Error))
+			}
 		}
-		// 每条 voucher 落 metric (按 event_code 区分,方便定位是哪个 phase 的问题).
 		observability.VoucherStatusCount.WithLabelValues(
 			tx.EventCode,
 			observability.VoucherStatusLabel(int8(v.Status)),
 		).Inc()
-		// SP-AC-7 S6: 资金审计 - 每个 voucher 写一条独立 audit, 不阻塞业务即可.
-		// SP-AC-7 P10: log + audit 都加 trace_id (从 OTel ctx 抓).
 		if s.Audit != nil {
 			actor := extractActor(ctx)
 			_ = s.Audit.Write(ctx, AuditEvent{

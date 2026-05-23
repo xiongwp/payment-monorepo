@@ -4503,15 +4503,32 @@ CREATE TABLE IF NOT EXISTS `account_80` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -4932,15 +4949,32 @@ CREATE TABLE IF NOT EXISTS `account_81` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -5361,15 +5395,32 @@ CREATE TABLE IF NOT EXISTS `account_82` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -5790,15 +5841,32 @@ CREATE TABLE IF NOT EXISTS `account_83` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -6219,15 +6287,32 @@ CREATE TABLE IF NOT EXISTS `account_84` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -6648,15 +6733,32 @@ CREATE TABLE IF NOT EXISTS `account_85` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -7077,15 +7179,32 @@ CREATE TABLE IF NOT EXISTS `account_86` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -7506,15 +7625,32 @@ CREATE TABLE IF NOT EXISTS `account_87` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -7935,15 +8071,32 @@ CREATE TABLE IF NOT EXISTS `account_88` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -8364,15 +8517,32 @@ CREATE TABLE IF NOT EXISTS `account_89` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -8759,6 +8929,646 @@ CREATE TABLE IF NOT EXISTS `settlement_outbox_89` (
     KEY `idx_status_id` (`status`, `id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='热路径事务预写日志（Outbox）';
 
+
+
+
+
+
+
+
+
+
+
+
+-- ============================================
+-- tx_account_anchor_80: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_80` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_80: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_80` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_81: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_81` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_81: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_81` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_82: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_82` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_82: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_82` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_83: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_83` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_83: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_83` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_84: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_84` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_84: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_84` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_85: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_85` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_85: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_85` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_86: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_86` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_86: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_86` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_87: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_87` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_87: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_87` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_88: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_88` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_88: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_88` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_89: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_89` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_89: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_89` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
 
 -- ==== accounting-system 平台账户 seed (按位编码 account_no) ====
 SET NAMES utf8mb4;
@@ -12261,6 +13071,28 @@ CREATE TABLE IF NOT EXISTS `batch_order_89_shadow` LIKE `batch_order_89`;
 CREATE TABLE IF NOT EXISTS `settlement_outbox_89_shadow` LIKE `settlement_outbox_89`;
 
 
+
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_80_shadow` LIKE `tx_account_anchor_80`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_80_shadow` LIKE `flow_anchor_route_80`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_81_shadow` LIKE `tx_account_anchor_81`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_81_shadow` LIKE `flow_anchor_route_81`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_82_shadow` LIKE `tx_account_anchor_82`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_82_shadow` LIKE `flow_anchor_route_82`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_83_shadow` LIKE `tx_account_anchor_83`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_83_shadow` LIKE `flow_anchor_route_83`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_84_shadow` LIKE `tx_account_anchor_84`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_84_shadow` LIKE `flow_anchor_route_84`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_85_shadow` LIKE `tx_account_anchor_85`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_85_shadow` LIKE `flow_anchor_route_85`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_86_shadow` LIKE `tx_account_anchor_86`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_86_shadow` LIKE `flow_anchor_route_86`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_87_shadow` LIKE `tx_account_anchor_87`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_87_shadow` LIKE `flow_anchor_route_87`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_88_shadow` LIKE `tx_account_anchor_88`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_88_shadow` LIKE `flow_anchor_route_88`;
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_89_shadow` LIKE `tx_account_anchor_89`;
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_89_shadow` LIKE `flow_anchor_route_89`;
+
 -- ==== user-merchant-core _shadow ====
 -- user_merchant_db_8 的影子表（压测 / shadow 流量）
 -- 依赖：8_init.sql 已经导入完成（CREATE TABLE LIKE 需要主表存在）。
@@ -13658,6 +14490,992 @@ CREATE TABLE IF NOT EXISTS `card_transaction_87_shadow` LIKE `card_transaction_8
 CREATE TABLE IF NOT EXISTS `card_transaction_88_shadow` LIKE `card_transaction_88`;
 
 CREATE TABLE IF NOT EXISTS `card_transaction_89_shadow` LIKE `card_transaction_89`;
+
+
+-- ==== split-payment shardb (split_payment_db_8) ====
+-- ============================================================================
+-- split_payment_db_8 —— 高频事件流水分片库（DB-split Batch 7 极简版）
+-- ⚠ 模板文件。由 ../gen.sh 用 sed 替换 8 + 注入 tables block 生成 N_init.sql。
+--
+-- 唯一表族 moneyflow_event_NN —— 按 idempotency_key / charge_id / saga_id hash 路由：
+--   hash(key) % 100 → globalIdx (0..99)
+--   dbIdx   = globalIdx / 10  (0..9)
+--   tblIdx  = globalIdx       (00..99)
+--
+-- 设计原则：
+--   split-payment **不再存业务账本**（transfers / fees / payouts / reversals 等都
+--   在 accounting-system 已有）。它只关注"事件 / 状态机执行流水"。
+--
+-- 同一张表覆盖 4 种 event_type：
+--   trigger          一次 TriggerEvent 触发的 RunPlan 执行记录（原 moneyflow_runs）
+--   saga             SaveGraph / refund / payout 等 saga 的状态机持久化（原 moneyflow_sagas）
+--   outbox           可靠事件发布的待发队列（原 event_outbox）
+--   reversal_retry   退款失败的重试队列（原 reversal_retry_outbox）
+--
+-- 字段按"通用执行状态" + "按 type 含义的可选字段" 设计：
+--   通用：id / event_type / event_id / status / retry_count / max_retry /
+--          payload_json / error_msg / next_retry_at / hold_until / 时间戳
+--   特定：graph_id / graph_version / charge_id / merchant_id / amount_minor /
+--          currency / plan_json / voucher_no / trace_id / correlation_id /
+--          current_step / steps_json
+--   (event_type 不需要的字段填 NULL/0; 不浪费多少空间)
+-- ============================================================================
+
+CREATE DATABASE IF NOT EXISTS split_payment_db_8 CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- split_user 在 meta init.sql 里也建一遍；但 shared-db 把每个 shard SQL 灌到不同
+-- mysql 实例（shared-shard-N），mysql user 是 per-instance 的不跨实例共享，所以
+-- 每个 shard 自己也必须 CREATE USER。IF NOT EXISTS 幂等。
+CREATE USER IF NOT EXISTS 'split_user'@'%' IDENTIFIED BY 'password';
+ALTER USER 'split_user'@'%' IDENTIFIED BY 'password';
+
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, REFERENCES
+  ON split_payment_db_8.* TO 'split_user'@'%';
+FLUSH PRIVILEGES;
+
+USE split_payment_db_8;
+-- ─── moneyflow_event (10 张主表 + 10 张 _shadow 镜像) ──────────────────────
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_80 (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_80_shadow (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_81 (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_81_shadow (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_82 (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_82_shadow (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_83 (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_83_shadow (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_84 (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_84_shadow (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_85 (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_85_shadow (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_86 (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_86_shadow (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_87 (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_87_shadow (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_88 (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_88_shadow (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_89 (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moneyflow_event_89_shadow (
+    id                    BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+    -- 路由 + 幂等 key
+    event_id              VARCHAR(128) NOT NULL COMMENT '业务事件唯一 ID (charge_id / external event id)',
+    graph_id              BIGINT       NOT NULL COMMENT '关联 moneyflow_graphs.id',
+    graph_version         VARCHAR(32)  DEFAULT NULL,
+    graph_key             VARCHAR(128) DEFAULT NULL COMMENT '冗余存 graph_key 便于查询',
+
+    -- 业务上下文
+    trigger_event         VARCHAR(64)  NOT NULL COMMENT 'graph 内的 event 节点名 (e.g. charge.succeeded)',
+    merchant_id           VARCHAR(128) DEFAULT NULL,
+    amount_minor          BIGINT       NOT NULL DEFAULT 0,
+    currency              VARCHAR(8)   DEFAULT NULL,
+
+    -- 输入 / 翻译产物
+    trigger_payload_json  JSON         DEFAULT NULL COMMENT 'event attrs 原始 payload',
+    plan_json             JSON         DEFAULT NULL COMMENT 'translator 翻译产物 (账户操作 leg 列表)',
+
+    -- 执行状态机
+    status                VARCHAR(32)  NOT NULL DEFAULT 'pending'
+                          COMMENT 'pending / translating / booking / success / failed / cancelled',
+    retry_count           INT          NOT NULL DEFAULT 0,
+    max_retry             INT          NOT NULL DEFAULT 5,
+    next_retry_at         DATETIME     DEFAULT NULL,
+    error_msg             TEXT         DEFAULT NULL,
+
+    -- 输出（accounting 返回）
+    accounting_voucher_no VARCHAR(64)  DEFAULT NULL COMMENT 'accounting 落账后的凭证号',
+    trace_id              VARCHAR(64)  DEFAULT NULL,
+
+    -- marketplace / hold-period 场景（可选）
+    hold_until            DATETIME     DEFAULT NULL,
+    hold_released         TINYINT(1)   NOT NULL DEFAULT 0,
+
+    -- 时间戳
+    created_at            DATETIME     NOT NULL,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at          DATETIME     DEFAULT NULL,
+
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_graph (graph_id),
+    KEY idx_status_next (status, next_retry_at),
+    KEY idx_event_created (trigger_event, created_at),
+    KEY idx_hold_expired (hold_released, hold_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 
 
 -- ==== recon_cdc binlog 用户 ====

@@ -20,6 +20,9 @@ import {
   DeleteOutlined,
   SettingOutlined,
   ReloadOutlined,
+  SwapOutlined,
+  ThunderboltOutlined,
+  UnorderedListOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 
@@ -57,6 +60,10 @@ const items: MenuItem[] = [
   getItem('业务类型', '/business-types', <ProfileOutlined />),
   getItem('平台账户余额', '/platform-balances', <PieChartOutlined />),
   getItem('平台账户快照', '/platform-snapshots', <AreaChartOutlined />),
+  getItem('账户轮换管理', 'rotation-group', <SwapOutlined />, [
+    getItem('LA 列表', '/rotation', <UnorderedListOutlined />),
+    getItem('Fleet 路由测试', '/rotation/fleet-test', <ThunderboltOutlined />),
+  ]),
   getItem('TCC 归档', '/tcc-archive', <DeleteOutlined />),
   getItem('系统配置', '/system-config', <SettingOutlined />),
   getItem('Redis 重建', '/redis-rebuild', <ReloadOutlined />),
@@ -91,7 +98,18 @@ export default function AppLayout() {
         </div>
         <Menu
           theme="dark"
-          selectedKeys={[location.pathname]}
+          // 详情页（/rotation/:key, /accounts/:accountNo）也要让父菜单高亮
+          // /rotation/fleet-test 是子菜单项之一，要保留完整 key
+          selectedKeys={[
+            location.pathname === '/rotation/fleet-test'
+              ? '/rotation/fleet-test'
+              : location.pathname.startsWith('/rotation/')
+              ? '/rotation'
+              : location.pathname.startsWith('/accounts/')
+              ? '/accounts'
+              : location.pathname,
+          ]}
+          defaultOpenKeys={['rotation-group']}
           mode="inline"
           items={items}
           onClick={handleMenuClick}

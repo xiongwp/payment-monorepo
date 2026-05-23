@@ -205,10 +205,13 @@ const (
 	// 载时立即回到 100ms，不影响 p99 延迟。
 	mysqlWriterIdleMax = 2 * time.Second
 	outboxRecoveryInterval = 10 * time.Second
-	orderRecoveryInterval  = 30 * time.Second
+	// 压测 tuning（优化 C）：原 30s 扫 + 60s 阈值在 50 并发下偶发误伤 —— confirm
+	// 阶段 mysql 慢一点就被标 FAILED。调到 120s 扫 + 300s 阈值，给真实慢请求容忍。
+	// 生产环境恢复 30s/60s 是合理的（业务期望快速恢复 stuck order）。
+	orderRecoveryInterval  = 120 * time.Second
 	cleanupInterval        = 1 * time.Hour
-	stuckPendingThreshold  = 30 * time.Second // PENDING 超过此时间视为卡住
-	stuckProcessingThreshold = 60 * time.Second // PROCESSING 超过此时间视为卡住
+	stuckPendingThreshold  = 30 * time.Second  // PENDING 超过此时间视为卡住
+	stuckProcessingThreshold = 300 * time.Second // PROCESSING 超过此时间视为卡住（压测 tuning）
 	recoveryQueryTimeout   = 5 * time.Second  // 每次 recovery DB 查询的超时时间
 	cleanupQueryTimeout    = 5 * time.Second  // 每次 cleanup DB 查询的超时时间
 	retryBaseDelay         = 100 * time.Millisecond // 指数退避基础延迟

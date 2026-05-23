@@ -578,6 +578,70 @@ CREATE TABLE IF NOT EXISTS `service_instance` (
 --       outbox_backpressure.shrink_ratio    = 0.5
 -- ============================================
 
+-- ============================================
+-- Rotating Suspense / Receivable / Payable Accounts
+-- 设计文档：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md
+-- 域模型：internal/domain/model/rotation.go
+--
+-- logical_account：跨周期稳定的逻辑账户。多个 account instance 在不同周期承接其流量。
+-- I1 不变量：同一 logical_account_id 下任意时刻至多一个 instance phase=active
+--           （由 scheduler 切换事务 + invariant_audit_job 巡检保证）
+-- 反范式化：current_active_account_no/period_end 由 scheduler 在切换事务原子更新，
+--           路由层热路径只查本表即可，避免跨片 account 表 scan。
+-- ============================================
+CREATE TABLE IF NOT EXISTS `logical_account` (
+    `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键（AUTO_INCREMENT；原设计 Leaf 号段，但低频表 AUTO_INCREMENT 也够）',
+    `logical_account_key` VARCHAR(64) NOT NULL COMMENT '业务稳定 key（命名前缀白名单见 rotation.go AllowedKeyPrefixes）',
+    `account_type` TINYINT NOT NULL COMMENT '复用 AccountType (期望值 5/6/9)',
+    `account_business_type` SMALLINT NOT NULL COMMENT '复用 AccountBusinessType (1-999)',
+    `currency` CHAR(3) NOT NULL COMMENT 'ISO 4217',
+    `description` VARCHAR(255) DEFAULT NULL,
+    `rotation_enabled` TINYINT NOT NULL DEFAULT 0 COMMENT '0=不轮换(legacy) 1=轮换',
+    `current_active_account_no` VARCHAR(64) DEFAULT NULL COMMENT '反范式化：当期 active 的 account_no（fleet 场景指其中 anchor sub-account；NULL=未轮换）',
+    `current_active_group` CHAR(1) DEFAULT NULL COMMENT 'fleet 模式下当前 active 的 group ID (A 或 B)；NULL=未轮换的 legacy LA',
+    `current_active_period_end` DATETIME DEFAULT NULL,
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=disabled 1=enabled',
+    `registered_by` VARCHAR(64) NOT NULL COMMENT '注册者（审计；禁止 lazy create）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_lak` (`logical_account_key`),
+    KEY `idx_type_biz_currency` (`account_type`, `account_business_type`, `currency`),
+    KEY `idx_rotation_enabled` (`rotation_enabled`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='逻辑账户（跨周期稳定）';
+
+
+-- ============================================
+-- logical_account_rotation_policy：单个逻辑账户的轮换策略
+-- 关键字段：
+--   drain_p99_seconds       — draining 保留下限（业务 P99 生命周期）
+--   drain_hard_timeout_secs — draining 保留上限，超过强制迁移（§8）
+--   archive_grace_secs      — frozen → archived 缓冲
+--   provision_lead_secs     — scheduler 提前多久预创建下一期（默认 24h）
+--   config_version          — 配置版本号，路由层用它判断缓存是否过期 (E-30)
+-- 旧 instance 走出生时锁定的 policy_version_at_birth 而非最新策略 (E-28/E-29)。
+-- ============================================
+CREATE TABLE IF NOT EXISTS `logical_account_rotation_policy` (
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `period_unit` VARCHAR(8) NOT NULL COMMENT 'DAY(测试) / MONTH(应付应收) / QUARTER(通用中间)',
+    `period_count` INT NOT NULL DEFAULT 1 COMMENT '周期倍数',
+    `rotation_anchor_tz` VARCHAR(32) NOT NULL COMMENT 'IANA 时区',
+    `drain_p99_seconds` INT NOT NULL COMMENT 'draining 最短保留',
+    `drain_hard_timeout_secs` INT NOT NULL COMMENT 'draining 最长保留；超过强制迁移',
+    `archive_grace_secs` INT NOT NULL DEFAULT 604800 COMMENT 'frozen → archived 缓冲（默认 7 天）',
+    `provision_lead_secs` INT NOT NULL DEFAULT 86400 COMMENT '提前预创建下一期（默认 24h）',
+    `config_version` BIGINT NOT NULL DEFAULT 1 COMMENT '配置版本号；每次变更 +1',
+    `effective_from` DATETIME NOT NULL,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`logical_account_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='轮换策略';
+
+-- 注：原 10-13 轮换内部过渡科目（ROTATION_MIGRATION_SUSPENSE / RESIDUAL_WRITEOFF /
+-- OPS_ADJUST / CARRYFORWARD）已删除 — 不在 business_type registry 暴露给运维。
+-- 这些科目是轮换内部 migration / convergence / 归档流程的实现细节，调用方应在代码
+-- 内部用专用编码处理，不占用对外的 1-N business_type 名额。
+
 -- ==== card-center meta (card_center_meta: leaf_alloc + audit_log) ====
 -- card_center_meta：留 leaf_alloc + 全局审计（量小不分片）。
 CREATE DATABASE IF NOT EXISTS `card_center_meta` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
@@ -682,38 +746,33 @@ CREATE TABLE IF NOT EXISTS `network_call_log` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Network call audit (no PAN)';
 
 -- ==== split-payment meta (split_payment: moneyflow_graphs / runs / outbox / saga / Stripe-style + cron_lease) ====
--- split-payment / split_payment meta schema —— 由 stack/init-db/bootstrap.sh 灌入.
+-- split-payment / split_payment_meta schema —— 由 docker entrypoint 灌入.
 --
--- 风格跟 user-merchant-core / payment-channel / order-core / accounting-system /
--- card-center / card-payment 一致 (single init.sql, CREATE IF NOT EXISTS 幂等).
+-- ⚠ 设计原则（DB-split Batch 7 之后，极简纯粹版）：
+--   split-payment 的本质 = 根据 scenario 查 graph DSL → 翻译成有序 leg → 严格按
+--   定义顺序调 accounting 控制资金流向。不存业务账本（accounting 全有），不跑
+--   background cron / outbox worker（删了 cron_lease）。
 --
--- 表清单 (11 张):
---   moneyflow_graphs        Graph DSL
---   moneyflow_runs          一次 TriggerEvent 的 RunPlan
---   moneyflow_graph_versions SP-7 版本快照
---   connected_accounts      Stripe-style connected account
---   transfers               Stripe-style transfer
---   application_fees        Stripe-style fee
---   payouts                 Stripe-style payout
---   reversals               Stripe-style reversal
---   moneyflow_sagas         SP-3A 持久化 saga 状态
---   event_outbox            L5 事件 outbox
---   reversal_retry_outbox   R5 反转重试 outbox
---   cron_lease              X3 多副本 cron 互斥 lease
+-- meta 库表清单（仅 2 张 graph 配置表）：
+--   moneyflow_graphs           Graph DSL（admin-web 维护，低频改动）
+--   moneyflow_graph_versions   版本快照（历史 + 回滚）
+--
+-- 事件流水（moneyflow_event_NN）在 shard 库里，不在 meta。
 
-CREATE DATABASE IF NOT EXISTS split_payment CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS split_payment_meta CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
--- 应用账号 split_user (跟 SPLIT_PAYMENT_DSN 对齐: split_user:password@tcp(shared-meta:3306)/split_payment).
--- IF NOT EXISTS + ALTER 保证幂等; 已存在用户改密码也安全.
+-- 应用账号 split_user：meta 库 + 10 个 shard 库共享同一账号
+-- IF NOT EXISTS + ALTER 保证幂等
 CREATE USER IF NOT EXISTS 'split_user'@'%' IDENTIFIED BY 'password';
 ALTER USER 'split_user'@'%' IDENTIFIED BY 'password';
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, REFERENCES
-  ON split_payment.* TO 'split_user'@'%';
+  ON split_payment_meta.* TO 'split_user'@'%';
+-- shard 库的 grant 由 shardb/init/N_init.sql 自己加
 FLUSH PRIVILEGES;
 
-USE split_payment;
+USE split_payment_meta;
 
--- ─── 1. moneyflow core ─────────────────────────────────────────────────
+-- ─── 1. moneyflow 配置 ─────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS moneyflow_graphs (
     id          BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -731,30 +790,6 @@ CREATE TABLE IF NOT EXISTS moneyflow_graphs (
     KEY idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS moneyflow_runs (
-    id              BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    graph_id        BIGINT NOT NULL,
-    graph_version   VARCHAR(32),
-    trigger_event   VARCHAR(64)  NOT NULL,
-    charge_id       VARCHAR(128) DEFAULT NULL,
-    merchant_id     VARCHAR(128) DEFAULT NULL,
-    amount_minor    BIGINT NOT NULL DEFAULT 0,
-    currency        VARCHAR(8)   DEFAULT NULL,
-    attributes_json JSON         DEFAULT NULL,
-    movements_json  JSON         DEFAULT NULL,
-    status          VARCHAR(32)  NOT NULL DEFAULT 'created',
-    voucher_no      VARCHAR(64)  DEFAULT NULL,
-    error_msg       TEXT         DEFAULT NULL,
-    trace_id        VARCHAR(64)  DEFAULT NULL,
-    hold_until      DATETIME     DEFAULT NULL,
-    hold_released   TINYINT(1)   NOT NULL DEFAULT 0,
-    created_at      DATETIME     NOT NULL,
-    KEY idx_charge (charge_id),
-    KEY idx_graph (graph_id),
-    KEY idx_event_created (trigger_event, created_at),
-    KEY idx_hold_expired (hold_released, hold_until)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 CREATE TABLE IF NOT EXISTS moneyflow_graph_versions (
     id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
     graph_id BIGINT NOT NULL,
@@ -768,160 +803,10 @@ CREATE TABLE IF NOT EXISTS moneyflow_graph_versions (
     KEY idx_graph_created (graph_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ─── 2. Stripe-style 资金原语 ──────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS connected_accounts (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    type VARCHAR(16) NOT NULL,
-    country VARCHAR(8) NOT NULL,
-    default_currency VARCHAR(8) NOT NULL,
-    status VARCHAR(16) NOT NULL DEFAULT 'pending',
-    capabilities_json JSON,
-    business_profile_json JSON,
-    payout_destination_json JSON,
-    payout_schedule_json JSON,
-    metadata_json JSON,
-    created_at DATETIME NOT NULL,
-    updated_at DATETIME NOT NULL,
-    KEY idx_status (status),
-    KEY idx_country (country)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS transfers (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    transfer_group VARCHAR(64),
-    source_account VARCHAR(64) NOT NULL,
-    destination_account VARCHAR(64) NOT NULL,
-    amount_minor BIGINT NOT NULL,
-    currency VARCHAR(8) NOT NULL,
-    description VARCHAR(256),
-    source_transaction VARCHAR(64),
-    application_fee VARCHAR(64),
-    status VARCHAR(32) NOT NULL DEFAULT 'created',
-    reversed_amount BIGINT NOT NULL DEFAULT 0,
-    graph_run_id BIGINT,
-    idempotency_key VARCHAR(128),
-    metadata_json JSON,
-    created_at DATETIME NOT NULL,
-    posted_at DATETIME,
-    UNIQUE KEY uk_idem (idempotency_key),
-    KEY idx_group (transfer_group),
-    KEY idx_src_tx (source_transaction),
-    KEY idx_dest (destination_account),
-    KEY idx_run (graph_run_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS application_fees (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    charge VARCHAR(64) NOT NULL,
-    account VARCHAR(64),
-    amount_minor BIGINT NOT NULL,
-    currency VARCHAR(8) NOT NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'pending',
-    refunded_amount BIGINT NOT NULL DEFAULT 0,
-    graph_run_id BIGINT,
-    idempotency_key VARCHAR(128),
-    metadata_json JSON,
-    created_at DATETIME NOT NULL,
-    UNIQUE KEY uk_idem (idempotency_key),
-    KEY idx_charge (charge),
-    KEY idx_account (account)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS payouts (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    account VARCHAR(64) NOT NULL,
-    amount_minor BIGINT NOT NULL,
-    currency VARCHAR(8) NOT NULL,
-    method VARCHAR(16) NOT NULL DEFAULT 'standard',
-    status VARCHAR(32) NOT NULL DEFAULT 'pending',
-    arrival_date DATETIME,
-    failure_code VARCHAR(64),
-    failure_message TEXT,
-    statement_descriptor VARCHAR(128),
-    destination_json JSON,
-    graph_run_id BIGINT,
-    idempotency_key VARCHAR(128),
-    metadata_json JSON,
-    created_at DATETIME NOT NULL,
-    UNIQUE KEY uk_idem (idempotency_key),
-    KEY idx_account (account),
-    KEY idx_status_arrival (status, arrival_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS reversals (
-    id VARCHAR(64) NOT NULL PRIMARY KEY,
-    transfer VARCHAR(64) NOT NULL,
-    amount_minor BIGINT NOT NULL,
-    currency VARCHAR(8) NOT NULL,
-    reason VARCHAR(64),
-    status VARCHAR(32) NOT NULL DEFAULT 'pending',
-    failure_message TEXT,
-    idempotency_key VARCHAR(128),
-    graph_run_id BIGINT,
-    metadata_json JSON,
-    created_at DATETIME NOT NULL,
-    UNIQUE KEY uk_idem (idempotency_key),
-    KEY idx_transfer (transfer)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- ─── 3. Saga store ─────────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS moneyflow_sagas (
-    saga_id        VARCHAR(64) NOT NULL PRIMARY KEY,
-    graph_run_id   BIGINT,
-    correlation_id VARCHAR(128),
-    state          VARCHAR(32) NOT NULL,
-    current_step   INT NOT NULL DEFAULT 0,
-    steps_json     JSON NOT NULL,
-    started_at     DATETIME NOT NULL,
-    completed_at   DATETIME,
-    updated_at     DATETIME NOT NULL,
-    KEY idx_state (state),
-    KEY idx_run (graph_run_id),
-    KEY idx_started (started_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- ─── 4. Outbox (events + reversal retry) ───────────────────────────────
-
-CREATE TABLE IF NOT EXISTS event_outbox (
-    id            BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    event_type    VARCHAR(64) NOT NULL,
-    payload_json  JSON NOT NULL,
-    status        VARCHAR(32) NOT NULL DEFAULT 'pending',
-    retry_count   INT NOT NULL DEFAULT 0,
-    max_retry     INT NOT NULL DEFAULT 10,
-    last_error    TEXT,
-    next_retry_at DATETIME NOT NULL,
-    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    KEY idx_status_next (status, next_retry_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS reversal_retry_outbox (
-    id              BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    reversal_id     VARCHAR(64) NOT NULL,
-    transfer_id     VARCHAR(64) NOT NULL,
-    delta_minor     BIGINT NOT NULL,
-    status          VARCHAR(32) NOT NULL DEFAULT 'pending',
-    retry_count     INT NOT NULL DEFAULT 0,
-    max_retry       INT NOT NULL DEFAULT 5,
-    last_error      TEXT,
-    next_retry_at   DATETIME NOT NULL,
-    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_reversal_id (reversal_id),
-    KEY idx_status_next (status, next_retry_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- ─── 5. Cron lease (X3 多副本互斥) ─────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS cron_lease (
-    name         VARCHAR(64)  NOT NULL PRIMARY KEY,
-    holder       VARCHAR(128) NOT NULL DEFAULT '',
-    leased_until DATETIME     NOT NULL DEFAULT '1970-01-01 00:00:00',
-    updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- ─── cron_lease 已删除 ─────────────────────────────────────────────────
+-- 极简版 split-payment 不跑 cron / outbox worker（不再有 HoldUnstickWorker /
+-- OutboxWorker / ReversalRetryWorker），所以多副本互斥 lease 也不需要。
+-- 后续若需 cron 互斥，建议走 etcd lease 而不是 mysql 表。
 
 -- ==== database meta _shadow ====
 -- paychan_meta 的影子表（压测 / shadow 流量）。
@@ -1043,6 +928,15 @@ INSERT IGNORE INTO `leaf_alloc_shadow` (`biz_tag`, `max_id`, `step`, `descriptio
     ('accounting.tcc',            1000000000000000001, 100000, 'Shadow tcc id (entity layout high bit = shadow)'),
     ('accounting.batch_order',    1000000000000000001, 100000, 'Shadow batch order id'),
     ('accounting.account',        90000000000,         100000, 'Shadow account_id (high bit 1 in 19-digit account layout)');
+
+-- Rotation feature shadow tables
+CREATE TABLE IF NOT EXISTS `logical_account_shadow`                  LIKE `logical_account`;
+CREATE TABLE IF NOT EXISTS `logical_account_rotation_policy_shadow`  LIKE `logical_account_rotation_policy`;
+
+-- shadow 流量同步新增字典 seed
+INSERT IGNORE INTO `account_business_type_info_shadow`
+    SELECT * FROM `account_business_type_info`
+     WHERE `business_type` IN (10, 11, 12, 13);
 
 -- ==== recon_cdc binlog 用户 ====
 CREATE USER IF NOT EXISTS 'recon_cdc'@'%' IDENTIFIED WITH mysql_native_password BY 'recon_cdc_pwd';

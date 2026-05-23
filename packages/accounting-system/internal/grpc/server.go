@@ -68,6 +68,21 @@ type Server struct {
 	kitexSrv kitexserver.Server
 	// done ListenAndServe 退出后关闭; 用作 Stop() 的等待信号.
 	done chan struct{}
+
+	// rotationAdminSvc — fleet × rotation 路由解析。caller 在 AccountingEntry 里填
+	// LogicalAccountKey + FlowId 时，handler 用这个 service 把 LA + flow_id 解到具体
+	// active sub-account（fnv32a(flow_id)%100 → 100 个 sub 之一）然后替换
+	// entry.AccountNo。nil → 拒绝带 LA 字段的请求，返回明确错误。
+	//
+	// 通过 WithRotationAdmin 注入；fx provider 在 main.go 已经 wire。
+	rotationAdminSvc *service.AdminService
+}
+
+// WithRotationAdmin 注入 rotation admin service（fleet routing 用）。
+// nil 安全：不注入则 fleet routing 字段触发 "rotation admin not wired" 错误。
+func (s *Server) WithRotationAdmin(svc *service.AdminService) *Server {
+	s.rotationAdminSvc = svc
+	return s
 }
 
 // Stop 优雅关停 Kitex server. SIGTERM 时由 fx OnStop 调用.
@@ -351,6 +366,11 @@ func (s *Server) DoubleEntryBooking(ctx context.Context, req *accountingv1.Doubl
 	if req.Currency == "" {
 		req.Currency = "PHP"
 	}
+	// Fleet × Rotation 路由：把 entry.LogicalAccountKey + FlowId 解析为具体
+	// account_no（如果填了 LA 字段）。无 LA 字段时这一步是 no-op。
+	if err := s.resolveFleetRoutingEntries(ctx, req.Entries, req.BusinessNo); err != nil {
+		return &accountingv1.DoubleEntryBookingResponse{Code: 400, Message: err.Error()}, nil
+	}
 	entries := make([]service.AccountingEntry, len(req.Entries))
 	for i, e := range req.Entries {
 		debit, credit, err := resolveEntryAmounts(e, req.Currency)
@@ -418,6 +438,13 @@ func (s *Server) BatchBooking(ctx context.Context, req *accountingv1.BatchBookin
 		currency := r.GetCurrency()
 		if currency == "" {
 			currency = "PHP"
+		}
+		// Fleet routing per-item（独立于其它 item，不互相影响）
+		if err := s.resolveFleetRoutingEntries(ctx, r.GetEntries(), r.GetBusinessNo()); err != nil {
+			wireSkips[i] = &accountingv1.DoubleEntryBookingResponse{
+				Code: 400, Message: fmt.Sprintf("item[%d]: %v", i, err),
+			}
+			continue
 		}
 		entries := make([]service.AccountingEntry, len(r.GetEntries()))
 		var entryErr error
@@ -530,6 +557,10 @@ func (s *Server) HybridDoubleEntryBooking(ctx context.Context, req *accountingv1
 	if req.Currency == "" {
 		req.Currency = "PHP"
 	}
+	// Fleet × Rotation 路由（同 DoubleEntryBooking）
+	if err := s.resolveFleetRoutingEntries(ctx, req.Entries, req.BusinessNo); err != nil {
+		return &accountingv1.HybridDoubleEntryBookingResponse{Code: 400, Message: err.Error()}, nil
+	}
 	entries := make([]service.AccountingEntry, len(req.Entries))
 	for i, e := range req.Entries {
 		debit, credit, err := resolveEntryAmounts(e, req.Currency)
@@ -579,6 +610,11 @@ func (s *Server) AtomicBatchBooking(ctx context.Context, req *accountingv1.Atomi
 	}
 	svcRequests := make([]service.DoubleEntryBookingRequest, len(req.Requests))
 	for i, r := range req.Requests {
+		// Fleet routing per-item（同 BatchBooking）。atomic batch 里任意一笔
+		// routing 失败 → 整批拒绝（caller 不期望部分写入）。
+		if err := s.resolveFleetRoutingEntries(ctx, r.Entries, r.BusinessNo); err != nil {
+			return &accountingv1.AtomicBatchBookingResponse{Code: 400, Message: fmt.Sprintf("request[%d]: %v", i, err)}, nil
+		}
 		entries := make([]service.AccountingEntry, len(r.Entries))
 		cur := r.Currency
 		if cur == "" {
@@ -1786,18 +1822,42 @@ func (s *Server) CreateTransaction(ctx context.Context, req *accountingv1.Create
 				ErrorMessage: fmt.Sprintf("leg[%d] amount_minor must be > 0", i),
 			}, nil
 		}
-		if leg.GetFromAccountNo() == "" || leg.GetToAccountNo() == "" {
+		// Fleet × Rotation 路由：from / to 任一侧留空 account_no + 给了 LA key + flow_id →
+		// 在此处把 LA 解析为具体 sub-account 写回 leg.From/ToAccountNo。
+		fromNo := leg.GetFromAccountNo()
+		toNo := leg.GetToAccountNo()
+		if fromNo == "" && leg.GetFromLogicalAccountKey() != "" {
+			resolved, rerr := s.resolveLegSide(ctx,
+				leg.GetFromLogicalAccountKey(), leg.GetFromFlowId(), "from", i)
+			if rerr != nil {
+				return &accountingv1.CreateTransactionResponse{
+					OrderNo: req.GetIdempotencyKey(), Status: "failed", ErrorMessage: rerr.Error(),
+				}, nil
+			}
+			fromNo = resolved
+		}
+		if toNo == "" && leg.GetToLogicalAccountKey() != "" {
+			resolved, rerr := s.resolveLegSide(ctx,
+				leg.GetToLogicalAccountKey(), leg.GetToFlowId(), "to", i)
+			if rerr != nil {
+				return &accountingv1.CreateTransactionResponse{
+					OrderNo: req.GetIdempotencyKey(), Status: "failed", ErrorMessage: rerr.Error(),
+				}, nil
+			}
+			toNo = resolved
+		}
+		if fromNo == "" || toNo == "" {
 			return &accountingv1.CreateTransactionResponse{
 				OrderNo:      req.GetIdempotencyKey(),
 				Status:       "failed",
-				ErrorMessage: fmt.Sprintf("leg[%d] from_account_no / to_account_no required", i),
+				ErrorMessage: fmt.Sprintf("leg[%d] from_account_no / to_account_no required (or fill logical_account_key + flow_id)", i),
 			}, nil
 		}
 		serviceLegs = append(serviceLegs, service.TxnLeg{
 			EdgeFromNode:  leg.GetEdgeFromNode(),
 			EdgeToNode:    leg.GetEdgeToNode(),
-			FromAccountID: leg.GetFromAccountNo(),
-			ToAccountID:   leg.GetToAccountNo(),
+			FromAccountID: fromNo,
+			ToAccountID:   toNo,
 			Amount:        strconv.FormatInt(leg.GetAmountMinor(), 10),
 			Currency:      legCur,
 		})

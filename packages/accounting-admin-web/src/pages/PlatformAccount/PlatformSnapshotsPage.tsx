@@ -72,6 +72,18 @@ export default function PlatformSnapshotsPage() {
     { title: 'User ID', dataIndex: ['account', 'user_id'], key: 'user_id', width: 90 },
     { title: '账户号', dataIndex: ['account', 'account_no'], key: 'account_no', width: 220, ellipsis: true },
     {
+      title: 'Group',
+      dataIndex: ['account', 'account_group'],
+      key: 'account_group',
+      width: 75,
+      filters: [
+        { text: 'A', value: 'A' },
+        { text: 'B', value: 'B' },
+      ],
+      onFilter: (val, r) => r.account.account_group === val,
+      render: (g: string) => g === 'B' ? <Tag color="orange">B</Tag> : <Tag color="blue">A</Tag>,
+    },
+    {
       title: '期初余额', key: 'beginning',
       render: (_, r) => r.snapshot ? displayMoney(r.snapshot.beginning_balance, r.snapshot.currency || r.account.currency) : <Tag color="default">无快照</Tag>,
       width: 140, align: 'right',

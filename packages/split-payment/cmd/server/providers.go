@@ -27,6 +27,8 @@ import (
 
 	"github.com/xiongwp/split-payment/internal/clients"
 	"github.com/xiongwp/split-payment/internal/config"
+	"github.com/xiongwp/split-payment/internal/database"
+	"github.com/xiongwp/split-payment/internal/sharding"
 )
 
 // Module — split-payment fx 装配根. 当前 stage 1+2, 后续逐步扩.
@@ -44,6 +46,8 @@ var Module = fx.Options(
 		newLogLevelFx,
 		newLoggerFx,
 		newDBFx,
+		newDBManagerFx, // DB-split: 1 meta + 10 shards
+		newShardingRouterFx,
 		newAccountingGRPCClientFx,
 	),
 	fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
@@ -167,4 +171,74 @@ func newAccountingGRPCClientFx(cfg *config.Config, log *zap.Logger) (*clients.Ac
 		zap.Int("registry_endpoint_count", len(cfg.Registry.Endpoints)))
 	// Kitex client 自带 connection pool, 无需 lifecycle close hook.
 	return cli, nil
+}
+
+// ─── DB-split: Multi-shard manager + router ───────────────────────────
+
+// newDBManagerFx 打开 1 个 metaDB + N 个 shardDB（DB-split 重构）。
+//
+// 配置：cfg.Database.MetaDB.DSN + cfg.Database.Shards[10]。
+//
+// 跟 newDBFx (legacy 单 DSN) 共存 —— 过渡期老 repo 还用 newDBFx 给的 *sql.DB，
+// 新 repo (RunRepo / GraphRepo) 用 *database.Manager。
+//
+// MetaDB.DSN 空 → 返 nil（memory / 老配置模式）；其他重要错（shard 个数不对、
+// 连接失败）直接 fail-fast。
+func newDBManagerFx(cfg *config.Config, log *zap.Logger, lc fx.Lifecycle) (*database.Manager, error) {
+	if cfg.Database.MetaDB.DSN == "" {
+		log.Info("database.meta_database.dsn 空 — 跳过 Manager 构造 (走 legacy 单 DSN 或 memory)")
+		return nil, nil
+	}
+	if len(cfg.Database.Shards) == 0 {
+		log.Info("database.databases 空 — 跳过 Manager 构造")
+		return nil, nil
+	}
+
+	// 把 config 类型转 database.Config（同 schema 不同 package）
+	mgrCfg := database.Config{
+		MetaDB: database.DBConfig{
+			Name:            "split_payment_meta",
+			DSN:             cfg.Database.MetaDB.DSN,
+			MaxOpenConns:    cfg.Database.MetaDB.MaxOpenConns,
+			MaxIdleConns:    cfg.Database.MetaDB.MaxIdleConns,
+			ConnMaxLifetime: cfg.Database.MetaDB.ConnMaxLifetime,
+		},
+		ShardDBs: make([]database.DBConfig, len(cfg.Database.Shards)),
+	}
+	for i, s := range cfg.Database.Shards {
+		mgrCfg.ShardDBs[i] = database.DBConfig{
+			Name:            s.Name,
+			DSN:             s.DSN,
+			MaxOpenConns:    s.MaxOpenConns,
+			MaxIdleConns:    s.MaxIdleConns,
+			ConnMaxLifetime: s.ConnMaxLifetime,
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	mgr, err := database.NewManager(ctx, mgrCfg)
+	if err != nil {
+		return nil, fmt.Errorf("split-payment DBManager init: %w", err)
+	}
+
+	log.Info("split-payment DBManager ready",
+		zap.String("meta_dsn_host", maskDSN(cfg.Database.MetaDB.DSN)),
+		zap.Int("shard_count", len(cfg.Database.Shards)))
+
+	lc.Append(fx.Hook{
+		OnStop: func(_ context.Context) error {
+			if err := mgr.Close(); err != nil {
+				log.Warn("DBManager close error on shutdown", zap.Error(err))
+				return err
+			}
+			return nil
+		},
+	})
+	return mgr, nil
+}
+
+// newShardingRouterFx 默认 10×10 router（跟 accounting + 新 DDL 100 张全局表对齐）。
+func newShardingRouterFx() *sharding.Router {
+	return sharding.NewRouter()
 }

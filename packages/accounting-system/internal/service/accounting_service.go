@@ -1798,15 +1798,8 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 	// TransactionOrder.Extra，从这里通过参数传入。本函数永不调 resolveCutDate
 	// 重算 —— 抗时钟漂移、抗 SystemConfig reload、抗多 pod / DB 重启 / 重试。
 
-	// ── TCC 协调者：写入 TRYING 阶段标记（Risk A 修复）────────────────────────────
-	// RecoveryWorker 依据此记录判断超时事务是 Cancel（TRYING）还是需要告警不取消（CONFIRMING）。
-	// 写入失败为非致命错误：协调者不存在时 RecoveryWorker 退化为原有行为（扫描分支记录）。
-	if s.tccCoordRepo != nil {
-		if coordErr := s.tccCoordRepo.Create(ctx, voucherNo, req.BusinessNo, cutDate, req.Currency, len(req.Entries)); coordErr != nil {
-			s.logger.Warn("tcc coordinator create failed (non-fatal, recovery may fall back to branch scan)",
-				zap.String("voucherNo", voucherNo), zap.Error(coordErr))
-		}
-	}
+	// TCC 协调者写入延后到 dbGroupKeys 算出之后，便于做 fast-path 判定。
+	// 见 line ~1834 之后的 singleDBFastPath 块。
 
 	// shardedEntry 在分组时一并计算路由，消除 goroutine 内重复调用 RouteByAccountNo。
 	type shardedEntry struct {
@@ -1833,6 +1826,26 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 		})
 	}
 
+	// Fast-path 判定：单 DB 组（所有 entries 路由到同一 dbIdx）。
+	// fleet × rotation 同 LA 多 leg 路由同 sub 时常见。
+	// 优化：
+	//   1. 跳过 tcc_coord 写入（meta DB write）— Recovery 仍能通过扫 tcc_branch 完成清理
+	//   2. 跳过 goroutine spawn（WaitGroup 无开销）
+	//   3. Phase 1 Try 直接同步执行
+	//   注意 Confirm 阶段保持，仍写 voucher + transaction 流水（业务正确性需要）
+	singleDBFastPath := len(dbGroupKeys) == 1
+
+	// ── TCC 协调者：写入 TRYING 阶段标记（Risk A 修复）────────────────────────────
+	// RecoveryWorker 依据此记录判断超时事务是 Cancel（TRYING）还是需要告警不取消（CONFIRMING）。
+	// 写入失败为非致命错误：协调者不存在时 RecoveryWorker 退化为原有行为（扫描分支记录）。
+	// Fast-path 单 DB 时跳过此 write — 无跨 DB 协调需要，Recovery 直接扫 tcc_branch。
+	if s.tccCoordRepo != nil && !singleDBFastPath {
+		if coordErr := s.tccCoordRepo.Create(ctx, voucherNo, req.BusinessNo, cutDate, req.Currency, len(req.Entries)); coordErr != nil {
+			s.logger.Warn("tcc coordinator create failed (non-fatal, recovery may fall back to branch scan)",
+				zap.String("voucherNo", voucherNo), zap.Error(coordErr))
+		}
+	}
+
 	// ── Phase 1: 并行 Try（每 DB 一个事务）──────────────────────────────────
 	//
 	// outcomes[i].err == nil 表示第 i 条分录 Try 成功。
@@ -1852,19 +1865,16 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 		balanceDelta int64
 	}
 
-	var wg sync.WaitGroup
-	for _, dbIdx := range dbGroupKeys {
-		dbIdx, group := dbIdx, dbGroupMap[dbIdx]
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			db, err := s.dbManager.GetDB(dbIdx)
-			if err != nil {
-				for _, se := range group {
-					outcomes[se.idx].err = fmt.Errorf("get db[%d]: %w", dbIdx, err)
-				}
-				return
+	// tryGroup 把单 DB 组的 Try 阶段封装；多 DB 路径在 goroutine 里并发跑；
+	// 单 DB fast-path 同步直接调用，省去 goroutine 调度 + WaitGroup 开销。
+	tryGroup := func(dbIdx int, group []shardedEntry) {
+		db, err := s.dbManager.GetDB(dbIdx)
+		if err != nil {
+			for _, se := range group {
+				outcomes[se.idx].err = fmt.Errorf("get db[%d]: %w", dbIdx, err)
 			}
+			return
+		}
 
 			// 包一层 retryOnDeadlock：InnoDB gap-lock 死锁（热点账户 fee / platform 上常见）
 			// 由本函数内部 rollback 释放所有锁 + jitter 退避后重试，整组 Try 再做一遍。
@@ -1911,14 +1921,30 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 				}
 				return
 			}
-			// 整组 Try 成功，填充 meta + balanceDelta（供 Cancel 和 Confirm 使用）
-			for gi, se := range group {
-				outcomes[se.idx].meta = tccBranchMeta{se.dbIdx, pendingDeltas[gi].tableIdx, transactionIDs[se.idx], se.entry}
-				outcomes[se.idx].balanceDelta = pendingDeltas[gi].balanceDelta
-			}
-		}()
+		// 整组 Try 成功，填充 meta + balanceDelta（供 Cancel 和 Confirm 使用）
+		for gi, se := range group {
+			outcomes[se.idx].meta = tccBranchMeta{se.dbIdx, pendingDeltas[gi].tableIdx, transactionIDs[se.idx], se.entry}
+			outcomes[se.idx].balanceDelta = pendingDeltas[gi].balanceDelta
+		}
 	}
-	wg.Wait()
+
+	// Try 执行：单 DB 直接同步调用；多 DB 时 goroutine 并发执行各 DB 组。
+	if singleDBFastPath {
+		dbIdx := dbGroupKeys[0]
+		tryGroup(dbIdx, dbGroupMap[dbIdx])
+		metrics.BookingTotal.WithLabelValues("tcc_single_db").Inc()
+	} else {
+		var wg sync.WaitGroup
+		for _, dbIdx := range dbGroupKeys {
+			dbIdx, group := dbIdx, dbGroupMap[dbIdx]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				tryGroup(dbIdx, group)
+			}()
+		}
+		wg.Wait()
+	}
 
 	// 汇总 Try 结果
 	tried := make([]tccBranchMeta, 0, len(req.Entries))
@@ -1939,7 +1965,8 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 		defer cleanupCancel()
 
 		// 协调者：Try 失败 → 标记 CANCELLED（非致命，失败仅影响 Recovery Worker 判断）
-		if s.tccCoordRepo != nil {
+		// Fast-path 单 DB 时跳过（Create 也没写）。
+		if s.tccCoordRepo != nil && !singleDBFastPath {
 			if cErr := s.tccCoordRepo.TransitionToCancelled(cleanupCtx, voucherNo); cErr != nil {
 				s.logger.Warn("tcc coordinator cancel transition failed",
 					zap.String("voucherNo", voucherNo), zap.Error(cErr))
@@ -1965,7 +1992,8 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 	// recovery worker 已经把 coordinator 改成 CANCELLED 并 cancel 掉了 branch
 	// (释放冻结)。此时再继续 Confirm 等于"释放冻结后又应用余额 = 凭空多钱"，
 	// 资金会不平。**必须 fail-fast 不再继续 Confirm，让调用方拿到 error 重试。**
-	if s.tccCoordRepo != nil {
+	// Fast-path 单 DB 跳过（coord 没创建，CAS 也没必要）。
+	if s.tccCoordRepo != nil && !singleDBFastPath {
 		if cErr := s.tccCoordRepo.TransitionToConfirming(confirmCtx, voucherNo); cErr != nil {
 			s.logger.Error("tcc coordinator confirming CAS failed — aborting confirm to protect fund integrity",
 				zap.String("voucherNo", voucherNo), zap.Error(cErr))
@@ -1974,81 +2002,94 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 		}
 	}
 
-	// ── Phase 2: 并行 Confirm（每 DB 一个事务，与 Try 相同锁顺序）────────────
+	// ── Phase 2: Confirm（每 DB 一个事务，与 Try 相同锁顺序）────────────
 	//
 	// Confirm 失败极罕见（网络抖动/节点宕机）；失败时不 Cancel，
 	// 保留 TRYING 状态由 TccRecoveryWorker 后台重试。
 	// 使用 confirmCtx（非请求 ctx）确保 Confirm 在调用方超时后仍能完成。
 	confirmErrs := make([]error, len(req.Entries))
-	for _, dbIdx := range dbGroupKeys {
-		dbIdx, group := dbIdx, dbGroupMap[dbIdx]
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			db, err := s.dbManager.GetDB(dbIdx)
-			if err != nil {
-				for _, se := range group {
-					confirmErrs[se.idx] = fmt.Errorf("get db[%d]: %w", dbIdx, err)
-					s.logger.Error("tcc confirm: get db failed, needs recovery",
-						zap.Error(err), zap.String("voucherNo", voucherNo))
-				}
-				return
+
+	// confirmGroup 封装单 DB 组 Confirm；多 DB 路径并发跑，单 DB fast-path 同步跑
+	confirmGroup := func(dbIdx int, group []shardedEntry) {
+		db, err := s.dbManager.GetDB(dbIdx)
+		if err != nil {
+			for _, se := range group {
+				confirmErrs[se.idx] = fmt.Errorf("get db[%d]: %w", dbIdx, err)
+				s.logger.Error("tcc confirm: get db failed, needs recovery",
+					zap.Error(err), zap.String("voucherNo", voucherNo))
 			}
+			return
+		}
 
-			// 同 Try：整组 Confirm 单事务 + retryOnDeadlock。
-			// Confirm 阶段 tccConfirm 内部的 UpdateBranchStatus 幂等（CONFIRMED → CONFIRMED no-op），
-			// 重试安全。死锁主要来自 tcc_transaction 的 WHERE branch_id=? UPDATE，跟 Try 同类问题。
-			cfmErr := s.retryOnDeadlock(func() error {
-				tx := db.WithContext(confirmCtx).Begin()
-				if tx.Error != nil {
-					return fmt.Errorf("begin tx: %w", tx.Error)
-				}
-				for _, se := range group {
-					branchID := transactionIDs[se.idx]
-
-					account, accErr := s.accountRepo.GetAccountForUpdate(confirmCtx, tx, se.entry.AccountNo, se.dbIdx, se.tableIdx)
-					if accErr != nil || account == nil {
-						msg := "account not found"
-						if accErr != nil {
-							msg = accErr.Error()
-						}
-						tx.Rollback()
-						return fmt.Errorf("get account %s: %s", se.entry.AccountNo, msg)
-					}
-					// outcomes[se.idx].balanceDelta 由 Try 阶段计算并持久化到内存；
-					// tccConfirm 将跳过 GetBranchForUpdate SELECT，直接执行余额和流水更新。
-					if cfmErr := s.tccConfirm(confirmCtx, tx, branchID, se.entry, account, &bookingParams{
-						transactionID:   branchID,
-						voucherNo:       voucherNo,
-						businessNo:      req.BusinessNo,
-						businessType:    req.BusinessType,
-						entry:           se.entry,
-						currency:        req.Currency,
-						transactionDate: transactionDate,
-						transactionTime: now,
-						description:     req.Description,
-						cutDate:         cutDate,
-					}, se.dbIdx, se.tableIdx, outcomes[se.idx].balanceDelta, true); cfmErr != nil {
-						tx.Rollback()
-						return cfmErr
-					}
-				}
-				if commitErr := tx.Commit().Error; commitErr != nil {
-					return fmt.Errorf("commit confirm db[%d]: %w", dbIdx, commitErr)
-				}
-				return nil
-			})
-
-			if cfmErr != nil {
-				for _, se := range group {
-					confirmErrs[se.idx] = cfmErr
-				}
-				s.logger.Error("tcc confirm failed after retry, needs recovery",
-					zap.Error(cfmErr), zap.String("voucherNo", voucherNo))
+		// 同 Try：整组 Confirm 单事务 + retryOnDeadlock。
+		// Confirm 阶段 tccConfirm 内部的 UpdateBranchStatus 幂等（CONFIRMED → CONFIRMED no-op），
+		// 重试安全。死锁主要来自 tcc_transaction 的 WHERE branch_id=? UPDATE，跟 Try 同类问题。
+		cfmErr := s.retryOnDeadlock(func() error {
+			tx := db.WithContext(confirmCtx).Begin()
+			if tx.Error != nil {
+				return fmt.Errorf("begin tx: %w", tx.Error)
 			}
-		}()
+			for _, se := range group {
+				branchID := transactionIDs[se.idx]
+
+				account, accErr := s.accountRepo.GetAccountForUpdate(confirmCtx, tx, se.entry.AccountNo, se.dbIdx, se.tableIdx)
+				if accErr != nil || account == nil {
+					msg := "account not found"
+					if accErr != nil {
+						msg = accErr.Error()
+					}
+					tx.Rollback()
+					return fmt.Errorf("get account %s: %s", se.entry.AccountNo, msg)
+				}
+				// outcomes[se.idx].balanceDelta 由 Try 阶段计算并持久化到内存；
+				// tccConfirm 将跳过 GetBranchForUpdate SELECT，直接执行余额和流水更新。
+				if cfmErr := s.tccConfirm(confirmCtx, tx, branchID, se.entry, account, &bookingParams{
+					transactionID:   branchID,
+					voucherNo:       voucherNo,
+					businessNo:      req.BusinessNo,
+					businessType:    req.BusinessType,
+					entry:           se.entry,
+					currency:        req.Currency,
+					transactionDate: transactionDate,
+					transactionTime: now,
+					description:     req.Description,
+					cutDate:         cutDate,
+				}, se.dbIdx, se.tableIdx, outcomes[se.idx].balanceDelta, true); cfmErr != nil {
+					tx.Rollback()
+					return cfmErr
+				}
+			}
+			if commitErr := tx.Commit().Error; commitErr != nil {
+				return fmt.Errorf("commit confirm db[%d]: %w", dbIdx, commitErr)
+			}
+			return nil
+		})
+
+		if cfmErr != nil {
+			for _, se := range group {
+				confirmErrs[se.idx] = cfmErr
+			}
+			s.logger.Error("tcc confirm failed after retry, needs recovery",
+				zap.Error(cfmErr), zap.String("voucherNo", voucherNo))
+		}
 	}
-	wg.Wait()
+
+	// Confirm 执行：单 DB 直接同步；多 DB 时 goroutine 并发各 DB 组。
+	if singleDBFastPath {
+		dbIdx := dbGroupKeys[0]
+		confirmGroup(dbIdx, dbGroupMap[dbIdx])
+	} else {
+		var wg sync.WaitGroup
+		for _, dbIdx := range dbGroupKeys {
+			dbIdx, group := dbIdx, dbGroupMap[dbIdx]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				confirmGroup(dbIdx, group)
+			}()
+		}
+		wg.Wait()
+	}
 
 	for _, cfmErr := range confirmErrs {
 		if cfmErr != nil {
@@ -2059,7 +2100,8 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 	// 协调者：所有 Confirm 成功 → 标记 CONFIRMED。
 	// cut_date 已在 Create 时写入 + propagate 到所有 entry 的 cut_date 列，
 	// 不再需要 finalize fan-out（试算平衡靠 cut_date tag 自然成立）。
-	if s.tccCoordRepo != nil {
+	// Fast-path 单 DB 跳过（coord 没创建）。
+	if s.tccCoordRepo != nil && !singleDBFastPath {
 		if cErr := s.tccCoordRepo.TransitionToConfirmed(confirmCtx, voucherNo); cErr != nil {
 			s.logger.Warn("tcc coordinator confirmed transition failed (non-fatal)",
 				zap.String("voucherNo", voucherNo), zap.Error(cErr))
@@ -2582,7 +2624,8 @@ func (s *accountingService) CreateAccount(ctx context.Context, userID int64, acc
 	if err := validateOwnerIDForType(userID, accountType); err != nil {
 		return nil, err
 	}
-	return s.createAccountInternal(ctx, userID, accountBusinessType, accountType, category, currency)
+	// 默认 GroupA；要建 GroupB 用 Scheduler.ForceProvision（fleet 路径）
+	return s.createAccountInternal(ctx, userID, accountBusinessType, accountType, category, currency, model.AccountGroupA)
 }
 
 // CategoryForAccountType 按约定的 1:1 映射返回 AccountType 对应的 AccountCategory。
@@ -2658,7 +2701,7 @@ func (s *accountingService) CreatePlatformAccount(ctx context.Context, reservedI
 	if !ok {
 		return nil, fmt.Errorf("account type %d is not a platform-internal type; use CreateAccount", accountType)
 	}
-	return s.createAccountInternal(ctx, reservedID, spec.BusinessType, accountType, spec.Category, currency)
+	return s.createAccountInternal(ctx, reservedID, spec.BusinessType, accountType, spec.Category, currency, model.AccountGroupA)
 }
 
 // CreateUserScopedPlatformAccount 给具体真实用户挂一个平台类型 business_type 账户.
@@ -2676,7 +2719,7 @@ func (s *accountingService) CreateUserScopedPlatformAccount(ctx context.Context,
 	if !ok {
 		return nil, fmt.Errorf("account type %d is not a platform-internal type", accountType)
 	}
-	return s.createAccountInternal(ctx, userID, spec.BusinessType, accountType, spec.Category, currency)
+	return s.createAccountInternal(ctx, userID, spec.BusinessType, accountType, spec.Category, currency, model.AccountGroupA)
 }
 
 // CreatePlatformChannelRequest Fleet 请求：基于**已登记**的 business_type 批量建 100 账户。
@@ -2689,6 +2732,9 @@ type CreatePlatformChannelRequest struct {
 	AccountType         model.AccountType
 	ChannelBusinessType int
 	Currency            string
+	// Group "A" / "B" / ""（空=A）—— 100 sub-account 全部落同一 group。
+	// "A"：常规渠道注册（默认）；"B"：Scheduler.ForceProvision 预创建下一期 fleet 时用
+	Group               string
 }
 
 // CreatePlatformChannelResult 返回 fleet 创建结果：实际使用的 business_type 数字码 + 100 个账户。
@@ -2751,10 +2797,14 @@ func (s *accountingService) CreatePlatformAccountFleet(ctx context.Context, req 
 	if currency == "" {
 		currency = "PHP"
 	}
+	group := req.Group
+	if group == "" {
+		group = model.AccountGroupA
+	}
 	accounts := make([]*model.Account, 0, 100)
 	var firstErr error
 	for i := int64(0); i < 100; i++ {
-		acc, err := s.createAccountInternal(ctx, i, model.AccountBusinessType(req.ChannelBusinessType), req.AccountType, category, currency)
+		acc, err := s.createAccountInternal(ctx, i, model.AccountBusinessType(req.ChannelBusinessType), req.AccountType, category, currency, group)
 		if err != nil {
 			s.logger.Warn("CreatePlatformAccountFleet: shard failed, continuing",
 				zap.Int64("userID", i), zap.Int("businessType", req.ChannelBusinessType),
@@ -3243,17 +3293,34 @@ func (s *accountingService) allocateNextChannelBusinessType(ctx context.Context)
 }
 
 // createAccountInternal 去掉 owner_id 校验的共享创建逻辑（幂等 + 写库）。
-func (s *accountingService) createAccountInternal(ctx context.Context, userID int64, accountBusinessType model.AccountBusinessType, accountType model.AccountType, category model.AccountCategory, currency string) (*model.Account, error) {
-	// 幂等性按 (user_id, business_type, currency) 三元组判断 —— 这也是 account 表
-	// uk_user_business_type 的实际唯一键。早期实现只按 (user_id, business_type)
-	// 查重，导致"同一用户改个币种再建"被误判成已存在，直接把旧币种账户返回给
-	// 调用方（排查案例：传 USD 却拿到 PHP）。
+// createAccountInternal 创建账户（共享给 CreateAccount / Fleet / Scheduler.ForceProvision）。
+//
+// accountGroup 参数：
+//   - 空字符串或 "A"  → GroupA（默认；非轮换账户、轮换的当期 active）
+//   - "B"             → GroupB（轮换预创建的下一组）
+//
+// 幂等检查按 (user_id, business_type, currency, account_group) 四元组（跟新 unique key 对齐）：
+// 同 (user, biz, currency) 下 GroupA + GroupB 可以共存，分别幂等，不互相影响。
+func (s *accountingService) createAccountInternal(ctx context.Context, userID int64, accountBusinessType model.AccountBusinessType, accountType model.AccountType, category model.AccountCategory, currency string, accountGroup string) (*model.Account, error) {
+	if accountGroup == "" {
+		accountGroup = model.AccountGroupA
+	}
+	if accountGroup != model.AccountGroupA && accountGroup != model.AccountGroupB {
+		return nil, fmt.Errorf("invalid account_group %q (only A/B)", accountGroup)
+	}
+
+	// 幂等检查：找同 (user, biz, currency) 但只看相同 group 的行（unique 4 元组）
+	// 注：ListAccountsByUserAndBusinessType 不带 group 过滤；这里手动 filter
 	existing, err := s.accountRepo.ListAccountsByUserAndBusinessType(ctx, userID, accountBusinessType, currency)
 	if err != nil {
 		return nil, fmt.Errorf("check account existence: %w", err)
 	}
-	if len(existing) > 0 {
-		return existing[0], nil
+	for _, e := range existing {
+		if e.AccountGroup == accountGroup ||
+			(accountGroup == model.AccountGroupA && e.AccountGroup == "") {
+			// "" 兼容已有未填 group 的老行（应该回写但保守起见识别成 A）
+			return e, nil
+		}
 	}
 
 	accountNo, err := s.generateAccountNo(ctx, userID, accountType, accountBusinessType, currency)
@@ -3271,6 +3338,7 @@ func (s *accountingService) createAccountInternal(ctx context.Context, userID in
 		FrozenBalance:       0,
 		AvailableBalance:    0,
 		Status:              model.AccountStatusActive,
+		AccountGroup:        accountGroup,
 		Version:             0,
 	}
 	if err := s.accountRepo.CreateAccount(ctx, account); err != nil {

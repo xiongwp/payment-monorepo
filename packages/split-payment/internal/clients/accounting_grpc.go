@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/pkg/retry"
 	"github.com/cloudwego/kitex/transport"
 	"github.com/xiongwp/payment-util/kitexutil"
 
@@ -68,11 +69,28 @@ func NewAccountingGRPCClient(endpoint string) (*AccountingGRPCClient, error) {
 		// 显式指定的 endpoint 优先级最高 (CLI / 测试场景).
 		opts = append(opts, client.WithHostPorts(endpoint))
 	}
+	// ⚡ 优化 #2: 禁掉 Kitex auto retry。
+	// 默认 Kitex 在 timeout / connection-closed 等可重试错时会自动 retry 多次，
+	// 让 5s timeout 实际变成 10-15s（叠加 1-2 次 retry）。压测时这放大效应会
+	// 把 worker 全卡死。MaxRetryTimes=0 → 单次 timeout 立即失败。
+	noRetryPolicy := &retry.FailurePolicy{
+		StopPolicy: retry.StopPolicy{
+			MaxRetryTimes:    0, // 关键：不重试
+			MaxDurationMS:    0,
+			DisableChainStop: false,
+		},
+	}
+
 	opts = append(opts,
 		// 强制 gRPC over HTTP/2 over TCP, 避开 Kitex netpoll 把 host:port 当 unix
 		// socket 路径解读的 "dial unix ...: no such file or directory" 陷阱.
 		client.WithTransportProtocol(transport.GRPC),
+		// 2s inner timeout：loadtest 外层 3s，内层短 1s 让单 leg 先 fail-fast，
+		// 整笔 TriggerEvent 不被一条慢 leg 拖死。retry 已禁掉，不会被放大。
+		// Fleet × rotation 启用后每个 leg 多一次 LA→sub_account 解析 +
+		// shard write，资源压力大时 2s 不够 → 调 3s。
 		client.WithRPCTimeout(3*time.Second),
+		client.WithFailureRetry(noRetryPolicy),
 	)
 	cli, err := transactionservice.NewClient("accounting-service", opts...)
 	if err != nil {
@@ -80,7 +98,8 @@ func NewAccountingGRPCClient(endpoint string) (*AccountingGRPCClient, error) {
 	}
 	return &AccountingGRPCClient{
 		cli:        cli,
-		Timeout:    3 * time.Second,
+		Timeout:    3 * time.Second, // 同 WithRPCTimeout — fleet routing 解析 + 多 shard write 需要稍宽
+
 		rulesCache: map[string][]*TransactionRule{},
 		rulesExp:   map[string]time.Time{},
 	}, nil
@@ -128,10 +147,22 @@ func (c *AccountingGRPCClient) CreateTransaction(ctx context.Context, req *domai
 			Currency:      leg.Currency,
 			EdgeFromNode:  leg.EdgeFromNode,
 			EdgeToNode:    leg.EdgeToNode,
+			// Fleet × Rotation 字段（任一侧填了 LA key 就让 server 端走 fleet routing）
+			FromLogicalAccountKey: leg.FromLogicalAccountKey,
+			FromFlowId:            leg.FromFlowID,
+			ToLogicalAccountKey:   leg.ToLogicalAccountKey,
+			ToFlowId:              leg.ToFlowID,
 		})
 	}
+	// 注意 BusinessNo vs OrderNo 语义分离：
+	//   BusinessNo: 业务订单号 = chargeID（同一笔业务跨多 leg 一致），accounting 用作
+	//               shard routing key → 必须用 req.BusinessNo，不是 req.OrderNo
+	//   OrderNo  / IdempotencyKey: 单 leg 维度的请求 id（chargeID + event_code 拼成），
+	//               accounting 用来去重幂等
+	// 历史 bug：曾把 req.OrderNo 错塞进 BusinessNo，导致 OrderNo 里有下划线 / 字母
+	// → accounting RouteByNumericStr ParseInt 失败 → 全部路由到 (0,0) → 单 shard 跑满。
 	wireReq := &accountingv1.CreateTransactionRequest{
-		BusinessNo:     req.OrderNo,
+		BusinessNo:     req.BusinessNo,
 		ProductCode:    req.ProductCode,
 		EventCode:      req.EventCode,
 		IdempotencyKey: req.OrderNo, // 业务 id 兼任幂等 key

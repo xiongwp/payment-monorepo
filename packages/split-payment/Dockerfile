@@ -31,6 +31,9 @@ COPY packages/split-payment/go.mod packages/split-payment/go.sum packages/split-
 COPY packages/payment-util/ packages/payment-util/
 COPY packages/accounting-system/go.mod packages/accounting-system/go.sum packages/accounting-system/
 COPY packages/accounting-system/internal/ packages/accounting-system/internal/
+# split-payment 通过 replace 引用 accounting-system 的 kitex_gen（gRPC client stubs）；
+# 漏拷会让 internal/clients/accounting_grpc.go 找不到包 → go build 失败。
+COPY packages/accounting-system/kitex_gen/ packages/accounting-system/kitex_gen/
 
 # tidy 拉依赖
 WORKDIR /src/packages/split-payment

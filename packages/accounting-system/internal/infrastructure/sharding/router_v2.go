@@ -24,6 +24,7 @@ package sharding
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"strconv"
 
 	"github.com/xiongwp/payment-util/shadow"
@@ -101,13 +102,19 @@ func (r *RouterV2) RouteByID(id int64) (dbIndex, globalTableIndex int) {
 	return n / r.tablePerDB, n
 }
 
-// RouteByNumericStr 字符串 → int64 → RouteByID。
+// RouteByNumericStr 字符串 → 路由。
+//
+//   - 数字 → ParseInt + RouteByID（向后兼容）
+//   - 非数字 → FNV-1a hash 散布到全部 shard（避免 (0,0) footgun，跟 Router 行为一致）
 func (r *RouterV2) RouteByNumericStr(s string) (dbIndex, globalTableIndex int) {
-	id, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return 0, 0
+	if id, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return r.RouteByID(id)
 	}
-	return r.RouteByID(id)
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s))
+	total := int64(r.dbCount * r.tablePerDB)
+	n := int(int64(h.Sum32()) % total)
+	return n / r.tablePerDB, n
 }
 
 // RouteByUserID alias。

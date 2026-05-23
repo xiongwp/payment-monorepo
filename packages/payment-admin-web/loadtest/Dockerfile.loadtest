@@ -1,0 +1,69 @@
+# ============================================================================
+# Dockerfile.loadtest — 端到端压测客户端镜像
+#
+# Build context（看 docker-compose.loadtest.yml）：
+#   context: ../../split-payment            ← Go binary 源码包根
+#   dockerfile: ../payment-admin-web/loadtest/Dockerfile.loadtest
+#   additional_contexts:
+#     payment-util:        ../payment-util
+#     accounting-system:   ../accounting-system
+#     accounting-grpc-api: ../accounting-grpc-api
+#
+# 镜像产物：
+#   /usr/local/bin/loadtest            （主压测程序）
+#   /usr/local/bin/loadtest-bootstrap  （账户池预创建工具）
+#
+# 复用 split-payment 的 go.mod（已 replace ../payment-util / ../accounting-system），
+# 避免压测自己另起 module 跨包 import 复杂度。
+# ============================================================================
+
+# ─── Stage 1: builder ────────────────────────────────────────────────────────
+FROM golang:1.25-bookworm AS builder
+
+ENV GOPROXY=https://proxy.golang.org,direct
+ENV CGO_ENABLED=0
+ENV GOOS=linux
+
+WORKDIR /src
+
+# 兄弟仓（split-payment go.mod 里 replace ../X 指向这些）
+COPY --from=payment-util . /src/payment-util/
+COPY --from=accounting-system . /src/accounting-system/
+COPY --from=accounting-grpc-api . /src/accounting-grpc-api/
+
+# split-payment 主源（context = packages/split-payment）
+COPY . /src/split-payment/
+
+WORKDIR /src/split-payment
+RUN go mod download
+
+# 编译压测两支 binary
+RUN go build \
+    -ldflags="-s -w -X main.buildVersion=$(date +%Y%m%d-%H%M%S)" \
+    -o /out/loadtest \
+    ./cmd/loadtest
+
+RUN go build \
+    -ldflags="-s -w" \
+    -o /out/loadtest-bootstrap \
+    ./cmd/loadtest-bootstrap
+
+# ─── Stage 2: runtime ────────────────────────────────────────────────────────
+# 用 alpine：scripts/run.sh 偶尔 exec 进容器查东西，要 shell + curl + jq
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates curl jq bash
+
+COPY --from=builder /out/loadtest           /usr/local/bin/loadtest
+COPY --from=builder /out/loadtest-bootstrap /usr/local/bin/loadtest-bootstrap
+
+# /loadtest 是 compose 里 mount config + graphs + output 的位置
+WORKDIR /loadtest
+RUN mkdir -p /output && chmod 0777 /output
+
+LABEL org.opencontainers.image.title="payment-loadtest"
+LABEL org.opencontainers.image.description="End-to-end loadtest for payment-admin-web full stack"
+
+# 默认入口走主压测；bootstrap 用 `docker compose run --rm --entrypoint ...` 覆盖
+ENTRYPOINT ["/usr/local/bin/loadtest"]
+CMD ["--config=/loadtest/config.yaml"]

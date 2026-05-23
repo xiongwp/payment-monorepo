@@ -134,6 +134,18 @@ func main() {
 	r.HandleFunc("/v1/tcc-archive/config", instanceH.TccArchiveConfig).Methods(http.MethodGet)
 	r.HandleFunc("/v1/tcc-archive/run", instanceH.TccArchiveRun).Methods(http.MethodPost)
 
+	// ─── 轮换账户管理（rotation）─ proxy 到 accounting-system /admin/rotation/* ───
+	r.HandleFunc("/v1/rotation/logical-accounts", instanceH.RotationListLogicalAccounts).Methods(http.MethodGet)
+	r.HandleFunc("/v1/rotation/instance-history", instanceH.RotationInstanceHistory).Methods(http.MethodGet)
+	r.HandleFunc("/v1/rotation/instance-detail", instanceH.RotationInstanceDetail).Methods(http.MethodGet)
+	r.HandleFunc("/v1/rotation/register", instanceH.RotationRegister).Methods(http.MethodPost)
+	r.HandleFunc("/v1/rotation/manual-switch", instanceH.RotationManualSwitch).Methods(http.MethodPost)
+	r.HandleFunc("/v1/rotation/manual-provision", instanceH.RotationManualProvision).Methods(http.MethodPost)
+	// Fleet routing 测试端点（UI "Fleet 路由测试" 面板用）
+	r.HandleFunc("/v1/rotation/resolve-fleet-sub", instanceH.RotationResolveFleetSub).Methods(http.MethodGet)
+	r.HandleFunc("/v1/rotation/fleet-book", instanceH.RotationFleetBook).Methods(http.MethodPost)
+	r.HandleFunc("/v1/rotation/balance-summary", instanceH.RotationBalanceSummary).Methods(http.MethodGet)
+
 	// Buffer accounts — reload fans out to all live instances via HTTP admin
 	r.HandleFunc("/v1/buffer-accounts/reload", instanceH.ReloadBufferAccounts).Methods(http.MethodPost)
 	r.HandleFunc("/v1/transaction-rules/reload", instanceH.ReloadTransactionRules).Methods(http.MethodPost)

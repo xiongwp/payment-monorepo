@@ -1,99 +1,102 @@
-# split-payment 联栈模式 — SP-AC-7 纯 gRPC 内部服务.
+# split-payment 联栈模式 — DB-split 重构后版本.
 #
-# 方案选 "无 Dockerfile, 用官方 golang image + bind mount monorepo" 而不是写 Dockerfile:
-#   - split-payment 还没有自己的 Dockerfile, 联栈跑成本最低
+# 方案 "无 Dockerfile, 用官方 golang image + bind mount monorepo"，跟原 dev 联栈一致:
+#   - split-payment 没有自己的 Dockerfile (loadtest 下的 deploy/loadtest/ 才有);
+#     联栈跑成本最低
 #   - go.mod 里 replace ../accounting-system 直接复用本机源码
-#   - 改完代码 `docker restart split-payment` 几秒就重跑, 不用 build image
+#   - 改完代码 docker restart split-payment 几秒重跑, 不用 build image
 #
-# 生产部署应该独立 stripe-gateway 服务 / 真镜像; 本 override 仅供联栈 dev.
+# DB-split 关键改动：
+#   - mount split-payment-config.shared.yaml 进 /app/config/config.yaml
+#     里面定义 1 meta + 10 shard DSN（指 shared-meta + shared-shard-N）
+#   - DB schema 由 shared-db/generate-shared-init.sh 拼好后 mysql 启动期自动灌入
+#     (split_payment_meta + split_payment_db_0..9 + 1600 张分片表)
+#   - 删除老的 bootstrap 脚本里的 "CREATE DATABASE split_payment" — 不再需要
 #
-# 网络: payment-stack 共享网, 直接 DNS 找 accounting-system:50051.
-# 端口: 9098 暴露到 host (admin-web BFF 在 host 上跑时可达; 容器里直接 DNS).
+# 网络: payment-stack 共享网，直接 DNS 找 accounting-service:50051。
+# 端口: 9098 暴露到 host (admin-web BFF 在 host 上跑时可达; 容器里直接 DNS)。
 
 services:
   split-payment:
     # Go 版本必须 >= monorepo 最高的 go.mod 要求 (accounting-system 用 1.25).
-    # tag 'golang:1.25' 对应 1.25.x 系列.
     image: golang:1.25
-    container_name: split-payment
+    # 不写 container_name：scale=N 时 compose 自动 -1/-2 后缀。
     restart: unless-stopped
     networks:
-      - payment-stack
+      payment-stack:
+        # 显式 alias：跨 compose 项目 DNS 才认这个名字（不指定时 docker 不会跨
+        # project 暴露服务名）。loadtest 在 payment-loadtest project 里调 split-payment:9098。
+        # 多副本时 docker DNS 自动 round-robin 多个 IP，alias 不冲突。
+        aliases:
+          - split-payment
     working_dir: /workspace/packages/split-payment
     volumes:
       # 整个 monorepo 挂进来 (split-payment go.mod 用 replace ../accounting-system 等
       # 兄弟仓 path, 必须能看到 packages/ 同级).
-      # overrides/ → deploy/ → payment-admin-web/ → packages/ → monorepo root, 共 4 级.
       - ../../../..:/workspace
       - split-go-cache:/root/.cache/go-build
       - split-go-mod:/go/pkg/mod
+      # mount 联栈版 config (DB-split: 1 meta + 10 shards DSN).
+      # split-payment viper 默认从 ./config/config.yaml 读 (cwd=working_dir).
+      - ./split-payment-config.shared.yaml:/workspace/packages/split-payment/config/config.yaml:ro
     environment:
-      SPLIT_GRPC_PORT: "9098"
-      # etcd 服务发现 + 自注册 (kitexutil 读 REGISTRY_ENDPOINTS).
+      # etcd 服务发现 + 自注册 (kitexutil 读 global env, 无前缀)
       REGISTRY_ENDPOINTS: "etcd:2379"
       ADVERTISE_HOST: "split-payment"
-      # accounting service 在 compose 里实际叫 accounting-service (不是 accounting-system).
-      # etcd 注册名同名; 多副本由 deploy.sh scale_args_of 起 2 个.
-      ACCOUNTING_GRPC_ADDR: "accounting-service:50051"
-      # SP-AC-7 SaveGraph saga: SaveGraph 时把 graph 派生的 rules POST 到 accounting
-      # admin HTTP (/admin/transaction-rules), 全部 upsert 成功才落 graph 本地 DB.
-      # 空 → 退化, 不同步 (dev 单仓启动用).
+      # 启动期 reconcileGraphRules 把 transaction_rule 推到 accounting admin HTTP
       ACCOUNTING_HTTP_URL: "http://accounting-service:8888"
-      # MySQL 持久化 (跟 accounting-system 一样复用 shared-meta meta 库)
-      SPLIT_PAYMENT_DSN: "split_user:password@tcp(shared-meta:3306)/split_payment?parseTime=true&charset=utf8mb4"
-      # Kafka 事件订阅 (refund.completed) — 复用 risk-stack 的 kafka
-      SPLIT_PAYMENT_KAFKA_BROKERS: "risk-kafka:9092"
-      CGO_ENABLED: "0"
-      # 关掉 workspace 模式: monorepo 根有 go.work, 但 split-payment 自带 replace
-      # 指 ../accounting-system, 不需要 workspace; workspace 模式还跟 -mod 标志冲突.
+      # 启动期把 seed/scenarios/*.graph.json 灌进 meta DB（moneyflow_graphs 表）。
+      # 没这个 env，graph 库是空的 → TriggerEvent 全报 "no active graphs / not found"。
+      # /workspace 是 monorepo 挂载点（看上面 volumes）→ seed 路径就在它下面。
+      # 同一份 json loadtest 也 bind-mount 读，单一源头不会跑偏。
+      MONEYFLOW_SEED_DIR: "/workspace/packages/split-payment/seed/scenarios"
+      # Fleet × Rotation routing：true → translator 把 channel-*/platform-*/transit:* 等
+      # 中间节点改填 logical_account_key + flow_id（=charge_id），让 accounting 服务端按
+      # fnv32a(flow_id)%100 选 fleet sub-account。
+      #
+      # 启用前需要：① accounting LA 已注册（admin UI / curl /admin/rotation/register）
+      # ② fleet 100 sub 已 provision（manual-provision + manual-switch 各一次到 active）。
+      # 否则 split-payment 调 accounting 会被服务端拒绝（"no active sub" 错）。
+      SPLIT_PAYMENT_FLEET_ROUTING_ENABLED: "true"
+      # 关掉 workspace 模式 (monorepo 根 go.work 不含 split-payment)
       GOWORK: "off"
-      # 万一镜像 Go 版本比 go.mod 要求低, 允许自动下载匹配 toolchain.
       GOTOOLCHAIN: "auto"
-    # bash + /dev/tcp 内置 TCP probe, 不需要装 nc.
-    # 所有 shell 变量用 $$  转义, 避免 compose 解释 $i / $ok.
+      CGO_ENABLED: "0"
+    # bootstrap：等 shared-meta + 10 个 shared-shard 都通了再 go run。
+    # shared-db 的 mysql entrypoint 启动期会自动跑 generate-shared-init.sh 生成的
+    # SQL（含 split_payment_meta + split_payment_db_0..9 + user 创建）。
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
         set -u
-        echo "[bootstrap] waiting for shared-meta:3306"
-        ok=0
-        for i in $$(seq 1 60); do
-          if (echo > /dev/tcp/shared-meta/3306) 2>/dev/null; then
-            echo "[bootstrap] shared-meta:3306 reachable (took $${i}x2s)"
-            ok=1
-            break
-          fi
-          echo "[bootstrap] waiting ... ($$i/60)"
-          sleep 2
+        wait_tcp() {
+          host=$$1; port=$$2; label=$$3
+          for i in $$(seq 1 60); do
+            if (echo > /dev/tcp/$$host/$$port) 2>/dev/null; then
+              echo "[bootstrap] $$label reachable (took $${i}x2s)"
+              return 0
+            fi
+            sleep 2
+          done
+          echo "[bootstrap] WARN: $$label unreachable after 120s, continuing"
+          return 1
+        }
+
+        wait_tcp shared-meta 3306 "shared-meta:3306"
+        for i in 0 1 2 3 4 5 6 7 8 9; do
+          wait_tcp "shared-shard-$$i" 3306 "shared-shard-$$i:3306"
         done
-        if [ "$$ok" = "0" ]; then
-          echo "[bootstrap] WARN: shared-meta unreachable after 120s, continuing anyway"
-        fi
 
-        echo "[bootstrap] installing mariadb-client (best-effort)"
-        apt-get update -qq 2>&1 | tail -2 || true
-        apt-get install -y --no-install-recommends mariadb-client 2>&1 | tail -2 || true
-
-        if command -v mariadb >/dev/null 2>&1; then
-          mariadb --skip-ssl -h shared-meta -uroot -ppassword <<'SQL' 2>&1 | tail -5 || echo "[bootstrap] WARN: DB create failed"
-        CREATE DATABASE IF NOT EXISTS split_payment DEFAULT CHARSET utf8mb4;
-        CREATE USER IF NOT EXISTS 'split_user'@'%' IDENTIFIED BY 'password';
-        GRANT ALL ON split_payment.* TO 'split_user'@'%';
-        FLUSH PRIVILEGES;
-        SQL
-          echo "[bootstrap] split_payment DB ensured"
-        else
-          echo "[bootstrap] WARN: mariadb client not installed, skipping DB bootstrap"
-        fi
-
-        echo "[bootstrap] go mod tidy (sync go.mod for new grpcsvc imports)"
+        echo "[bootstrap] go mod tidy"
         cd /workspace/packages/split-payment
-        go mod tidy 2>&1 | tail -5 || echo "[bootstrap] WARN: go mod tidy failed, trying anyway"
+        go mod tidy 2>&1 | tail -5 || echo "[bootstrap] WARN: go mod tidy failed"
 
-        echo "[bootstrap] starting split-payment service"
+        echo "[bootstrap] starting split-payment service (DB-split mode)"
         exec go run ./cmd/server
     ports:
-      - "9098:9098"
+      # range: scale=N 时 compose 给每副本依次分配 host port
+      - "9098-9107:9098"   # gRPC
+      - "9099-9108:9099"   # admin HTTP（可选 healthz / metrics）
     depends_on: []
 
 volumes:

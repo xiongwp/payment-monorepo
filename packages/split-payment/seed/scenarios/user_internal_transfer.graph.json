@@ -1,0 +1,48 @@
+{
+  "key": "user-internal-transfer-v1",
+  "name": "用户间内部转账（1 leg: from_user → to_user）",
+  "version": "1.0.0",
+  "status": "active",
+  "spec": {
+    "scenario": "user_internal_transfer",
+    "charge_strategy": "separate",
+    "triggers": [
+      { "event": "user.internal_transfer" }
+    ],
+    "guards": [
+      { "kind": "amount_min", "value": 1, "msg": "转账金额必须 > 0" }
+    ],
+    "nodes": [
+      {
+        "id": "from_user",
+        "type": "input",
+        "label": "转出方钱包",
+        "account_id_attr": "from_account"
+      },
+      {
+        "id": "to_user",
+        "type": "output",
+        "label": "转入方钱包",
+        "account_id_attr": "to_account"
+      }
+    ],
+    "edges": [
+      {
+        "from": "from_user",
+        "to": "to_user",
+        "kind": "transfer",
+        "event_code": "user_internal_transfer",
+        "rule": { "type": "remainder" }
+      }
+    ]
+  },
+  "_sample_trigger_payload": {
+    "_doc": "loadtest dispatch() 填 from_account / to_account 两个 user 19 位 account_no",
+    "from_account":           "100000001234567890",
+    "from_account_amount":    "5000",
+    "from_account_currency":  "PHP",
+    "to_account":             "100000001234567891",
+    "to_account_amount":      "5000",
+    "to_account_currency":    "PHP"
+  }
+}

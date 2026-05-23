@@ -42,6 +42,12 @@ type TransactionRequest struct {
 // TxnLeg 一条资金流 (from_account → to_account, 一笔金额).
 //
 // 同一个 TransactionRequest 里的所有 Leg 必须用同一币种 (accounting 不支持跨币种原子操作).
+//
+// Fleet × Rotation 路由（可选）：
+//   - 留空 FromAccountID + 填 FromLogicalAccountKey + FromFlowID → server 端选 fleet sub
+//   - 留空 ToAccountID   + 填 ToLogicalAccountKey   + ToFlowID   → 同上
+//   - 两侧独立生效；caller 通常只对 channel-* / platform-* 等需要轮换的账户填 LA 字段，
+//     用户 / 商户账户继续走 account_no 直填路径。
 type TxnLeg struct {
 	EdgeFromNode  string `json:"edge_from_node"`
 	EdgeToNode    string `json:"edge_to_node"`
@@ -49,4 +55,10 @@ type TxnLeg struct {
 	ToAccountID   string `json:"to_account_id"`
 	Amount        string `json:"amount"` // 字符串保精度 (单位 minor)
 	Currency      string `json:"currency"`
+
+	// fleet routing 可选字段
+	FromLogicalAccountKey string `json:"from_logical_account_key,omitempty"`
+	FromFlowID            string `json:"from_flow_id,omitempty"`
+	ToLogicalAccountKey   string `json:"to_logical_account_key,omitempty"`
+	ToFlowID              string `json:"to_flow_id,omitempty"`
 }

@@ -30,12 +30,23 @@ mtls:
   ca_cert: ""
 
 # ─── DB (MySQL) ─────────────────────────────────────────────────────────
-# DSN 留空 → 走 memory 模式 (单测 / dev fallback).
+# DB-split 重构后两套配置共存：
+#   - 老 `dsn`：legacy 单 DB DSN（给未迁移的 repo: stripe/outbox/saga 用）
+#   - 新 `meta_database` + `databases[10]`：给 RunRepo + GraphRepo 用
+# 全 nil → memory 模式（dev fallback）。
 database:
-  dsn: ""
+  dsn: ""                     # legacy 单 DSN（过渡期）
   max_open_conns: 100
   max_idle_conns: 20
   conn_max_lifetime: 30m
+
+  # 新分片配置（loadtest / prod 必填）。dsn 空时走 memory 模式。
+  meta_database:
+    dsn: ""                   # split_payment_meta 库 DSN
+    max_open_conns: 50
+    max_idle_conns: 20
+    conn_max_lifetime: 30m
+  databases: []               # 必须正好 10 个，对应 split_payment_db_0..9
 
 # ─── accounting-system ──────────────────────────────────────────────────
 accounting:

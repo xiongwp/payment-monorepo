@@ -47,10 +47,30 @@ type Config struct {
 	} `mapstructure:"mtls"`
 
 	Database struct {
+		// Legacy: 单 DSN（兼容老配置；新代码逐步迁到下面的 MetaDB + Shards）
 		DSN             string        `mapstructure:"dsn"`
 		MaxOpenConns    int           `mapstructure:"max_open_conns"`
 		MaxIdleConns    int           `mapstructure:"max_idle_conns"`
 		ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
+
+		// New: 分库分表配置（DB-split 重构）
+		// MetaDB: 单库存 meta 表 (moneyflow_graphs / versions / cron_lease / connected_accounts)
+		// Shards: 10 个分片库存高频流水表
+		// 这两个非空时新 repo (RunRepo / GraphRepo via Manager) 走它们；
+		// 老 repo (Stripe / Outbox / Saga) 仍走 DSN 字段（过渡期共存）。
+		MetaDB struct {
+			DSN             string        `mapstructure:"dsn"`
+			MaxOpenConns    int           `mapstructure:"max_open_conns"`
+			MaxIdleConns    int           `mapstructure:"max_idle_conns"`
+			ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
+		} `mapstructure:"meta_database"`
+		Shards []struct {
+			Name            string        `mapstructure:"name"`
+			DSN             string        `mapstructure:"dsn"`
+			MaxOpenConns    int           `mapstructure:"max_open_conns"`
+			MaxIdleConns    int           `mapstructure:"max_idle_conns"`
+			ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
+		} `mapstructure:"databases"`
 	} `mapstructure:"database"`
 
 	Accounting struct {

@@ -245,3 +245,67 @@ CREATE TABLE IF NOT EXISTS `service_instance` (
 --       outbox_backpressure.low_threshold   = 1000
 --       outbox_backpressure.shrink_ratio    = 0.5
 -- ============================================
+
+-- ============================================
+-- Rotating Suspense / Receivable / Payable Accounts
+-- 设计文档：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md
+-- 域模型：internal/domain/model/rotation.go
+--
+-- logical_account：跨周期稳定的逻辑账户。多个 account instance 在不同周期承接其流量。
+-- I1 不变量：同一 logical_account_id 下任意时刻至多一个 instance phase=active
+--           （由 scheduler 切换事务 + invariant_audit_job 巡检保证）
+-- 反范式化：current_active_account_no/period_end 由 scheduler 在切换事务原子更新，
+--           路由层热路径只查本表即可，避免跨片 account 表 scan。
+-- ============================================
+CREATE TABLE IF NOT EXISTS `logical_account` (
+    `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键（AUTO_INCREMENT；原设计 Leaf 号段，但低频表 AUTO_INCREMENT 也够）',
+    `logical_account_key` VARCHAR(64) NOT NULL COMMENT '业务稳定 key（命名前缀白名单见 rotation.go AllowedKeyPrefixes）',
+    `account_type` TINYINT NOT NULL COMMENT '复用 AccountType (期望值 5/6/9)',
+    `account_business_type` SMALLINT NOT NULL COMMENT '复用 AccountBusinessType (1-999)',
+    `currency` CHAR(3) NOT NULL COMMENT 'ISO 4217',
+    `description` VARCHAR(255) DEFAULT NULL,
+    `rotation_enabled` TINYINT NOT NULL DEFAULT 0 COMMENT '0=不轮换(legacy) 1=轮换',
+    `current_active_account_no` VARCHAR(64) DEFAULT NULL COMMENT '反范式化：当期 active 的 account_no（fleet 场景指其中 anchor sub-account；NULL=未轮换）',
+    `current_active_group` CHAR(1) DEFAULT NULL COMMENT 'fleet 模式下当前 active 的 group ID (A 或 B)；NULL=未轮换的 legacy LA',
+    `current_active_period_end` DATETIME DEFAULT NULL,
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=disabled 1=enabled',
+    `registered_by` VARCHAR(64) NOT NULL COMMENT '注册者（审计；禁止 lazy create）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_lak` (`logical_account_key`),
+    KEY `idx_type_biz_currency` (`account_type`, `account_business_type`, `currency`),
+    KEY `idx_rotation_enabled` (`rotation_enabled`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='逻辑账户（跨周期稳定）';
+
+
+-- ============================================
+-- logical_account_rotation_policy：单个逻辑账户的轮换策略
+-- 关键字段：
+--   drain_p99_seconds       — draining 保留下限（业务 P99 生命周期）
+--   drain_hard_timeout_secs — draining 保留上限，超过强制迁移（§8）
+--   archive_grace_secs      — frozen → archived 缓冲
+--   provision_lead_secs     — scheduler 提前多久预创建下一期（默认 24h）
+--   config_version          — 配置版本号，路由层用它判断缓存是否过期 (E-30)
+-- 旧 instance 走出生时锁定的 policy_version_at_birth 而非最新策略 (E-28/E-29)。
+-- ============================================
+CREATE TABLE IF NOT EXISTS `logical_account_rotation_policy` (
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `period_unit` VARCHAR(8) NOT NULL COMMENT 'DAY(测试) / MONTH(应付应收) / QUARTER(通用中间)',
+    `period_count` INT NOT NULL DEFAULT 1 COMMENT '周期倍数',
+    `rotation_anchor_tz` VARCHAR(32) NOT NULL COMMENT 'IANA 时区',
+    `drain_p99_seconds` INT NOT NULL COMMENT 'draining 最短保留',
+    `drain_hard_timeout_secs` INT NOT NULL COMMENT 'draining 最长保留；超过强制迁移',
+    `archive_grace_secs` INT NOT NULL DEFAULT 604800 COMMENT 'frozen → archived 缓冲（默认 7 天）',
+    `provision_lead_secs` INT NOT NULL DEFAULT 86400 COMMENT '提前预创建下一期（默认 24h）',
+    `config_version` BIGINT NOT NULL DEFAULT 1 COMMENT '配置版本号；每次变更 +1',
+    `effective_from` DATETIME NOT NULL,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`logical_account_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='轮换策略';
+
+-- 注：原 10-13 轮换内部过渡科目（ROTATION_MIGRATION_SUSPENSE / RESIDUAL_WRITEOFF /
+-- OPS_ADJUST / CARRYFORWARD）已删除 — 不在 business_type registry 暴露给运维。
+-- 这些科目是轮换内部 migration / convergence / 归档流程的实现细节，调用方应在代码
+-- 内部用专用编码处理，不占用对外的 1-N business_type 名额。

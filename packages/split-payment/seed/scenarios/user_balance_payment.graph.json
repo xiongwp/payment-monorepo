@@ -1,0 +1,65 @@
+{
+  "key": "user-balance-payment-v1",
+  "name": "用户余额支付（2 leg: 用户钱包 → 商户待结算 → 商户主账户）",
+  "version": "1.0.0",
+  "status": "active",
+  "spec": {
+    "scenario": "user_balance_payment",
+    "charge_strategy": "separate",
+    "triggers": [
+      { "event": "user.balance_payment" }
+    ],
+    "guards": [
+      { "kind": "amount_min", "value": 1, "msg": "支付金额必须 > 0" }
+    ],
+    "nodes": [
+      {
+        "id": "payer_wallet",
+        "type": "input",
+        "label": "付款用户钱包",
+        "account_id_attr": "payer_account"
+      },
+      {
+        "id": "merchant_pending",
+        "type": "intermediate",
+        "label": "商户待结算",
+        "account_id_attr": "merchant_pending_account",
+        "auto_clear": true
+      },
+      {
+        "id": "merchant_wallet",
+        "type": "output",
+        "label": "商户主账户",
+        "account_id_attr": "merchant_account"
+      }
+    ],
+    "edges": [
+      {
+        "from": "payer_wallet",
+        "to": "merchant_pending",
+        "kind": "transfer",
+        "event_code": "user_payment_to_pending",
+        "rule": { "type": "remainder" }
+      },
+      {
+        "from": "merchant_pending",
+        "to": "merchant_wallet",
+        "kind": "transfer",
+        "event_code": "merchant_pending_to_main",
+        "rule": { "type": "remainder" }
+      }
+    ]
+  },
+  "_sample_trigger_payload": {
+    "_doc": "loadtest dispatch() 填 payer_account / merchant_pending_account / merchant_account 三个 19 位 account_no",
+    "payer_account":               "100000001234567890",
+    "payer_account_amount":        "5000",
+    "payer_account_currency":      "PHP",
+    "merchant_pending_account":    "900000001234567891",
+    "merchant_pending_account_amount":   "5000",
+    "merchant_pending_account_currency": "PHP",
+    "merchant_account":            "900000001234567892",
+    "merchant_account_amount":     "5000",
+    "merchant_account_currency":   "PHP"
+  }
+}

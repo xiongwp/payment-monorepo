@@ -105,7 +105,7 @@ message Money {
 
 // AccountingEntry 记账分录
 message AccountingEntry {
-  string account_no    = 1; // 账户号
+  string account_no    = 1; // 账户号；与 logical_account_key 二选一
   // Deprecated: 改用 debit_money / credit_money。老客户端仍可用 string decimal，
   // 但服务端优先读 Money 字段；两者同时非空时 Money 胜出。
   string debit_amount  = 2 [deprecated = true];
@@ -113,6 +113,24 @@ message AccountingEntry {
   string description   = 4; // 描述
   Money  debit_money   = 5; // 借方金额（Money），与 debit_amount 二选一
   Money  credit_money  = 6; // 贷方金额（Money），与 credit_amount 二选一
+
+  // Fleet × Rotation 路由字段（可选）
+  //
+  // 调用方有两种填法：
+  //   方式 A (legacy)：直接填 account_no，server 直接用。
+  //   方式 B (fleet routing)：填 logical_account_key + flow_id（leave account_no
+  //     empty），server 端走 rotation_router：
+  //       sub_idx = fnv32a(flow_id) % 100
+  //       account_no := <LA fleet 中 user_id=sub_idx 的 active sub-account>
+  //
+  // 优先级：account_no 非空 → 直接用；否则要求 logical_account_key + flow_id 都
+  // 非空，server 端 routing 失败（LA 不存在 / fleet 未建好 / 锁竞争）→ 返回错误。
+  //
+  // 用途：让 caller 不用关心 fleet 中哪个 sub-account 是 active，只传业务稳定的
+  // LA key + flow id（如 order_no）即可让流量自动散到 100 个 sub-account 上，同时
+  // 在 rotation 切换时自动跟随到新 group。
+  string logical_account_key = 7;
+  string flow_id             = 8;
 }
 
 // Transaction 账户流水

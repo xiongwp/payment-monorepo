@@ -115,6 +115,29 @@ func main() {
 		fx.Provide(NewAdminHTTPConfig),
 		fx.Provide(func(m *database.Manager) adminhttp.HealthPinger { return m }),
 		fx.Provide(adminhttp.NewServer),
+		// ─── 轮换账户管理（rotation feature）接线 ───────────────────────
+		// 这些 provider 让 service.AdminService 可用，从而让
+		// adminhttp 的 /admin/rotation/* 端点返回真实数据（不是 503）。
+		// 见 rotation_wiring.go。
+		fx.Provide(
+			NewRotationLogicalAccountRepository,
+			NewRotationAccountInstanceManager,
+			NewRotationLogicalAccountAdminReader,
+			NewRotationLogicalAccountAdminRegistrar,
+			NewRotationAccountAdminReader,
+			// Scheduler 全套（让 ManualSwitch / ManualProvision 真生效）
+			NewDistributedLockRepositoryFx,
+			NewRotationLockManagerFx,
+			NewSchedulerLogicalLister,
+			NewSchedulerPolicyReader,
+			NewSchedulerInstanceManager,
+			NewSchedulerAccountIDGenerator,
+			NewRotationScheduler,
+			NewRotationSchedulerCommand,
+			NewRotationBookingInvoker,
+			NewFleetCache,           // fleet routing 本地缓存（config-center push）
+			NewRotationAdminService,
+		),
 		fx.Provide(NewEtcdClient),
 		fx.Invoke(
 			StartGRPCServer,
@@ -237,7 +260,18 @@ func NewShardingRouter(v *viper.Viper) *sharding.Router {
 	return sharding.NewRouterWithConfig(dbCount, tablePerDB)
 }
 
-func StartGRPCServer(lc fx.Lifecycle, srv *grpcserver.Server, v *viper.Viper, logger *zap.Logger) {
+func StartGRPCServer(
+	lc fx.Lifecycle,
+	srv *grpcserver.Server,
+	rotationAdmin *service.AdminService, // Fleet × Rotation 路由解析
+	v *viper.Viper,
+	logger *zap.Logger,
+) {
+	// 让 gRPC handler 能在 AccountingEntry.LogicalAccountKey 非空时走 rotation_router
+	// 解析到具体 sub-account。注入失败（nil）只影响 fleet routing 路径，legacy
+	// account_no 流量不受影响。
+	srv.WithRotationAdmin(rotationAdmin)
+
 	port := v.GetInt("server.grpc_port")
 	if port == 0 {
 		port = 50051
@@ -310,7 +344,15 @@ func NewAdminHTTPConfig(v *viper.Viper) adminhttp.Config {
 	}
 }
 
-func StartAdminHTTPServer(lc fx.Lifecycle, srv *adminhttp.Server, logger *zap.Logger) {
+func StartAdminHTTPServer(
+	lc fx.Lifecycle,
+	srv *adminhttp.Server,
+	rotationAdmin *service.AdminService, // 轮换 admin service（rotation feature）
+	logger *zap.Logger,
+) {
+	// 把 rotation admin service 注入 server，使 /admin/rotation/* 端点可用。
+	srv.WithRotationAdmin(rotationAdmin)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
@@ -632,6 +674,8 @@ func StartOutboxBackpressureController(lc fx.Lifecycle, srv *grpcserver.Server, 
 						if !shrunk && pending > float64(highThreshold) {
 							srv.SetMaxInflight(shrunkMax)
 							shrunk = true
+							metrics.OutboxBackpressureEngaged.Set(1)
+							metrics.OutboxBackpressureTransitionsTotal.WithLabelValues("engage").Inc()
 							logger.Warn("outbox backpressure ENGAGED: shrinking max_inflight",
 								zap.Float64("pending", pending),
 								zap.Int64("highThreshold", highThreshold),
@@ -641,6 +685,8 @@ func StartOutboxBackpressureController(lc fx.Lifecycle, srv *grpcserver.Server, 
 						} else if shrunk && pending < float64(lowThreshold) {
 							srv.SetMaxInflight(originalMax)
 							shrunk = false
+							metrics.OutboxBackpressureEngaged.Set(0)
+							metrics.OutboxBackpressureTransitionsTotal.WithLabelValues("release").Inc()
 							logger.Info("outbox backpressure RELEASED: restoring max_inflight",
 								zap.Float64("pending", pending),
 								zap.Int64("lowThreshold", lowThreshold),

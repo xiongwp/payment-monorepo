@@ -43,3 +43,12 @@ INSERT IGNORE INTO `leaf_alloc_shadow` (`biz_tag`, `max_id`, `step`, `descriptio
     ('accounting.tcc',            1000000000000000001, 100000, 'Shadow tcc id (entity layout high bit = shadow)'),
     ('accounting.batch_order',    1000000000000000001, 100000, 'Shadow batch order id'),
     ('accounting.account',        90000000000,         100000, 'Shadow account_id (high bit 1 in 19-digit account layout)');
+
+-- Rotation feature shadow tables
+CREATE TABLE IF NOT EXISTS `logical_account_shadow`                  LIKE `logical_account`;
+CREATE TABLE IF NOT EXISTS `logical_account_rotation_policy_shadow`  LIKE `logical_account_rotation_policy`;
+
+-- shadow 流量同步新增字典 seed
+INSERT IGNORE INTO `account_business_type_info_shadow`
+    SELECT * FROM `account_business_type_info`
+     WHERE `business_type` IN (10, 11, 12, 13);

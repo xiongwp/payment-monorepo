@@ -1,0 +1,198 @@
+package main
+
+import (
+	"os"
+	"time"
+
+	"github.com/xiongwp/accounting-system/internal/idgen"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/database"
+	"github.com/xiongwp/accounting-system/internal/infrastructure/sharding"
+	"github.com/xiongwp/accounting-system/internal/repository"
+	"github.com/xiongwp/accounting-system/internal/service"
+	"github.com/xiongwp/payment-util/configcenter"
+	"go.uber.org/zap"
+)
+
+// ============================================================================
+// 轮换账户管理：fx 接线
+//
+// 把 service.NewAdminService + 完整 Scheduler 接进 fx 图，让 adminhttp 的
+// /admin/rotation/* 端点全部可用（含 ManualSwitch / ManualProvision）。
+//
+// Scheduler 依赖链：
+//   LogicalAccountRepository (lister + policy reader + admin reader/registrar)
+//   AccountInstanceManager   (instance phase 变更)
+//   AccountRepository        (account by no)
+//   DistributedLockRepository → RotationLockManager  (logical-level 并发互斥)
+//   idgen.IDGenerator + shadow.EncodeAccountID → AccountIDGenerator (生 account_no)
+//
+// 注：Scheduler.Tick() 定时循环还没在这里 wire（只接了 Force* 路径以满足 admin UI）。
+// 后续要按时间自动轮换的话再加个 fx.Invoke 把 Tick 挂到 context-aware ticker 上。
+// ============================================================================
+
+// NewRotationLogicalAccountRepository fx provider — 单实例。
+func NewRotationLogicalAccountRepository(dbm *database.Manager) repository.LogicalAccountRepository {
+	return repository.NewLogicalAccountRepository(dbm)
+}
+
+// NewRotationAccountInstanceManager fx provider — 跨表 instance 读写。
+func NewRotationAccountInstanceManager(
+	dbm *database.Manager,
+	router *sharding.Router,
+	laRepo repository.LogicalAccountRepository,
+) repository.AccountInstanceManager {
+	return repository.NewAccountInstanceManager(dbm, router, laRepo)
+}
+
+// NewRotationLogicalAccountAdminReader 适配 LogicalAccountRepository → service.LogicalAccountAdminReader
+// 三个方法签名完全一致，直接返回 repo 即可。
+func NewRotationLogicalAccountAdminReader(
+	laRepo repository.LogicalAccountRepository,
+) service.LogicalAccountAdminReader {
+	return laRepo
+}
+
+// NewRotationLogicalAccountAdminRegistrar 适配 LogicalAccountRepository → service.LogicalAccountAdminRegistrar
+// Register 方法签名一致，直接复用同一份 repo 实现。
+func NewRotationLogicalAccountAdminRegistrar(
+	laRepo repository.LogicalAccountRepository,
+) service.LogicalAccountAdminRegistrar {
+	return laRepo
+}
+
+// NewRotationAccountAdminReader 适配 instance manager + account repo → service.AccountAdminReader
+func NewRotationAccountAdminReader(
+	instances repository.AccountInstanceManager,
+	accounts repository.AccountRepository,
+) service.AccountAdminReader {
+	return service.NewAdminAccountReaderAdapter(instances, accounts)
+}
+
+// ============================================================================
+// Scheduler 接线 — 让 ManualSwitch / ManualProvision 真生效
+// ============================================================================
+
+// NewDistributedLockRepositoryFx fx provider — 跨 shard 锁仓储。
+func NewDistributedLockRepositoryFx(
+	dbm *database.Manager, router *sharding.Router,
+) repository.DistributedLockRepository {
+	return repository.NewDistributedLockRepository(dbm, router)
+}
+
+// NewRotationLockManagerFx fx provider — Scheduler 用的 LockManager。
+// TTL 60s 足以覆盖一次 ManualSwitch / ManualProvision 调用。
+func NewRotationLockManagerFx(
+	lockRepo repository.DistributedLockRepository, router *sharding.Router,
+) service.LockManager {
+	return repository.NewRotationLockManager(lockRepo, router, 60*time.Second)
+}
+
+// NewSchedulerLogicalLister 把 LogicalAccountRepository 适配为 service.LogicalAccountLister。
+// 跟 NewSchedulerPolicyReader 是同一个底层适配器，但 fx 类型系统要求两个 provider 分开。
+func NewSchedulerLogicalLister(repo repository.LogicalAccountRepository) service.LogicalAccountLister {
+	return service.NewLogicalAccountSchedulerAdapter(repo)
+}
+
+// NewSchedulerPolicyReader 把 LogicalAccountRepository 适配为 service.PolicyReaderForScheduler。
+func NewSchedulerPolicyReader(repo repository.LogicalAccountRepository) service.PolicyReaderForScheduler {
+	return service.NewLogicalAccountSchedulerAdapter(repo)
+}
+
+// NewSchedulerInstanceManager 适配 repo.AccountInstanceManager → service.AccountInstanceManager。
+func NewSchedulerInstanceManager(
+	mgr repository.AccountInstanceManager,
+) service.AccountInstanceManager {
+	return service.NewAccountInstanceManagerAdapter(mgr)
+}
+
+// NewSchedulerAccountIDGenerator 真实 ID 生成器（包 shadow.EncodeAccountID + idgen 号段）。
+func NewSchedulerAccountIDGenerator(g idgen.IDGenerator) service.AccountIDGenerator {
+	return service.NewAccountIDGenerator(g)
+}
+
+// NewRotationScheduler 组装完整 Scheduler。
+// owner 用 HOSTNAME 让多副本之间区分；空字符串走 service.NewScheduler 的默认值。
+// fleetCache 用链式 setter 注入；rotation 完成后 push 到 config-center。
+func NewRotationScheduler(
+	lister service.LogicalAccountLister,
+	instances service.AccountInstanceManager,
+	policies service.PolicyReaderForScheduler,
+	locks service.LockManager,
+	idgenSvc service.AccountIDGenerator,
+	fleetCache service.FleetCache, // fx 自动注入；NewFleetCache provider
+	logger *zap.Logger,
+) *service.Scheduler {
+	owner := os.Getenv("HOSTNAME")
+	if owner == "" {
+		owner = "accounting-rotation-scheduler"
+	}
+	return service.NewScheduler(lister, instances, policies, locks, idgenSvc, owner, nil /* clock=Now */).
+		WithFleetCache(fleetCache).
+		WithLogger(logger)
+}
+
+// NewFleetCache fx provider — fleet routing 本地缓存（接 config-center push）。
+//
+// 依赖：
+//   - *configcenter.Client（已经在跑 watch namespace=accounting-system）
+//   - ACCOUNTING_FLEET_CONFIG_CENTER_URL 环境变量：config-center server 的 HTTP base
+//     e.g. "http://config-center:9691"。空 → 返回 noop cache（兼容老部署）。
+//
+// 注意 config-center 端口约定：
+//   - 9690 = gRPC（SDK 不用；保留）
+//   - 9691 = HTTP (admin / SDK REST / SSE watch) ★ fleet push 用这个 ★
+//   - 9692 = metrics
+//
+// 没拿到 client 或 URL 时返回 noopFleetCache：Get 永远 miss → 100% DB fallback
+// （功能正常但少了 cache 加速；监控指标会暴露低 hit 率）。
+func NewFleetCache(cli *configcenter.Client, logger *zap.Logger) service.FleetCache {
+	baseURL := os.Getenv("ACCOUNTING_FLEET_CONFIG_CENTER_URL")
+	if baseURL == "" {
+		// 跟 system_config 用同一个 config-center server，复用 env
+		baseURL = os.Getenv("CONFIG_CENTER_URL")
+	}
+	if baseURL == "" {
+		// 联栈 dev 默认值（生产应该走 env 显式注入）
+		baseURL = "http://config-center:9691"
+	}
+	actor := os.Getenv("HOSTNAME")
+	// 启动期日志：明确告知是 noop 还是 real cache，方便排障
+	if logger != nil {
+		logger.Info("fleet cache provider initializing",
+			zap.Bool("configcenter_client_nil", cli == nil),
+			zap.String("base_url", baseURL),
+			zap.String("actor", actor))
+	}
+	return service.NewFleetCache(cli, baseURL, actor, logger)
+}
+
+// NewRotationSchedulerCommand fx provider — 把 Scheduler 适配为 SchedulerCommand
+// 注入 AdminService。现在 ManualSwitch / ManualProvision 真生效（替换了 stub）。
+func NewRotationSchedulerCommand(sch *service.Scheduler) service.SchedulerCommand {
+	return service.NewAdminSchedulerCommandAdapter(sch)
+}
+
+// NewRotationBookingInvoker fx provider — 把 service.AccountingService 适配为
+// service.BookingInvoker（仅 DoubleEntryBooking 方法），注入 AdminService 给
+// /admin/rotation/fleet-book demo 端点用。
+//
+// AccountingService 的 DoubleEntryBooking 签名跟 BookingInvoker 一致 → 直接返回。
+func NewRotationBookingInvoker(svc service.AccountingService) service.BookingInvoker {
+	return svc
+}
+
+// NewRotationAdminService fx provider — 组装 service.AdminService。
+// registrar 走 LogicalAccountRepository.Register（已含前缀白名单 + unique 冲突保护）。
+// booker 来自 NewRotationBookingInvoker，供 fleet-book demo 端点用；不可空。
+// fleetCache 链式注入：ResolveFleetSubAccount 优先查本地 cache。
+func NewRotationAdminService(
+	logicals service.LogicalAccountAdminReader,
+	registrar service.LogicalAccountAdminRegistrar,
+	accounts service.AccountAdminReader,
+	scheduler service.SchedulerCommand,
+	booker service.BookingInvoker,
+	fleetCache service.FleetCache,
+) *service.AdminService {
+	return service.NewAdminService(logicals, registrar, accounts, scheduler, booker, nil /* clock=time.Now */).
+		WithFleetCache(fleetCache)
+}

@@ -22,11 +22,48 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/xiongwp/split-payment/internal/domain"
 )
+
+// fleetRoutingEnabled SPLIT_PAYMENT_FLEET_ROUTING_ENABLED=true 时启用 fleet routing。
+// 仅作用于 node.ID 命中 allowedLAPrefixes 的节点（platform 中间账户）；用户/商户
+// 节点继续走 account_no 直填。
+//
+// 评估时机：每次 Translate 入口检查 env，便于切换不重启服务（生产部署应当上配置
+// 中心或 feature flag 系统，loadtest 演示用 env 足矣）。
+func fleetRoutingEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("SPLIT_PAYMENT_FLEET_ROUTING_ENABLED")))
+	return v == "1" || v == "true" || v == "yes"
+}
+
+// allowedLAPrefixes node.ID 命中这些前缀时视为可走 fleet routing 的 LA key。
+// 跟 accounting-system model.AllowedKeyPrefixes 保持一致（手工同步即可，list 长度小）。
+var allowedLAPrefixes = []string{
+	"channel-receivable:",
+	"channel-payable:",
+	"channel-suspense:",
+	"channel-fee:",
+	"platform-fee-clearing:",
+	"platform-fee-revenue:",
+	"platform-withdraw-pending:",
+	"user-suspense:",
+	"transit:",
+}
+
+// isLogicalAccountKey 判定 node.ID 是否落在 LA key 白名单前缀。
+func isLogicalAccountKey(id string) bool {
+	for _, p := range allowedLAPrefixes {
+		if strings.HasPrefix(id, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // TriggerContext 触发事件携带的上下文.
 //
@@ -143,14 +180,35 @@ func Translate(g *domain.Graph, tc TriggerContext) (*domain.RunPlan, error) {
 					evCode, groupCurrency, currency)
 			}
 
-			legs = append(legs, domain.TxnLeg{
+			leg := domain.TxnLeg{
 				EdgeFromNode:  e.From,
 				EdgeToNode:    e.To,
 				FromAccountID: fromAccID,
 				ToAccountID:   toAccID,
 				Amount:        fmt.Sprintf("%d", amount),
 				Currency:      currency,
-			})
+			}
+			// Fleet × Rotation 路由：env 开关命中且 node.ID 是白名单 LA key 时，
+			// 改填 LA key + flow_id，留空 account_no 让 accounting 端选 sub。
+			// flow_id 用 ChargeID 保证：同一笔业务（多 leg）路由到稳定的 sub_idx，
+			// 且不同 charge 散落到不同 sub（避免热点）。
+			if fleetRoutingEnabled() {
+				flowID := tc.ChargeID
+				if flowID == "" {
+					flowID = tc.TraceID // fallback；理论上 ChargeID 必非空
+				}
+				if isLogicalAccountKey(fromNode.ID) && fromNode.AccountIDAttr == "" {
+					leg.FromAccountID = ""
+					leg.FromLogicalAccountKey = fromNode.ID
+					leg.FromFlowID = flowID
+				}
+				if isLogicalAccountKey(toNode.ID) && toNode.AccountIDAttr == "" {
+					leg.ToAccountID = ""
+					leg.ToLogicalAccountKey = toNode.ID
+					leg.ToFlowID = flowID
+				}
+			}
+			legs = append(legs, leg)
 			movements = append(movements, domain.Movement{
 				EdgeFromNode: e.From, EdgeToNode: e.To,
 				FromAccount: fromAccID, ToAccount: toAccID,

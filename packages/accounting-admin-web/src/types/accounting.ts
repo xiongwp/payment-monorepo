@@ -82,6 +82,8 @@ export interface Account {
   frozen_balance: string;
   available_balance: string;
   status: AccountStatus;
+  /** 账户分组：A=默认/当期 active；B=轮换预创建的下一组（非轮换账户永远是 A） */
+  account_group: 'A' | 'B';
   version: number;
   created_at: string;
   updated_at: string;
@@ -429,5 +431,195 @@ export interface BusinessTypeInfo {
 export interface PlatformAccountSnapshotRow {
   account: Account;
   snapshot: AccountBalanceSnapshot | null;
+}
+
+// ─── 轮换账户管理（rotation feature）类型 ─────────────────────────────────
+
+/** LifecyclePhase 数值定义（与后端 model.LifecyclePhase 对齐） */
+export const LifecyclePhase = {
+  Legacy: 0,
+  Active: 1,
+  Draining: 2,
+  Frozen: 3,
+  Archived: 4,
+  Provisioned: 5,
+  Quarantined: 9,
+} as const;
+
+/** 把 phase 数值转成短人话标签（用于 antd Tag） */
+export const LIFECYCLE_PHASE_LABEL: Record<number, string> = {
+  0: 'legacy',
+  1: 'active',
+  2: 'draining',
+  3: 'frozen',
+  4: 'archived',
+  5: 'provisioned',
+  9: 'quarantined',
+};
+
+/** Phase tag 配色（antd Tag color） */
+export const LIFECYCLE_PHASE_COLOR: Record<number, string> = {
+  0: 'default',
+  1: 'green',
+  2: 'gold',
+  3: 'blue',
+  4: 'default',
+  5: 'cyan',
+  9: 'red',
+};
+
+/** Dashboard 行：来自 /v1/rotation/logical-accounts */
+export interface RotationLogicalAccountRow {
+  logical_account_id: number;
+  logical_account_key: string;
+  account_type: number;
+  currency: string;
+  rotation_enabled: boolean;
+  active_account_no: string;
+  active_account_balance: number;      // minor units（int64；JS Number 精度对账务金额够用，必要时升级 bigint）
+  active_is_zero: boolean;
+  period_start: string;                // RFC3339；"0001-01-01T00:00:00Z" 表示未设置
+  period_end: string;
+  time_to_end_seconds: number;         // 负数 = 已过期
+  provisioned_ready: boolean;
+  provisioned_account_no?: string;
+}
+
+/** /v1/rotation/logical-accounts 响应 */
+export interface RotationLogicalAccountsResponse {
+  rows: RotationLogicalAccountRow[];
+  count: number;
+}
+
+/** 单 instance 行（详情页表格） */
+export interface RotationInstanceHistoryRow {
+  account_no: string;
+  lifecycle_phase: number;
+  lifecycle_phase_name: string;
+  balance: number;
+  is_zero: boolean;
+  frozen_balance: number;
+  available_balance: number;
+  currency: string;
+  period_start?: string;
+  period_end?: string;
+  draining_started_at?: string;
+  frozen_at?: string;
+  archived_at?: string;
+  policy_version_at_birth?: number;
+  effective_hard_timeout_secs?: number;
+  override_reason?: string;
+  override_by?: string;
+  version: number;
+}
+
+/** /v1/rotation/instance-history 响应 */
+export interface RotationInstanceHistoryView {
+  logical_account_id: number;
+  logical_account_key: string;
+  currency: string;
+  rotation_enabled: boolean;
+  instances: RotationInstanceHistoryRow[];
+  phase_counts: Record<string, number>;
+  total_balance: number;          // 所有 instance 余额之和（minor units）
+  all_instances_zero: boolean;
+}
+
+/** /v1/rotation/instance-detail 响应 */
+export interface RotationInstanceDetail extends RotationInstanceHistoryRow {
+  logical_account_id: number;
+  logical_account_key: string;
+}
+
+/** 手动切换 / 预创建请求 */
+export interface RotationManualOpRequest {
+  logical_account_key: string;
+  operator: string;
+  reason: string;
+}
+
+/** 手动切换 / 预创建响应（accounting-system 端通用 message+key） */
+export interface RotationManualOpResponse {
+  message: string;
+  logical_account_key: string;
+  operator: string;
+}
+
+/** 注册新 LA 请求 —— "创建 LA" 表单提交体。
+ *
+ *  字段约束：
+ *   - logical_account_key: 必须以 model.AllowedKeyPrefixes 之一开头
+ *     ('transit:', 'channel-payable:', 'channel-receivable:', ...)，长度 ∈ [8, 64]，ASCII 可见字符
+ *   - account_type / account_business_type: 见 AccountType / AccountBusinessType 枚举（int8）
+ *   - rotation_enabled: false → legacy 单 instance 路径；true → 启用轮换
+ */
+export interface RotationRegisterRequest {
+  logical_account_key: string;
+  account_type: number;
+  account_business_type: number;
+  currency: string;
+  description?: string;
+  rotation_enabled: boolean;
+  operator: string;
+}
+
+/** 注册成功响应 */
+export interface RotationRegisterResponse {
+  message: string;
+  logical_account_key: string;
+  id: number;
+  rotation_enabled: boolean;
+  registered_by: string;
+}
+
+// ────────────────────────────────────────────────────────────────
+// Fleet routing 测试 — /admin/rotation/resolve-fleet-sub + /admin/rotation/fleet-book
+// ────────────────────────────────────────────────────────────────
+
+/** Fleet routing 路由解析结果 — 给 UI 测试面板显示路由出了哪个 sub。 */
+export interface FleetSubResolution {
+  logical_account_id: number;
+  logical_account_key: string;
+  flow_id: string;
+  sub_idx: number;                // fnv32(flow_id) % 100
+  account_no: string;
+  account_group: string;          // "A" / "B"
+  lifecycle_phase: number;
+  lifecycle_phase_str: string;
+  balance: number;                // 当前余额（minor units）
+  currency: string;
+}
+
+/** Fleet booking 测试入参（src 二选一：走 fleet routing or 直填 account_no） */
+export interface FleetTestBookRequest {
+  src_logical_account_key?: string;
+  src_account_no?: string;
+  dst_account_no: string;
+  amount: number;
+  currency: string;
+  flow_id: string;
+  business_type: string;          // "TRANSFER" / "PAYMENT" / ...
+  operator: string;
+}
+
+/** Fleet booking 测试响应 */
+export interface FleetTestBookResponse {
+  voucher_no: string;
+  transaction_ids: string[];
+  src_resolution?: FleetSubResolution;
+  booking_time: string;           // RFC3339
+}
+
+/** LA 维度余额聚合（fleet 全 sub 之和 + group/phase 分布） */
+export interface RotationBalanceSummary {
+  logical_account_id: number;
+  logical_account_key: string;
+  currency: string;
+  total_balance: number;
+  instance_count: number;
+  by_group: Record<string, number>;        // {"A": 100, "B": -100}
+  by_phase: Record<string, number>;        // {"1": 0}  key 是 phase code as string
+  group_counts: Record<string, number>;    // {"A": 100, "B": 100}
+  phase_counts: Record<string, number>;    // {"1": 100, "2": 100}
 }
 

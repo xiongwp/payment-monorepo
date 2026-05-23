@@ -37,15 +37,32 @@ CREATE TABLE IF NOT EXISTS `account_10` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -466,15 +483,32 @@ CREATE TABLE IF NOT EXISTS `account_11` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -895,15 +929,32 @@ CREATE TABLE IF NOT EXISTS `account_12` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -1324,15 +1375,32 @@ CREATE TABLE IF NOT EXISTS `account_13` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -1753,15 +1821,32 @@ CREATE TABLE IF NOT EXISTS `account_14` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -2182,15 +2267,32 @@ CREATE TABLE IF NOT EXISTS `account_15` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -2611,15 +2713,32 @@ CREATE TABLE IF NOT EXISTS `account_16` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -3040,15 +3159,32 @@ CREATE TABLE IF NOT EXISTS `account_17` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -3469,15 +3605,32 @@ CREATE TABLE IF NOT EXISTS `account_18` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -3898,15 +4051,32 @@ CREATE TABLE IF NOT EXISTS `account_19` (
     `frozen_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额',
     `available_balance` BIGINT NOT NULL DEFAULT 0 COMMENT '可用余额',
     `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0-禁用 1-正常 2-冻结',
+    `account_group` CHAR(1) NOT NULL DEFAULT 'A' COMMENT '账户分组：A=默认/当前；B=轮换预创建的下一组。非轮换账户永远是 A',
     `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 轮换字段（rotating-suspense-accounts 特性，见 docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md）
+    -- 旧账户 logical_account_id=NULL 且 lifecycle_phase=0 (legacy)，写入路径与原行为一致。
+    `logical_account_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联 logical_account.id；NULL=legacy 账户',
+    `period_start` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期起点（包含），UTC',
+    `period_end` DATETIME DEFAULT NULL COMMENT '本 instance 承接流量的周期终点（不含），UTC',
+    `lifecycle_phase` TINYINT NOT NULL DEFAULT 0 COMMENT '0=legacy 1=active 2=draining 3=frozen 4=archived 5=provisioned 9=quarantined',
+    `draining_started_at` DATETIME DEFAULT NULL COMMENT '进入 draining 的时刻',
+    `frozen_at` DATETIME DEFAULT NULL COMMENT '进入 frozen 的时刻',
+    `archived_at` DATETIME DEFAULT NULL COMMENT '进入 archived 的时刻',
+    `policy_version_at_birth` BIGINT DEFAULT NULL COMMENT '出生时锁定的 policy_version；后续策略变更不影响本 instance (E-28/E-29)',
+    `effective_hard_timeout_secs` INT DEFAULT NULL COMMENT '策略覆盖：本 instance 专用 hard timeout (§11.X 紧急运维)',
+    `override_reason` VARCHAR(255) DEFAULT NULL COMMENT 'override 原因',
+    `override_by` VARCHAR(64) DEFAULT NULL COMMENT 'override 操作人',
+    `override_at` DATETIME DEFAULT NULL COMMENT 'override 时刻',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_no` (`account_no`),
-    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`) COMMENT 'userId + 业务类型 + 币种唯一键',
+    UNIQUE KEY `uk_user_business_type` (`user_id`, `account_business_type`, `currency`, `account_group`, `logical_account_id`) COMMENT 'userId + 业务类型 + 币种 + 组 唯一键 (轮换 fleet 时 GroupA / GroupB 各 1 个)',
     KEY `idx_user_id` (`user_id`),
     KEY `idx_account_type` (`account_type`),
-    KEY `idx_type_status` (`account_type`, `status`)
+    KEY `idx_type_status` (`account_type`, `status`),
+    KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -4293,3 +4463,643 @@ CREATE TABLE IF NOT EXISTS `settlement_outbox_19` (
     KEY `idx_status_id` (`status`, `id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='热路径事务预写日志（Outbox）';
 
+
+
+
+
+
+
+
+
+
+
+
+-- ============================================
+-- tx_account_anchor_10: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_10` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_10: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_10` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_11: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_11` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_11: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_11` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_12: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_12` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_12: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_12` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_13: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_13` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_13: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_13` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_14: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_14` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_14: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_14` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_15: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_15` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_15: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_15` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_16: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_16` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_16: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_16` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_17: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_17` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_17: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_17` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_18: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_18` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_18: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_18` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
+
+-- ============================================
+-- tx_account_anchor_19: 资金流账户锚点表
+-- 【方向 B 分片】按 account_no FNV-1a 哈希到 100 片（与 account_transaction、account 同片）
+--   关键：anchor 与对应 entry 必然在同一物理分片 → 同一本地事务 atomic 写入，无需 TCC
+-- 不变量：(flow_id, account_no) 唯一 — 同一资金流在同一 instance 上仅一条 anchor
+-- 设计：docs/ROTATING_SUSPENSE_ACCOUNTS_DESIGN.md §3.4
+--
+-- 查找路径（业务方按 (flow_id, logical_account_id) 找 account_no）：
+--   先查 flow_anchor_route_NN（按 flow_id 分片）拿到 account_no → 路由到本表（按 account_no 分片）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `tx_account_anchor_19` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf 号段生成）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（业务方 business_id）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id（per-shard 二级索引使用）',
+    `account_no` VARCHAR(64) NOT NULL COMMENT '锚定到的 instance account_no（分片键）',
+    `direction_mask` TINYINT NOT NULL DEFAULT 0 COMMENT 'bit0=曾借记 bit1=曾贷记',
+    `anchored_at` DATETIME NOT NULL COMMENT '锚定时刻',
+    `last_posting_at` DATETIME NOT NULL COMMENT '最近一笔分录时刻',
+    `posting_count` INT NOT NULL DEFAULT 1 COMMENT '已写入的分录数',
+    `migrated_to_account_no` VARCHAR(64) DEFAULT NULL COMMENT '若发生强制迁移，指向新 instance',
+    `migration_voucher_no` VARCHAR(64) DEFAULT NULL COMMENT '迁移凭证号（审计）',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '0=trying 1=active 2=settled 3=migrated 4=stuck',
+    `reuse_source` TINYINT NOT NULL DEFAULT 0 COMMENT '0=primary 1=refund-of 2=reverse-of',
+    `reuse_source_anchor_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '复用了哪条 anchor（审计）',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '已发生过多少次强制迁移；>5 进 quarantined (E-50)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_account` (`flow_id`, `account_no`),
+    KEY `idx_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_status` (`account_no`, `status`),
+    KEY `idx_status_chain_depth` (`status`, `migration_chain_depth`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流账户锚点表（方向B：按 account_no 分片）';
+
+-- ============================================
+-- flow_anchor_route_19: 资金流 → instance 路由索引表
+-- 【方向 B 关键】按 flow_id FNV-1a 哈希到 100 片
+-- 作用：通过 (flow_id, logical_account_id) → account_no 解析，让 router 知道
+--      "本资金流在某 logical_account 上锁定到了哪个 instance"
+-- 不变量：(flow_id, logical_account_id) 唯一 — 一个 flow 在同一 LA 上仅锁定一个 instance（I0）
+--
+-- 写入：
+--   - 首次锚定（router 决定 account_no）→ INSERT 一行（在 flow_id shard 本地事务）
+--   - 强制迁移：UPDATE account_no 字段（chain_depth++）
+--   - 其他情况绝不修改 — immutable lookup record
+--
+-- 读取：路由层热路径每次都查（5s 缓存）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `flow_anchor_route_19` (
+    `id` BIGINT UNSIGNED NOT NULL COMMENT '主键（Leaf）',
+    `flow_id` VARCHAR(64) NOT NULL COMMENT '资金流 ID（分片键）',
+    `logical_account_id` BIGINT UNSIGNED NOT NULL COMMENT 'logical_account.id',
+    `account_no` VARCHAR(64) NOT NULL COMMENT 'flow 在本 LA 上锁定的 account_no',
+    `migration_chain_depth` TINYINT NOT NULL DEFAULT 0 COMMENT '迁移跳数（与 anchor 表一致）',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_flow_logical` (`flow_id`, `logical_account_id`),
+    KEY `idx_account_no` (`account_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='资金流路由索引（方向B）';
