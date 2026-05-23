@@ -2002,81 +2002,94 @@ func (s *accountingService) tccBooking(ctx context.Context, req *DoubleEntryBook
 		}
 	}
 
-	// ── Phase 2: 并行 Confirm（每 DB 一个事务，与 Try 相同锁顺序）────────────
+	// ── Phase 2: Confirm（每 DB 一个事务，与 Try 相同锁顺序）────────────
 	//
 	// Confirm 失败极罕见（网络抖动/节点宕机）；失败时不 Cancel，
 	// 保留 TRYING 状态由 TccRecoveryWorker 后台重试。
 	// 使用 confirmCtx（非请求 ctx）确保 Confirm 在调用方超时后仍能完成。
 	confirmErrs := make([]error, len(req.Entries))
-	for _, dbIdx := range dbGroupKeys {
-		dbIdx, group := dbIdx, dbGroupMap[dbIdx]
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			db, err := s.dbManager.GetDB(dbIdx)
-			if err != nil {
-				for _, se := range group {
-					confirmErrs[se.idx] = fmt.Errorf("get db[%d]: %w", dbIdx, err)
-					s.logger.Error("tcc confirm: get db failed, needs recovery",
-						zap.Error(err), zap.String("voucherNo", voucherNo))
-				}
-				return
+
+	// confirmGroup 封装单 DB 组 Confirm；多 DB 路径并发跑，单 DB fast-path 同步跑
+	confirmGroup := func(dbIdx int, group []shardedEntry) {
+		db, err := s.dbManager.GetDB(dbIdx)
+		if err != nil {
+			for _, se := range group {
+				confirmErrs[se.idx] = fmt.Errorf("get db[%d]: %w", dbIdx, err)
+				s.logger.Error("tcc confirm: get db failed, needs recovery",
+					zap.Error(err), zap.String("voucherNo", voucherNo))
 			}
+			return
+		}
 
-			// 同 Try：整组 Confirm 单事务 + retryOnDeadlock。
-			// Confirm 阶段 tccConfirm 内部的 UpdateBranchStatus 幂等（CONFIRMED → CONFIRMED no-op），
-			// 重试安全。死锁主要来自 tcc_transaction 的 WHERE branch_id=? UPDATE，跟 Try 同类问题。
-			cfmErr := s.retryOnDeadlock(func() error {
-				tx := db.WithContext(confirmCtx).Begin()
-				if tx.Error != nil {
-					return fmt.Errorf("begin tx: %w", tx.Error)
-				}
-				for _, se := range group {
-					branchID := transactionIDs[se.idx]
-
-					account, accErr := s.accountRepo.GetAccountForUpdate(confirmCtx, tx, se.entry.AccountNo, se.dbIdx, se.tableIdx)
-					if accErr != nil || account == nil {
-						msg := "account not found"
-						if accErr != nil {
-							msg = accErr.Error()
-						}
-						tx.Rollback()
-						return fmt.Errorf("get account %s: %s", se.entry.AccountNo, msg)
-					}
-					// outcomes[se.idx].balanceDelta 由 Try 阶段计算并持久化到内存；
-					// tccConfirm 将跳过 GetBranchForUpdate SELECT，直接执行余额和流水更新。
-					if cfmErr := s.tccConfirm(confirmCtx, tx, branchID, se.entry, account, &bookingParams{
-						transactionID:   branchID,
-						voucherNo:       voucherNo,
-						businessNo:      req.BusinessNo,
-						businessType:    req.BusinessType,
-						entry:           se.entry,
-						currency:        req.Currency,
-						transactionDate: transactionDate,
-						transactionTime: now,
-						description:     req.Description,
-						cutDate:         cutDate,
-					}, se.dbIdx, se.tableIdx, outcomes[se.idx].balanceDelta, true); cfmErr != nil {
-						tx.Rollback()
-						return cfmErr
-					}
-				}
-				if commitErr := tx.Commit().Error; commitErr != nil {
-					return fmt.Errorf("commit confirm db[%d]: %w", dbIdx, commitErr)
-				}
-				return nil
-			})
-
-			if cfmErr != nil {
-				for _, se := range group {
-					confirmErrs[se.idx] = cfmErr
-				}
-				s.logger.Error("tcc confirm failed after retry, needs recovery",
-					zap.Error(cfmErr), zap.String("voucherNo", voucherNo))
+		// 同 Try：整组 Confirm 单事务 + retryOnDeadlock。
+		// Confirm 阶段 tccConfirm 内部的 UpdateBranchStatus 幂等（CONFIRMED → CONFIRMED no-op），
+		// 重试安全。死锁主要来自 tcc_transaction 的 WHERE branch_id=? UPDATE，跟 Try 同类问题。
+		cfmErr := s.retryOnDeadlock(func() error {
+			tx := db.WithContext(confirmCtx).Begin()
+			if tx.Error != nil {
+				return fmt.Errorf("begin tx: %w", tx.Error)
 			}
-		}()
+			for _, se := range group {
+				branchID := transactionIDs[se.idx]
+
+				account, accErr := s.accountRepo.GetAccountForUpdate(confirmCtx, tx, se.entry.AccountNo, se.dbIdx, se.tableIdx)
+				if accErr != nil || account == nil {
+					msg := "account not found"
+					if accErr != nil {
+						msg = accErr.Error()
+					}
+					tx.Rollback()
+					return fmt.Errorf("get account %s: %s", se.entry.AccountNo, msg)
+				}
+				// outcomes[se.idx].balanceDelta 由 Try 阶段计算并持久化到内存；
+				// tccConfirm 将跳过 GetBranchForUpdate SELECT，直接执行余额和流水更新。
+				if cfmErr := s.tccConfirm(confirmCtx, tx, branchID, se.entry, account, &bookingParams{
+					transactionID:   branchID,
+					voucherNo:       voucherNo,
+					businessNo:      req.BusinessNo,
+					businessType:    req.BusinessType,
+					entry:           se.entry,
+					currency:        req.Currency,
+					transactionDate: transactionDate,
+					transactionTime: now,
+					description:     req.Description,
+					cutDate:         cutDate,
+				}, se.dbIdx, se.tableIdx, outcomes[se.idx].balanceDelta, true); cfmErr != nil {
+					tx.Rollback()
+					return cfmErr
+				}
+			}
+			if commitErr := tx.Commit().Error; commitErr != nil {
+				return fmt.Errorf("commit confirm db[%d]: %w", dbIdx, commitErr)
+			}
+			return nil
+		})
+
+		if cfmErr != nil {
+			for _, se := range group {
+				confirmErrs[se.idx] = cfmErr
+			}
+			s.logger.Error("tcc confirm failed after retry, needs recovery",
+				zap.Error(cfmErr), zap.String("voucherNo", voucherNo))
+		}
 	}
-	wg.Wait()
+
+	// Confirm 执行：单 DB 直接同步；多 DB 时 goroutine 并发各 DB 组。
+	if singleDBFastPath {
+		dbIdx := dbGroupKeys[0]
+		confirmGroup(dbIdx, dbGroupMap[dbIdx])
+	} else {
+		var wg sync.WaitGroup
+		for _, dbIdx := range dbGroupKeys {
+			dbIdx, group := dbIdx, dbGroupMap[dbIdx]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				confirmGroup(dbIdx, group)
+			}()
+		}
+		wg.Wait()
+	}
 
 	for _, cfmErr := range confirmErrs {
 		if cfmErr != nil {
