@@ -1,0 +1,82 @@
+{
+  "columns": {
+    "status": "Status",
+    "instanceId": "Instance ID",
+    "instance": "Instance",
+    "host": "Host",
+    "httpAdminPort": "HTTP Admin Port",
+    "grpcPort": "gRPC Port",
+    "lastHeartbeat": "Last Heartbeat",
+    "recentHeartbeat": "Recent Heartbeat",
+    "startedAt": "Started At",
+    "actions": "Actions"
+  },
+  "statusTags": {
+    "alive": "Alive",
+    "dead": "Lost",
+    "running": "Running"
+  },
+  "rowActions": {
+    "hotTooltip": "Hot-reload the hot-account whitelist to this instance",
+    "hot": "Hot Accounts",
+    "bufferTooltip": "Hot-reload the buffer-account config to this instance",
+    "buffer": "Buffer Accounts"
+  },
+  "toolbar": {
+    "pushAllHotTooltip": "Push the hot-account whitelist to all alive instances",
+    "pushAllHot": "Push Hot Accounts to All",
+    "pushAllBufferTooltip": "Push the buffer-account config to all alive instances",
+    "pushAllBuffer": "Push Buffer Accounts to All"
+  },
+  "messages": {
+    "loadFailed": "Failed to load",
+    "hotReloadSuccess": "Hot-account reload complete, {{count}} accounts in total",
+    "bufferReloadSuccess": "Buffer-account reload complete, {{count}} accounts in total",
+    "reloadFailed": "Reload failed"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "backendUnhealthy": "Backend service connection error; please check whether accounting-system is running",
+    "stats": {
+      "serviceStatus": "Service Status",
+      "checking": "Checking",
+      "normal": "Normal",
+      "abnormal": "Abnormal",
+      "onlineInstances": "Online Instances",
+      "systemName": "Double-Entry Bookkeeping Management System",
+      "systemTagline": "TCC distributed transactions · Hot path (Redis + Outbox) · Sharding (10 DB x 100 tables) · Day-cut reconciliation"
+    },
+    "shortcutsCard": "Quick Entries",
+    "shortcuts": {
+      "transactions": {
+        "title": "Transaction Journal Query",
+        "desc": "Query journal by account no. / business no. / transaction ID"
+      },
+      "accounts": {
+        "title": "Account Management",
+        "desc": "Create and query account information and balances"
+      },
+      "booking": {
+        "title": "Manual Booking",
+        "desc": "Double-entry booking and adjustment operations"
+      },
+      "snapshots": {
+        "title": "Balance Snapshots",
+        "desc": "Query end-of-day account balance snapshots"
+      },
+      "trialBalance": {
+        "title": "Trial Balance",
+        "desc": "Verify debit/credit balance and the accounting identity"
+      },
+      "tcc": {
+        "title": "TCC Monitor",
+        "desc": "View and repair hanging TCC transactions"
+      }
+    },
+    "instancesCard": "Service Instances",
+    "loadingText": "Loading...",
+    "emptyText": "No instances registered",
+    "tipTag": "Tip",
+    "tipText": "Transaction Journal queries require an account no., business no., or transaction ID to prevent full-DB scans"
+  }
+}

@@ -18,6 +18,7 @@ import {
   SyncOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import { useTranslation } from 'react-i18next'
 import {
   createHotAccount,
   deleteHotAccount,
@@ -37,6 +38,7 @@ interface FormValues {
 }
 
 export default function HotAccountConfigPage() {
+  const { t } = useTranslation('config')
   const [data, setData] = useState<HotAccountConfig[]>([])
   const [loading, setLoading] = useState(false)
   const [reloading, setReloading] = useState(false)
@@ -52,11 +54,11 @@ export default function HotAccountConfigPage() {
       const items = await listHotAccounts()
       setData(items ?? [])
     } catch (err: unknown) {
-      message.error((err as { message?: string })?.message ?? '加载失败')
+      message.error((err as { message?: string })?.message ?? t('hot.messages.loadFailed'))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => { fetchList() }, [fetchList])
 
@@ -84,19 +86,19 @@ export default function HotAccountConfigPage() {
     try {
       if (modalMode === 'create') {
         await createHotAccount({ account_no: values.account_no, description: values.description })
-        message.success('创建成功')
+        message.success(t('hot.messages.createSuccess'))
       } else if (editingId !== null) {
         await updateHotAccount(editingId, {
           enabled: values.enabled ?? true,
           description: values.description,
         })
-        message.success('更新成功')
+        message.success(t('hot.messages.updateSuccess'))
       }
       setModalOpen(false)
       fetchList()
       await reloadHotAccounts()
     } catch (err: unknown) {
-      message.error((err as { message?: string })?.message ?? '操作失败')
+      message.error((err as { message?: string })?.message ?? t('hot.messages.operationFailed'))
     } finally {
       setSubmitting(false)
     }
@@ -105,11 +107,11 @@ export default function HotAccountConfigPage() {
   const handleDelete = async (id: number) => {
     try {
       await deleteHotAccount(id)
-      message.success('删除成功')
+      message.success(t('hot.messages.deleteSuccess'))
       fetchList()
       await reloadHotAccounts()
     } catch (err: unknown) {
-      message.error((err as { message?: string })?.message ?? '删除失败')
+      message.error((err as { message?: string })?.message ?? t('hot.messages.deleteFailed'))
     }
   }
 
@@ -117,47 +119,47 @@ export default function HotAccountConfigPage() {
     setReloading(true)
     try {
       const res = await reloadHotAccounts()
-      message.success(`热重载完成，共 ${res.count} 个账户`)
+      message.success(t('hot.messages.reloadSuccess', { count: res.count }))
     } catch (err: unknown) {
-      message.error((err as { message?: string })?.message ?? '热重载失败')
+      message.error((err as { message?: string })?.message ?? t('hot.messages.reloadFailed'))
     } finally {
       setReloading(false)
     }
   }
 
   const columns: ColumnsType<HotAccountConfig> = [
-    { title: 'ID', dataIndex: 'id', width: 70 },
-    { title: '账户号', dataIndex: 'account_no', width: 220 },
+    { title: t('hot.columns.id'), dataIndex: 'id', width: 70 },
+    { title: t('hot.columns.accountNo'), dataIndex: 'account_no', width: 220 },
     {
-      title: '状态',
+      title: t('hot.columns.status'),
       dataIndex: 'enabled',
       width: 80,
       render: (enabled: boolean) =>
-        enabled ? <Tag color="green">启用</Tag> : <Tag color="default">禁用</Tag>,
+        enabled ? <Tag color="green">{t('hot.status.enabled')}</Tag> : <Tag color="default">{t('hot.status.disabled')}</Tag>,
     },
-    { title: '描述', dataIndex: 'description', ellipsis: true },
+    { title: t('hot.columns.description'), dataIndex: 'description', ellipsis: true },
     {
-      title: '更新时间',
+      title: t('hot.columns.updatedAt'),
       dataIndex: 'updated_at',
       width: 180,
       render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '-',
     },
     {
-      title: '操作',
+      title: t('hot.columns.actions'),
       width: 140,
       render: (_: unknown, record: HotAccountConfig) => (
         <Space>
           <Button type="link" size="small" onClick={() => openEdit(record)}>
-            编辑
+            {t('common:actions.edit')}
           </Button>
           <Popconfirm
-            title="确认删除该热点账户配置？"
+            title={t('hot.deleteConfirm')}
             onConfirm={() => handleDelete(record.id)}
-            okText="确认"
-            cancelText="取消"
+            okText={t('common:actions.confirm')}
+            cancelText={t('common:actions.cancel')}
           >
             <Button type="link" size="small" danger>
-              删除
+              {t('common:actions.delete')}
             </Button>
           </Popconfirm>
         </Space>
@@ -170,20 +172,20 @@ export default function HotAccountConfigPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <Space>
           <Button icon={<PlusOutlined />} type="primary" onClick={openCreate}>
-            新增热点账户
+            {t('hot.addAccount')}
           </Button>
-          <Tooltip title="将数据库中的热点账户白名单热重载到运行中的服务">
+          <Tooltip title={t('hot.reloadTooltip')}>
             <Button
               icon={<SyncOutlined spin={reloading} />}
               loading={reloading}
               onClick={handleReload}
             >
-              热重载白名单
+              {t('hot.reloadButton')}
             </Button>
           </Tooltip>
         </Space>
         <Button icon={<ReloadOutlined />} onClick={fetchList} loading={loading}>
-          刷新
+          {t('common:actions.refresh')}
         </Button>
       </div>
 
@@ -199,32 +201,32 @@ export default function HotAccountConfigPage() {
       <InstanceListPanel type="hot" />
 
       <Modal
-        title={modalMode === 'create' ? '新增热点账户' : '编辑热点账户'}
+        title={modalMode === 'create' ? t('hot.createModalTitle') : t('hot.editModalTitle')}
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
         confirmLoading={submitting}
-        okText="确认"
-        cancelText="取消"
+        okText={t('common:actions.confirm')}
+        cancelText={t('common:actions.cancel')}
         destroyOnClose
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item
             name="account_no"
-            label="账户号"
-            rules={[{ required: true, message: '请输入账户号' }]}
+            label={t('hot.form.accountNoLabel')}
+            rules={[{ required: true, message: t('hot.form.accountNoRequired') }]}
           >
-            <Input placeholder="请输入账户号" disabled={modalMode === 'edit'} />
+            <Input placeholder={t('hot.form.accountNoPlaceholder')} disabled={modalMode === 'edit'} />
           </Form.Item>
 
           {modalMode === 'edit' && (
-            <Form.Item name="enabled" label="启用状态" valuePropName="checked">
-              <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+            <Form.Item name="enabled" label={t('hot.form.enabledLabel')} valuePropName="checked">
+              <Switch checkedChildren={t('hot.form.enabledOn')} unCheckedChildren={t('hot.form.enabledOff')} />
             </Form.Item>
           )}
 
-          <Form.Item name="description" label="描述">
-            <Input.TextArea rows={3} placeholder="可选描述" />
+          <Form.Item name="description" label={t('hot.form.descLabel')}>
+            <Input.TextArea rows={3} placeholder={t('hot.form.descPlaceholder')} />
           </Form.Item>
         </Form>
       </Modal>

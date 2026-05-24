@@ -1,0 +1,32 @@
+{
+  "columns": {
+    "transactionId": "交易ID",
+    "accountNo": "账户号",
+    "businessNo": "业务订单号",
+    "businessType": "业务类型",
+    "debitAmount": "借方金额",
+    "creditAmount": "贷方金额",
+    "balanceBefore": "交易前余额",
+    "balanceAfter": "交易后余额",
+    "bookingType": "记账类型",
+    "transactionDate": "交易日期",
+    "transactionTime": "交易时间"
+  },
+  "businessTypes": {
+    "transfer": "转账",
+    "payment": "支付",
+    "refund": "退款",
+    "withdraw": "提现",
+    "deposit": "充值",
+    "commission": "手续费"
+  },
+  "bookingTypes": {
+    "normal": "实时记账",
+    "buffer": "缓冲记账"
+  },
+  "filters": {
+    "accountNoPlaceholder": "账户号",
+    "businessNoPlaceholder": "业务订单号",
+    "transactionIdPlaceholder": "交易ID"
+  }
+}

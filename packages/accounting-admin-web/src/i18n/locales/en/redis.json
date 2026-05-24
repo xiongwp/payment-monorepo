@@ -1,0 +1,62 @@
+{
+  "title": "Redis Hot Account Rebuild",
+  "description": "Rebuild Redis hot-account balances from MySQL (only accounts with enabled=1 in <code>hot_account_config</code>). Typical scenarios: Redis data loss / corruption / suspected dirty writes. <b>It is recommended to run a dry-run first to inspect the diff before executing for real.</b>",
+  "form": {
+    "asOfModeLabel": "Point in Time",
+    "asOfModeNow": "Current MySQL balance (most common, recovery after Redis restart)",
+    "asOfModeDuration": "Roll back N minutes ago (suspecting recent writes are bad)",
+    "asOfModeTimestamp": "Roll back to a specific timestamp",
+    "durationLabel": "Duration (e.g. 5m / 1h / 24h)",
+    "durationRequired": "Please enter duration",
+    "durationPlaceholder": "5m",
+    "timestampLabel": "RFC3339 Timestamp (e.g. 2026-04-24T15:00:00Z)",
+    "timestampRequired": "Please enter timestamp",
+    "timestampPlaceholder": "2026-04-24T15:00:00Z",
+    "accountNosLabel": "Account No. Filter",
+    "accountNosTooltip": "Empty = rebuild all enabled hot accounts. Separate multiple accounts with commas or newlines. Accounts must still exist in hot_account_config.",
+    "accountNosPlaceholder": "010100001-001, 010100002-002 ...",
+    "dryRunLabel": "Dry run (only compute diff, do not write Redis)",
+    "dryRunOn": "dry-run",
+    "dryRunOff": "Execute"
+  },
+  "submit": {
+    "dryRun": "Simulate Rebuild",
+    "execute": "Execute Rebuild"
+  },
+  "verbs": {
+    "dryRun": "Simulated (dry-run)",
+    "executed": "Rebuilt"
+  },
+  "messages": {
+    "result": "{{verb}}: updated={{updated}} skipped={{skipped}} failed={{failed}}",
+    "callFailed": "Call failed"
+  },
+  "stats": {
+    "total": "Total",
+    "updated": "Written",
+    "skipped": "Skipped",
+    "failed": "Failed",
+    "duration": "Duration",
+    "dryRunTag": "dry-run",
+    "asOfTag": "as_of: {{value}}"
+  },
+  "columns": {
+    "accountNo": "Account No.",
+    "redisCurrent": "Redis Current",
+    "targetBalance": "Target Balance",
+    "delta": "Delta",
+    "source": "Source",
+    "status": "Status",
+    "reason": "Reason"
+  },
+  "tags": {
+    "cacheMiss": "cache miss",
+    "na": "N/A",
+    "consistent": "consistent",
+    "sourceJournal": "journal replay",
+    "sourceAccount": "account table",
+    "failed": "failed",
+    "skipped": "skipped",
+    "written": "written"
+  }
+}

@@ -1,0 +1,171 @@
+{
+  "system": {
+    "title": "系统配置",
+    "description": "通用 key-value 配置中心，存于 <code>account_meta.system_config</code> 表。修改任意一条会立即 fanout 到所有 alive instances；60s 兜底 tick 也会自动同步。Value 必须是合法 JSON（字符串如 <code>\"abc\"</code>，数字如 <code>123</code>，对象如 <code>{\"a\":1}</code>）。",
+    "alert": "新增 key 后，使用方需要在代码中通过 systemConfigSvc.GetInt/GetString/GetJSON 等读取；硬编码 fallback 默认值仍生效，配置仅作为可在线调整的覆盖。",
+    "addConfig": "新增配置",
+    "forceReloadAll": "强制所有实例 reload",
+    "createModalTitle": "新增配置",
+    "editModalTitle": "编辑配置: {{key}}",
+    "okText": "保存并推送",
+    "columns": {
+      "key": "Key",
+      "type": "类型",
+      "value": "Value",
+      "description": "说明",
+      "updated": "更新"
+    },
+    "deleteConfirm": "删除 {{key}}?",
+    "form": {
+      "keyLabel": "Key",
+      "keyPlaceholder": "如 tcc_recovery.stuck_timeout_minutes",
+      "keyRequired": "必填",
+      "keyPattern": "只允许字母数字 . _ -",
+      "typeLabel": "类型 hint",
+      "valueLabel": "Value (JSON 格式)",
+      "valueRequired": "必填",
+      "valueExtra": "字符串要带双引号（如 \"abc\"），数字 / 数组 / 对象直接写。",
+      "valuePlaceholder": "例如：5  或  \"abc\"  或  [1,2,3]  或  {\"a\":1}",
+      "descLabel": "说明",
+      "descPlaceholder": "简短描述这个 key 的用途"
+    },
+    "valueTypes": {
+      "int": "int (整数)",
+      "string": "string (字符串)",
+      "bool": "bool (布尔)",
+      "json": "json (任意结构：数组 / 对象 / 浮点等)"
+    },
+    "messages": {
+      "loadFailed": "加载失败",
+      "invalidJson": "value_json 不是合法 JSON: {{err}}",
+      "updated": "配置已更新（已推送至所有实例）",
+      "created": "配置已新增（已推送至所有实例）",
+      "deleted": "已删除（已推送至所有实例）",
+      "deleteFailed": "删除失败",
+      "reloadAllSuccess": "已强制所有实例 reload 配置",
+      "reloadAllFailed": "reload 失败"
+    }
+  },
+  "hot": {
+    "addAccount": "新增热点账户",
+    "reloadTooltip": "将数据库中的热点账户白名单热重载到运行中的服务",
+    "reloadButton": "热重载白名单",
+    "createModalTitle": "新增热点账户",
+    "editModalTitle": "编辑热点账户",
+    "deleteConfirm": "确认删除该热点账户配置？",
+    "columns": {
+      "id": "ID",
+      "accountNo": "账户号",
+      "status": "状态",
+      "description": "描述",
+      "updatedAt": "更新时间",
+      "actions": "操作"
+    },
+    "status": {
+      "enabled": "启用",
+      "disabled": "禁用"
+    },
+    "form": {
+      "accountNoLabel": "账户号",
+      "accountNoRequired": "请输入账户号",
+      "accountNoPlaceholder": "请输入账户号",
+      "enabledLabel": "启用状态",
+      "enabledOn": "启用",
+      "enabledOff": "禁用",
+      "descLabel": "描述",
+      "descPlaceholder": "可选描述"
+    },
+    "messages": {
+      "loadFailed": "加载失败",
+      "createSuccess": "创建成功",
+      "updateSuccess": "更新成功",
+      "operationFailed": "操作失败",
+      "deleteSuccess": "删除成功",
+      "deleteFailed": "删除失败",
+      "reloadSuccess": "热重载完成，共 {{count}} 个账户",
+      "reloadFailed": "热重载失败"
+    }
+  },
+  "buffer": {
+    "addAccount": "新增缓冲账户",
+    "reloadTooltip": "将数据库中的缓冲记账账户配置热重载到运行中的服务",
+    "reloadButton": "热重载配置",
+    "createModalTitle": "新增缓冲记账账户",
+    "editModalTitle": "编辑缓冲记账账户",
+    "deleteConfirm": "确认删除该缓冲记账账户配置？",
+    "columns": {
+      "id": "ID",
+      "accountNo": "账户号",
+      "flushInterval": "刷新间隔",
+      "status": "状态",
+      "description": "描述",
+      "updatedAt": "更新时间",
+      "actions": "操作"
+    },
+    "status": {
+      "enabled": "启用",
+      "disabled": "禁用"
+    },
+    "form": {
+      "accountNoLabel": "账户号",
+      "accountNoRequired": "请输入账户号",
+      "accountNoPlaceholder": "请输入账户号",
+      "flushLabel": "刷新间隔",
+      "flushRequired": "请选择刷新间隔",
+      "flushPlaceholder": "选择刷新间隔",
+      "enabledLabel": "启用状态",
+      "enabledOn": "启用",
+      "enabledOff": "禁用",
+      "descLabel": "描述",
+      "descPlaceholder": "可选描述"
+    },
+    "messages": {
+      "loadFailed": "加载失败",
+      "createSuccess": "创建成功",
+      "updateSuccess": "更新成功",
+      "operationFailed": "操作失败",
+      "deleteSuccess": "删除成功",
+      "deleteFailed": "删除失败",
+      "reloadSuccess": "热重载完成，共 {{count}} 个账户",
+      "reloadFailed": "热重载失败"
+    }
+  },
+  "adjustment": {
+    "formTitle": "调账申请",
+    "resultTitle": "调账结果",
+    "submitButton": "提交调账申请",
+    "form": {
+      "accountNoLabel": "账户号",
+      "accountNoRequired": "请输入账户号",
+      "accountNoPlaceholder": "请输入账户号",
+      "typeLabel": "调账类型",
+      "typeCorrection": "余额修正",
+      "typeCompensate": "补偿调账",
+      "typeManual": "手工调账",
+      "amountLabel": "调账金额",
+      "amountRequired": "请输入调账金额",
+      "amountPlaceholder": "0.00",
+      "directionLabel": "调账方向",
+      "directionIncrease": "增加余额",
+      "directionDecrease": "减少余额",
+      "reasonLabel": "调账原因",
+      "reasonRequired": "请输入调账原因",
+      "reasonPlaceholder": "请输入调账原因",
+      "approvalLabel": "审批单号",
+      "approvalRequired": "请输入审批单号",
+      "approvalPlaceholder": "请输入审批单号",
+      "operatorLabel": "操作员",
+      "operatorPlaceholder": "可选，默认 admin"
+    },
+    "result": {
+      "transactionId": "交易ID",
+      "voucherNo": "凭证号",
+      "balanceBefore": "调账前余额",
+      "balanceAfter": "调账后余额"
+    },
+    "messages": {
+      "success": "调账成功",
+      "failed": "调账失败"
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "title": "Business Type Management",
+  "description": {
+    "line1": "Stored in <code>account_meta.account_business_type_info</code>. (user_id, business_type) is the account's unique key; multiple channels under the same account_type are distinguished by different business_type values.",
+    "line2": "<b>To add a channel</b>, please use the channel registration flow on the \"System Account\" page; this page is for query / audit only.",
+    "line3": "Convention: 1-9 system preset, 10-100 reserved, 101-999 custom channels."
+  },
+  "alert": {
+    "message": "Read-only view",
+    "description": "Once created, a business_type cannot have its category / account_type changed (which affects debit/credit direction). To disable a channel, use the admin API PUT enabled=0."
+  },
+  "addButton": "Add Business Type",
+  "searchPlaceholder": "Search business_type / code / channel / description",
+  "totalCount": "{{count}} total",
+  "columns": {
+    "businessType": "Business Type",
+    "code": "Code",
+    "accountType": "Account Type",
+    "categoryDerived": "Category (derived)",
+    "description": "Description",
+    "status": "Status"
+  },
+  "status": {
+    "enabled": "Enabled",
+    "disabled": "Disabled"
+  },
+  "unknown": "?",
+  "createModal": {
+    "title": "Add Business Type (registry only, no accounts created)",
+    "alertMessage": "Registry entry only",
+    "alertDescription": "This action only writes a row into <code>account_meta.account_business_type_info</code>; no accounts are created. After registration, go to the \"System Account\" page and select this business_type to trigger Fleet creation of 100 sharded accounts.",
+    "form": {
+      "accountTypeLabel": "Account Type (account_type)",
+      "accountTypePlaceholder": "Select account type (1-9)",
+      "codeLabel": "Business Code (business_type_code)",
+      "codeRequired": "Use UPPER_SNAKE_CASE, e.g. ALIPAY_RECEIVABLE",
+      "codePlaceholder": "ALIPAY_RECEIVABLE",
+      "descLabel": "Purpose Description",
+      "descPlaceholder": "Alipay channel receivable account",
+      "businessTypeLabel": "Business Type Numeric Code",
+      "businessTypeTooltip": "0 = auto-assign an unused number from [101, 999]; you may also specify manually",
+      "businessTypePlaceholder": "0 auto-assign"
+    }
+  },
+  "messages": {
+    "loadFailed": "Failed to load",
+    "registered": "Registered: business_type={{businessType}} · {{code}}. Next, go to the \"System Account\" page to create 100 sharded accounts."
+  }
+}

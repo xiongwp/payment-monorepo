@@ -1,0 +1,171 @@
+{
+  "system": {
+    "title": "System Configuration",
+    "description": "General-purpose key-value configuration center, stored in the <code>account_meta.system_config</code> table. Any change is immediately fanned out to all alive instances; a 60s fallback tick also syncs automatically. Value must be valid JSON (strings like <code>\"abc\"</code>, numbers like <code>123</code>, objects like <code>{\"a\":1}</code>).",
+    "alert": "After adding a key, consumers must read it via systemConfigSvc.GetInt/GetString/GetJSON; hard-coded fallback defaults still apply, and the config only acts as an online-adjustable override.",
+    "addConfig": "Add Config",
+    "forceReloadAll": "Force Reload All Instances",
+    "createModalTitle": "Add Config",
+    "editModalTitle": "Edit Config: {{key}}",
+    "okText": "Save and Push",
+    "columns": {
+      "key": "Key",
+      "type": "Type",
+      "value": "Value",
+      "description": "Description",
+      "updated": "Updated"
+    },
+    "deleteConfirm": "Delete {{key}}?",
+    "form": {
+      "keyLabel": "Key",
+      "keyPlaceholder": "e.g. tcc_recovery.stuck_timeout_minutes",
+      "keyRequired": "Required",
+      "keyPattern": "Only letters, digits and . _ - allowed",
+      "typeLabel": "Type Hint",
+      "valueLabel": "Value (JSON format)",
+      "valueRequired": "Required",
+      "valueExtra": "Strings must be double-quoted (e.g. \"abc\"); numbers / arrays / objects are written directly.",
+      "valuePlaceholder": "e.g. 5  or  \"abc\"  or  [1,2,3]  or  {\"a\":1}",
+      "descLabel": "Description",
+      "descPlaceholder": "Briefly describe the purpose of this key"
+    },
+    "valueTypes": {
+      "int": "int (integer)",
+      "string": "string",
+      "bool": "bool (boolean)",
+      "json": "json (any structure: array / object / float, etc.)"
+    },
+    "messages": {
+      "loadFailed": "Failed to load",
+      "invalidJson": "value_json is not valid JSON: {{err}}",
+      "updated": "Config updated (pushed to all instances)",
+      "created": "Config added (pushed to all instances)",
+      "deleted": "Deleted (pushed to all instances)",
+      "deleteFailed": "Failed to delete",
+      "reloadAllSuccess": "Forced reload on all instances",
+      "reloadAllFailed": "Reload failed"
+    }
+  },
+  "hot": {
+    "addAccount": "Add Hot Account",
+    "reloadTooltip": "Hot-reload the hot-account whitelist from the database to the running service",
+    "reloadButton": "Reload Whitelist",
+    "createModalTitle": "Add Hot Account",
+    "editModalTitle": "Edit Hot Account",
+    "deleteConfirm": "Delete this hot account config?",
+    "columns": {
+      "id": "ID",
+      "accountNo": "Account No.",
+      "status": "Status",
+      "description": "Description",
+      "updatedAt": "Updated At",
+      "actions": "Actions"
+    },
+    "status": {
+      "enabled": "Enabled",
+      "disabled": "Disabled"
+    },
+    "form": {
+      "accountNoLabel": "Account No.",
+      "accountNoRequired": "Please enter account no.",
+      "accountNoPlaceholder": "Enter account no.",
+      "enabledLabel": "Enabled",
+      "enabledOn": "Enabled",
+      "enabledOff": "Disabled",
+      "descLabel": "Description",
+      "descPlaceholder": "Optional description"
+    },
+    "messages": {
+      "loadFailed": "Failed to load",
+      "createSuccess": "Created successfully",
+      "updateSuccess": "Updated successfully",
+      "operationFailed": "Operation failed",
+      "deleteSuccess": "Deleted successfully",
+      "deleteFailed": "Failed to delete",
+      "reloadSuccess": "Reload complete, {{count}} accounts in total",
+      "reloadFailed": "Reload failed"
+    }
+  },
+  "buffer": {
+    "addAccount": "Add Buffer Account",
+    "reloadTooltip": "Hot-reload buffer account config from the database to the running service",
+    "reloadButton": "Reload Config",
+    "createModalTitle": "Add Buffer Account",
+    "editModalTitle": "Edit Buffer Account",
+    "deleteConfirm": "Delete this buffer account config?",
+    "columns": {
+      "id": "ID",
+      "accountNo": "Account No.",
+      "flushInterval": "Flush Interval",
+      "status": "Status",
+      "description": "Description",
+      "updatedAt": "Updated At",
+      "actions": "Actions"
+    },
+    "status": {
+      "enabled": "Enabled",
+      "disabled": "Disabled"
+    },
+    "form": {
+      "accountNoLabel": "Account No.",
+      "accountNoRequired": "Please enter account no.",
+      "accountNoPlaceholder": "Enter account no.",
+      "flushLabel": "Flush Interval",
+      "flushRequired": "Please select flush interval",
+      "flushPlaceholder": "Select flush interval",
+      "enabledLabel": "Enabled",
+      "enabledOn": "Enabled",
+      "enabledOff": "Disabled",
+      "descLabel": "Description",
+      "descPlaceholder": "Optional description"
+    },
+    "messages": {
+      "loadFailed": "Failed to load",
+      "createSuccess": "Created successfully",
+      "updateSuccess": "Updated successfully",
+      "operationFailed": "Operation failed",
+      "deleteSuccess": "Deleted successfully",
+      "deleteFailed": "Failed to delete",
+      "reloadSuccess": "Reload complete, {{count}} accounts in total",
+      "reloadFailed": "Reload failed"
+    }
+  },
+  "adjustment": {
+    "formTitle": "Adjustment Request",
+    "resultTitle": "Adjustment Result",
+    "submitButton": "Submit Adjustment",
+    "form": {
+      "accountNoLabel": "Account No.",
+      "accountNoRequired": "Please enter account no.",
+      "accountNoPlaceholder": "Enter account no.",
+      "typeLabel": "Adjustment Type",
+      "typeCorrection": "Balance Correction",
+      "typeCompensate": "Compensating Adjustment",
+      "typeManual": "Manual Adjustment",
+      "amountLabel": "Adjustment Amount",
+      "amountRequired": "Please enter adjustment amount",
+      "amountPlaceholder": "0.00",
+      "directionLabel": "Direction",
+      "directionIncrease": "Increase Balance",
+      "directionDecrease": "Decrease Balance",
+      "reasonLabel": "Reason",
+      "reasonRequired": "Please enter reason",
+      "reasonPlaceholder": "Enter reason",
+      "approvalLabel": "Approval No.",
+      "approvalRequired": "Please enter approval no.",
+      "approvalPlaceholder": "Enter approval no.",
+      "operatorLabel": "Operator",
+      "operatorPlaceholder": "Optional, defaults to admin"
+    },
+    "result": {
+      "transactionId": "Transaction ID",
+      "voucherNo": "Voucher No.",
+      "balanceBefore": "Balance Before",
+      "balanceAfter": "Balance After"
+    },
+    "messages": {
+      "success": "Adjustment succeeded",
+      "failed": "Adjustment failed"
+    }
+  }
+}

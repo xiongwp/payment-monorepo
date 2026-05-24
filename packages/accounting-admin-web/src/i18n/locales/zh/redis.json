@@ -1,0 +1,62 @@
+{
+  "title": "Redis 热账户重建",
+  "description": "从 MySQL 重建 Redis 热账户余额（仅 <code>hot_account_config</code> 中 enabled=1 的账户）。典型场景：Redis 数据丢失 / 损坏 / 怀疑被脏写。<b>建议先 dry-run 看 diff 再正式执行。</b>",
+  "form": {
+    "asOfModeLabel": "时间点",
+    "asOfModeNow": "当前 MySQL 余额（最常用，Redis 重启后恢复）",
+    "asOfModeDuration": "回滚到 N 分钟前（怀疑最近写入有问题）",
+    "asOfModeTimestamp": "回滚到指定时间戳",
+    "durationLabel": "时长（如 5m / 1h / 24h）",
+    "durationRequired": "请输入时长",
+    "durationPlaceholder": "5m",
+    "timestampLabel": "RFC3339 时间戳（如 2026-04-24T15:00:00Z）",
+    "timestampRequired": "请输入时间戳",
+    "timestampPlaceholder": "2026-04-24T15:00:00Z",
+    "accountNosLabel": "账户号过滤",
+    "accountNosTooltip": "留空 = 重建全部启用的热账户。多个账户用逗号或换行分隔。账户必须仍在 hot_account_config 中。",
+    "accountNosPlaceholder": "010100001-001, 010100002-002 ...",
+    "dryRunLabel": "Dry run（只算 diff 不写 Redis）",
+    "dryRunOn": "dry-run",
+    "dryRunOff": "正式执行"
+  },
+  "submit": {
+    "dryRun": "模拟重建",
+    "execute": "执行重建"
+  },
+  "verbs": {
+    "dryRun": "已模拟（dry-run）",
+    "executed": "已重建"
+  },
+  "messages": {
+    "result": "{{verb}}：updated={{updated}} skipped={{skipped}} failed={{failed}}",
+    "callFailed": "调用失败"
+  },
+  "stats": {
+    "total": "总数",
+    "updated": "已写入",
+    "skipped": "跳过",
+    "failed": "失败",
+    "duration": "耗时",
+    "dryRunTag": "dry-run",
+    "asOfTag": "as_of: {{value}}"
+  },
+  "columns": {
+    "accountNo": "账户号",
+    "redisCurrent": "Redis 当前",
+    "targetBalance": "目标余额",
+    "delta": "差量",
+    "source": "来源",
+    "status": "状态",
+    "reason": "说明"
+  },
+  "tags": {
+    "cacheMiss": "cache miss",
+    "na": "N/A",
+    "consistent": "一致",
+    "sourceJournal": "流水回放",
+    "sourceAccount": "account 表",
+    "failed": "失败",
+    "skipped": "skipped",
+    "written": "已写"
+  }
+}

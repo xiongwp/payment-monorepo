@@ -1,0 +1,70 @@
+{
+  "title": "总账 (Ledger)",
+  "subtitle": "双账记账 · 金额按后端 storage (minor × 100) 存储，展示时按币种精度格式化",
+  "tabs": {
+    "accounts": "账户",
+    "transactions": "凭证"
+  },
+  "ownerTypes": {
+    "platform": "平台",
+    "merchant": "商户",
+    "channel": "渠道"
+  },
+  "accounts": {
+    "filters": {
+      "ownerType": "账户维度",
+      "ownerIdPlaceholder": "owner_id (mch_xxx / gcash)"
+    },
+    "columns": {
+      "id": "ID",
+      "name": "名称",
+      "type": "类型",
+      "ownerType": "维度",
+      "owner": "owner",
+      "debit": "Dr",
+      "credit": "Cr",
+      "net": "Net",
+      "detail": "明细"
+    },
+    "drawer": {
+      "debit": "Debit",
+      "credit": "Credit",
+      "net": "Net",
+      "recentEntries": "近 100 条条目",
+      "entryColumns": {
+        "time": "时间",
+        "txn": "txn",
+        "debit": "Dr",
+        "credit": "Cr",
+        "memo": "Memo"
+      }
+    }
+  },
+  "transactions": {
+    "filters": {
+      "eventType": "事件类型",
+      "refType": "ref_type",
+      "refId": "ref_id"
+    },
+    "columns": {
+      "time": "时间",
+      "txn": "txn",
+      "event": "Event",
+      "ref": "Ref",
+      "amount": "金额",
+      "memo": "Memo",
+      "detail": "明细"
+    },
+    "drawer": {
+      "ref": "Ref",
+      "amount": "金额",
+      "entries": "Entries",
+      "entryColumns": {
+        "account": "账户",
+        "debit": "Dr",
+        "credit": "Cr",
+        "memo": "Memo"
+      }
+    }
+  }
+}

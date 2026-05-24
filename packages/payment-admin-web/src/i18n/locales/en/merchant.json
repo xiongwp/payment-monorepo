@@ -1,0 +1,194 @@
+{
+  "list": {
+    "title": "Merchants",
+    "filters": {
+      "statusPlaceholder": "Business status",
+      "kycStatusPlaceholder": "KYC status"
+    },
+    "actions": {
+      "create": "New Merchant"
+    },
+    "columns": {
+      "id": "ID",
+      "name": "Name",
+      "email": "Email",
+      "country": "Country",
+      "kyc": "KYC",
+      "status": "Status",
+      "riskTier": "Risk Tier",
+      "createdAt": "Created At"
+    },
+    "createModal": {
+      "title": "New Merchant",
+      "okText": "Create",
+      "alert": "Once created, the live/test API keys and webhook secret will be returned in plaintext. They are shown only once — copy and store them now.",
+      "fields": {
+        "name": "Name",
+        "legalName": "Registered legal name",
+        "contactEmail": "Contact email",
+        "contactPhone": "Contact phone",
+        "country": "Country",
+        "businessType": "Entity type",
+        "taxId": "TIN / SEC / DTI",
+        "mcc": "MCC (ISO 18245)",
+        "webhookUrl": "Webhook URL",
+        "webhookUrlPlaceholder": "https://merchant.example.com/webhooks/payments",
+        "settleMethod": "Settlement method",
+        "settleAccount": "Settlement account",
+        "settleBank": "Settlement bank",
+        "settleHolder": "Account holder"
+      }
+    },
+    "secretsModal": {
+      "title": "Merchant created — please save the following credentials",
+      "okText": "I have saved them",
+      "alert": "These credentials are shown only once. They cannot be retrieved again after closing this dialog; use rotate-key to reset.",
+      "labels": {
+        "merchantId": "Merchant ID",
+        "liveSecretKey": "Live Secret Key",
+        "testSecretKey": "Test Secret Key",
+        "webhookSecret": "Webhook Secret"
+      }
+    }
+  },
+  "detail": {
+    "title": "Merchant Detail · {{name}}",
+    "loading": "loading...",
+    "basicInfo": {
+      "cardTitle": "Basic Info",
+      "id": "ID",
+      "email": "Email",
+      "country": "Country",
+      "businessType": "Entity",
+      "taxId": "TIN/SEC",
+      "mcc": "MCC",
+      "riskTier": "Risk Tier",
+      "rateRps": "Rate RPS",
+      "webhookUrl": "Webhook URL",
+      "settleCurrency": "Settlement Currency",
+      "settleMethod": "Settlement Method",
+      "settleAccount": "Settlement Account",
+      "settleHolderSuffix": " ({{holder}})"
+    },
+    "kyc": {
+      "cardTitle": "KYC Actions",
+      "terminal": "Terminal state, no actions available",
+      "reasonLabel": "Current reason: {{reason}}",
+      "actions": {
+        "submit": "Submit for review",
+        "resubmit": "Resubmit",
+        "review": "Start review",
+        "reReview": "Re-review",
+        "approve": "Approve",
+        "reject": "Reject",
+        "requestMoreInfo": "Request more info",
+        "suspend": "Suspend",
+        "unsuspend": "Reinstate",
+        "terminate": "Terminate"
+      },
+      "modal": {
+        "titleTemplate": "KYC · {{label}}",
+        "doneMessage": "{{label}} done",
+        "actorLabel": "Operator (admin user)",
+        "actorPlaceholder": "Your admin ID",
+        "reasonLabel": "Reason",
+        "reasonPlaceholder": "Optional. Recommended for reject / request-more-info / suspend / terminate."
+      }
+    },
+    "apiKey": {
+      "cardTitle": "API Key Rotation",
+      "resetLive": "Reset Live Key",
+      "resetTest": "Reset Test Key",
+      "rotatedTitle": "{{kind}} key rotated",
+      "rotatedAlert": "Shown only once — copy and save it now."
+    },
+    "channelCredentials": {
+      "cardTitle": "Channel Credentials",
+      "description": "Each PH channel's partner_id / signing_key / webhook_secret is stored encrypted, isolated per merchant.",
+      "openLink": "Open channel credentials manager →"
+    },
+    "documents": {
+      "cardTitle": "KYC Documents",
+      "uploadButton": "Upload Document",
+      "columns": {
+        "id": "ID",
+        "docType": "Type",
+        "docNumber": "Number",
+        "url": "URL",
+        "review": "Review",
+        "actions": "Actions"
+      },
+      "actions": {
+        "accept": "Accept",
+        "reject": "Reject"
+      },
+      "reviewedMessage": "Document marked as {{status}}",
+      "addedMessage": "Document added",
+      "uploadModal": {
+        "title": "Add KYC Document",
+        "alert": "Upload the document body to object storage (S3/R2/GCS) first; only metadata + access URL are stored here.",
+        "fields": {
+          "docType": "Type",
+          "docTypePlaceholder": "gov_id / sec_registration / dti / bir_2303 / bank_statement / utility_bill",
+          "docNumber": "Number",
+          "fileUrl": "File URL",
+          "fileUrlPlaceholder": "https://s3...",
+          "mimeType": "MIME",
+          "uploadedBy": "Uploaded By"
+        }
+      }
+    },
+    "audits": {
+      "cardTitle": "KYC Audit Trail",
+      "columns": {
+        "time": "Time",
+        "from": "From",
+        "to": "To",
+        "actor": "Actor",
+        "reason": "Reason"
+      }
+    }
+  },
+  "secrets": {
+    "title": "{{name}} · Channel Credentials",
+    "titleSuffix": "Channel Credentials",
+    "warningAlert": "All plaintext credentials are encrypted via kms-manage before storage; the admin UI only ever shows a masked hint (e.g. sk_l***abc). You must configure kms.endpoint in yaml for KMS calls to take effect.",
+    "filters": {
+      "channelPlaceholder": "Filter by channel"
+    },
+    "actions": {
+      "create": "Create / Overwrite Credential"
+    },
+    "columns": {
+      "channel": "Channel",
+      "field": "Field",
+      "masked": "Masked",
+      "version": "ver",
+      "updatedBy": "Updated By",
+      "updatedAt": "Updated At"
+    },
+    "delete": {
+      "link": "Delete",
+      "title": "Delete this credential?",
+      "description": "Once deleted the field is removed from the database; you can re-Put the same field name if needed.",
+      "okText": "Confirm delete",
+      "doneMessage": "Deleted"
+    },
+    "putModal": {
+      "title": "Store Merchant Channel Credential",
+      "alert": "Plaintext is submitted only once; after kms-manage encrypts it, it can never be retrieved from the UI. If lost, you must Put it again.",
+      "savedMessage": "Saved {{channel}}/{{field}} (encrypted)",
+      "fields": {
+        "channel": "Channel",
+        "fieldName": "Field Name",
+        "fieldNamePlaceholder": "Required · empty fields",
+        "fieldNameInputPlaceholder": "e.g. client_secret / webhook_secret",
+        "missingSuffix": " (empty)",
+        "overrideSuffix": " (override)",
+        "plaintext": "Plaintext",
+        "plaintextPlaceholder": "Plaintext API key / secret / signing material",
+        "actor": "Operator"
+      }
+    }
+  }
+}

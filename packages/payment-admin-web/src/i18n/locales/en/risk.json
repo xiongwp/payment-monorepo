@@ -1,0 +1,632 @@
+{
+  "common": {
+    "decisionId": "Decision ID",
+    "time": "Time",
+    "verdict": "Verdict",
+    "riskScore": "Risk Score",
+    "riskLevel": "Risk Level",
+    "hitRules": "Hit Rules",
+    "merchant": "Merchant",
+    "customer": "Customer",
+    "actor": "Actor",
+    "noData": "None",
+    "dash": "—",
+    "none": "None",
+    "never": "Never"
+  },
+  "dashboard": {
+    "title": "Risk Operations Console",
+    "dataSourceAlert": "Data source: in-process ring buffer of risk-manage (last 500 decisions / 200 outcomes). For production, use ClickHouse + Grafana for long-term SLA observability.",
+    "systemStatus": "System Status",
+    "ruleCount": "Rules",
+    "queuePending": "Pending Pickup",
+    "queueInReview": "In Review",
+    "queueEscalated": "Escalated",
+    "queueOverdue": "Overdue",
+    "championLabel": "ML champion",
+    "challengersPrefix": "challengers: {{names}}",
+    "recallTitle": "System Recall / Precision (last {{days}} days, {{samples}} labeled samples)",
+    "precision": "Precision",
+    "precisionHint": "True fraud within BLOCK",
+    "recall": "Recall",
+    "recallHint": "True fraud caught",
+    "fpr": "FPR",
+    "fprHint": "Legit traffic blocked",
+    "f1": "F1",
+    "actualFraud": "Actual Fraud",
+    "actualLegit": "Actual Legit",
+    "rulePretestTitle": "Rule Pre-test (mode toggle)",
+    "rulePretestAlert": "New rule rollout SOP: run mode=shadow for N days, observe shadow_hits, compare against ground truth, then switch to enforce. This toggle does not require a restart.",
+    "ruleIdLabel": "Rule ID",
+    "shadowLabel": "Shadow",
+    "applyButton": "Apply",
+    "shadowHint": "shadow=on means the rule only observes and does not affect verdict; off means it enters the decision path",
+    "ruleSwitched": "Rule {{id}} switched to {{mode}}",
+    "pendingReview": "Pending Review",
+    "allowRate": "ALLOW Rate",
+    "reviewRate": "REVIEW Rate",
+    "denyRate": "DENY Rate",
+    "feedbackSamples": "Feedback Samples",
+    "markedFraud": "Marked Fraud",
+    "markedLegit": "Marked Legit",
+    "fraudRate": "Fraud Rate",
+    "unitItem": "",
+    "recentDenyTitle": "Recent DENY Decisions",
+    "recentDenyEmpty": "No DENY decisions (overall risk is low)"
+  },
+  "workbench": {
+    "title": "Risk Case Workbench",
+    "currentAnalystLabel": "Current Analyst:",
+    "analystPlaceholder": "alice / bob",
+    "noActorWarning": "Set your Analyst ID in the top right; otherwise you cannot Claim / Decide (abuse trace will be missing)",
+    "tabs": {
+      "mine": "My Workbench (in_review)",
+      "queue": "Pickup Queue (pending)",
+      "overdue": "Overdue (SLA)"
+    },
+    "totalRows": "{{count}} total",
+    "requireActorWarning": "Please set your analyst ID first (top right of the page)",
+    "claimed": "Claimed",
+    "released": "Released back to queue",
+    "escalated": "Escalated",
+    "noteAdded": "Note added",
+    "approved": "Approved",
+    "rejected": "Rejected",
+    "columns": {
+      "decisionId": "Decision ID",
+      "merchant": "Merchant",
+      "customer": "Customer",
+      "amount": "Amount",
+      "riskScore": "Risk Score",
+      "status": "Status",
+      "assignee": "Assignee",
+      "sla": "SLA",
+      "actions": "Actions"
+    },
+    "openButton": "Open",
+    "slaOverdue": "{{minutes}}m overdue",
+    "slaInHours": "due in {{hours}}h",
+    "slaInMinutes": "due in {{minutes}}m",
+    "drawer": {
+      "title": "Case Detail",
+      "claim": "Claim",
+      "release": "Release",
+      "escalate": "Escalate",
+      "decide": "Decide",
+      "addNote": "Add Note",
+      "basicInfo": "Basic Info",
+      "id": "ID",
+      "status": "Status",
+      "assignedTo": "Assigned To",
+      "riskScore": "Risk Score",
+      "amount": "Amount",
+      "merchant": "Merchant",
+      "customer": "Customer",
+      "created": "Created",
+      "sla": "SLA",
+      "escalateLevel": "Escalation Level",
+      "decidedAt": "Decided At",
+      "decidedBy": "Decided By",
+      "decideReason": "Decision Reason",
+      "hitRules": "Hit Rules",
+      "noteCount": "Notes ({{count}})",
+      "noNotes": "No notes yet"
+    },
+    "escalateModal": {
+      "title": "Escalate to Senior",
+      "reasonLabel": "Reason",
+      "reasonPlaceholder": "Why does this need escalation?"
+    },
+    "noteModal": {
+      "title": "Add Note",
+      "bodyLabel": "Content"
+    },
+    "decideModal": {
+      "title": "Decide",
+      "actionLabel": "Action",
+      "approve": "Approve (release)",
+      "reject": "Reject (block)",
+      "reasonLabel": "Reason (written to audit)",
+      "reasonPlaceholder": "Why this decision?"
+    }
+  },
+  "reviews": {
+    "title": "Risk Manual Review Queue",
+    "infoAlert": "Transactions with verdict=Review from the risk engine enter this queue. Decisions (approve/reject) are automatically written to the feedback recorder as training labels for the ML model.",
+    "statusFilter": {
+      "pending": "Pending",
+      "approved": "Approved",
+      "rejected": "Rejected"
+    },
+    "totalRows": "{{count}} total",
+    "selectedSuffix": " · {{count}} selected",
+    "bulkApprove": "Bulk Approve",
+    "bulkReject": "Bulk Reject",
+    "clearSelection": "Clear Selection",
+    "bulkSelectWarning": "Please select items to process in bulk first",
+    "bulkConfirmTitle": "Bulk {{verb}} {{count}} reviews?",
+    "bulkVerbApprove": "Approve",
+    "bulkVerbReject": "Reject",
+    "bulkAlertMessage": "Will execute {{action}} on {{count}} selected items at once",
+    "bulkActorPlaceholder": "actor (operator ID, required)",
+    "bulkReasonPlaceholder": "reason (written to audit + ML training label)",
+    "bulkConfirmOkText": "Confirm",
+    "bulkActorRequired": "actor is required",
+    "bulkResult": "Bulk {{verb}}: {{success}}/{{total}} succeeded, {{notPending}} changed status, {{failed}} failed",
+    "approvedSingleSuccess": "Approved (released)",
+    "rejectedSingleSuccess": "Rejected (blocked)",
+    "columns": {
+      "decisionId": "Decision ID",
+      "merchant": "Merchant",
+      "customer": "Customer",
+      "pi": "PI",
+      "amount": "Amount",
+      "riskScore": "Risk Score",
+      "hitRules": "Hit Rules",
+      "status": "Status",
+      "createdAt": "Created At"
+    },
+    "detailLink": "Details",
+    "drawerTitle": "Review {{id}}",
+    "decideButton": "Decide",
+    "drawerSections": {
+      "basic": "Basic",
+      "hitRules": "Hit Rules"
+    },
+    "fields": {
+      "decisionId": "Decision ID",
+      "merchant": "Merchant",
+      "customer": "Customer",
+      "pi": "PI",
+      "amount": "Amount",
+      "riskScore": "Risk Score",
+      "status": "Status",
+      "createdAt": "Created At",
+      "decidedAt": "Decided At",
+      "decidedBy": "Decided By",
+      "decideReason": "Decision Reason"
+    },
+    "decideModal": {
+      "title": "Decide",
+      "alert": "approve = release this transaction; reject = mark as fraud and block payout. After decision, a SourceReviewHuman outcome is automatically written for ML training.",
+      "actionLabel": "Action",
+      "approveOption": "approve (release / not fraud)",
+      "rejectOption": "reject (block / is fraud)",
+      "actorLabel": "Operator",
+      "actorPlaceholder": "e.g. ops:zhang.san",
+      "reasonLabel": "Decision Reason",
+      "reasonPlaceholder": "e.g. customer called to confirm; or: matches historical chargeback device fingerprint"
+    }
+  },
+  "decisions": {
+    "title": "Decision Audit Log",
+    "infoAlert": "Every Screen call writes an audit record; this view only shows the last 500 from the in-process ring buffer. For production, use ClickHouse / Kafka for long-term retention (see risk-manage COMMERCIAL.md § 3.1).",
+    "search": {
+      "merchantPlaceholder": "merchant_id",
+      "customerPlaceholder": "customer_id",
+      "ipPlaceholder": "ip",
+      "verdictPlaceholder": "verdict",
+      "sincePlaceholder": "since",
+      "untilPlaceholder": "until",
+      "clearButton": "Clear Filters",
+      "localFilterPlaceholder": "Filter by decision_id substring (local)",
+      "serverPrefix": "Server search: ",
+      "latestPrefix": "Latest: ",
+      "hitSummary": "{{shown}} / {{total}} matched"
+    },
+    "verifyChainButton": "Verify Audit Chain",
+    "columns": {
+      "decisionId": "Decision ID",
+      "time": "Time",
+      "verdict": "Verdict",
+      "riskScore": "Risk Score",
+      "riskLevel": "Risk Level",
+      "hitRules": "Hit Rules",
+      "evalMs": "Eval (ms)",
+      "actions": "Actions"
+    },
+    "explainButton": "Explain",
+    "explainDrawer": {
+      "title": "Decision Explain: {{id}}",
+      "loading": "Loading...",
+      "loadFailed": "Load failed",
+      "driftMessage": "Original decision differs from current rule-set replay",
+      "driftDescPrefix": "After rule changes, this transaction's verdict went from ",
+      "driftDescConnector": " to ",
+      "driftScore": ", risk score {{orig}} → {{replay}}",
+      "driftSuffix": ". The difference indicates the rule set has changed; precise replay requires long-term ClickHouse audit.",
+      "originalVerdict": "Original Verdict",
+      "replayedVerdict": "Replayed Verdict",
+      "originalScore": "Original Score",
+      "replayedScore": "Replayed Score",
+      "occurredAt": "Time",
+      "inputSnapshot": "Input Snapshot",
+      "amountLabel": "Amount: ",
+      "paymentMethodLabel": "Payment Method: ",
+      "countryLabel": "Country: ",
+      "hitCompareTitle": "Hit Rules Comparison",
+      "shadowHitsTitle": "Shadow Hits (observe only)",
+      "shadowColumns": {
+        "rule": "Rule",
+        "decision": "Decision",
+        "detail": "detail"
+      }
+    },
+    "hitsCompare": {
+      "statusLabels": {
+        "both": "Both hit",
+        "onlyOrig": "Original hit (now miss)",
+        "onlyReplay": "Now hit (originally miss)"
+      },
+      "columns": {
+        "rule": "Rule",
+        "status": "Status",
+        "originalDecision": "Original Decision",
+        "replayedDecision": "Replayed Decision",
+        "detail": "detail"
+      }
+    },
+    "chainVerify": {
+      "successTitle": "Audit chain integrity verified",
+      "failureTitle": "⚠️ Audit chain integrity FAILED",
+      "successDescPart1": "Verified ",
+      "successDescPart2": " audit records; all chained hashes consistent.",
+      "successAlgorithm": "Algorithm: sha256(prev_hash || canonical_json(record)). Verified in order (old → new) across the ring buffer; any mismatched hash aborts immediately.",
+      "failurePart1": "Failed after scanning ",
+      "failurePart2": " records.",
+      "failureIndex": "Failure index:",
+      "failureField": "Failure field:",
+      "expected": "Expected: ",
+      "actual": "Actual: ",
+      "diagnosis": "Diagnosis: record was tampered / deleted / reordered, or chain did not continue prev_hash across service restart."
+    }
+  },
+  "outcomes": {
+    "title": "Risk Feedback Records (Outcome)",
+    "infoAlert": "Each Outcome links to a decision_id and records whether that transaction was actually fraud. Sources: manual review / dispute / merchant confirmation. ML pipeline exports these offline as training labels.",
+    "recordButton": "Record Outcome",
+    "recentCount": "Last {{count}}",
+    "recorded": "Recorded",
+    "sourceLabels": {
+      "review_human": "Manual Review",
+      "dispute": "Dispute / Chargeback",
+      "merchant_confirm": "Merchant Confirm"
+    },
+    "columns": {
+      "decisionId": "Decision ID",
+      "time": "Time",
+      "source": "Source",
+      "verdict": "Verdict",
+      "actor": "Operator",
+      "notes": "Notes"
+    },
+    "modal": {
+      "title": "Record Outcome Feedback",
+      "warning": "Normally the dispute system writes this automatically at terminal state; this form is for manual backfill by ops (e.g., merchant email confirms fraud / not fraud).",
+      "decisionIdLabel": "Decision ID",
+      "decisionIdPlaceholder": "32 hex (from audit / review)",
+      "sourceLabel": "Source",
+      "isFraudLabel": "Is Fraud",
+      "isFraudYes": "Yes",
+      "isFraudNo": "No",
+      "actorLabel": "Operator",
+      "actorPlaceholder": "e.g. ops:zhang.san",
+      "notesLabel": "Notes",
+      "notesPlaceholder": "Evidence / linked ticket / notes"
+    }
+  },
+  "rules": {
+    "title": "Risk Rule Management",
+    "topAlert": "Changes here take effect immediately (heap-resident). To persist, update the ConfigMap and POST /admin/rules/reload; otherwise changes are lost on the next restart / reload.",
+    "tabs": {
+      "rules": "Rule List",
+      "insights": "Rule KPIs",
+      "overlap": "Redundancy / Conflict",
+      "audit": "Change Audit"
+    },
+    "createButton": "New Rule",
+    "exportYaml": "Export YAML",
+    "importYaml": "Import YAML",
+    "ruleCountSuffix": "{{count}} rules",
+    "columns": {
+      "id": "ID",
+      "name": "Name",
+      "type": "Type",
+      "decision": "Decision",
+      "weight": "Weight",
+      "mode": "Mode",
+      "rollout": "Rollout %",
+      "enabled": "Enabled",
+      "actions": "Actions"
+    },
+    "tag": {
+      "on": "on",
+      "off": "off"
+    },
+    "popconfirmDelete": "Confirm delete?",
+    "modeSwitched": "Rule {{id}} → {{mode}}",
+    "deleteModal": {
+      "title": "Delete rule {{id}}?",
+      "warning": "Soft delete: only removed from the current engine. Next yaml reload will bring it back.",
+      "reasonPlaceholder": "Explain deletion reason (written to audit log)",
+      "okText": "Confirm Delete"
+    },
+    "deleted": "Deleted",
+    "editDrawer": {
+      "createTitle": "New Rule",
+      "editTitle": "Edit Rule {{id}}",
+      "simulateButton": "Simulate",
+      "saveButton": "Save",
+      "saveDisabledTitle": "danger role required to modify risk rules",
+      "validateErrorTitle": "Validation failed",
+      "configInvalid": "config_json is not valid JSON: {{error}}",
+      "saveSuccess": "Rule {{id}} → {{action}}",
+      "createAction": "created",
+      "updateAction": "updated",
+      "simulate": {
+        "messagePart1": "Simulation result: replayed ",
+        "messagePart2": " historical decisions, candidate rule hit ",
+        "messagePart3": " (hit rate ",
+        "messagePart4": ")",
+        "newBlockPrefix": "New BLOCK ",
+        "newBlockMid": "; consistent with current BLOCK ",
+        "newBlockSuffix": "",
+        "outcomePrefix": "With outcome feedback ",
+        "outcomeMid": "; true fraud ",
+        "precisionPrefix": "; estimated precision "
+      },
+      "fields": {
+        "id": "ID",
+        "idRequired": "Required",
+        "name": "Name",
+        "namePlaceholder": "Description visible to ops",
+        "type": "Type",
+        "typePlaceholder": "e.g. velocity / amount / blacklist / mlscore",
+        "decision": "Decision",
+        "enabled": "Enabled",
+        "mode": "Mode",
+        "weight": "Weight (0 = use decision default)",
+        "rollout": "Rollout",
+        "bucketSeedPlaceholder": "bucket_seed (empty = use rule_id)",
+        "configLabel": "config (JSON)",
+        "configExtra": "Rule type-specific config; backend BuildRule will run schema validation on submit."
+      }
+    },
+    "audit": {
+      "filterPlaceholder": "Filter by rule_id",
+      "totalSuffix": "{{count}} changes",
+      "columns": {
+        "time": "Time",
+        "action": "Action",
+        "actor": "Actor",
+        "ruleId": "Rule ID",
+        "reason": "Reason"
+      }
+    },
+    "insights": {
+      "alert": "silence window {{days}} days; ROI = hits × precision; precision is only calculated with at least 5 outcome feedback samples (to avoid noise).",
+      "totalRules": "Total rules ",
+      "silentLabel": "silent ({{days}}d 0 hit) ",
+      "lowPrecisionLabel": "low precision (<0.3) ",
+      "columns": {
+        "ruleId": "Rule ID",
+        "status": "Status",
+        "lastHit": "Last Hit",
+        "hits": "Hits",
+        "outcome": "Outcome",
+        "precision": "Precision",
+        "roi": "ROI"
+      },
+      "statusTags": {
+        "silent": "silent",
+        "active": "active",
+        "idle": "idle"
+      },
+      "daysAgo": "({{days}}d ago)",
+      "neverHit": "Never",
+      "fraudCount": "{{fraud}}/{{total}} fraud",
+      "nLessThan5": "N<5"
+    },
+    "overlap": {
+      "alert": "Based on the most recent {{sample}} decisions' hit data. Jaccard > 0.8 = highly overlapping; implication rate > 95% = one rule is a subset of the other (possibly redundant); verdict mismatch = design conflict.",
+      "minBothLabel": "Min co-hits",
+      "conflictLabel": "Conflicts ",
+      "redundantLabel": "Suspected redundant ",
+      "totalPairs": "Total pairs {{count}}",
+      "columns": {
+        "ruleA": "Rule A",
+        "ruleB": "Rule B",
+        "hitsA": "A hits",
+        "hitsB": "B hits",
+        "both": "Both",
+        "jaccard": "Jaccard",
+        "aImpliesB": "A→B",
+        "bImpliesA": "B→A",
+        "diagnosis": "Diagnosis"
+      },
+      "diagnosisTags": {
+        "verdictConflict": "verdict conflict",
+        "equivalent": "two rules equivalent",
+        "aImpliesB": "A implies B",
+        "bImpliesA": "B implies A",
+        "highOverlap": "high overlap"
+      }
+    },
+    "importDrawer": {
+      "title": "Import Rules YAML",
+      "previewButton": "Preview diff",
+      "applyButton": "Apply",
+      "infoAlert": "Paste YAML, click \"Preview diff\" to validate + see changes, then \"Apply\" once confirmed. All rules must pass schema validation; a single failure rejects the whole batch.",
+      "validateFailed": "Validation failed",
+      "appliedSuccess": "Applied {{count}} rules",
+      "importedPrefix": "Importing {{count}} rules",
+      "columns": {
+        "ruleId": "Rule ID",
+        "action": "Action",
+        "description": "Description"
+      },
+      "actionDesc": {
+        "create": "New rule will be added",
+        "delete": "Existing rule will be removed",
+        "unchanged": "No change",
+        "update": "Existing rule will be updated"
+      }
+    }
+  },
+  "cohort": {
+    "title": "Cohort Analysis",
+    "infoAlert": "Samples come from the audit MemSink ring (about the most recent {{sample}} decisions). For \"monthly / by-vintage\" trend analysis in production, connect to a long-term ClickHouse table.",
+    "groupByLabel": "Group By",
+    "groupBy": {
+      "merchant_id": "Merchant",
+      "country": "Country",
+      "payment_method": "Payment Method"
+    },
+    "minSampleLabel": "Min Sample",
+    "minSampleOptions": {
+      "all": "All",
+      "ge5": "≥ 5",
+      "ge10": "≥ 10",
+      "ge50": "≥ 50",
+      "ge100": "≥ 100"
+    },
+    "platformSummaryPart1": "Platform block_rate ",
+    "platformSummaryPart2": "; fraud_rate ",
+    "columns": {
+      "decisions": "Decisions",
+      "blockCount": "BLOCK Count",
+      "blockRate": "block_rate",
+      "labeledTotal": "With outcome",
+      "actualFraud": "Actual fraud",
+      "fraudRate": "fraud_rate",
+      "tpFp": "TP / FP",
+      "precisionAtBlock": "precision @ BLOCK",
+      "trend": "Trend"
+    },
+    "timelineButton": "Timeline",
+    "nLessThan5": "N<5",
+    "timeline": {
+      "title": "Timeline: {{key}} (based on the most recent {{sample}} decisions)",
+      "bucketLabel": "Bucket Size",
+      "bucketHour": "Hour",
+      "bucketDay": "Day",
+      "bucketWeek": "Week",
+      "emptyText": "No data. Try a larger bucket, or check whether the audit MemSink has recent decision samples.",
+      "blockRateTitle": "Block Rate",
+      "fraudRateTitle": "Actual Fraud Rate",
+      "columns": {
+        "time": "Time",
+        "decisions": "Decisions",
+        "block": "block",
+        "outcome": "outcome",
+        "fraudRate": "fraud_rate"
+      },
+      "sparkEmpty": "(no data)"
+    }
+  },
+  "abtest": {
+    "title": "ML A/B Significance Test",
+    "tabs": {
+      "manage": "Model Management (challenger)",
+      "report": "Significance Report",
+      "override": "Emergency Override / Force Score"
+    },
+    "recLabels": {
+      "promote": "Promote",
+      "drop": "Drop",
+      "hold": "Hold (keep observing)"
+    },
+    "manage": {
+      "scoringDisabledTitle": "ML scoring disabled",
+      "scoringDisabledDesc": "Service was started with mlscore.enabled=false; cannot register challenger. Update config and restart.",
+      "currentChampionPrefix": "Current Champion: ",
+      "challengersPrefix": "Challengers: ",
+      "infoDesc": "Challengers score in parallel with the champion but do not affect the main decision; promote when significantly better than champion. After training via cmd/retrain, fill in via the \"Register challenger\" form.",
+      "registerButton": "Register Challenger",
+      "promoteButton": "Promote to champion",
+      "dropButton": "Drop",
+      "promoteConfirm": "Promote {{name}} to champion?",
+      "promoteContent": "Current champion {{champion}} will be auto-demoted to challenger for observation.",
+      "promoteSuccess": "Promoted: {{champion}} (former champion {{demoted}} demoted to challenger)",
+      "dropConfirm": "Drop {{name}}?",
+      "dropSuccess": "Dropped {{name}}",
+      "emptyText": "No challengers. Click \"Register Challenger\" to add.",
+      "columns": {
+        "name": "Name",
+        "actions": "Actions"
+      }
+    },
+    "register": {
+      "title": "Register Challenger Model",
+      "registerButton": "Register",
+      "infoAlert": "Paste the entire LogisticConfig JSON from cmd/retrain below, then click \"Fill from JSON\" to auto-populate intercept / weights / Platt calibration parameters.",
+      "errorTitle": "Error",
+      "pasteJsonLabel": "Paste LogisticConfig JSON",
+      "fillFromJson": "Fill from JSON",
+      "parseFailed": "Failed to parse pasted JSON: {{error}}",
+      "filledFromJson": "Fields populated from JSON",
+      "registered": "Challenger {{name}} registered",
+      "fields": {
+        "name": "Challenger Name",
+        "modelVer": "Model Version",
+        "intercept": "Intercept",
+        "featureWeights": "FeatureWeights",
+        "plattA": "Platt A (calibration)",
+        "plattB": "Platt B (calibration)"
+      }
+    },
+    "report": {
+      "infoMessage": "Based on ABTracker ring buffer (last 4096 decisions) + outcome feedback. Requires outcome labels ≥ min_labeled to output a challenger.",
+      "infoDesc": "Bootstrap CI all > 0 → promote; all < 0 → drop; crossing 0 → keep observing until sample size is sufficient.",
+      "minLabeledLabel": "Min Sample",
+      "bootstrapLabel": "Bootstrap Iterations",
+      "empty": "No challenger data. Register a challenger in \"Model Management\" and come back once enough outcome feedback has accumulated.",
+      "columns": {
+        "challenger": "Challenger",
+        "labeledSamples": "Labeled Samples",
+        "championAuc": "Champion AUC",
+        "challengerAuc": "Challenger AUC",
+        "aucDiff": "AUC Diff",
+        "ci": "95% CI on diff",
+        "ciNotComputed": "Not computed",
+        "recommend": "Recommendation"
+      },
+      "stats": {
+        "totalChallengers": "Total Challengers",
+        "canPromote": "Can Promote",
+        "shouldDrop": "Should Drop",
+        "keepHold": "Keep Holding"
+      }
+    },
+    "override": {
+      "activeTitle": "⚠️ ML override currently active",
+      "normalTitle": "Running normally",
+      "setByLine": "Set by {{actor}} at {{time}}",
+      "unknownActor": "unknown",
+      "clearButton": "Clear (restore)",
+      "warningTitle": "Emergency tool: only for sudden drops in ML inference quality / mass false-positives on legit traffic / debugging ml_threshold rules.",
+      "warningDesc": "disabled=true skips the entire ML inference. When force_score is non-zero, even successful ML runs are overridden with the forced value. All changes take effect immediately (no restart) + are written to audit.",
+      "switchDisabled": "Disable ML",
+      "switchEnabled": "Enable ML",
+      "willSkip": "ML inference will be skipped",
+      "runningNormal": "ML inference running normally",
+      "forceScoreLabel": "Force score",
+      "forceScoreHint": "0 = no force; non-zero overrides even successful ML",
+      "reasonLabel": "Reason (written to audit)",
+      "reasonPlaceholder": "e.g. drift alert / false-positive escalation / debugging ml_threshold",
+      "applyButton": "Apply Override",
+      "reasonRequired": "Please provide a reason (≥ 4 chars); it will be written to audit",
+      "applyConfirmTitle": "Confirm applying ML override?",
+      "applyConfirmDisabled": "Entire ML inference will be skipped",
+      "applyConfirmDisabledSuffix": "; all transactions' MLScore will use force_score or 0.",
+      "applyConfirmForceScore": "ML inference result will be overridden by ",
+      "applyConfirmForceScoreSuffix": ".",
+      "applyConfirmNoop": "This config will not change behavior (disabled=false and force_score=0).",
+      "applyConfirmReason": "Reason: {{reason}}",
+      "applied": "Applied",
+      "clearConfirmTitle": "Clear ML override?",
+      "clearConfirmContent": "ML inference path will be restored to normal.",
+      "cleared": "Cleared"
+    }
+  }
+}

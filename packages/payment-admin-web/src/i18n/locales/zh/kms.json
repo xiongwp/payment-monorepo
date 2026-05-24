@@ -1,0 +1,31 @@
+{
+  "panel": {
+    "title": "密钥管理 (kms-manage)",
+    "masterKeys": "Master Keys",
+    "columns": {
+      "keyId": "Key ID",
+      "active": "ACTIVE",
+      "algorithm": "算法",
+      "createdAt": "创建时间"
+    },
+    "encrypt": {
+      "title": "Encrypt",
+      "plaintext": "明文",
+      "context": "AAD Context",
+      "contextHint": "推荐 \"svc:<service>:<field>\"，如 svc:paycore:auth_tokens",
+      "contextPlaceholder": "svc:paycore:auth_tokens",
+      "keyId": "Key ID (留空=active)",
+      "submit": "加密",
+      "resultLabel": "密文:"
+    },
+    "decrypt": {
+      "title": "Decrypt",
+      "ciphertext": "密文",
+      "ciphertextPlaceholder": "kms:v1:main:...",
+      "context": "AAD Context",
+      "contextPlaceholder": "加密时使用的同一 context",
+      "submit": "解密",
+      "resultLabel": "明文:"
+    }
+  }
+}

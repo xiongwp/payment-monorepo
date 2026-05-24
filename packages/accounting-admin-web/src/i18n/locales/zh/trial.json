@@ -1,0 +1,73 @@
+{
+  "category": {
+    "ASSET": "资产",
+    "LIABILITY": "负债",
+    "EQUITY": "所有者权益",
+    "REVENUE": "收入",
+    "EXPENSE": "费用"
+  },
+  "accountType": {
+    "1": "用户账户",
+    "2": "商户账户",
+    "3": "商户待结算账户",
+    "4": "平台损益账户",
+    "5": "中间账户渠道应收款",
+    "6": "中间账户渠道应付款",
+    "7": "平台手续费账户",
+    "8": "平台服务费账户",
+    "9": "平台中间账户"
+  },
+  "snapshots": {
+    "title": "历史快照日期",
+    "empty": "暂无快照"
+  },
+  "form": {
+    "title": "试算平衡",
+    "datePlaceholder": "选择快照日期",
+    "currencyPlaceholder": "币种",
+    "submit": "执行试算平衡",
+    "hint": "说明：试算平衡在日切完成后执行，验证指定日期的借贷平衡与会计恒等式。也可直接点击左侧历史日期查看。",
+    "dateRequired": "请选择快照日期",
+    "currencyRequired": "请选择币种",
+    "runFailed": "试算平衡失败",
+    "balancedMessage": "试算平衡通过，借贷平衡且会计恒等式成立",
+    "imbalancedMessage": "试算平衡发现差异，请检查明细"
+  },
+  "stats": {
+    "balanceTitle": "借贷平衡",
+    "balancePass": "通过",
+    "balanceFail": "不平衡",
+    "equationTitle": "会计恒等式",
+    "equationPass": "成立",
+    "equationFail": "不成立",
+    "totalDebit": "期间借方合计",
+    "totalCredit": "期间贷方合计"
+  },
+  "equation": {
+    "title": "会计恒等式明细（资产 = 负债 + 所有者权益 + 收入 - 费用）",
+    "snapshotDate": "快照日期",
+    "currency": "币种",
+    "imbalance": "借贷差额",
+    "equationDiff": "等式差额",
+    "assetEnding": "资产期末余额合计",
+    "liabilityEnding": "负债期末余额合计",
+    "equityEnding": "权益期末余额合计",
+    "revenueEnding": "收入期末余额合计",
+    "expenseEnding": "费用期末余额合计",
+    "accountingEquation": "会计恒等式",
+    "equationValid": "资产 = 负债+权益+收入-费用 ✓",
+    "equationInvalid": "不平衡 ✗"
+  },
+  "summary": {
+    "title": "账户类别 × 类型 明细",
+    "columns": {
+      "category": "账户类别",
+      "type": "账户类型",
+      "accountCount": "账户数",
+      "sumBeginning": "期初余额合计",
+      "sumEnding": "期末余额合计",
+      "sumDebit": "期间借方合计",
+      "sumCredit": "期间贷方合计"
+    }
+  }
+}

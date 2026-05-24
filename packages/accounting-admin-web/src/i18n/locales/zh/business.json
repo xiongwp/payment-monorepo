@@ -1,0 +1,49 @@
+{
+  "title": "业务类型 (Business Type) 管理",
+  "description": {
+    "line1": "存于 <code>account_meta.account_business_type_info</code>。(user_id, business_type) 是账户唯一键；同一 account_type 下多个渠道用不同 business_type 区分。",
+    "line2": "<b>新增渠道</b>请走\"系统账户\"页面的渠道注册流程；本页用于查询 / 审计。",
+    "line3": "约定：1-9 系统预置，10-100 保留，101-999 自定义渠道。"
+  },
+  "alert": {
+    "message": "只读视图",
+    "description": "业务类型 (business_type) 一旦创建就不可修改 category / account_type (影响借贷方向)。 如需停用某渠道，请使用 admin API PUT enabled=0。"
+  },
+  "addButton": "新增 Business Type",
+  "searchPlaceholder": "搜 business_type / code / channel / 描述",
+  "totalCount": "共 {{count}} 条",
+  "columns": {
+    "businessType": "Business Type",
+    "code": "Code",
+    "accountType": "Account Type",
+    "categoryDerived": "Category (derived)",
+    "description": "描述",
+    "status": "状态"
+  },
+  "status": {
+    "enabled": "启用",
+    "disabled": "禁用"
+  },
+  "unknown": "?",
+  "createModal": {
+    "title": "新增 Business Type（仅登记，不建账户）",
+    "alertMessage": "只登记一行 registry",
+    "alertDescription": "本操作只写入 <code>account_meta.account_business_type_info</code>，不创建账户。登记完成后请到\"系统账户\"页，选中此 business_type 触发 Fleet 创建 100 个分片账户。",
+    "form": {
+      "accountTypeLabel": "账户类型 (account_type)",
+      "accountTypePlaceholder": "选择账户类型（1-9）",
+      "codeLabel": "业务码 (business_type_code)",
+      "codeRequired": "大写下划线命名，如 ALIPAY_RECEIVABLE",
+      "codePlaceholder": "ALIPAY_RECEIVABLE",
+      "descLabel": "用途描述",
+      "descPlaceholder": "支付宝渠道应收款账户",
+      "businessTypeLabel": "Business Type 数字码",
+      "businessTypeTooltip": "0 = 自动从 [101, 999] 分配一个未占用号；也可手动指定",
+      "businessTypePlaceholder": "0 自动分配"
+    }
+  },
+  "messages": {
+    "loadFailed": "加载失败",
+    "registered": "已登记：business_type={{businessType}} · {{code}}。下一步到\"系统账户\"页创建 100 分片账户。"
+  }
+}

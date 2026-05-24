@@ -28,6 +28,8 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation, Trans } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import {
   listRotationLogicalAccounts,
   rotationManualSwitch,
@@ -55,8 +57,8 @@ function ttlColor(seconds: number): string {
   return 'blue'
 }
 
-function fmtDuration(seconds: number): string {
-  if (seconds < 0) return `已过期 ${fmtDuration(-seconds)}`
+function fmtDuration(seconds: number, t: TFunction): string {
+  if (seconds < 0) return t('duration.expiredPrefix', { value: fmtDuration(-seconds, t) })
   if (seconds < 60) return `${seconds}s`
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m${seconds % 60}s`
   if (seconds < 86400) {
@@ -88,6 +90,7 @@ interface ManualOpModalProps {
 }
 
 function ManualOpModal(p: ManualOpModalProps) {
+  const { t } = useTranslation('rotation')
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
 
@@ -102,13 +105,13 @@ function ManualOpModal(p: ManualOpModalProps) {
       }
       const fn = p.action === 'switch' ? rotationManualSwitch : rotationManualProvision
       await fn(req)
-      message.success(p.action === 'switch' ? '切换成功' : '预创建成功')
+      message.success(p.action === 'switch' ? t('manualOp.switchSuccess') : t('manualOp.provisionSuccess'))
       form.resetFields()
       p.onClose()
       p.onDone()
     } catch (e) {
       if ((e as { errorFields?: unknown }).errorFields) return // form 校验失败
-      message.error(e instanceof Error ? e.message : '操作失败')
+      message.error(e instanceof Error ? e.message : t('manualOp.operationFailed'))
     } finally {
       setLoading(false)
     }
@@ -121,39 +124,39 @@ function ManualOpModal(p: ManualOpModalProps) {
       onCancel={p.onClose}
       onOk={submit}
       confirmLoading={loading}
-      okText="确认执行"
-      cancelText="取消"
+      okText={t('manualOp.okText')}
+      cancelText={t('common:actions.cancel')}
       destroyOnClose
     >
       <Alert
         message={
           p.action === 'switch'
-            ? '将立即把当前 active instance 转为 draining，并把 provisioned 转为 active。'
-            : '将立即创建下一期的 provisioned instance（不切换 active）。'
+            ? t('manualOp.switchAlert')
+            : t('manualOp.provisionAlert')
         }
         type="warning"
         showIcon
         style={{ marginBottom: 16 }}
       />
       <Form form={form} layout="vertical" preserve={false}>
-        <Form.Item label="logical_account_key">
+        <Form.Item label={t('manualOp.logicalAccountKeyLabel')}>
           <Input value={p.logicalAccountKey} disabled />
         </Form.Item>
         <Form.Item
-          label="Operator（操作人邮箱 / 工号）"
+          label={t('manualOp.operatorLabel')}
           name="operator"
-          rules={[{ required: true, message: '必填，记入审计日志' }]}
+          rules={[{ required: true, message: t('manualOp.operatorRequired') }]}
         >
-          <Input placeholder="e.g. ops-alice@example.com" />
+          <Input placeholder={t('manualOp.operatorPlaceholder')} />
         </Form.Item>
         <Form.Item
-          label="Reason（操作原因）"
+          label={t('manualOp.reasonLabel')}
           name="reason"
-          rules={[{ required: true, message: '必填，记入审计日志' }]}
+          rules={[{ required: true, message: t('manualOp.reasonRequired') }]}
         >
           <Input.TextArea
             rows={3}
-            placeholder="e.g. 故障演练 / 月末提前切换 / 余额异常待复核"
+            placeholder={t('manualOp.reasonPlaceholder')}
           />
         </Form.Item>
       </Form>
@@ -172,18 +175,18 @@ function ManualOpModal(p: ManualOpModalProps) {
 // 这里只是 UI 推荐选项，新增 / 删除 prefix 时两边都要改。
 const KEY_PREFIX_OPTIONS = [
   // 渠道侧（4 子类）
-  { prefix: 'channel-receivable:',       label: 'channel-receivable: 渠道应收款',        suggestedAccountType: 5 },
-  { prefix: 'channel-suspense:',         label: 'channel-suspense: 渠道入金挂账',        suggestedAccountType: 9 },
-  { prefix: 'channel-fee:',              label: 'channel-fee: 渠道手续费应付',           suggestedAccountType: 7 },
-  { prefix: 'channel-payable:',          label: 'channel-payable: 渠道应付款',           suggestedAccountType: 6 },
+  { prefix: 'channel-receivable:',       labelKey: 'keyPrefixes.channelReceivable',       suggestedAccountType: 5 },
+  { prefix: 'channel-suspense:',         labelKey: 'keyPrefixes.channelSuspense',         suggestedAccountType: 9 },
+  { prefix: 'channel-fee:',              labelKey: 'keyPrefixes.channelFee',              suggestedAccountType: 7 },
+  { prefix: 'channel-payable:',          labelKey: 'keyPrefixes.channelPayable',          suggestedAccountType: 6 },
   // 平台侧
-  { prefix: 'platform-fee-clearing:',    label: 'platform-fee-clearing: 平台待清算费用', suggestedAccountType: 4 },
-  { prefix: 'platform-fee-revenue:',     label: 'platform-fee-revenue: 平台手续费收入',  suggestedAccountType: 4 },
-  { prefix: 'platform-withdraw-pending:',label: 'platform-withdraw-pending: 平台提现挂账', suggestedAccountType: 9 },
+  { prefix: 'platform-fee-clearing:',    labelKey: 'keyPrefixes.platformFeeClearing',     suggestedAccountType: 4 },
+  { prefix: 'platform-fee-revenue:',     labelKey: 'keyPrefixes.platformFeeRevenue',      suggestedAccountType: 4 },
+  { prefix: 'platform-withdraw-pending:',labelKey: 'keyPrefixes.platformWithdrawPending', suggestedAccountType: 9 },
   // 用户侧中间
-  { prefix: 'user-suspense:',            label: 'user-suspense: 用户挂账',               suggestedAccountType: 9 },
+  { prefix: 'user-suspense:',            labelKey: 'keyPrefixes.userSuspense',            suggestedAccountType: 9 },
   // 通用兜底
-  { prefix: 'transit:',                  label: 'transit: 通用中间账户',                  suggestedAccountType: 9 },
+  { prefix: 'transit:',                  labelKey: 'keyPrefixes.transit',                 suggestedAccountType: 9 },
 ]
 
 // business_type / account_type / category 的关系（见"业务类型管理"页面）：
@@ -202,6 +205,7 @@ interface RegisterLAModalProps {
 }
 
 function RegisterLAModal(p: RegisterLAModalProps) {
+  const { t } = useTranslation('rotation')
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [prefix, setPrefix] = useState<string>(KEY_PREFIX_OPTIONS[0].prefix)
@@ -220,9 +224,9 @@ function RegisterLAModal(p: RegisterLAModalProps) {
         // 只显示 enabled=1 的，禁用的不让选
         setBtRegistry(rows.filter((r) => r.enabled === 1))
       })
-      .catch((e) => message.error(e instanceof Error ? e.message : '加载 business_type registry 失败'))
+      .catch((e) => message.error(e instanceof Error ? e.message : t('register.loadRegistryFailed')))
       .finally(() => setBtLoading(false))
-  }, [p.open, btRegistry.length])
+  }, [p.open, btRegistry.length, t])
 
   // 选中 business_type 时派生 account_type + category（不让用户手填，避免 schema drift）
   const derived = useMemo(() => {
@@ -246,15 +250,15 @@ function RegisterLAModal(p: RegisterLAModalProps) {
     try {
       const values = await form.validateFields()
       if (!keySuffix.trim()) {
-        message.error('请填写 logical_account_key 后缀')
+        message.error(t('register.suffixRequired'))
         return
       }
       if (fullKey.length < 8 || fullKey.length > 64) {
-        message.error(`完整 key 长度需在 [8, 64]: 当前 ${fullKey.length}`)
+        message.error(t('register.keyLengthError', { length: fullKey.length }))
         return
       }
       if (!derived) {
-        message.error('请选择 business_type')
+        message.error(t('register.businessTypeRequired'))
         return
       }
       setLoading(true)
@@ -268,7 +272,7 @@ function RegisterLAModal(p: RegisterLAModalProps) {
         operator:              values.operator,
       }
       await rotationRegisterLogicalAccount(req)
-      message.success(`已创建 ${fullKey}`)
+      message.success(t('register.createdSuccess', { key: fullKey }))
       form.resetFields()
       setKeySuffix('')
       setSelectedBT(undefined)
@@ -276,7 +280,7 @@ function RegisterLAModal(p: RegisterLAModalProps) {
       p.onDone()
     } catch (e) {
       if ((e as { errorFields?: unknown }).errorFields) return // form 校验失败
-      message.error(e instanceof Error ? e.message : '创建失败')
+      message.error(e instanceof Error ? e.message : t('register.createFailed'))
     } finally {
       setLoading(false)
     }
@@ -296,18 +300,18 @@ function RegisterLAModal(p: RegisterLAModalProps) {
 
   return (
     <Modal
-      title="创建 LogicalAccount"
+      title={t('register.title')}
       open={p.open}
       onCancel={p.onClose}
       onOk={submit}
       confirmLoading={loading}
-      okText="创建"
-      cancelText="取消"
+      okText={t('register.okText')}
+      cancelText={t('common:actions.cancel')}
       width={680}
       destroyOnClose
     >
       <Alert
-        message="LA 是业务侧稳定的账户键，背后挂多个 instance 按周期轮换。注册后 status=enabled；若 rotation_enabled=true，还需点「预创建」+「立即切换」启动首个 active instance。"
+        message={t('register.alert')}
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
@@ -321,35 +325,35 @@ function RegisterLAModal(p: RegisterLAModalProps) {
           rotation_enabled: true,
         }}
       >
-        <Form.Item label="logical_account_key 前缀" required>
+        <Form.Item label={t('register.keyPrefixLabel')} required>
           <Select
             value={prefix}
             onChange={setPrefix}
-            options={KEY_PREFIX_OPTIONS.map((o) => ({ value: o.prefix, label: o.label }))}
+            options={KEY_PREFIX_OPTIONS.map((o) => ({ value: o.prefix, label: t(o.labelKey) }))}
             style={{ width: '100%' }}
           />
         </Form.Item>
         <Form.Item
-          label={`完整 key: ${fullKey || '(填后缀)'}`}
+          label={t('register.fullKeyLabel', { key: fullKey || t('register.fullKeyPlaceholder') })}
           required
-          help="拼接：前缀 + 后缀。完整长度 ∈ [8, 64]，ASCII 可见字符（不含空格）"
+          help={t('register.fullKeyHelp')}
         >
           <Input
             value={keySuffix}
             onChange={(e) => setKeySuffix(e.target.value)}
-            placeholder="e.g. alipay / wechatpay-cn / merchant-12345"
+            placeholder={t('register.suffixPlaceholder')}
             addonBefore={prefix}
           />
         </Form.Item>
         <Form.Item
-          label="业务类型 (business_type)"
+          label={t('register.businessTypeLabel')}
           name="business_type"
-          rules={[{ required: true, message: '必选；新渠道请先去「业务类型管理」页注册' }]}
-          tooltip="account_type / category 由 business_type 自动派生，避免人工填错。要加新渠道请走「业务类型管理」页的注册流程"
+          rules={[{ required: true, message: t('register.businessTypeRequiredMsg') }]}
+          tooltip={t('register.businessTypeTooltip')}
         >
           <Select
             loading={btLoading}
-            placeholder="选择已注册的 business_type；账户类型 / 会计科目会自动派生"
+            placeholder={t('register.businessTypePlaceholder')}
             showSearch
             optionFilterProp="label"
             onChange={(v: number) => setSelectedBT(v)}
@@ -366,16 +370,16 @@ function RegisterLAModal(p: RegisterLAModalProps) {
             message={
               <Space size="middle" wrap>
                 <span>
-                  <Text type="secondary">account_type:</Text>{' '}
+                  <Text type="secondary">{t('register.derivedAccountType')}</Text>{' '}
                   <Tag color="cyan">{derived.accountType} - {derived.accountTypeLabel}</Tag>
                 </span>
                 <span>
-                  <Text type="secondary">category (派生):</Text>{' '}
+                  <Text type="secondary">{t('register.derivedCategory')}</Text>{' '}
                   <Tag color={categoryColor(derived.category)}>{derived.category}</Tag>
                 </span>
                 {derived.description && (
                   <span>
-                    <Text type="secondary">说明:</Text> <Text>{derived.description}</Text>
+                    <Text type="secondary">{t('register.derivedDescription')}</Text> <Text>{derived.description}</Text>
                   </span>
                 )}
               </Space>
@@ -384,29 +388,29 @@ function RegisterLAModal(p: RegisterLAModalProps) {
           />
         )}
         <Form.Item
-          label="币种 (currency)"
+          label={t('register.currencyLabel')}
           name="currency"
-          rules={[{ required: true, message: '必填' }]}
+          rules={[{ required: true, message: t('register.currencyRequired') }]}
         >
           <Select options={CURRENCY_OPTIONS.map((c) => ({ value: c, label: c }))} />
         </Form.Item>
         <Form.Item
-          label="启用轮换 (rotation_enabled)"
+          label={t('register.rotationEnabledLabel')}
           name="rotation_enabled"
           valuePropName="checked"
-          tooltip="false → 单 instance 兼容模式；true → 启用轮换，可点「预创建」「立即切换」"
+          tooltip={t('register.rotationEnabledTooltip')}
         >
           <Switch />
         </Form.Item>
-        <Form.Item label="描述 (可选)" name="description">
-          <Input.TextArea rows={2} placeholder="e.g. 支付宝渠道应付款主账户" />
+        <Form.Item label={t('register.descriptionLabel')} name="description">
+          <Input.TextArea rows={2} placeholder={t('register.descriptionPlaceholder')} />
         </Form.Item>
         <Form.Item
-          label="Operator (操作人邮箱 / 工号)"
+          label={t('register.operatorLabel')}
           name="operator"
-          rules={[{ required: true, message: '必填，写入 registered_by 做审计' }]}
+          rules={[{ required: true, message: t('register.operatorRequired') }]}
         >
-          <Input placeholder="e.g. ops-alice@example.com" />
+          <Input placeholder={t('register.operatorPlaceholder')} />
         </Form.Item>
       </Form>
     </Modal>
@@ -414,6 +418,7 @@ function RegisterLAModal(p: RegisterLAModalProps) {
 }
 
 export default function RotationDashboard() {
+  const { t } = useTranslation('rotation')
   const navigate = useNavigate()
   const [rows, setRows] = useState<RotationLogicalAccountRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -431,7 +436,7 @@ export default function RotationDashboard() {
       const resp = await listRotationLogicalAccounts(prefix || undefined, 500)
       setRows(resp.rows || [])
     } catch (e) {
-      message.error(e instanceof Error ? e.message : '加载失败')
+      message.error(e instanceof Error ? e.message : t('dashboard.loadFailed'))
       setRows([])
     } finally {
       setLoading(false)
@@ -458,7 +463,7 @@ export default function RotationDashboard() {
 
   const columns: ColumnsType<RotationLogicalAccountRow> = [
     {
-      title: 'Logical Account Key',
+      title: t('columns.logicalAccountKey'),
       dataIndex: 'logical_account_key',
       key: 'logical_account_key',
       width: 280,
@@ -467,21 +472,21 @@ export default function RotationDashboard() {
       ),
     },
     {
-      title: '币种',
+      title: t('columns.currency'),
       dataIndex: 'currency',
       key: 'currency',
       width: 80,
     },
     {
-      title: '轮换',
+      title: t('columns.rotation'),
       dataIndex: 'rotation_enabled',
       key: 'rotation_enabled',
       width: 90,
       render: (v: boolean) =>
-        v ? <Tag color="green">已启用</Tag> : <Tag color="default">未启用</Tag>,
+        v ? <Tag color="green">{t('columns.rotationEnabled')}</Tag> : <Tag color="default">{t('columns.rotationDisabled')}</Tag>,
     },
     {
-      title: '当前 Active 账户',
+      title: t('columns.activeAccount'),
       dataIndex: 'active_account_no',
       key: 'active_account_no',
       width: 220,
@@ -489,7 +494,7 @@ export default function RotationDashboard() {
       render: (v: string) => v || <Text type="secondary">—</Text>,
     },
     {
-      title: 'Balance',
+      title: t('columns.balance'),
       dataIndex: 'active_account_balance',
       key: 'active_account_balance',
       width: 140,
@@ -502,7 +507,7 @@ export default function RotationDashboard() {
       ),
     },
     {
-      title: '本期截止',
+      title: t('columns.periodEnd'),
       dataIndex: 'period_end',
       key: 'period_end',
       width: 200,
@@ -511,28 +516,28 @@ export default function RotationDashboard() {
           <Text>{fmtTime(v)}</Text>
           {row.rotation_enabled && (
             <Tag color={ttlColor(row.time_to_end_seconds)}>
-              {fmtDuration(row.time_to_end_seconds)}
+              {fmtDuration(row.time_to_end_seconds, t)}
             </Tag>
           )}
         </Space>
       ),
     },
     {
-      title: '下期已就绪',
+      title: t('columns.provisionedReady'),
       dataIndex: 'provisioned_ready',
       key: 'provisioned_ready',
       width: 130,
       render: (v: boolean, row) =>
         v ? (
           <Tooltip title={row.provisioned_account_no || ''}>
-            <Tag color="cyan">已预创建</Tag>
+            <Tag color="cyan">{t('columns.provisionedReadyYes')}</Tag>
           </Tooltip>
         ) : (
-          <Tag color="default">无</Tag>
+          <Tag color="default">{t('columns.provisionedReadyNo')}</Tag>
         ),
     },
     {
-      title: '操作',
+      title: t('columns.actions'),
       key: 'actions',
       width: 200,
       fixed: 'right',
@@ -547,7 +552,7 @@ export default function RotationDashboard() {
               setModal({ open: true, action: 'switch', key: row.logical_account_key })
             }
           >
-            立即切换
+            {t('dashboard.actions.switchNow')}
           </Button>
           <Button
             size="small"
@@ -558,7 +563,7 @@ export default function RotationDashboard() {
               setModal({ open: true, action: 'provision', key: row.logical_account_key })
             }
           >
-            预创建
+            {t('dashboard.actions.provision')}
           </Button>
         </Space>
       ),
@@ -568,28 +573,30 @@ export default function RotationDashboard() {
   return (
     <div>
       <Title level={3}>
-        <SwapOutlined /> 轮换账户管理
+        <SwapOutlined /> {t('dashboard.title')}
       </Title>
       <Paragraph type="secondary">
-        管理需要按周期（月/季/任意）切换的中间账户：channel-payable、channel-receivable、
-        user-suspense 等。点击 <Text code>logical_account_key</Text>{' '}
-        进详情页查看每个历史 instance 余额是否归零。
-        <Tooltip title="rotation feature 由 accounting-system 中的 Scheduler + Convergence + Migration + Audit 4 个 job 协作完成；本页面对应 service.AdminService（rotation_admin_service.go）。">
+        <Trans i18nKey="dashboard.description" t={t}>
+          {'管理需要按周期（月/季/任意）切换的中间账户：channel-payable、channel-receivable、user-suspense 等。点击 '}
+          <Text code>logical_account_key</Text>
+          {' 进详情页查看每个历史 instance 余额是否归零。'}
+        </Trans>
+        <Tooltip title={t('dashboard.infoTooltip')}>
           <InfoCircleOutlined style={{ marginLeft: 4 }} />
         </Tooltip>
       </Paragraph>
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col span={4}>
-          <Card><Statistic title="Total LA" value={stats.total} /></Card>
+          <Card><Statistic title={t('dashboard.stats.totalLA')} value={stats.total} /></Card>
         </Col>
         <Col span={5}>
-          <Card><Statistic title="启用轮换" value={stats.rotating} suffix={`/ ${stats.total}`} /></Card>
+          <Card><Statistic title={t('dashboard.stats.rotating')} value={stats.rotating} suffix={`/ ${stats.total}`} /></Card>
         </Col>
         <Col span={5}>
           <Card>
             <Statistic
-              title="24h 内到期"
+              title={t('dashboard.stats.expiring24h')}
               value={stats.expiring}
               valueStyle={{ color: stats.expiring > 0 ? '#fa8c16' : undefined }}
             />
@@ -598,36 +605,36 @@ export default function RotationDashboard() {
         <Col span={5}>
           <Card>
             <Statistic
-              title="已过期"
+              title={t('dashboard.stats.overdue')}
               value={stats.overdue}
               valueStyle={{ color: stats.overdue > 0 ? '#f5222d' : undefined }}
             />
           </Card>
         </Col>
         <Col span={5}>
-          <Card><Statistic title="已预创建下期" value={stats.provisioned} /></Card>
+          <Card><Statistic title={t('dashboard.stats.provisionedNext')} value={stats.provisioned} /></Card>
         </Col>
       </Row>
 
       <Card style={{ marginBottom: 16 }}>
         <Form layout="inline" onFinish={load}>
-          <Form.Item label="Key 前缀过滤">
+          <Form.Item label={t('dashboard.filter.keyPrefix')}>
             <Input
               value={prefix}
               onChange={(e) => setPrefix(e.target.value)}
-              placeholder="如：channel-payable:"
+              placeholder={t('dashboard.filter.keyPrefixPlaceholder')}
               style={{ width: 280 }}
               allowClear
             />
           </Form.Item>
           <Form.Item>
             <Button type="primary" htmlType="submit" icon={<SearchOutlined />} loading={loading}>
-              查询
+              {t('common:actions.search')}
             </Button>
           </Form.Item>
           <Form.Item>
             <Button onClick={load} icon={<ReloadOutlined />}>
-              刷新
+              {t('common:actions.refresh')}
             </Button>
           </Form.Item>
           <Form.Item>
@@ -637,7 +644,7 @@ export default function RotationDashboard() {
               icon={<PlusOutlined />}
               onClick={() => setRegisterOpen(true)}
             >
-              创建 LA
+              {t('dashboard.actions.createLA')}
             </Button>
           </Form.Item>
         </Form>
@@ -661,7 +668,7 @@ export default function RotationDashboard() {
 
       <ManualOpModal
         open={modal.open}
-        title={modal.action === 'switch' ? '手动切换中间账户' : '手动预创建下一期'}
+        title={modal.action === 'switch' ? t('manualOp.switchTitle') : t('manualOp.provisionTitle')}
         action={modal.action}
         logicalAccountKey={modal.key}
         onClose={() => setModal((m) => ({ ...m, open: false }))}

@@ -4,6 +4,7 @@ import {
   Space, Table, Tag, Typography, message,
 } from 'antd'
 import dayjs from 'dayjs'
+import { useTranslation } from 'react-i18next'
 import { listReviews, decideReview, decideReviewBulk, getReview } from '../../api/risk'
 import type { ReviewItem, ReviewStatus, ReviewAction } from '../../api/risk'
 import { display } from '../../utils/money'
@@ -20,6 +21,7 @@ const SCORE_COLOR = (n: number) =>
   n >= 80 ? 'red' : n >= 50 ? 'volcano' : n >= 20 ? 'gold' : 'default'
 
 export default function Reviews() {
+  const { t } = useTranslation('risk')
   const [loading, setLoading] = useState(false)
   const [rows, setRows] = useState<ReviewItem[]>([])
   const [status, setStatus] = useState<ReviewStatus>('pending')
@@ -33,42 +35,49 @@ export default function Reviews() {
   const onBulkDecide = (action: ReviewAction) => {
     const ids = [...selectedIDs]
     if (ids.length === 0) {
-      message.warning('请先勾选要批量处理的条目')
+      message.warning(t('reviews.bulkSelectWarning'))
       return
     }
     let actor = ''
     let reason = ''
+    const verb = action === 'approve' ? t('reviews.bulkVerbApprove') : t('reviews.bulkVerbReject')
     Modal.confirm({
-      title: `批量${action === 'approve' ? '批准' : '拒绝'} ${ids.length} 笔审核？`,
+      title: t('reviews.bulkConfirmTitle', { verb, count: ids.length }),
       content: (
         <div>
           <Alert
             type={action === 'reject' ? 'warning' : 'info'} showIcon
-            message={`将对选中的 ${ids.length} 笔同时执行 ${action}`}
+            message={t('reviews.bulkAlertMessage', { count: ids.length, action })}
             style={{ marginBottom: 12 }}
           />
           <Input
-            placeholder="actor (操作人 ID，必填)"
+            placeholder={t('reviews.bulkActorPlaceholder')}
             onChange={(e) => { actor = e.target.value.trim() }}
             style={{ marginBottom: 8 }}
           />
           <Input.TextArea
-            placeholder="reason (原因，落审计 + ML 训练 label)" rows={3}
+            placeholder={t('reviews.bulkReasonPlaceholder')} rows={3}
             onChange={(e) => { reason = e.target.value }}
           />
         </div>
       ),
-      okText: '确认', okButtonProps: { danger: action === 'reject' },
+      okText: t('reviews.bulkConfirmOkText'), okButtonProps: { danger: action === 'reject' },
       onOk: async () => {
         if (!actor) {
-          message.error('actor 必填')
+          message.error(t('reviews.bulkActorRequired'))
           return Promise.reject()
         }
         setBulkSubmitting(true)
         try {
           const r = await decideReviewBulk({ ids, action, actor, reason })
           message.success(
-            `批量${action === 'approve' ? '批准' : '拒绝'}：${r.success}/${r.total} 成功，${r.not_pending} 已变更状态，${r.failed} 失败`,
+            t('reviews.bulkResult', {
+              verb,
+              success: r.success,
+              total: r.total,
+              notPending: r.not_pending,
+              failed: r.failed,
+            }),
           )
           setSelectedIDs([])
           load()
@@ -93,7 +102,7 @@ export default function Reviews() {
     if (!detail) return
     try {
       await decideReview({ id: detail.id, ...v })
-      message.success(v.action === 'approve' ? '已批准（放行）' : '已拒绝（拦截）')
+      message.success(v.action === 'approve' ? t('reviews.approvedSingleSuccess') : t('reviews.rejectedSingleSuccess'))
       setDecideOpen(false)
       form.resetFields()
       // 刷新当前详情 + 列表
@@ -105,36 +114,36 @@ export default function Reviews() {
 
   return (
     <div>
-      <Typography.Title level={3}>风控人工审核队列</Typography.Title>
+      <Typography.Title level={3}>{t('reviews.title')}</Typography.Title>
       <Card>
         <Alert
           type="info" showIcon style={{ marginBottom: 16 }}
-          message="风控引擎判 verdict=Review 的交易会进入此队列。决议结果（approve/reject）会自动写到 feedback recorder，作为 ML 模型的训练 label。"
+          message={t('reviews.infoAlert')}
         />
         <Space style={{ marginBottom: 16 }} wrap>
           <Radio.Group value={status} onChange={(e) => { setStatus(e.target.value); setSelectedIDs([]) }}>
-            <Radio.Button value="pending">待审核</Radio.Button>
-            <Radio.Button value="approved">已批准</Radio.Button>
-            <Radio.Button value="rejected">已拒绝</Radio.Button>
+            <Radio.Button value="pending">{t('reviews.statusFilter.pending')}</Radio.Button>
+            <Radio.Button value="approved">{t('reviews.statusFilter.approved')}</Radio.Button>
+            <Radio.Button value="rejected">{t('reviews.statusFilter.rejected')}</Radio.Button>
           </Radio.Group>
-          <Button onClick={load}>刷新</Button>
+          <Button onClick={load}>{t('common:actions.refresh')}</Button>
           <Typography.Text type="secondary">
-            共 {rows.length} 条
+            {t('reviews.totalRows', { count: rows.length })}
             {selectedIDs.length > 0 && (
               <span style={{ marginLeft: 8, color: '#1677ff' }}>
-                · 已选 {selectedIDs.length}
+                {t('reviews.selectedSuffix', { count: selectedIDs.length })}
               </span>
             )}
           </Typography.Text>
           {status === 'pending' && selectedIDs.length > 0 && (
             <>
               <Button onClick={() => onBulkDecide('approve')} loading={bulkSubmitting}>
-                批量批准
+                {t('reviews.bulkApprove')}
               </Button>
               <Button danger onClick={() => onBulkDecide('reject')} loading={bulkSubmitting}>
-                批量拒绝
+                {t('reviews.bulkReject')}
               </Button>
-              <Button size="small" onClick={() => setSelectedIDs([])}>取消选中</Button>
+              <Button size="small" onClick={() => setSelectedIDs([])}>{t('reviews.clearSelection')}</Button>
             </>
           )}
         </Space>
@@ -147,27 +156,27 @@ export default function Reviews() {
           } : undefined}
           columns={[
             {
-              title: '决策 ID', dataIndex: 'id', width: 220, ellipsis: true,
+              title: t('reviews.columns.decisionId'), dataIndex: 'id', width: 220, ellipsis: true,
               render: (v) => <Typography.Text code copyable>{v}</Typography.Text>,
             },
-            { title: '商户', dataIndex: 'merchant_id', width: 140, ellipsis: true },
-            { title: '客户', dataIndex: 'customer_id', width: 140, ellipsis: true },
+            { title: t('reviews.columns.merchant'), dataIndex: 'merchant_id', width: 140, ellipsis: true },
+            { title: t('reviews.columns.customer'), dataIndex: 'customer_id', width: 140, ellipsis: true },
             {
-              title: 'PI', dataIndex: 'payment_intent_id', width: 180, ellipsis: true,
+              title: t('reviews.columns.pi'), dataIndex: 'payment_intent_id', width: 180, ellipsis: true,
               render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
             },
             {
-              title: '金额', dataIndex: 'amount', width: 110, align: 'right',
+              title: t('reviews.columns.amount'), dataIndex: 'amount', width: 110, align: 'right',
               // 注册 / 登录 / 改密这类事件 amount=0 currency="" — display 会抛 unsupported currency；
               // 用 — 占位避免崩溃。
               render: (v: number, r) => (v && r.currency) ? display(v, r.currency) : '—',
             },
             {
-              title: '风险分', dataIndex: 'risk_score', width: 80, align: 'center',
+              title: t('reviews.columns.riskScore'), dataIndex: 'risk_score', width: 80, align: 'center',
               render: (v: number) => <Tag color={SCORE_COLOR(v)}>{v}</Tag>,
             },
             {
-              title: '命中规则', dataIndex: 'reasons', ellipsis: true,
+              title: t('reviews.columns.hitRules'), dataIndex: 'reasons', ellipsis: true,
               render: (vs: string[]) => (
                 <Space size={4} wrap>
                   {(vs || []).map((s, i) => (
@@ -177,48 +186,48 @@ export default function Reviews() {
               ),
             },
             {
-              title: '状态', dataIndex: 'status', width: 90,
+              title: t('reviews.columns.status'), dataIndex: 'status', width: 90,
               render: (v: ReviewStatus) => <Tag color={STATUS_COLOR[v]}>{v}</Tag>,
             },
             {
-              title: '创建时间', dataIndex: 'created_at', width: 150,
+              title: t('reviews.columns.createdAt'), dataIndex: 'created_at', width: 150,
               render: (v: string) => dayjs(v).format('MM-DD HH:mm:ss'),
             },
             {
               title: '', width: 60,
-              render: (_, r) => <a onClick={() => setDetail(r)}>详情</a>,
+              render: (_, r) => <a onClick={() => setDetail(r)}>{t('reviews.detailLink')}</a>,
             },
           ]}
         />
       </Card>
 
       <Drawer
-        title={detail ? `Review ${detail.id}` : ''}
+        title={detail ? t('reviews.drawerTitle', { id: detail.id }) : ''}
         width={720} open={!!detail} onClose={() => setDetail(null)}
         extra={detail?.status === 'pending' && (
-          <Button type="primary" onClick={() => setDecideOpen(true)}>决议</Button>
+          <Button type="primary" onClick={() => setDecideOpen(true)}>{t('reviews.decideButton')}</Button>
         )}
       >
         {detail && (
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
-            <Card size="small" title="基本">
-              <Row k="决策 ID" v={<Typography.Text code copyable>{detail.id}</Typography.Text>} />
-              <Row k="商户" v={detail.merchant_id} />
-              <Row k="客户" v={detail.customer_id} />
-              <Row k="PI" v={<Typography.Text code copyable>{detail.payment_intent_id}</Typography.Text>} />
-              <Row k="金额" v={(detail.amount && detail.currency) ? display(detail.amount, detail.currency) : '—'} />
-              <Row k="风险分" v={<Tag color={SCORE_COLOR(detail.risk_score)}>{detail.risk_score}</Tag>} />
-              <Row k="状态" v={<Tag color={STATUS_COLOR[detail.status]}>{detail.status}</Tag>} />
-              <Row k="创建时间" v={dayjs(detail.created_at).format('YYYY-MM-DD HH:mm:ss')} />
+            <Card size="small" title={t('reviews.drawerSections.basic')}>
+              <Row k={t('reviews.fields.decisionId')} v={<Typography.Text code copyable>{detail.id}</Typography.Text>} />
+              <Row k={t('reviews.fields.merchant')} v={detail.merchant_id} />
+              <Row k={t('reviews.fields.customer')} v={detail.customer_id} />
+              <Row k={t('reviews.fields.pi')} v={<Typography.Text code copyable>{detail.payment_intent_id}</Typography.Text>} />
+              <Row k={t('reviews.fields.amount')} v={(detail.amount && detail.currency) ? display(detail.amount, detail.currency) : '—'} />
+              <Row k={t('reviews.fields.riskScore')} v={<Tag color={SCORE_COLOR(detail.risk_score)}>{detail.risk_score}</Tag>} />
+              <Row k={t('reviews.fields.status')} v={<Tag color={STATUS_COLOR[detail.status]}>{detail.status}</Tag>} />
+              <Row k={t('reviews.fields.createdAt')} v={dayjs(detail.created_at).format('YYYY-MM-DD HH:mm:ss')} />
               {detail.decided_at && <>
-                <Row k="决议时间" v={dayjs(detail.decided_at).format('YYYY-MM-DD HH:mm:ss')} />
-                <Row k="决议人" v={detail.decided_by} />
-                <Row k="决议原因" v={detail.decide_reason || '-'} />
+                <Row k={t('reviews.fields.decidedAt')} v={dayjs(detail.decided_at).format('YYYY-MM-DD HH:mm:ss')} />
+                <Row k={t('reviews.fields.decidedBy')} v={detail.decided_by} />
+                <Row k={t('reviews.fields.decideReason')} v={detail.decide_reason || '-'} />
               </>}
             </Card>
-            <Card size="small" title="命中规则">
+            <Card size="small" title={t('reviews.drawerSections.hitRules')}>
               {(detail.reasons || []).length === 0
-                ? <Typography.Text type="secondary">无</Typography.Text>
+                ? <Typography.Text type="secondary">{t('common.none')}</Typography.Text>
                 : <ul style={{ margin: 0, paddingLeft: 20 }}>
                   {detail.reasons.map((r, i) => <li key={i}><Typography.Text>{r}</Typography.Text></li>)}
                 </ul>
@@ -229,25 +238,25 @@ export default function Reviews() {
       </Drawer>
 
       <Modal
-        title="决议" open={decideOpen}
+        title={t('reviews.decideModal.title')} open={decideOpen}
         onCancel={() => setDecideOpen(false)} onOk={() => form.submit()}
       >
         <Alert
           type="warning" showIcon style={{ marginBottom: 12 }}
-          message="approve = 放行该笔交易；reject = 标记为欺诈并阻止放款。决议后会自动写一条 SourceReviewHuman 的 outcome 给 ML 训练。"
+          message={t('reviews.decideModal.alert')}
         />
         <Form form={form} layout="vertical" onFinish={onDecide} initialValues={{ action: 'approve' }}>
-          <Form.Item name="action" label="动作" rules={[{ required: true }]}>
+          <Form.Item name="action" label={t('reviews.decideModal.actionLabel')} rules={[{ required: true }]}>
             <Select options={[
-              { value: 'approve', label: 'approve（放行 / 非欺诈）' },
-              { value: 'reject',  label: 'reject（拒绝 / 是欺诈）' },
+              { value: 'approve', label: t('reviews.decideModal.approveOption') },
+              { value: 'reject',  label: t('reviews.decideModal.rejectOption') },
             ]} />
           </Form.Item>
-          <Form.Item name="actor" label="操作人" rules={[{ required: true }]}>
-            <Input placeholder="如 ops:zhang.san" />
+          <Form.Item name="actor" label={t('reviews.decideModal.actorLabel')} rules={[{ required: true }]}>
+            <Input placeholder={t('reviews.decideModal.actorPlaceholder')} />
           </Form.Item>
-          <Form.Item name="reason" label="决议原因">
-            <Input.TextArea rows={3} placeholder="如：客户致电确认本人交易；或：与历史 chargeback 设备指纹一致" />
+          <Form.Item name="reason" label={t('reviews.decideModal.reasonLabel')}>
+            <Input.TextArea rows={3} placeholder={t('reviews.decideModal.reasonPlaceholder')} />
           </Form.Item>
         </Form>
       </Modal>

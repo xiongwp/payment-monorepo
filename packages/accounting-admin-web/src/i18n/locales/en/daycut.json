@@ -1,0 +1,44 @@
+{
+  "trigger": {
+    "title": "Trigger Day Cut",
+    "datePlaceholder": "Select day-cut date (defaults to yesterday)",
+    "currencyPlaceholder": "Currency",
+    "submit": "Trigger Day Cut",
+    "currencyRequired": "Please select a currency",
+    "triggerSuccess": "Day-cut task triggered. Date: {{date}}, Currency: {{currency}}",
+    "triggerFailed": "Failed to trigger day cut",
+    "hint": "Note: Day cuts run independently per currency — precision differs by currency, so aggregating across currencies is meaningless. Each currency runs once with its own snapshot. Retries also filter by the currency selected above."
+  },
+  "retrigger": {
+    "currencyRequired": "Please select a currency above before retrying",
+    "success": "Day-cut retry triggered. Date: {{date}}, Currency: {{currency}}",
+    "failed": "Retry failed",
+    "tooltip": "Re-run the day cut for this date (creates a new version; previous data is retained)",
+    "button": "Retry"
+  },
+  "history": {
+    "title": "Day-Cut History",
+    "refresh": "Refresh",
+    "empty": "No day-cut records",
+    "loadFailed": "Failed to load day-cut history"
+  },
+  "columns": {
+    "cutDate": "Cut Date",
+    "runId": "Version",
+    "currency": "Currency",
+    "currencyAll": "All",
+    "overall": "Overall Status",
+    "totalShards": "Total Shards",
+    "completed": "Completed",
+    "failed": "Failed",
+    "processing": "Processing",
+    "pending": "Pending",
+    "action": "Actions"
+  },
+  "status": {
+    "processing": "Processing",
+    "failed": "Failed",
+    "completed": "Completed",
+    "unknown": "Unknown"
+  }
+}

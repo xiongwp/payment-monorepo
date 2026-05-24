@@ -1,0 +1,66 @@
+{
+  "simulator": {
+    "title": "模拟商户 App（下单 → 支付）",
+    "notice": {
+      "message": "这不是真实收银台",
+      "description": "下面三步完整触发 order-core → payment-core → payment-channel 的 gRPC 链路；外部渠道（GCash/Maya/...）的 HTTP API 由 payment-channel 的 scripted adapter 在容器里 mock。"
+    },
+    "steps": {
+      "create": "商户创建订单",
+      "selectMethod": "用户选渠道",
+      "complete": "完成支付"
+    },
+    "step1": {
+      "title": "① CreatePaymentIntent",
+      "form": {
+        "mchId": "商户 ID",
+        "mchOrderNo": "商户订单号",
+        "mchOrderNoPlaceholder": "留空会生成 mch_{timestamp}",
+        "amount": "金额 (storage)",
+        "currency": "币种",
+        "country": "国家（路由用）",
+        "description": "描述",
+        "descriptionPlaceholder": "示例：购买 10 个苹果",
+        "returnUrl": "return_url（用户完成支付后跳转）",
+        "idempotencyKey": "幂等键（留空自动生成）",
+        "submit": "创建订单"
+      }
+    },
+    "intent": {
+      "title": "订单",
+      "piId": "PI ID",
+      "status": "状态",
+      "amount": "金额",
+      "merchant": "商户",
+      "shardKey": "分片键",
+      "createdAt": "创建时间"
+    },
+    "step2": {
+      "title": "② Confirm：选支付方式"
+    },
+    "step3": {
+      "title": "③ 完成支付",
+      "refresh": "刷新订单状态",
+      "again": "再来一单",
+      "chargeId": "Charge ID",
+      "paymentMethod": "支付方式",
+      "chargeAmount": "金额",
+      "chargeStatus": "状态",
+      "noActionNeeded": {
+        "message": "无需用户动作，订单已终态",
+        "description": "PI.status = {{status}}"
+      }
+    },
+    "nextAction": {
+      "warningMessage": "需要用户完成 {{actionType}}",
+      "redirectHint": "收银台应跳转：",
+      "payloadFallback": "具体动作字段见下方 payload",
+      "actionId": "Action ID",
+      "type": "类型",
+      "status": "状态",
+      "charge": "Charge",
+      "expiresAt": "过期时间",
+      "payload": "payload"
+    }
+  }
+}

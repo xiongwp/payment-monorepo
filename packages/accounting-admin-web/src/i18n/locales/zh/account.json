@@ -1,0 +1,263 @@
+{
+  "accountTypes": {
+    "user": "用户账户",
+    "merchant": "商户账户",
+    "merchantPendingSettle": "商户待结算账户",
+    "merchantPendingSettleLong": "商户待结算余额账户",
+    "platform": "平台损益账户",
+    "platformSimple": "平台账户",
+    "transitChannelReceivable": "中间渠道应收账户",
+    "transitChannelPayable": "中间渠道应付账户",
+    "transactionFee": "平台手续费账户",
+    "chargeFee": "平台服务费账户",
+    "transit": "中间账户"
+  },
+  "businessTypes": {
+    "userBalance": "用户余额",
+    "merchantBalance": "商户结算",
+    "merchantPendingSettle": "商户待结算",
+    "transfer": "转账",
+    "payment": "支付",
+    "refund": "退款",
+    "withdraw": "提现",
+    "deposit": "充值",
+    "commission": "手续费"
+  },
+  "bookingTypes": {
+    "normal": "实时记账",
+    "buffer": "缓冲记账"
+  },
+  "categories": {
+    "asset": "资产",
+    "liability": "负债",
+    "equity": "所有者权益",
+    "revenue": "收入",
+    "expense": "费用"
+  },
+  "statusLabels": {
+    "active": "正常",
+    "frozen": "冻结",
+    "disabled": "禁用",
+    "abnormal": "异常"
+  },
+  "list": {
+    "searchMode": {
+      "byAccountNo": "按账户号查询",
+      "byUserAndBusinessType": "按用户ID+业务类型查询"
+    },
+    "placeholders": {
+      "accountNo": "输入账户号",
+      "userId": "用户ID",
+      "businessType": "业务类型"
+    },
+    "businessTypeEmpty": "请先在「业务类型」页登记 business_type",
+    "tableEmpty": "请输入查询条件",
+    "createButton": "创建账户",
+    "columns": {
+      "accountNo": "账户号",
+      "userId": "用户ID",
+      "accountType": "账户类型",
+      "businessType": "业务类型",
+      "balance": "余额",
+      "availableBalance": "可用余额",
+      "currency": "币种",
+      "status": "状态"
+    },
+    "actions": {
+      "detail": "详情",
+      "freeze": "冻结",
+      "unfreeze": "解冻"
+    },
+    "messages": {
+      "requireAccountNo": "请输入账户号",
+      "requireUserAndBusinessType": "请输入用户ID并选择业务类型",
+      "notFound": "没有找到对应账户",
+      "multipleCurrencies": "该用户在该业务类型下持有 {{count}} 个币种账户",
+      "queryFailed": "查询失败",
+      "createSuccess": "账户创建成功"
+    },
+    "modal": {
+      "title": "创建账户",
+      "userIdLabel": "用户ID",
+      "userIdTooltip": "用户 base 1e8、商户 base 9e8、系统保留 [1,10000]",
+      "userIdPlaceholder": "请输入用户ID",
+      "accountTypeLabel": "账户类型",
+      "accountTypePlaceholder": "请选择账户类型",
+      "businessTypeLabel": "业务类型",
+      "businessTypeRequired": "请先选择账户类型，再选业务类型",
+      "businessTypeTooltip": "仅显示与选中账户类型关联、且已在 meta DB 登记的 business_type",
+      "businessTypePlaceholderSelect": "请选择业务类型",
+      "businessTypePlaceholderPickType": "请先选择账户类型",
+      "businessTypeEmpty": "该 account_type 下暂无已登记 business_type；请先在\"系统账户\"页渠道注册",
+      "categoryLabel": "账户分类 (自动由业务类型推导)",
+      "categoryPlaceholder": "选择业务类型后自动填写",
+      "currencyLabel": "币种",
+      "currencyOptions": {
+        "php": "菲律宾比索",
+        "usd": "美元"
+      }
+    }
+  },
+  "detail": {
+    "loading": "加载中...",
+    "loadFailed": "查询账户失败",
+    "cardTitle": "账户详情",
+    "txCardTitle": "交易记录",
+    "fields": {
+      "accountNo": "账户号",
+      "userId": "用户ID",
+      "accountType": "账户类型",
+      "accountCategory": "账户类别",
+      "status": "账户状态",
+      "currency": "币种",
+      "balance": "余额",
+      "availableBalance": "可用余额",
+      "frozenBalance": "冻结余额",
+      "version": "版本号",
+      "createdAt": "创建时间",
+      "updatedAt": "更新时间"
+    },
+    "txColumns": {
+      "transactionId": "交易ID",
+      "businessNo": "业务订单号",
+      "businessType": "业务类型",
+      "debit": "借方",
+      "credit": "贷方",
+      "bookingType": "记账类型",
+      "balanceBefore": "交易前余额",
+      "balanceAfter": "交易后余额",
+      "transactionDate": "交易日期"
+    },
+    "pagination": {
+      "showTotal": "共 {{count}} 条"
+    }
+  },
+  "platformAccounts": {
+    "pageTitle": "系统账户管理",
+    "pageDescription": "管理平台 / 中间 / 手续费 / 权益 / 中转等系统内部账户。owner_id 预留 [1, 10000]；用户 base 1e8、商户 base 9e8。每个渠道对应 100 个分片账户（user_id = 0..99），business_type 唯一区分渠道。业务类型清单与审计请到\"业务类型\"页面。",
+    "tabs": {
+      "fleet": "渠道注册（100 账户）",
+      "single": "单点创建"
+    },
+    "fleet": {
+      "alertTitle": "基于已登记 business_type 创建 100 个分片账户",
+      "alertLine1": "先到\"业务类型\"页登记一条 business_type，再到这里选它来创建 100 个分片账户（user_id = 0..99）。",
+      "alertLine2Prefix": "本操作只建账户，",
+      "alertLine2Bold": "不再注册 registry",
+      "alertLine2Suffix": "；所以下拉里如果没看到你要的 business_type，先去登记。相同参数重跑幂等：只补齐缺失分片。",
+      "selectLabel": "选择已登记的 Business Type",
+      "selectRequired": "请选择 business_type",
+      "selectPlaceholderHas": "选择已在 registry 登记的 business_type",
+      "selectPlaceholderEmpty": "请先到\"业务类型\"页注册",
+      "descriptions": {
+        "accountType": "Account Type",
+        "category": "Category (derived)",
+        "code": "Code",
+        "description": "描述"
+      },
+      "currencyLabel": "币种",
+      "submitButton": "创建 100 个账户",
+      "messages": {
+        "needSelect": "请先选择一个已登记的 business_type",
+        "allDone": "账户创建完成",
+        "partialDone": "部分成功 {{created}}/100，可用相同参数重跑补齐",
+        "createFailed": "创建失败",
+        "resultFleet": "已创建 {{created}}/100 个分片账户 · business_type={{businessType}} · {{code}}"
+      }
+    },
+    "single": {
+      "alertTitle": "单点创建（少用）",
+      "alertDescription": "只为某一分片补一个账户。大多数情况应该用\"渠道注册\"批量建 100 个。",
+      "reservedIdLabel": "Reserved ID (1-10000)",
+      "reservedIdPlaceholder": "该账户在保留段的 owner_id",
+      "accountTypeLabel": "账户类型",
+      "accountTypePlaceholder": "选择平台账户类型",
+      "currencyLabel": "币种",
+      "submitButton": "创建账户",
+      "resultTitle": "创建结果",
+      "messages": {
+        "createSuccess": "账户已创建: {{accountNo}}",
+        "createFailed": "创建失败"
+      },
+      "fields": {
+        "accountNo": "账户号",
+        "userId": "User ID",
+        "accountType": "Account Type",
+        "businessType": "Business Type",
+        "category": "Category",
+        "currency": "Currency"
+      }
+    }
+  },
+  "balances": {
+    "pageTitle": "平台账户余额查询",
+    "pageDescriptionPrefix": "按 ",
+    "pageDescriptionSuffix": " 查询对应的 100 个平台账户（user_id = 0..99，每分片一个）的当前余额。余额可能含 Redis/buffer 未刷入的增量 —— 以 account.balance 为准，不一定等于 snapshot。",
+    "form": {
+      "businessTypeLabel": "Business Type",
+      "businessTypePlaceholder": "选择已注册的业务类型",
+      "currencyLabel": "币种",
+      "queryButton": "查询"
+    },
+    "stats": {
+      "businessType": "Business Type",
+      "code": "Code",
+      "category": "Category (derived)",
+      "foundAccounts": "找到账户数",
+      "foundAccountsSuffix": "/ 100",
+      "totalBalance": "所有账户余额汇总 (balance 之和)"
+    },
+    "columns": {
+      "userIdShard": "User ID (分片)",
+      "accountNo": "账户号",
+      "group": "Group",
+      "balance": "Balance",
+      "available": "Available",
+      "frozen": "Frozen",
+      "status": "状态"
+    },
+    "messages": {
+      "needBusinessType": "请选择 business_type",
+      "needCurrency": "请选择币种",
+      "queryFailed": "查询失败",
+      "partialFleet": "已找到 {{count}} 个账户（少于 100 个，可能尚未完成 fleet 注册）"
+    }
+  },
+  "snapshots": {
+    "pageTitle": "平台账户快照查询",
+    "pageDescriptionPrefix": "按 ",
+    "pageDescriptionSuffix": " 查询该渠道 100 个平台账户的日切快照。右侧\"当前余额\"与\"期末余额\"对账：绿色一致、红色不一致（可能已有新增流水或未 flush）。",
+    "form": {
+      "businessTypeLabel": "Business Type",
+      "businessTypePlaceholder": "选择业务类型",
+      "dateLabel": "日切日期",
+      "currencyLabel": "币种",
+      "queryButton": "查询"
+    },
+    "columns": {
+      "userId": "User ID",
+      "accountNo": "账户号",
+      "group": "Group",
+      "beginning": "期初余额",
+      "ending": "期末余额",
+      "debit": "借方合计",
+      "credit": "贷方合计",
+      "count": "交易笔数",
+      "liveBalance": "当前余额 (对账)",
+      "noSnapshot": "无快照"
+    },
+    "stats": {
+      "hasSnapshot": "有快照账户: {{has}} / {{total}}",
+      "sumBeginning": "Σ 期初 {{value}}",
+      "sumEnding": "Σ 期末 {{value}}",
+      "sumDebit": "Σ 借方 {{value}}",
+      "sumCredit": "Σ 贷方 {{value}}"
+    },
+    "messages": {
+      "needBusinessTypeAndDate": "请选择 business_type 和日期",
+      "needCurrency": "请选择币种",
+      "queryFailed": "查询失败",
+      "diffTitle": "与期末差 {{diff}} minor"
+    }
+  }
+}

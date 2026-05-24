@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Card, Drawer, Input, Select, Space, Table, Tabs, Tag, Typography, message,
 } from 'antd'
+import { useTranslation } from 'react-i18next'
 import dayjs from 'dayjs'
 import {
   listLedgerAccounts, listLedgerEntries, listLedgerTransactions, getLedgerTransaction,
@@ -17,12 +18,6 @@ const TYPE_COLORS: Record<string, string> = {
   equity: 'purple',
 }
 
-const OWNER_LABELS: Record<string, string> = {
-  platform: '平台',
-  merchant: '商户',
-  channel: '渠道',
-}
-
 // fmtAmount renders a backend storage amount using the row's currency.
 // storage = minor_units * 100; display() applies banker's rounding and the
 // currency-specific symbol + precision.
@@ -33,6 +28,12 @@ function fmtAmount(storage: number | undefined | null, currency: string): string
 
 // Accounts tab — browse chart of accounts + balances.
 function AccountsTab() {
+  const { t } = useTranslation('ledger')
+  const ownerLabel = (v: string): string => {
+    const key = `ownerTypes.${v}`
+    const translated = t(key)
+    return translated === key ? v : translated
+  }
   const [loading, setLoading] = useState(false)
   const [rows, setRows] = useState<GLAccount[]>([])
   const [filter, setFilter] = useState<{ owner_type?: string; owner_id?: string }>({})
@@ -67,16 +68,16 @@ function AccountsTab() {
     <>
       <Space wrap style={{ marginBottom: 16 }}>
         <Select
-          placeholder="账户维度" allowClear style={{ width: 140 }}
+          placeholder={t('accounts.filters.ownerType')} allowClear style={{ width: 140 }}
           onChange={(v) => setFilter((f) => ({ ...f, owner_type: v }))}
           options={[
-            { value: 'platform', label: '平台' },
-            { value: 'merchant', label: '商户' },
-            { value: 'channel', label: '渠道' },
+            { value: 'platform', label: t('ownerTypes.platform') },
+            { value: 'merchant', label: t('ownerTypes.merchant') },
+            { value: 'channel', label: t('ownerTypes.channel') },
           ]}
         />
         <Input
-          placeholder="owner_id (mch_xxx / gcash)" allowClear
+          placeholder={t('accounts.filters.ownerIdPlaceholder')} allowClear
           style={{ width: 260 }}
           onPressEnter={(e) => setFilter((f) => ({ ...f, owner_id: (e.target as HTMLInputElement).value }))}
         />
@@ -88,18 +89,18 @@ function AccountsTab() {
         dataSource={rows}
         pagination={{ pageSize: 30 }}
         columns={[
-          { title: 'ID', dataIndex: 'id', width: 320, render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
-          { title: '名称', dataIndex: 'name', ellipsis: true },
-          { title: '类型', dataIndex: 'type', width: 110, render: (v: string) => <Tag color={TYPE_COLORS[v] || 'default'}>{v}</Tag> },
-          { title: '维度', dataIndex: 'owner_type', width: 80, render: (v: string) => OWNER_LABELS[v] || v },
-          { title: 'owner', dataIndex: 'owner_id', width: 140, ellipsis: true },
-          { title: 'Dr', dataIndex: 'debit_balance', width: 120, align: 'right', render: (v: number, r) => fmtAmount(v, r.currency) },
-          { title: 'Cr', dataIndex: 'credit_balance', width: 120, align: 'right', render: (v: number, r) => fmtAmount(v, r.currency) },
+          { title: t('accounts.columns.id'), dataIndex: 'id', width: 320, render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
+          { title: t('accounts.columns.name'), dataIndex: 'name', ellipsis: true },
+          { title: t('accounts.columns.type'), dataIndex: 'type', width: 110, render: (v: string) => <Tag color={TYPE_COLORS[v] || 'default'}>{v}</Tag> },
+          { title: t('accounts.columns.ownerType'), dataIndex: 'owner_type', width: 80, render: (v: string) => ownerLabel(v) },
+          { title: t('accounts.columns.owner'), dataIndex: 'owner_id', width: 140, ellipsis: true },
+          { title: t('accounts.columns.debit'), dataIndex: 'debit_balance', width: 120, align: 'right', render: (v: number, r) => fmtAmount(v, r.currency) },
+          { title: t('accounts.columns.credit'), dataIndex: 'credit_balance', width: 120, align: 'right', render: (v: number, r) => fmtAmount(v, r.currency) },
           {
-            title: 'Net', dataIndex: 'net_balance', width: 120, align: 'right',
+            title: t('accounts.columns.net'), dataIndex: 'net_balance', width: 120, align: 'right',
             render: (v: number, r) => <Typography.Text strong>{fmtAmount(v, r.currency)}</Typography.Text>,
           },
-          { title: '', width: 70, render: (_, r) => <a onClick={() => openAccount(r)}>明细</a> },
+          { title: '', width: 70, render: (_, r) => <a onClick={() => openAccount(r)}>{t('accounts.columns.detail')}</a> },
         ]}
       />
       <Drawer
@@ -116,23 +117,23 @@ function AccountsTab() {
             </Typography.Paragraph>
             <Typography.Paragraph>
               <Space size="large">
-                <span>Debit: <Typography.Text strong>{fmtAmount(detail.debit_balance, detail.currency)}</Typography.Text></span>
-                <span>Credit: <Typography.Text strong>{fmtAmount(detail.credit_balance, detail.currency)}</Typography.Text></span>
-                <span>Net: <Typography.Text strong type="success">{fmtAmount(detail.net_balance, detail.currency)}</Typography.Text></span>
+                <span>{t('accounts.drawer.debit')}: <Typography.Text strong>{fmtAmount(detail.debit_balance, detail.currency)}</Typography.Text></span>
+                <span>{t('accounts.drawer.credit')}: <Typography.Text strong>{fmtAmount(detail.credit_balance, detail.currency)}</Typography.Text></span>
+                <span>{t('accounts.drawer.net')}: <Typography.Text strong type="success">{fmtAmount(detail.net_balance, detail.currency)}</Typography.Text></span>
               </Space>
             </Typography.Paragraph>
-            <Typography.Title level={5}>近 100 条条目</Typography.Title>
+            <Typography.Title level={5}>{t('accounts.drawer.recentEntries')}</Typography.Title>
             <Table<GLEntry>
               rowKey="id"
               size="small"
               dataSource={entries}
               pagination={false}
               columns={[
-                { title: '时间', dataIndex: 'created_ms', width: 160, render: (v) => dayjs(v).format('MM-DD HH:mm:ss') },
-                { title: 'txn', dataIndex: 'txn_id', width: 160, ellipsis: true },
-                { title: 'Dr', dataIndex: 'debit_amount', width: 110, align: 'right', render: (v: number, r) => fmtAmount(v, r.currency) },
-                { title: 'Cr', dataIndex: 'credit_amount', width: 110, align: 'right', render: (v: number, r) => fmtAmount(v, r.currency) },
-                { title: 'Memo', dataIndex: 'memo', ellipsis: true },
+                { title: t('accounts.drawer.entryColumns.time'), dataIndex: 'created_ms', width: 160, render: (v) => dayjs(v).format('MM-DD HH:mm:ss') },
+                { title: t('accounts.drawer.entryColumns.txn'), dataIndex: 'txn_id', width: 160, ellipsis: true },
+                { title: t('accounts.drawer.entryColumns.debit'), dataIndex: 'debit_amount', width: 110, align: 'right', render: (v: number, r) => fmtAmount(v, r.currency) },
+                { title: t('accounts.drawer.entryColumns.credit'), dataIndex: 'credit_amount', width: 110, align: 'right', render: (v: number, r) => fmtAmount(v, r.currency) },
+                { title: t('accounts.drawer.entryColumns.memo'), dataIndex: 'memo', ellipsis: true },
               ]}
             />
           </div>
@@ -144,6 +145,7 @@ function AccountsTab() {
 
 // Transactions tab — browse gl_transaction with drill-into-entries.
 function TransactionsTab() {
+  const { t } = useTranslation('ledger')
   const [loading, setLoading] = useState(false)
   const [rows, setRows] = useState<GLTransaction[]>([])
   const [filter, setFilter] = useState<{ event_type?: string; ref_type?: string; ref_id?: string }>({})
@@ -163,9 +165,9 @@ function TransactionsTab() {
 
   useEffect(() => { load() }, [load])
 
-  const open = async (t: GLTransaction) => {
+  const open = async (tx: GLTransaction) => {
     try {
-      const full = await getLedgerTransaction(t.id)
+      const full = await getLedgerTransaction(tx.id)
       setDetail(full)
     } catch (e) {
       message.error(String(e))
@@ -181,7 +183,7 @@ function TransactionsTab() {
     <>
       <Space wrap style={{ marginBottom: 16 }}>
         <Select
-          placeholder="事件类型" allowClear style={{ width: 220 }}
+          placeholder={t('transactions.filters.eventType')} allowClear style={{ width: 220 }}
           onChange={(v) => setFilter((f) => ({ ...f, event_type: v }))}
           options={[
             { value: 'charge.succeeded', label: 'charge.succeeded' },
@@ -191,10 +193,10 @@ function TransactionsTab() {
             { value: 'adjustment.manual', label: 'adjustment.manual' },
           ]}
         />
-        <Input placeholder="ref_type" allowClear style={{ width: 160 }}
+        <Input placeholder={t('transactions.filters.refType')} allowClear style={{ width: 160 }}
           onPressEnter={(e) => setFilter((f) => ({ ...f, ref_type: (e.target as HTMLInputElement).value }))}
         />
-        <Input placeholder="ref_id" allowClear style={{ width: 220 }}
+        <Input placeholder={t('transactions.filters.refId')} allowClear style={{ width: 220 }}
           onPressEnter={(e) => setFilter((f) => ({ ...f, ref_id: (e.target as HTMLInputElement).value }))}
         />
       </Space>
@@ -205,13 +207,13 @@ function TransactionsTab() {
         dataSource={rows}
         pagination={{ pageSize: 30 }}
         columns={[
-          { title: '时间', dataIndex: 'created_ms', width: 170, render: (v) => dayjs(v).format('YYYY-MM-DD HH:mm:ss') },
-          { title: 'txn', dataIndex: 'id', width: 180, ellipsis: true, render: (v) => <Typography.Text code>{v}</Typography.Text> },
-          { title: 'Event', dataIndex: 'event_type', width: 200, render: (v) => <Tag>{v}</Tag> },
-          { title: 'Ref', width: 240, render: (_, r) => r.ref_type ? `${r.ref_type} / ${r.ref_id}` : '-' },
-          { title: '金额', dataIndex: 'total_debit', width: 120, align: 'right', render: (v: number, r) => fmtAmount(v, txnCurrency(r)) },
-          { title: 'Memo', dataIndex: 'memo', ellipsis: true },
-          { title: '', width: 70, render: (_, r) => <a onClick={() => open(r)}>明细</a> },
+          { title: t('transactions.columns.time'), dataIndex: 'created_ms', width: 170, render: (v) => dayjs(v).format('YYYY-MM-DD HH:mm:ss') },
+          { title: t('transactions.columns.txn'), dataIndex: 'id', width: 180, ellipsis: true, render: (v) => <Typography.Text code>{v}</Typography.Text> },
+          { title: t('transactions.columns.event'), dataIndex: 'event_type', width: 200, render: (v) => <Tag>{v}</Tag> },
+          { title: t('transactions.columns.ref'), width: 240, render: (_, r) => r.ref_type ? `${r.ref_type} / ${r.ref_id}` : '-' },
+          { title: t('transactions.columns.amount'), dataIndex: 'total_debit', width: 120, align: 'right', render: (v: number, r) => fmtAmount(v, txnCurrency(r)) },
+          { title: t('transactions.columns.memo'), dataIndex: 'memo', ellipsis: true },
+          { title: '', width: 70, render: (_, r) => <a onClick={() => open(r)}>{t('transactions.columns.detail')}</a> },
         ]}
       />
       <Drawer
@@ -224,22 +226,22 @@ function TransactionsTab() {
           <div>
             <Typography.Paragraph>
               <Space size="large">
-                <span>Ref: {detail.ref_type} / <Typography.Text code>{detail.ref_id}</Typography.Text></span>
-                <span>金额: <Typography.Text strong>{fmtAmount(detail.total_debit, txnCurrency(detail))}</Typography.Text></span>
+                <span>{t('transactions.drawer.ref')}: {detail.ref_type} / <Typography.Text code>{detail.ref_id}</Typography.Text></span>
+                <span>{t('transactions.drawer.amount')}: <Typography.Text strong>{fmtAmount(detail.total_debit, txnCurrency(detail))}</Typography.Text></span>
               </Space>
             </Typography.Paragraph>
             {detail.memo && <Typography.Paragraph type="secondary">{detail.memo}</Typography.Paragraph>}
-            <Typography.Title level={5}>Entries</Typography.Title>
+            <Typography.Title level={5}>{t('transactions.drawer.entries')}</Typography.Title>
             <Table<GLEntry>
               rowKey="id"
               size="small"
               dataSource={detail.entries || []}
               pagination={false}
               columns={[
-                { title: '账户', dataIndex: 'account_id', ellipsis: true, render: (v) => <Typography.Text code>{v}</Typography.Text> },
-                { title: 'Dr', dataIndex: 'debit_amount', width: 120, align: 'right', render: (v: number, r) => fmtAmount(v, r.currency) },
-                { title: 'Cr', dataIndex: 'credit_amount', width: 120, align: 'right', render: (v: number, r) => fmtAmount(v, r.currency) },
-                { title: 'Memo', dataIndex: 'memo', ellipsis: true },
+                { title: t('transactions.drawer.entryColumns.account'), dataIndex: 'account_id', ellipsis: true, render: (v) => <Typography.Text code>{v}</Typography.Text> },
+                { title: t('transactions.drawer.entryColumns.debit'), dataIndex: 'debit_amount', width: 120, align: 'right', render: (v: number, r) => fmtAmount(v, r.currency) },
+                { title: t('transactions.drawer.entryColumns.credit'), dataIndex: 'credit_amount', width: 120, align: 'right', render: (v: number, r) => fmtAmount(v, r.currency) },
+                { title: t('transactions.drawer.entryColumns.memo'), dataIndex: 'memo', ellipsis: true },
               ]}
             />
           </div>
@@ -250,19 +252,20 @@ function TransactionsTab() {
 }
 
 export default function LedgerPage() {
+  const { t } = useTranslation('ledger')
   return (
     <div>
       <Typography.Title level={3}>
-        总账 (Ledger)
+        {t('title')}
         <Typography.Text type="secondary" style={{ fontSize: 14, marginLeft: 12 }}>
-          双账记账 · 金额按后端 storage (minor × 100) 存储，展示时按币种精度格式化
+          {t('subtitle')}
         </Typography.Text>
       </Typography.Title>
       <Card>
         <Tabs
           items={[
-            { key: 'accounts', label: '账户', children: <AccountsTab /> },
-            { key: 'txns', label: '凭证', children: <TransactionsTab /> },
+            { key: 'accounts', label: t('tabs.accounts'), children: <AccountsTab /> },
+            { key: 'txns', label: t('tabs.transactions'), children: <TransactionsTab /> },
           ]}
         />
       </Card>

@@ -1,0 +1,21 @@
+{
+  "title": "Balance Snapshot",
+  "filters": {
+    "accountNoPlaceholder": "Account No.",
+    "snapshotDatePlaceholder": "Snapshot Date (latest by default)"
+  },
+  "errors": {
+    "accountNoRequired": "Please enter an account number",
+    "queryFailed": "Query failed"
+  },
+  "columns": {
+    "accountNo": "Account No.",
+    "snapshotDate": "Snapshot Date",
+    "beginningBalance": "Beginning Balance",
+    "endingBalance": "Ending Balance",
+    "totalDebit": "Total Debit",
+    "totalCredit": "Total Credit",
+    "transactionCount": "Transaction Count",
+    "currency": "Currency"
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "category": {
+    "ASSET": "Asset",
+    "LIABILITY": "Liability",
+    "EQUITY": "Equity",
+    "REVENUE": "Revenue",
+    "EXPENSE": "Expense"
+  },
+  "accountType": {
+    "1": "User Account",
+    "2": "Merchant Account",
+    "3": "Merchant Pending Settlement Account",
+    "4": "Platform P&L Account",
+    "5": "Intermediate Channel Receivable",
+    "6": "Intermediate Channel Payable",
+    "7": "Platform Fee Account",
+    "8": "Platform Service Fee Account",
+    "9": "Platform Intermediate Account"
+  },
+  "snapshots": {
+    "title": "Historical Snapshot Dates",
+    "empty": "No snapshots"
+  },
+  "form": {
+    "title": "Trial Balance",
+    "datePlaceholder": "Select snapshot date",
+    "currencyPlaceholder": "Currency",
+    "submit": "Run Trial Balance",
+    "hint": "Note: Trial balance runs after day cut completes, verifying debit/credit balance and the accounting equation for the specified date. You can also click a date on the left to view history.",
+    "dateRequired": "Please select a snapshot date",
+    "currencyRequired": "Please select a currency",
+    "runFailed": "Trial balance failed",
+    "balancedMessage": "Trial balance passed: debits equal credits and the accounting equation holds",
+    "imbalancedMessage": "Trial balance discrepancy detected — please review the details"
+  },
+  "stats": {
+    "balanceTitle": "Debit/Credit Balance",
+    "balancePass": "Passed",
+    "balanceFail": "Imbalanced",
+    "equationTitle": "Accounting Equation",
+    "equationPass": "Holds",
+    "equationFail": "Does Not Hold",
+    "totalDebit": "Period Total Debit",
+    "totalCredit": "Period Total Credit"
+  },
+  "equation": {
+    "title": "Accounting Equation Detail (Assets = Liabilities + Equity + Revenue - Expense)",
+    "snapshotDate": "Snapshot Date",
+    "currency": "Currency",
+    "imbalance": "Debit/Credit Difference",
+    "equationDiff": "Equation Difference",
+    "assetEnding": "Total Asset Ending Balance",
+    "liabilityEnding": "Total Liability Ending Balance",
+    "equityEnding": "Total Equity Ending Balance",
+    "revenueEnding": "Total Revenue Ending Balance",
+    "expenseEnding": "Total Expense Ending Balance",
+    "accountingEquation": "Accounting Equation",
+    "equationValid": "Assets = Liabilities + Equity + Revenue - Expense ✓",
+    "equationInvalid": "Imbalanced ✗"
+  },
+  "summary": {
+    "title": "Category x Type Detail",
+    "columns": {
+      "category": "Category",
+      "type": "Account Type",
+      "accountCount": "Account Count",
+      "sumBeginning": "Total Beginning Balance",
+      "sumEnding": "Total Ending Balance",
+      "sumDebit": "Total Period Debit",
+      "sumCredit": "Total Period Credit"
+    }
+  }
+}

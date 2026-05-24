@@ -2,11 +2,13 @@ import { Table, Input, Button, Space, DatePicker, Form, Alert } from 'antd'
 import { SearchOutlined } from '@ant-design/icons'
 import { useState } from 'react'
 import dayjs from 'dayjs'
+import { useTranslation } from 'react-i18next'
 import { getBalanceSnapshot } from '../../api/accounting'
 import type { AccountBalanceSnapshot } from '../../types/accounting'
 import { display as displayMoney } from '../../utils/money'
 
 export default function SnapshotList() {
+  const { t } = useTranslation('snapshot')
   const [form] = Form.useForm<{ account_no: string; snapshot_date: dayjs.Dayjs }>()
   const [data, setData] = useState<AccountBalanceSnapshot[]>([])
   const [loading, setLoading] = useState(false)
@@ -16,7 +18,7 @@ export default function SnapshotList() {
     const values = form.getFieldsValue()
     const accountNo = values.account_no?.trim()
     if (!accountNo) {
-      setError('请输入账户号')
+      setError(t('errors.accountNoRequired'))
       return
     }
     setError(null)
@@ -24,61 +26,61 @@ export default function SnapshotList() {
     const date = values.snapshot_date ? values.snapshot_date.format('YYYY-MM-DD') : undefined
     getBalanceSnapshot(accountNo, date)
       .then((snap) => setData([snap]))
-      .catch((err) => setError(err?.message ?? '查询失败'))
+      .catch((err) => setError(err?.message ?? t('errors.queryFailed')))
       .finally(() => setLoading(false))
   }
 
   const columns = [
-    { title: '账户号', dataIndex: 'account_no', key: 'account_no' },
-    { title: '快照日期', dataIndex: 'snapshot_date', key: 'snapshot_date' },
+    { title: t('columns.accountNo'), dataIndex: 'account_no', key: 'account_no' },
+    { title: t('columns.snapshotDate'), dataIndex: 'snapshot_date', key: 'snapshot_date' },
     {
-      title: '期初余额',
+      title: t('columns.beginningBalance'),
       dataIndex: 'beginning_balance',
       key: 'beginning_balance',
       render: (v: string, row: AccountBalanceSnapshot) => displayMoney(v, row.currency),
     },
     {
-      title: '期末余额',
+      title: t('columns.endingBalance'),
       dataIndex: 'ending_balance',
       key: 'ending_balance',
       render: (v: string, row: AccountBalanceSnapshot) => displayMoney(v, row.currency),
     },
     {
-      title: '借方总额',
+      title: t('columns.totalDebit'),
       dataIndex: 'total_debit',
       key: 'total_debit',
       render: (v: string, row: AccountBalanceSnapshot) => displayMoney(v, row.currency),
     },
     {
-      title: '贷方总额',
+      title: t('columns.totalCredit'),
       dataIndex: 'total_credit',
       key: 'total_credit',
       render: (v: string, row: AccountBalanceSnapshot) => displayMoney(v, row.currency),
     },
-    { title: '交易笔数', dataIndex: 'transaction_count', key: 'transaction_count' },
-    { title: '币种', dataIndex: 'currency', key: 'currency' },
+    { title: t('columns.transactionCount'), dataIndex: 'transaction_count', key: 'transaction_count' },
+    { title: t('columns.currency'), dataIndex: 'currency', key: 'currency' },
   ]
 
   return (
     <div>
-      <h2>余额快照</h2>
+      <h2>{t('title')}</h2>
 
       <Form form={form} layout="inline" style={{ marginBottom: 16 }}>
         <Form.Item name="account_no">
           <Input
-            placeholder="账户号"
+            placeholder={t('filters.accountNoPlaceholder')}
             prefix={<SearchOutlined />}
             style={{ width: 220 }}
             allowClear
           />
         </Form.Item>
         <Form.Item name="snapshot_date">
-          <DatePicker placeholder="快照日期（默认最新）" />
+          <DatePicker placeholder={t('filters.snapshotDatePlaceholder')} />
         </Form.Item>
         <Form.Item>
           <Space>
             <Button type="primary" onClick={handleSearch} loading={loading}>
-              查询
+              {t('common:actions.search')}
             </Button>
             <Button
               onClick={() => {
@@ -87,7 +89,7 @@ export default function SnapshotList() {
                 setError(null)
               }}
             >
-              重置
+              {t('common:actions.reset')}
             </Button>
           </Space>
         </Form.Item>

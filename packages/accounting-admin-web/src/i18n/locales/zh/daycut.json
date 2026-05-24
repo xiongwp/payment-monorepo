@@ -1,0 +1,44 @@
+{
+  "trigger": {
+    "title": "触发日切",
+    "datePlaceholder": "选择日切日期（默认昨天）",
+    "currencyPlaceholder": "币种",
+    "submit": "触发日切",
+    "currencyRequired": "请选择币种",
+    "triggerSuccess": "日切任务已触发，日期: {{date}}, 币种: {{currency}}",
+    "triggerFailed": "日切触发失败",
+    "hint": "提示：日切按币种独立执行——不同币种 precision 不同，汇总没有意义。每个币种各跑一次，各自一份 snapshot。重跑同样按上方所选币种过滤。"
+  },
+  "retrigger": {
+    "currencyRequired": "请先在上方选币种再重跑",
+    "success": "日切重跑已触发，日期: {{date}}, 币种: {{currency}}",
+    "failed": "重跑失败",
+    "tooltip": "重新执行该日期的日切（新增一个版本，之前数据保留）",
+    "button": "重跑"
+  },
+  "history": {
+    "title": "历史日切记录",
+    "refresh": "刷新",
+    "empty": "暂无日切记录",
+    "loadFailed": "加载日切记录失败"
+  },
+  "columns": {
+    "cutDate": "日切日期",
+    "runId": "版本号",
+    "currency": "币种",
+    "currencyAll": "全部",
+    "overall": "整体状态",
+    "totalShards": "总分片",
+    "completed": "已完成",
+    "failed": "失败",
+    "processing": "处理中",
+    "pending": "待处理",
+    "action": "操作"
+  },
+  "status": {
+    "processing": "处理中",
+    "failed": "失败",
+    "completed": "完成",
+    "unknown": "未知"
+  }
+}

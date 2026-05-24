@@ -19,6 +19,7 @@ import {
   SyncOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import { useTranslation } from 'react-i18next'
 import {
   createBufferAccount,
   deleteBufferAccount,
@@ -40,6 +41,7 @@ interface FormValues {
 }
 
 export default function BufferAccountConfigPage() {
+  const { t } = useTranslation('config')
   const [data, setData] = useState<BufferAccountConfig[]>([])
   const [loading, setLoading] = useState(false)
   const [reloading, setReloading] = useState(false)
@@ -55,11 +57,11 @@ export default function BufferAccountConfigPage() {
       const items = await listBufferAccounts()
       setData(items ?? [])
     } catch (err: unknown) {
-      message.error((err as { message?: string })?.message ?? '加载失败')
+      message.error((err as { message?: string })?.message ?? t('buffer.messages.loadFailed'))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => { fetchList() }, [fetchList])
 
@@ -93,21 +95,21 @@ export default function BufferAccountConfigPage() {
           flush_interval_level: values.flush_interval_level,
           description: values.description,
         })
-        message.success('创建成功')
+        message.success(t('buffer.messages.createSuccess'))
       } else if (editingId !== null) {
         await updateBufferAccount(editingId, {
           enabled: values.enabled ?? true,
           flush_interval_level: values.flush_interval_level,
           description: values.description,
         })
-        message.success('更新成功')
+        message.success(t('buffer.messages.updateSuccess'))
       }
       setModalOpen(false)
       fetchList()
       // 自动热重载：让 accounting-system 内存缓存立即生效，无需手动点击"重新加载"
       await reloadBufferAccounts()
     } catch (err: unknown) {
-      message.error((err as { message?: string })?.message ?? '操作失败')
+      message.error((err as { message?: string })?.message ?? t('buffer.messages.operationFailed'))
     } finally {
       setSubmitting(false)
     }
@@ -116,11 +118,11 @@ export default function BufferAccountConfigPage() {
   const handleDelete = async (id: number) => {
     try {
       await deleteBufferAccount(id)
-      message.success('删除成功')
+      message.success(t('buffer.messages.deleteSuccess'))
       fetchList()
       await reloadBufferAccounts()
     } catch (err: unknown) {
-      message.error((err as { message?: string })?.message ?? '删除失败')
+      message.error((err as { message?: string })?.message ?? t('buffer.messages.deleteFailed'))
     }
   }
 
@@ -128,19 +130,19 @@ export default function BufferAccountConfigPage() {
     setReloading(true)
     try {
       const res = await reloadBufferAccounts()
-      message.success(`热重载完成，共 ${res.count} 个账户`)
+      message.success(t('buffer.messages.reloadSuccess', { count: res.count }))
     } catch (err: unknown) {
-      message.error((err as { message?: string })?.message ?? '热重载失败')
+      message.error((err as { message?: string })?.message ?? t('buffer.messages.reloadFailed'))
     } finally {
       setReloading(false)
     }
   }
 
   const columns: ColumnsType<BufferAccountConfig> = [
-    { title: 'ID', dataIndex: 'id', width: 70 },
-    { title: '账户号', dataIndex: 'account_no', width: 220 },
+    { title: t('buffer.columns.id'), dataIndex: 'id', width: 70 },
+    { title: t('buffer.columns.accountNo'), dataIndex: 'account_no', width: 220 },
     {
-      title: '刷新间隔',
+      title: t('buffer.columns.flushInterval'),
       dataIndex: 'flush_interval_level',
       width: 110,
       render: (level: BufferFlushLevel) => (
@@ -148,35 +150,35 @@ export default function BufferAccountConfigPage() {
       ),
     },
     {
-      title: '状态',
+      title: t('buffer.columns.status'),
       dataIndex: 'enabled',
       width: 80,
       render: (enabled: boolean) =>
-        enabled ? <Tag color="green">启用</Tag> : <Tag color="default">禁用</Tag>,
+        enabled ? <Tag color="green">{t('buffer.status.enabled')}</Tag> : <Tag color="default">{t('buffer.status.disabled')}</Tag>,
     },
-    { title: '描述', dataIndex: 'description', ellipsis: true },
+    { title: t('buffer.columns.description'), dataIndex: 'description', ellipsis: true },
     {
-      title: '更新时间',
+      title: t('buffer.columns.updatedAt'),
       dataIndex: 'updated_at',
       width: 180,
       render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '-',
     },
     {
-      title: '操作',
+      title: t('buffer.columns.actions'),
       width: 140,
       render: (_: unknown, record: BufferAccountConfig) => (
         <Space>
           <Button type="link" size="small" onClick={() => openEdit(record)}>
-            编辑
+            {t('common:actions.edit')}
           </Button>
           <Popconfirm
-            title="确认删除该缓冲记账账户配置？"
+            title={t('buffer.deleteConfirm')}
             onConfirm={() => handleDelete(record.id)}
-            okText="确认"
-            cancelText="取消"
+            okText={t('common:actions.confirm')}
+            cancelText={t('common:actions.cancel')}
           >
             <Button type="link" size="small" danger>
-              删除
+              {t('common:actions.delete')}
             </Button>
           </Popconfirm>
         </Space>
@@ -189,20 +191,20 @@ export default function BufferAccountConfigPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <Space>
           <Button icon={<PlusOutlined />} type="primary" onClick={openCreate}>
-            新增缓冲账户
+            {t('buffer.addAccount')}
           </Button>
-          <Tooltip title="将数据库中的缓冲记账账户配置热重载到运行中的服务">
+          <Tooltip title={t('buffer.reloadTooltip')}>
             <Button
               icon={<SyncOutlined spin={reloading} />}
               loading={reloading}
               onClick={handleReload}
             >
-              热重载配置
+              {t('buffer.reloadButton')}
             </Button>
           </Tooltip>
         </Space>
         <Button icon={<ReloadOutlined />} onClick={fetchList} loading={loading}>
-          刷新
+          {t('common:actions.refresh')}
         </Button>
       </div>
 
@@ -218,30 +220,30 @@ export default function BufferAccountConfigPage() {
       <InstanceListPanel type="buffer" />
 
       <Modal
-        title={modalMode === 'create' ? '新增缓冲记账账户' : '编辑缓冲记账账户'}
+        title={modalMode === 'create' ? t('buffer.createModalTitle') : t('buffer.editModalTitle')}
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
         confirmLoading={submitting}
-        okText="确认"
-        cancelText="取消"
+        okText={t('common:actions.confirm')}
+        cancelText={t('common:actions.cancel')}
         destroyOnClose
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item
             name="account_no"
-            label="账户号"
-            rules={[{ required: true, message: '请输入账户号' }]}
+            label={t('buffer.form.accountNoLabel')}
+            rules={[{ required: true, message: t('buffer.form.accountNoRequired') }]}
           >
-            <Input placeholder="请输入账户号" disabled={modalMode === 'edit'} />
+            <Input placeholder={t('buffer.form.accountNoPlaceholder')} disabled={modalMode === 'edit'} />
           </Form.Item>
 
           <Form.Item
             name="flush_interval_level"
-            label="刷新间隔"
-            rules={[{ required: true, message: '请选择刷新间隔' }]}
+            label={t('buffer.form.flushLabel')}
+            rules={[{ required: true, message: t('buffer.form.flushRequired') }]}
           >
-            <Select placeholder="选择刷新间隔">
+            <Select placeholder={t('buffer.form.flushPlaceholder')}>
               {BUFFER_FLUSH_LEVELS.map((level) => (
                 <Select.Option key={level} value={level}>
                   {BUFFER_FLUSH_LEVEL_LABELS[level]}
@@ -251,13 +253,13 @@ export default function BufferAccountConfigPage() {
           </Form.Item>
 
           {modalMode === 'edit' && (
-            <Form.Item name="enabled" label="启用状态" valuePropName="checked">
-              <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+            <Form.Item name="enabled" label={t('buffer.form.enabledLabel')} valuePropName="checked">
+              <Switch checkedChildren={t('buffer.form.enabledOn')} unCheckedChildren={t('buffer.form.enabledOff')} />
             </Form.Item>
           )}
 
-          <Form.Item name="description" label="描述">
-            <Input.TextArea rows={3} placeholder="可选描述" />
+          <Form.Item name="description" label={t('buffer.form.descLabel')}>
+            <Input.TextArea rows={3} placeholder={t('buffer.form.descPlaceholder')} />
           </Form.Item>
         </Form>
       </Modal>

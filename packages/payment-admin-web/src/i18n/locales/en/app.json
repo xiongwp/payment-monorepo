@@ -1,0 +1,66 @@
+{
+  "simulator": {
+    "title": "Merchant app simulator (create order → pay)",
+    "notice": {
+      "message": "This is not a production cashier",
+      "description": "The three steps below exercise the full order-core → payment-core → payment-channel gRPC chain. External channel HTTP APIs (GCash/Maya/...) are mocked in-container by payment-channel's scripted adapter."
+    },
+    "steps": {
+      "create": "Merchant creates order",
+      "selectMethod": "User picks channel",
+      "complete": "Complete payment"
+    },
+    "step1": {
+      "title": "1. CreatePaymentIntent",
+      "form": {
+        "mchId": "Merchant ID",
+        "mchOrderNo": "Merchant order number",
+        "mchOrderNoPlaceholder": "Leave blank to auto-generate mch_{timestamp}",
+        "amount": "Amount (storage)",
+        "currency": "Currency",
+        "country": "Country (for routing)",
+        "description": "Description",
+        "descriptionPlaceholder": "e.g. Purchase 10 apples",
+        "returnUrl": "return_url (redirect after user payment)",
+        "idempotencyKey": "Idempotency key (blank = auto)",
+        "submit": "Create order"
+      }
+    },
+    "intent": {
+      "title": "Payment intent",
+      "piId": "PI ID",
+      "status": "Status",
+      "amount": "Amount",
+      "merchant": "Merchant",
+      "shardKey": "Shard key",
+      "createdAt": "Created at"
+    },
+    "step2": {
+      "title": "2. Confirm: pick a payment method"
+    },
+    "step3": {
+      "title": "3. Complete payment",
+      "refresh": "Refresh order status",
+      "again": "Start another",
+      "chargeId": "Charge ID",
+      "paymentMethod": "Payment method",
+      "chargeAmount": "Amount",
+      "chargeStatus": "Status",
+      "noActionNeeded": {
+        "message": "No user action needed, order is in a terminal state",
+        "description": "PI.status = {{status}}"
+      }
+    },
+    "nextAction": {
+      "warningMessage": "User must complete {{actionType}}",
+      "redirectHint": "Cashier should redirect to:",
+      "payloadFallback": "See payload below for action details",
+      "actionId": "Action ID",
+      "type": "Type",
+      "status": "Status",
+      "charge": "Charge",
+      "expiresAt": "Expires at",
+      "payload": "Payload"
+    }
+  }
+}

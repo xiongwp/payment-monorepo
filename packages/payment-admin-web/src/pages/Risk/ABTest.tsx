@@ -13,6 +13,7 @@ import {
   Alert, Button, Card, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm,
   Space, Statistic, Switch, Table, Tabs, Tag, Typography, message,
 } from 'antd'
+import { useTranslation } from 'react-i18next'
 import {
   clearMLOverride, dropChallenger, getMLOverride, listChallengers, mlscoreABTest,
   promoteChallenger, registerChallenger, setMLOverride,
@@ -29,22 +30,17 @@ const REC_COLOR: Record<ABRecommendation, string> = {
   hold: 'warning',
 }
 
-const REC_LABEL: Record<ABRecommendation, string> = {
-  promote: '升级 (promote)',
-  drop: '下线 (drop)',
-  hold: '继续观察 (hold)',
-}
-
 export default function ABTest() {
+  const { t } = useTranslation('risk')
   return (
     <div>
-      <Typography.Title level={3}>ML A/B 显著性检验</Typography.Title>
+      <Typography.Title level={3}>{t('abtest.title')}</Typography.Title>
       <Tabs
         defaultActiveKey="manage"
         items={[
-          { key: 'manage', label: '模型管理 (challenger)', children: <ChallengerManage /> },
-          { key: 'report', label: '显著性报告', children: <ABReport /> },
-          { key: 'override', label: '紧急降级 / 强制分数', children: <MLOverridePanel /> },
+          { key: 'manage', label: t('abtest.tabs.manage'), children: <ChallengerManage /> },
+          { key: 'report', label: t('abtest.tabs.report'), children: <ABReport /> },
+          { key: 'override', label: t('abtest.tabs.override'), children: <MLOverridePanel /> },
         ]}
       />
     </div>
@@ -65,6 +61,7 @@ const ZERO_WEIGHTS: FeatureWeights = FEATURE_NAMES.reduce((acc, n) => {
 }, {} as FeatureWeights)
 
 function ChallengerManage() {
+  const { t } = useTranslation('risk')
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<ChallengerListResp>({ scoring_disabled: false })
   const [registerOpen, setRegisterOpen] = useState(false)
@@ -81,12 +78,12 @@ function ChallengerManage() {
 
   const onPromote = (name: string) => {
     Modal.confirm({
-      title: `升级 ${name} 为 champion？`,
-      content: `当前 champion ${data.champion} 会自动降级为 challenger 留观。`,
+      title: t('abtest.manage.promoteConfirm', { name }),
+      content: t('abtest.manage.promoteContent', { champion: data.champion }),
       onOk: async () => {
         try {
           const r = await promoteChallenger(name)
-          message.success(`已升级：${r.champion}（原 champion ${r.demoted} 已降级为 challenger）`)
+          message.success(t('abtest.manage.promoteSuccess', { champion: r.champion, demoted: r.demoted }))
           load()
         } catch (e) { message.error(String(e)) }
       },
@@ -96,7 +93,7 @@ function ChallengerManage() {
   const onDrop = async (name: string) => {
     try {
       await dropChallenger(name)
-      message.success(`已下线 ${name}`)
+      message.success(t('abtest.manage.dropSuccess', { name }))
       load()
     } catch (e) { message.error(String(e)) }
   }
@@ -106,8 +103,8 @@ function ChallengerManage() {
       <Card>
         <Alert
           type="warning" showIcon
-          message="ML scoring 已禁用"
-          description="服务启动时 mlscore.enabled=false，无法注册 challenger。改 config 后重启。"
+          message={t('abtest.manage.scoringDisabledTitle')}
+          description={t('abtest.manage.scoringDisabledDesc')}
         />
       </Card>
     )
@@ -119,33 +116,33 @@ function ChallengerManage() {
         type="info" showIcon style={{ marginBottom: 16 }}
         message={
           <span>
-            当前 Champion: <Typography.Text code strong>{data.champion || '-'}</Typography.Text>
+            {t('abtest.manage.currentChampionPrefix')}<Typography.Text code strong>{data.champion || '-'}</Typography.Text>
             <span style={{ marginLeft: 16 }}>
-              Challengers: <strong>{data.challengers?.length || 0}</strong>
+              {t('abtest.manage.challengersPrefix')}<strong>{data.challengers?.length || 0}</strong>
             </span>
           </span>
         }
-        description="Challenger 跟 champion 并行打分但不影响主决策；显著优于 champion 时升级。从 cmd/retrain 训出来后填到 “注册 challenger” 表单。"
+        description={t('abtest.manage.infoDesc')}
       />
       <Space style={{ marginBottom: 16 }}>
-        <Button type="primary" onClick={() => setRegisterOpen(true)}>注册 challenger</Button>
-        <Button onClick={load} loading={loading}>刷新</Button>
+        <Button type="primary" onClick={() => setRegisterOpen(true)}>{t('abtest.manage.registerButton')}</Button>
+        <Button onClick={load} loading={loading}>{t('common:actions.refresh')}</Button>
       </Space>
       <Table
         rowKey="name" size="small" loading={loading}
         dataSource={data.challengers || []}
         pagination={false}
-        locale={{ emptyText: '没有 challenger。点 "注册 challenger" 添加。' }}
+        locale={{ emptyText: t('abtest.manage.emptyText') }}
         columns={[
-          { title: 'Name', dataIndex: 'name', width: 220,
+          { title: t('abtest.manage.columns.name'), dataIndex: 'name', width: 220,
             render: (v) => <Typography.Text code strong>{v}</Typography.Text> },
           {
-            title: '操作', width: 220,
+            title: t('abtest.manage.columns.actions'), width: 220,
             render: (_v, rec: { name: string }) => (
               <Space>
-                <Button size="small" onClick={() => onPromote(rec.name)}>升级为 champion</Button>
-                <Popconfirm title={`下线 ${rec.name}？`} onConfirm={() => onDrop(rec.name)}>
-                  <Button size="small" danger>下线</Button>
+                <Button size="small" onClick={() => onPromote(rec.name)}>{t('abtest.manage.promoteButton')}</Button>
+                <Popconfirm title={t('abtest.manage.dropConfirm', { name: rec.name })} onConfirm={() => onDrop(rec.name)}>
+                  <Button size="small" danger>{t('abtest.manage.dropButton')}</Button>
                 </Popconfirm>
               </Space>
             ),
@@ -164,6 +161,7 @@ function ChallengerManage() {
 function ChallengerRegisterDrawer({
   open, onClose, onSaved,
 }: { open: boolean; onClose: () => void; onSaved: () => void }) {
+  const { t } = useTranslation('risk')
   const [form] = Form.useForm<ChallengerRegisterReq>()
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState('')
@@ -196,9 +194,9 @@ function ChallengerRegisterDrawer({
         platt_a: j.PlattA || 0,
         platt_b: j.PlattB || 0,
       })
-      message.success('已从 JSON 填入字段')
+      message.success(t('abtest.register.filledFromJson'))
     } catch (e) {
-      setErr(`paste JSON 解析失败: ${e}`)
+      setErr(t('abtest.register.parseFailed', { error: String(e) }))
     }
   }
 
@@ -209,7 +207,7 @@ function ChallengerRegisterDrawer({
     setErr('')
     try {
       await registerChallenger(v)
-      message.success(`challenger ${v.name} 已注册`)
+      message.success(t('abtest.register.registered', { name: v.name }))
       onSaved()
     } catch (e: unknown) {
       const m = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
@@ -223,21 +221,21 @@ function ChallengerRegisterDrawer({
   return (
     <Drawer
       open={open} onClose={onClose} width={640}
-      title="注册 Challenger 模型"
+      title={t('abtest.register.title')}
       extra={
         <Space>
-          <Button onClick={onClose}>取消</Button>
-          <Button type="primary" loading={submitting} onClick={onSubmit}>注册</Button>
+          <Button onClick={onClose}>{t('common:actions.cancel')}</Button>
+          <Button type="primary" loading={submitting} onClick={onSubmit}>{t('abtest.register.registerButton')}</Button>
         </Space>
       }
     >
       <Alert
         type="info" showIcon style={{ marginBottom: 16 }}
-        message="把 cmd/retrain 输出的 LogisticConfig JSON 整段粘贴到下方，再点 “从 JSON 填表” 自动填入 intercept / weights / Platt 校准参数。"
+        message={t('abtest.register.infoAlert')}
       />
-      {err && <Alert type="error" showIcon closable message="错误" description={err}
+      {err && <Alert type="error" showIcon closable message={t('abtest.register.errorTitle')} description={err}
         style={{ marginBottom: 16 }} onClose={() => setErr('')} />}
-      <Form.Item label="LogisticConfig JSON 粘贴">
+      <Form.Item label={t('abtest.register.pasteJsonLabel')}>
         <Input.TextArea
           value={pasteJson}
           onChange={(e) => setPasteJson(e.target.value)}
@@ -245,19 +243,19 @@ function ChallengerRegisterDrawer({
           placeholder='{"ModelVer":"...","Intercept":-2.5,"Weights":{...},"PlattA":1.2,"PlattB":-0.3}'
           style={{ fontFamily: 'ui-monospace, monospace' }}
         />
-        <Button onClick={onPasteJSON} style={{ marginTop: 8 }} disabled={!pasteJson}>从 JSON 填表</Button>
+        <Button onClick={onPasteJSON} style={{ marginTop: 8 }} disabled={!pasteJson}>{t('abtest.register.fillFromJson')}</Button>
       </Form.Item>
       <Form layout="vertical" form={form}>
-        <Form.Item name="name" label="Challenger Name" rules={[{ required: true }]}>
+        <Form.Item name="name" label={t('abtest.register.fields.name')} rules={[{ required: true }]}>
           <Input placeholder="e.g. logistic-v2" />
         </Form.Item>
-        <Form.Item name="model_ver" label="Model Version">
+        <Form.Item name="model_ver" label={t('abtest.register.fields.modelVer')}>
           <Input placeholder="e.g. v2.0-2026-04" />
         </Form.Item>
-        <Form.Item name="intercept" label="Intercept">
+        <Form.Item name="intercept" label={t('abtest.register.fields.intercept')}>
           <InputNumber step={0.1} style={{ width: 200 }} />
         </Form.Item>
-        <Typography.Text strong>FeatureWeights</Typography.Text>
+        <Typography.Text strong>{t('abtest.register.fields.featureWeights')}</Typography.Text>
         <div style={{
           display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8, marginBottom: 16,
         }}>
@@ -268,10 +266,10 @@ function ChallengerRegisterDrawer({
           ))}
         </div>
         <Space>
-          <Form.Item name="platt_a" label="Platt A (校准)">
+          <Form.Item name="platt_a" label={t('abtest.register.fields.plattA')}>
             <InputNumber step={0.1} style={{ width: 160 }} />
           </Form.Item>
-          <Form.Item name="platt_b" label="Platt B (校准)">
+          <Form.Item name="platt_b" label={t('abtest.register.fields.plattB')}>
             <InputNumber step={0.1} style={{ width: 160 }} />
           </Form.Item>
         </Space>
@@ -283,10 +281,17 @@ function ChallengerRegisterDrawer({
 // ── 显著性报告面板（原 ABTest 内容） ───────────────────────────
 
 function ABReport() {
+  const { t } = useTranslation('risk')
   const [loading, setLoading] = useState(false)
   const [report, setReport] = useState<ChallengerReport[]>([])
   const [minLabeled, setMinLabeled] = useState(30)
   const [bootstrap, setBootstrap] = useState(1000)
+
+  const REC_LABEL: Record<ABRecommendation, string> = {
+    promote: t('abtest.recLabels.promote'),
+    drop: t('abtest.recLabels.drop'),
+    hold: t('abtest.recLabels.hold'),
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -303,52 +308,52 @@ function ABReport() {
     <Card>
       <Alert
         type="info" showIcon style={{ marginBottom: 16 }}
-        message="基于 ABTracker ring buffer（最近 4096 条决策）+ outcome 反馈。需要 outcome 标签 ≥ min_labeled 才输出某 challenger。"
-        description="bootstrap CI 全 > 0 → 升级；全 < 0 → 下线；跨 0 → 继续观察直到样本足够。"
+        message={t('abtest.report.infoMessage')}
+        description={t('abtest.report.infoDesc')}
       />
       <Space style={{ marginBottom: 16 }} size="large">
         <Space>
-          <Typography.Text strong>最小样本</Typography.Text>
+          <Typography.Text strong>{t('abtest.report.minLabeledLabel')}</Typography.Text>
           <InputNumber min={5} max={10000} value={minLabeled} onChange={(v) => setMinLabeled(v || 30)} />
         </Space>
         <Space>
-          <Typography.Text strong>Bootstrap 次数</Typography.Text>
+          <Typography.Text strong>{t('abtest.report.bootstrapLabel')}</Typography.Text>
           <InputNumber min={0} max={10000} step={100} value={bootstrap} onChange={(v) => setBootstrap(v || 0)} />
         </Space>
-        <Button onClick={load} loading={loading}>刷新</Button>
+        <Button onClick={load} loading={loading}>{t('common:actions.refresh')}</Button>
       </Space>
       {report.length === 0 ? (
-        <Empty description="无 challenger 数据。先去 “模型管理” 注册 challenger，等积累足够 outcome 反馈后回来查看显著性。" />
+        <Empty description={t('abtest.report.empty')} />
       ) : (
         <Table<ChallengerReport>
           rowKey="name" size="middle" loading={loading} dataSource={report}
           pagination={false}
           columns={[
-            { title: 'Challenger', dataIndex: 'name', width: 180,
+            { title: t('abtest.report.columns.challenger'), dataIndex: 'name', width: 180,
               render: (v) => <Typography.Text code strong>{v}</Typography.Text> },
-            { title: 'Labeled 样本', dataIndex: 'labeled_samples', width: 110, align: 'right' as const },
-            { title: 'Champion AUC', dataIndex: 'champion_auc', width: 130, align: 'right' as const,
+            { title: t('abtest.report.columns.labeledSamples'), dataIndex: 'labeled_samples', width: 110, align: 'right' as const },
+            { title: t('abtest.report.columns.championAuc'), dataIndex: 'champion_auc', width: 130, align: 'right' as const,
               render: (v: number) => v.toFixed(4) },
-            { title: 'Challenger AUC', dataIndex: 'challenger_auc', width: 130, align: 'right' as const,
+            { title: t('abtest.report.columns.challengerAuc'), dataIndex: 'challenger_auc', width: 130, align: 'right' as const,
               render: (v: number) => <strong>{v.toFixed(4)}</strong> },
             {
-              title: 'AUC Diff', dataIndex: 'auc_diff', width: 110, align: 'right' as const,
+              title: t('abtest.report.columns.aucDiff'), dataIndex: 'auc_diff', width: 110, align: 'right' as const,
               render: (v: number) => {
                 const color = v > 0 ? '#52c41a' : v < 0 ? '#cf1322' : undefined
                 return <span style={{ color }}>{v >= 0 ? '+' : ''}{v.toFixed(4)}</span>
               },
             },
             {
-              title: '95% CI on diff', width: 200,
+              title: t('abtest.report.columns.ci'), width: 200,
               render: (_v, r) => {
                 if (r.ci_low === 0 && r.ci_high === 0) {
-                  return <Typography.Text type="secondary">未计算</Typography.Text>
+                  return <Typography.Text type="secondary">{t('abtest.report.columns.ciNotComputed')}</Typography.Text>
                 }
                 return <span>[{r.ci_low.toFixed(4)}, {r.ci_high.toFixed(4)}]</span>
               },
             },
             {
-              title: '推荐', dataIndex: 'recommendation', width: 180,
+              title: t('abtest.report.columns.recommend'), dataIndex: 'recommendation', width: 180,
               render: (v: ABRecommendation, r) => (
                 <span>
                   <Tag color={REC_COLOR[v]}>{REC_LABEL[v]}</Tag>
@@ -361,14 +366,14 @@ function ABReport() {
       )}
       {report.length > 0 && (
         <Space size="large" style={{ marginTop: 24 }} wrap>
-          <Statistic title="Challenger 总数" value={report.length} />
-          <Statistic title="可升级 (promote)"
+          <Statistic title={t('abtest.report.stats.totalChallengers')} value={report.length} />
+          <Statistic title={t('abtest.report.stats.canPromote')}
             value={report.filter((r) => r.recommendation === 'promote').length}
             valueStyle={{ color: '#52c41a' }} />
-          <Statistic title="该下线 (drop)"
+          <Statistic title={t('abtest.report.stats.shouldDrop')}
             value={report.filter((r) => r.recommendation === 'drop').length}
             valueStyle={{ color: '#cf1322' }} />
-          <Statistic title="继续观察 (hold)"
+          <Statistic title={t('abtest.report.stats.keepHold')}
             value={report.filter((r) => r.recommendation === 'hold').length}
             valueStyle={{ color: '#faad14' }} />
         </Space>
@@ -380,6 +385,7 @@ function ABReport() {
 // ── ML 降级开关 panel：紧急关 ML / 强制分数 ─────────────────
 
 function MLOverridePanel() {
+  const { t } = useTranslation('risk')
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState<MLOverrideStatus | null>(null)
   const [disabled, setDisabled] = useState(false)
@@ -402,26 +408,26 @@ function MLOverridePanel() {
 
   const onApply = async () => {
     if (!reason || reason.length < 4) {
-      message.warning('请填写降级原因（≥ 4 字符），会落审计')
+      message.warning(t('abtest.override.reasonRequired'))
       return
     }
     Modal.confirm({
-      title: '确认应用 ML 降级？',
+      title: t('abtest.override.applyConfirmTitle'),
       content: (
         <div>
           {disabled
-            ? <div><strong>整段 ML 推理将被跳过</strong>，所有交易的 MLScore 用 force_score 或 0。</div>
+            ? <div><strong>{t('abtest.override.applyConfirmDisabled')}</strong>{t('abtest.override.applyConfirmDisabledSuffix')}</div>
             : forceScore !== 0
-              ? <div>ML 推理结果将被 <strong>force_score={forceScore}</strong> 覆盖。</div>
-              : <div>这条配置不会改变行为（disabled=false 且 force_score=0）。</div>}
-          <div style={{ marginTop: 8, color: '#888' }}>原因：{reason}</div>
+              ? <div>{t('abtest.override.applyConfirmForceScore')}<strong>force_score={forceScore}</strong>{t('abtest.override.applyConfirmForceScoreSuffix')}</div>
+              : <div>{t('abtest.override.applyConfirmNoop')}</div>}
+          <div style={{ marginTop: 8, color: '#888' }}>{t('abtest.override.applyConfirmReason', { reason })}</div>
         </div>
       ),
       okButtonProps: { danger: disabled || forceScore !== 0 },
       onOk: async () => {
         try {
           await setMLOverride({ disabled, force_score: forceScore, reason })
-          message.success('已应用')
+          message.success(t('abtest.override.applied'))
           load()
         } catch (e) { message.error(String(e)) }
       },
@@ -430,12 +436,12 @@ function MLOverridePanel() {
 
   const onClear = async () => {
     Modal.confirm({
-      title: '清空 ML 降级？',
-      content: '将恢复正常 ML 推理路径。',
+      title: t('abtest.override.clearConfirmTitle'),
+      content: t('abtest.override.clearConfirmContent'),
       onOk: async () => {
         try {
           await clearMLOverride()
-          message.success('已清空')
+          message.success(t('abtest.override.cleared'))
           load()
         } catch (e) { message.error(String(e)) }
       },
@@ -447,7 +453,7 @@ function MLOverridePanel() {
       <Alert
         type={status?.is_active ? 'error' : 'info'}
         showIcon style={{ marginBottom: 16 }}
-        message={status?.is_active ? '⚠️ ML 降级当前已激活' : '正常运行'}
+        message={status?.is_active ? t('abtest.override.activeTitle') : t('abtest.override.normalTitle')}
         description={
           status && (
             <Space direction="vertical" size={2}>
@@ -455,56 +461,59 @@ function MLOverridePanel() {
               <span>force_score = <strong>{status.force_score}</strong></span>
               <span>reason: {status.reason || '-'}</span>
               {status.set_at && (
-                <span>由 {status.set_by || 'unknown'} 在 {dayjs(status.set_at).format('YYYY-MM-DD HH:mm:ss')} 设置</span>
+                <span>{t('abtest.override.setByLine', {
+                  actor: status.set_by || t('abtest.override.unknownActor'),
+                  time: dayjs(status.set_at).format('YYYY-MM-DD HH:mm:ss'),
+                })}</span>
               )}
             </Space>
           )
         }
         action={
           status?.is_active && (
-            <Button danger size="small" onClick={onClear}>清空 (恢复)</Button>
+            <Button danger size="small" onClick={onClear}>{t('abtest.override.clearButton')}</Button>
           )
         }
       />
       <Alert
         type="warning" showIcon style={{ marginBottom: 16 }}
-        message="紧急工具：仅用于 ML 推理质量突降 / 误伤大批合法交易 / 调试 ml_threshold 规则。"
-        description="disabled=true 跳过整段 ML 推理。force_score 非 0 时即使 ML 跑成功也用强制值覆盖。所有变更立即生效（不重启）+ 落 audit。"
+        message={t('abtest.override.warningTitle')}
+        description={t('abtest.override.warningDesc')}
       />
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <Space>
           <Switch
             checked={disabled} onChange={setDisabled}
-            checkedChildren="禁用 ML" unCheckedChildren="启用 ML"
+            checkedChildren={t('abtest.override.switchDisabled')} unCheckedChildren={t('abtest.override.switchEnabled')}
           />
           <Typography.Text type={disabled ? 'danger' : 'secondary'}>
-            {disabled ? 'ML 推理将被跳过' : 'ML 推理正常运行'}
+            {disabled ? t('abtest.override.willSkip') : t('abtest.override.runningNormal')}
           </Typography.Text>
         </Space>
         <Space>
-          <Typography.Text strong>强制 score</Typography.Text>
+          <Typography.Text strong>{t('abtest.override.forceScoreLabel')}</Typography.Text>
           <InputNumber
             min={0} max={1} step={0.01} value={forceScore}
             onChange={(v) => setForceScore(v ?? 0)}
             style={{ width: 160 }}
           />
           <Typography.Text type="secondary">
-            0 = 不强制；非 0 时即使 ML 成功也覆盖
+            {t('abtest.override.forceScoreHint')}
           </Typography.Text>
         </Space>
         <div>
-          <Typography.Text strong>原因 (落审计)</Typography.Text>
+          <Typography.Text strong>{t('abtest.override.reasonLabel')}</Typography.Text>
           <Input.TextArea
             value={reason} onChange={(e) => setReason(e.target.value)}
-            rows={2} placeholder="e.g. drift 告警 / 误伤升级 / 调试 ml_threshold"
+            rows={2} placeholder={t('abtest.override.reasonPlaceholder')}
             style={{ marginTop: 4 }}
           />
         </div>
         <Space>
           <Button type="primary" danger={disabled || forceScore !== 0} onClick={onApply}>
-            应用降级
+            {t('abtest.override.applyButton')}
           </Button>
-          <Button onClick={load} loading={loading}>刷新</Button>
+          <Button onClick={load} loading={loading}>{t('common:actions.refresh')}</Button>
         </Space>
       </Space>
     </Card>

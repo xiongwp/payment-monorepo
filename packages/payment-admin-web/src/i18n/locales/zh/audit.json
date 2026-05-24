@@ -1,0 +1,64 @@
+{
+  "orderAudit": {
+    "title": "审计日志",
+    "filters": {
+      "actor": "actor",
+      "action": "action（支持 merchant.* 前缀）",
+      "targetType": "target type",
+      "targetId": "target id"
+    },
+    "columns": {
+      "time": "时间",
+      "actor": "Actor",
+      "action": "Action",
+      "target": "Target",
+      "http": "HTTP",
+      "duration": "Dur",
+      "detail": "详情"
+    },
+    "drawer": {
+      "actor": "Actor",
+      "target": "Target",
+      "http": "HTTP",
+      "requestBody": "Request body",
+      "response": "Response",
+      "footnote": "审计日志不可修改/删除（合规要求保留 ≥7 年）。"
+    }
+  },
+  "userMerchantAudit": {
+    "title": "商户审计日志（user-merchant-core）",
+    "subtitle": "append-only · 链式 row_hash · mutation 自动写入（Create/Rotate/SubmitKyc/Put…）",
+    "chainBroken": "链式签名在第 {{idx}} 行断裂 —— 立即跑 audit-verify CLI 核对",
+    "filters": {
+      "actorLabel": "Actor",
+      "actorPlaceholder": "admin user / bearer prefix",
+      "targetLabel": "Target merchant_id",
+      "targetPlaceholder": "mch_xxx",
+      "clear": "清空"
+    },
+    "totalSuffix": "{{count}} 条",
+    "columns": {
+      "time": "时间",
+      "actor": "Actor",
+      "ip": "IP",
+      "method": "Method",
+      "target": "Target",
+      "status": "Status",
+      "duration": "耗时"
+    },
+    "drawer": {
+      "title": "审计条目 #{{id}}",
+      "method": "Method",
+      "actor": "Actor",
+      "target": "Target",
+      "status": "Status",
+      "duration": "Duration",
+      "trace": "Trace",
+      "prevHash": "Prev hash",
+      "rowHash": "Row hash",
+      "requestBody": "Request body",
+      "genesis": "(genesis)",
+      "empty": "(empty)"
+    }
+  }
+}

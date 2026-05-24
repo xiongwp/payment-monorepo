@@ -1,0 +1,67 @@
+{
+  "appName": "Accounting System Admin",
+  "actions": {
+    "submit": "Submit",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "delete": "Delete",
+    "edit": "Edit",
+    "create": "Create",
+    "refresh": "Refresh",
+    "search": "Search",
+    "reset": "Reset",
+    "back": "Back",
+    "close": "Close",
+    "retry": "Retry",
+    "viewDetail": "View Detail",
+    "execute": "Execute",
+    "copy": "Copy",
+    "exportCsv": "Export CSV"
+  },
+  "table": {
+    "loading": "Loading…",
+    "empty": "No data",
+    "total": "Total {{count}}",
+    "page": "Page {{page}}",
+    "actions": "Actions"
+  },
+  "form": {
+    "required": "Required",
+    "invalidFormat": "Invalid format",
+    "placeholderInput": "Please input",
+    "placeholderSelect": "Please select"
+  },
+  "status": {
+    "success": "Success",
+    "failed": "Failed",
+    "pending": "Pending",
+    "active": "Active",
+    "frozen": "Frozen",
+    "draining": "Draining",
+    "archived": "Archived",
+    "provisioned": "Provisioned",
+    "yes": "Yes",
+    "no": "No"
+  },
+  "messages": {
+    "saveSuccess": "Saved successfully",
+    "saveFailed": "Save failed",
+    "deleteSuccess": "Deleted successfully",
+    "deleteFailed": "Delete failed",
+    "operationSuccess": "Operation succeeded",
+    "operationFailed": "Operation failed",
+    "loadFailed": "Failed to load",
+    "copySuccess": "Copied to clipboard"
+  },
+  "language": "Language",
+  "switchLanguage": "Switch language",
+  "currency": "Currency",
+  "amount": "Amount",
+  "balance": "Balance",
+  "accountNo": "Account No.",
+  "createdAt": "Created At",
+  "updatedAt": "Updated At",
+  "operator": "Operator",
+  "reason": "Reason"
+}

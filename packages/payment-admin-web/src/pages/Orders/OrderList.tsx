@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Alert, Button, Card, Input, Space, Table, Tag, Typography, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import dayjs from 'dayjs'
 import { listOrders } from '../../api'
 import type { PaymentIntentSummary } from '../../api/types'
@@ -16,6 +17,7 @@ const statusColor: Record<string, string> = {
 }
 
 export default function OrderList() {
+  const { t } = useTranslation('order')
   const nav = useNavigate()
   const [items, setItems] = useState<PaymentIntentSummary[]>([])
   const [total, setTotal] = useState(0)
@@ -29,7 +31,7 @@ export default function OrderList() {
   // 没法做"跨商户全局列表"。所以必须用户明确填 mch_id 才发请求。
   const load = (p: number, ps: number) => {
     if (!mchID.trim()) {
-      message.warning('请先填商户 ID')
+      message.warning(t('list.filters.mchIdRequiredTip'))
       return
     }
     setLoading(true)
@@ -54,20 +56,20 @@ export default function OrderList() {
 
   return (
     <div>
-      <Typography.Title level={3}>订单管理</Typography.Title>
+      <Typography.Title level={3}>{t('list.title')}</Typography.Title>
 
       <Alert
         type="info"
         showIcon
-        message="PaymentIntent 按 business_id（商户 ID）分库分表"
-        description="必须指定商户 ID 才能查询；否则会命中全库扫描，order-core 会直接拒绝。"
+        message={t('list.shardingAlert.message')}
+        description={t('list.shardingAlert.description')}
         style={{ marginBottom: 16 }}
       />
 
       <Card>
         <Space style={{ marginBottom: 16 }}>
           <Input
-            placeholder="商户 ID（必填）"
+            placeholder={t('list.filters.mchIdPlaceholder')}
             value={mchID}
             onChange={(e) => setMchID(e.target.value)}
             onPressEnter={onSearch}
@@ -75,14 +77,14 @@ export default function OrderList() {
             allowClear
           />
           <Button type="primary" onClick={onSearch} disabled={!mchID.trim()}>
-            查询
+            {t('common:actions.search')}
           </Button>
         </Space>
         <Table<PaymentIntentSummary>
           rowKey="id"
           loading={loading}
           dataSource={items}
-          locale={{ emptyText: queried ? '无匹配订单' : '请输入商户 ID 后查询' }}
+          locale={{ emptyText: queried ? t('list.empty.noMatch') : t('list.empty.needMchId') }}
           pagination={{
             current: page,
             pageSize,
@@ -96,17 +98,17 @@ export default function OrderList() {
           }}
           columns={[
             {
-              title: '订单号',
+              title: t('list.columns.orderId'),
               dataIndex: 'id',
               render: (v) => <a onClick={() => nav(`/orders/${v}`)}>{v}</a>,
             },
             {
-              title: '金额',
+              title: t('list.columns.amount'),
               dataIndex: 'amount',
               render: (v, r) => display(v, r.currency),
             },
             {
-              title: '状态',
+              title: t('list.columns.status'),
               dataIndex: 'status',
               render: (v) => (
                 <Tag color={statusColor[v] || 'default'}>
@@ -114,10 +116,10 @@ export default function OrderList() {
                 </Tag>
               ),
             },
-            { title: '商户', dataIndex: 'mch_id' },
-            { title: '商户订单号', dataIndex: 'mch_order_no' },
+            { title: t('list.columns.merchant'), dataIndex: 'mch_id' },
+            { title: t('list.columns.mchOrderNo'), dataIndex: 'mch_order_no' },
             {
-              title: '创建时间',
+              title: t('list.columns.createdAt'),
               dataIndex: 'created',
               render: (v) => (v ? dayjs(v * 1000).format('YYYY-MM-DD HH:mm:ss') : '—'),
             },

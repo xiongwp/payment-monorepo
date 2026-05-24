@@ -1,0 +1,105 @@
+{
+  "list": {
+    "title": "Disputes / Chargebacks",
+    "warning": "Disputes are initiated by the channel. For needs_response, evidence must be submitted before the deadline or the merchant loses by default. lost / concede triggers automatic refund.",
+    "merchantIdPlaceholder": "Merchant ID (required)",
+    "statusPlaceholder": "Status",
+    "load": "Load",
+    "merchantRequired": "Enter a merchant ID first.",
+    "columns": {
+      "id": "ID",
+      "time": "Time",
+      "charge": "Charge",
+      "channel": "Channel",
+      "amount": "Amount",
+      "reason": "Reason",
+      "status": "Status",
+      "due": "Due",
+      "detail": "Detail"
+    }
+  },
+  "status": {
+    "needsResponse": "Needs response",
+    "underReview": "Under review",
+    "won": "Won",
+    "lost": "Lost",
+    "warningClosed": "Warning only",
+    "chargeRefunded": "Refunded & closed",
+    "canceled": "Canceled"
+  },
+  "detail": {
+    "title": "Dispute {{id}}",
+    "tabs": {
+      "info": "Info",
+      "evidence": "Evidence",
+      "events": "Events ({{count}})"
+    },
+    "fields": {
+      "status": "Status",
+      "amount": "Amount",
+      "outcome": "outcome",
+      "channel": "Channel",
+      "charge": "Charge",
+      "pi": "PI",
+      "reason": "Reason",
+      "due": "Due",
+      "autoRefund": "Auto-refund",
+      "autoRefundYes": "Yes (auto refund on lost)",
+      "autoRefundNo": "No"
+    },
+    "actions": {
+      "title": "Actions",
+      "submitEvidence": "Submit evidence",
+      "concede": "Concede (refund & close)",
+      "cancel": "Cancel",
+      "simulate": "Simulate channel event"
+    },
+    "evidenceEmpty": "No evidence submitted yet",
+    "eventColumns": {
+      "time": "Time",
+      "from": "From",
+      "to": "To",
+      "source": "Source",
+      "actor": "Actor",
+      "note": "Note"
+    }
+  },
+  "evidenceModal": {
+    "title": "Submit evidence",
+    "alert": "Upload evidence files to object storage first; record only links and summary text here. After submission status goes to under_review.",
+    "fields": {
+      "actor": "Operator",
+      "actorPlaceholder": "admin user id",
+      "customerCommunication": "Customer communication (URL/text)",
+      "receipt": "Receipt URL",
+      "shipping": "Shipping proof URL",
+      "service": "Service delivery proof URL",
+      "refundPolicy": "Refund policy URL/text",
+      "uncategorized": "Other notes"
+    },
+    "submitSuccess": "Evidence submitted, status -> under_review"
+  },
+  "concedeModal": {
+    "title": "Confirm conceding to merchant (full refund)?",
+    "content": "This will move the dispute to charge_refunded and trigger an automatic refund on the original charge.",
+    "success": "Conceded"
+  },
+  "cancelDispute": {
+    "success": "Canceled"
+  },
+  "simulateModal": {
+    "title": "Simulate channel webhook event",
+    "alert": "This directly drives order-core through the corresponding state-machine transition. Intended for QA / demo. In production these come from channel webhooks.",
+    "action": "Simulated event",
+    "actionOptions": {
+      "underReview": "-> under_review (channel starts review)",
+      "won": "-> won (merchant wins)",
+      "lost": "-> lost (merchant loses, auto refund)",
+      "warningClosed": "-> warning_closed (warning only)"
+    },
+    "outcomeAmount": "Outcome amount (lost only; blank = original dispute amount)",
+    "outcomeTooltip": "Original amount {{amount}} (storage integer, = minor x 100)",
+    "outcomePlaceholder": "storage integer (backend convention: minor x 100)",
+    "success": "Channel event simulated: {{action}}"
+  }
+}

@@ -1,0 +1,168 @@
+{
+  "probe": {
+    "title": "路由探测",
+    "warning": "会向 payment-core 发送一次带 extra.probe=true 的 Charge；确保生产环境的 adapter 识别该标记、不会产生真实扣款。",
+    "form": {
+      "country": "国家",
+      "paymentMethod": "支付方式",
+      "amount": "金额 (分)",
+      "currency": "币种",
+      "merchant": "商户"
+    },
+    "actions": {
+      "run": "探测"
+    },
+    "result": "结果"
+  },
+  "phTester": {
+    "title": "PH 渠道联测",
+    "intro": "通过 payment-core 发 probe Charge → 选中 adapter → payment-channel mockserver。需 payment-channel 已用 sandbox profile 启动；probe 不计入熔断。",
+    "tabs": {
+      "single": "单次测试",
+      "matrix": "一键跑全部场景"
+    },
+    "form": {
+      "channel": "渠道",
+      "scenario": "场景",
+      "amount": "金额"
+    },
+    "actions": {
+      "sendTest": "发送测试 Charge"
+    },
+    "result": "结果",
+    "scenarios": {
+      "s1": {
+        "label": "1 · 同步成功",
+        "description": "succeeded 立即返回"
+      },
+      "s2": {
+        "label": "2 · 需要用户跳转",
+        "description": "requires_action + redirect URL"
+      },
+      "s3": {
+        "label": "3 · 失败 · 卡拒付",
+        "description": "failure_code=card_declined"
+      },
+      "s4": {
+        "label": "4 · 失败 · 余额不足",
+        "description": "failure_code=insufficient_funds"
+      },
+      "s5": {
+        "label": "5 · 失败 · 风控拦截",
+        "description": "failure_code=risk_blocked"
+      },
+      "s6": {
+        "label": "6 · 失败 · 渠道不可用",
+        "description": "failure_code=channel_unavailable"
+      },
+      "s7": {
+        "label": "7 · 异步成功（webhook=success）",
+        "description": "processing → webhook success"
+      },
+      "s8": {
+        "label": "8 · 异步失败（webhook=failed）",
+        "description": "processing → webhook failure"
+      },
+      "s9": {
+        "label": "9 · 超时",
+        "description": "mock 挂起 30s；adapter 超时会报错"
+      }
+    },
+    "matrix": {
+      "timeoutWarning": "场景 9（超时）会让 mock 挂起 30s；默认勾除。",
+      "channelLabel": "渠道:",
+      "scenarioLabel": "场景:",
+      "concurrencyLabel": "并发:",
+      "selectAll": "全部",
+      "selectTop5": "前 5",
+      "selectAllWithTimeout": "全部 (含超时)",
+      "excludeTimeout": "排除超时",
+      "running": "运行中 {{done}}/{{total}}",
+      "start": "开始 (共 {{total}} 格)",
+      "summary": {
+        "pass": "Pass {{count}}",
+        "mismatch": "Mismatch {{count}}",
+        "error": "Error {{count}}"
+      },
+      "columns": {
+        "channel": "渠道",
+        "scenario": "场景",
+        "expected": "预期",
+        "actualResultType": "实际 result_type",
+        "failureCode": "failure_code",
+        "failureMsg": "failure_msg",
+        "duration": "耗时",
+        "result": "结果"
+      },
+      "statusTag": {
+        "running": "running…",
+        "error": "error",
+        "pass": "PASS",
+        "mismatch": "MISMATCH",
+        "errorBadge": "ERROR"
+      }
+    }
+  },
+  "webhookTest": {
+    "title": "Webhook 调试",
+    "form": {
+      "adapter": "Adapter",
+      "headers": "Headers (JSON)",
+      "body": "Body (raw)"
+    },
+    "actions": {
+      "parse": "解析"
+    },
+    "result": "解析结果",
+    "errors": {
+      "invalidHeadersJson": "headers 必须是合法 JSON"
+    },
+    "payloadPlaceholder": "{\"pi\": \"pi_xxx\", \"event\": \"charge.succeeded\"}"
+  },
+  "deliveries": {
+    "title": "出站 Webhook 投递",
+    "subtitle": "HMAC-SHA256 签名 · 指数退避重试 · 0s/30s/2min/15min/2h",
+    "signatureHint": "商户侧用 header X-Signature: t=<unix_ts>,v1=<HMAC-SHA256 hex> 验证；签名内容 = t + '.' + body。",
+    "filters": {
+      "merchantIdPlaceholder": "merchant_id",
+      "statusPlaceholder": "状态"
+    },
+    "actions": {
+      "sendTest": "发送测试 Webhook",
+      "detail": "详情",
+      "retryNow": "立即重试"
+    },
+    "columns": {
+      "id": "ID",
+      "time": "时间",
+      "merchant": "商户",
+      "event": "事件",
+      "status": "状态",
+      "http": "HTTP",
+      "nextRetry": "下次重试"
+    },
+    "drawer": {
+      "url": "URL: ",
+      "event": "Event: ",
+      "status": "Status: ",
+      "attemptsHttp": " · {{attempts}}/{{max}} attempts · http={{http}}",
+      "lastErrorTitle": "上一次失败原因",
+      "payload": "Payload"
+    },
+    "testModal": {
+      "title": "发送测试 Webhook",
+      "intro": "会调用目标商户配置的 webhook_url，用其 webhook_secret HMAC-SHA256 签名。",
+      "merchantId": "商户 ID",
+      "merchantIdPlaceholder": "mch_xxx",
+      "eventType": "事件类型",
+      "eventTypePlaceholder": "webhook.test（默认）",
+      "payload": "Payload (JSON)",
+      "payloadPlaceholder": "{\"message\":\"hello\"}"
+    },
+    "messages": {
+      "retryQueued": "已入队重试",
+      "invalidPayloadJson": "payload 必须是合法 JSON",
+      "testSent": "已发送测试 webhook，delivery id={{id}}"
+    }
+  }
+}

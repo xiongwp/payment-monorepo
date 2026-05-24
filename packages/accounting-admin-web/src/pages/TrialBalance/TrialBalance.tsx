@@ -16,6 +16,7 @@ import {
 } from 'antd'
 import { CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import dayjs from 'dayjs'
 import { runTrialBalance, listSnapshotDates } from '../../api/accounting'
 import type { TrialBalanceResult, TrialBalanceCategorySummary } from '../../types/accounting'
@@ -27,30 +28,11 @@ import { display as displayMoney } from '../../utils/money'
 // so this fallback is defensive.
 const FALLBACK_CURRENCY = 'PHP'
 
-const CATEGORY_LABEL: Record<string, string> = {
-  ASSET:     '资产',
-  LIABILITY: '负债',
-  EQUITY:    '所有者权益',
-  REVENUE:   '收入',
-  EXPENSE:   '费用',
-}
-
-const ACCOUNT_TYPE_LABEL: Record<number, string> = {
-  1: '用户账户',
-  2: '商户账户',
-  3: '商户待结算账户',
-  4: '平台损益账户',
-  5: '中间账户渠道应收款',
-  6: '中间账户渠道应付款',
-  7: '平台手续费账户',
-  8: '平台服务费账户',
-  9: '平台中间账户',
-}
-
 // 与 DayCut 页面保持同一份；后端按 currency.precisionMap 校验，未在内的会被拒。
 const SUPPORTED_CURRENCIES = ['PHP', 'USD', 'CNY', 'EUR', 'JPY', 'HKD', 'SGD', 'THB', 'IDR', 'MYR', 'VND', 'KRW']
 
 export default function TrialBalance() {
+  const { t } = useTranslation('trial')
   const [selectedDate, setSelectedDate] = useState<dayjs.Dayjs | null>(
     dayjs().subtract(1, 'day'),
   )
@@ -80,7 +62,7 @@ export default function TrialBalance() {
   const handleRun = async (dateStr?: string) => {
     const date = dateStr ?? (selectedDate ? selectedDate.format('YYYY-MM-DD') : '')
     if (!date) {
-      message.warning('请选择快照日期')
+      message.warning(t('form.dateRequired'))
       return
     }
     setLoading(true)
@@ -91,7 +73,7 @@ export default function TrialBalance() {
       setSelectedDate(dayjs(date))
     }
     if (!selectedCurrency) {
-      message.warning('请选择币种')
+      message.warning(t('form.currencyRequired'))
       setLoading(false)
       return
     }
@@ -99,14 +81,14 @@ export default function TrialBalance() {
       const res = await runTrialBalance(date, selectedCurrency)
       setResult(res)
       if (res.is_balanced && res.is_equation_valid) {
-        message.success('试算平衡通过，借贷平衡且会计恒等式成立')
+        message.success(t('form.balancedMessage'))
       } else {
-        message.warning('试算平衡发现差异，请检查明细')
+        message.warning(t('form.imbalancedMessage'))
       }
       // refresh dates list to pick up newly created snapshots
       loadSnapshotDates()
     } catch (err: unknown) {
-      const msg = (err as { message?: string })?.message ?? '试算平衡失败'
+      const msg = (err as { message?: string })?.message ?? t('form.runFailed')
       setError(msg)
       message.error(msg)
     } finally {
@@ -121,22 +103,22 @@ export default function TrialBalance() {
 
   const summaryColumns = [
     {
-      title: '账户类别',
+      title: t('summary.columns.category'),
       dataIndex: 'category',
       key: 'category',
-      render: (v: string) => CATEGORY_LABEL[v] ?? v,
+      render: (v: string) => t(`category.${v}`, { defaultValue: v }),
     },
     {
-      title: '账户类型',
+      title: t('summary.columns.type'),
       dataIndex: 'type',
       key: 'type',
-      render: (v: number) => ACCOUNT_TYPE_LABEL[v] ?? v,
+      render: (v: number) => t(`accountType.${v}`, { defaultValue: String(v) }),
     },
-    { title: '账户数', dataIndex: 'account_count', key: 'account_count' },
-    { title: '期初余额合计', dataIndex: 'sum_beginning', key: 'sum_beginning', render: (v: string) => fmt(v) },
-    { title: '期末余额合计', dataIndex: 'sum_ending', key: 'sum_ending', render: (v: string) => fmt(v) },
-    { title: '期间借方合计', dataIndex: 'sum_debit', key: 'sum_debit', render: (v: string) => fmt(v) },
-    { title: '期间贷方合计', dataIndex: 'sum_credit', key: 'sum_credit', render: (v: string) => fmt(v) },
+    { title: t('summary.columns.accountCount'), dataIndex: 'account_count', key: 'account_count' },
+    { title: t('summary.columns.sumBeginning'), dataIndex: 'sum_beginning', key: 'sum_beginning', render: (v: string) => fmt(v) },
+    { title: t('summary.columns.sumEnding'), dataIndex: 'sum_ending', key: 'sum_ending', render: (v: string) => fmt(v) },
+    { title: t('summary.columns.sumDebit'), dataIndex: 'sum_debit', key: 'sum_debit', render: (v: string) => fmt(v) },
+    { title: t('summary.columns.sumCredit'), dataIndex: 'sum_credit', key: 'sum_credit', render: (v: string) => fmt(v) },
   ]
 
   return (
@@ -145,7 +127,7 @@ export default function TrialBalance() {
         {/* ─── 左侧：历史日期列表 ─────────────────────────────────── */}
         <Col span={5}>
           <Card
-            title="历史快照日期"
+            title={t('snapshots.title')}
             size="small"
             extra={
               <Button size="small" icon={<ReloadOutlined />} onClick={loadSnapshotDates} loading={datesLoading} />
@@ -156,7 +138,7 @@ export default function TrialBalance() {
             <List
               loading={datesLoading}
               dataSource={snapshotDates}
-              locale={{ emptyText: '暂无快照' }}
+              locale={{ emptyText: t('snapshots.empty') }}
               renderItem={(date) => (
                 <List.Item
                   style={{
@@ -175,28 +157,28 @@ export default function TrialBalance() {
 
         {/* ─── 右侧：试算平衡操作区 ────────────────────────────────── */}
         <Col span={19}>
-          <Card title="试算平衡" style={{ marginBottom: 16 }}>
+          <Card title={t('form.title')} style={{ marginBottom: 16 }}>
             <Space>
               <DatePicker
                 value={selectedDate}
                 onChange={setSelectedDate}
-                placeholder="选择快照日期"
+                placeholder={t('form.datePlaceholder')}
                 disabledDate={(d) => d && d.isAfter(dayjs(), 'day')}
               />
               <Select
                 value={selectedCurrency}
                 onChange={setSelectedCurrency}
-                placeholder="币种"
+                placeholder={t('form.currencyPlaceholder')}
                 style={{ width: 120 }}
                 options={SUPPORTED_CURRENCIES.map((c) => ({ value: c, label: c }))}
                 showSearch
               />
               <Button type="primary" loading={loading} onClick={() => handleRun()}>
-                执行试算平衡
+                {t('form.submit')}
               </Button>
             </Space>
             <div style={{ marginTop: 8, color: '#888', fontSize: 13 }}>
-              说明：试算平衡在日切完成后执行，验证指定日期的借贷平衡与会计恒等式。也可直接点击左侧历史日期查看。
+              {t('form.hint')}
             </div>
           </Card>
 
@@ -209,8 +191,8 @@ export default function TrialBalance() {
                 <Col span={6}>
                   <Card>
                     <Statistic
-                      title="借贷平衡"
-                      value={result.is_balanced ? '通过' : '不平衡'}
+                      title={t('stats.balanceTitle')}
+                      value={result.is_balanced ? t('stats.balancePass') : t('stats.balanceFail')}
                       prefix={
                         result.is_balanced ? (
                           <CheckCircleOutlined />
@@ -225,8 +207,8 @@ export default function TrialBalance() {
                 <Col span={6}>
                   <Card>
                     <Statistic
-                      title="会计恒等式"
-                      value={result.is_equation_valid ? '成立' : '不成立'}
+                      title={t('stats.equationTitle')}
+                      value={result.is_equation_valid ? t('stats.equationPass') : t('stats.equationFail')}
                       prefix={
                         result.is_equation_valid ? (
                           <CheckCircleOutlined />
@@ -240,42 +222,42 @@ export default function TrialBalance() {
                 </Col>
                 <Col span={6}>
                   <Card>
-                    <Statistic title="期间借方合计" value={fmt(result.total_debit)} />
+                    <Statistic title={t('stats.totalDebit')} value={fmt(result.total_debit)} />
                   </Card>
                 </Col>
                 <Col span={6}>
                   <Card>
-                    <Statistic title="期间贷方合计" value={fmt(result.total_credit)} />
+                    <Statistic title={t('stats.totalCredit')} value={fmt(result.total_credit)} />
                   </Card>
                 </Col>
               </Row>
 
               {/* 会计恒等式明细 */}
-              <Card title="会计恒等式明细（资产 = 负债 + 所有者权益 + 收入 - 费用）" style={{ marginBottom: 16 }}>
+              <Card title={t('equation.title')} style={{ marginBottom: 16 }}>
                 <Descriptions column={3} bordered size="small">
-                  <Descriptions.Item label="快照日期">{result.snapshot_date}</Descriptions.Item>
-                  <Descriptions.Item label="币种">
+                  <Descriptions.Item label={t('equation.snapshotDate')}>{result.snapshot_date}</Descriptions.Item>
+                  <Descriptions.Item label={t('equation.currency')}>
                     <Tag color="blue">{result.currency || '-'}</Tag>
                   </Descriptions.Item>
-                  <Descriptions.Item label="借贷差额">{fmt(result.imbalance)}</Descriptions.Item>
-                  <Descriptions.Item label="等式差额">{fmt(result.equation_diff)}</Descriptions.Item>
-                  <Descriptions.Item label="资产期末余额合计">
+                  <Descriptions.Item label={t('equation.imbalance')}>{fmt(result.imbalance)}</Descriptions.Item>
+                  <Descriptions.Item label={t('equation.equationDiff')}>{fmt(result.equation_diff)}</Descriptions.Item>
+                  <Descriptions.Item label={t('equation.assetEnding')}>
                     <span style={{ fontWeight: 'bold', color: '#1890ff' }}>{fmt(result.asset_ending_balance)}</span>
                   </Descriptions.Item>
-                  <Descriptions.Item label="负债期末余额合计">{fmt(result.liability_ending_balance)}</Descriptions.Item>
-                  <Descriptions.Item label="权益期末余额合计">{fmt(result.equity_ending_balance)}</Descriptions.Item>
-                  <Descriptions.Item label="收入期末余额合计">{fmt(result.revenue_ending_balance)}</Descriptions.Item>
-                  <Descriptions.Item label="费用期末余额合计">{fmt(result.expense_ending_balance)}</Descriptions.Item>
-                  <Descriptions.Item label="会计恒等式">
+                  <Descriptions.Item label={t('equation.liabilityEnding')}>{fmt(result.liability_ending_balance)}</Descriptions.Item>
+                  <Descriptions.Item label={t('equation.equityEnding')}>{fmt(result.equity_ending_balance)}</Descriptions.Item>
+                  <Descriptions.Item label={t('equation.revenueEnding')}>{fmt(result.revenue_ending_balance)}</Descriptions.Item>
+                  <Descriptions.Item label={t('equation.expenseEnding')}>{fmt(result.expense_ending_balance)}</Descriptions.Item>
+                  <Descriptions.Item label={t('equation.accountingEquation')}>
                     <Tag color={result.is_equation_valid ? 'green' : 'red'}>
-                      {result.is_equation_valid ? '资产 = 负债+权益+收入-费用 ✓' : '不平衡 ✗'}
+                      {result.is_equation_valid ? t('equation.equationValid') : t('equation.equationInvalid')}
                     </Tag>
                   </Descriptions.Item>
                 </Descriptions>
               </Card>
 
               {/* 分类明细 */}
-              <Card title="账户类别 × 类型 明细">
+              <Card title={t('summary.title')}>
                 <Table
                   columns={summaryColumns}
                   dataSource={result.summaries}

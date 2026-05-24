@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import {
   Tabs,
   Input,
@@ -40,13 +42,14 @@ const FALLBACK_CURRENCY = 'PHP'
 // ─── TCC 分支表格列定义 ───────────────────────────────────────────────────────
 
 function branchColumns(
+  t: TFunction,
   onCancelBranch?: (b: TccBranch) => void,
 ): ColumnsType<TccBranch> {
   return [
-    { title: 'Branch ID', dataIndex: 'branch_id', key: 'branch_id', ellipsis: true, width: 200 },
-    { title: '账户号', dataIndex: 'account_no', key: 'account_no', width: 180 },
+    { title: t('branch.id'), dataIndex: 'branch_id', key: 'branch_id', ellipsis: true, width: 200 },
+    { title: t('branch.accountNo'), dataIndex: 'account_no', key: 'account_no', width: 180 },
     {
-      title: '余额增量',
+      title: t('branch.balanceDelta'),
       dataIndex: 'balance_delta',
       key: 'balance_delta',
       width: 140,
@@ -60,14 +63,14 @@ function branchColumns(
       },
     },
     {
-      title: '冻结金额',
+      title: t('branch.frozenAmount'),
       dataIndex: 'frozen_amount',
       key: 'frozen_amount',
       width: 140,
       render: (v: string) => displayMoney(v, FALLBACK_CURRENCY),
     },
     {
-      title: '状态',
+      title: t('branch.status'),
       dataIndex: 'status',
       key: 'status',
       width: 110,
@@ -75,11 +78,11 @@ function branchColumns(
         <Tag color={TCC_STATUS_COLOR[s]}>{TCC_STATUS_LABEL[s] ?? s}</Tag>
       ),
     },
-    { title: 'DB', dataIndex: 'db_index', key: 'db_index', width: 60 },
-    { title: 'Table', dataIndex: 'table_index', key: 'table_index', width: 70 },
-    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 180 },
+    { title: t('branch.db'), dataIndex: 'db_index', key: 'db_index', width: 60 },
+    { title: t('branch.table'), dataIndex: 'table_index', key: 'table_index', width: 70 },
+    { title: t('branch.createdAt'), dataIndex: 'created_at', key: 'created_at', width: 180 },
     {
-      title: 'TCC ID',
+      title: t('branch.tccId'),
       dataIndex: 'tcc_id',
       key: 'tcc_id',
       ellipsis: true,
@@ -88,7 +91,7 @@ function branchColumns(
     ...(onCancelBranch
       ? [
           {
-            title: '操作',
+            title: t('branch.action'),
             key: 'action',
             width: 90,
             render: (_: unknown, record: TccBranch) =>
@@ -99,7 +102,7 @@ function branchColumns(
                   icon={<StopOutlined />}
                   onClick={() => onCancelBranch(record)}
                 >
-                  取消
+                  {t('branch.cancel')}
                 </Button>
               ) : null,
           },
@@ -111,18 +114,19 @@ function branchColumns(
 // ─── Tab1: 按 TCC ID 查询 ─────────────────────────────────────────────────────
 
 function TccIdSearch() {
+  const { t } = useTranslation('tcc')
   const [tccId, setTccId] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<TccStatusResponse | null>(null)
 
   const handleSearch = async () => {
-    if (!tccId.trim()) { message.warning('请输入 TCC ID'); return }
+    if (!tccId.trim()) { message.warning(t('search.emptyInput')); return }
     setLoading(true)
     try {
       const data = await getTccStatus(tccId.trim())
       setResult(data)
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '查询失败')
+      message.error(e instanceof Error ? e.message : t('search.queryFailed'))
       setResult(null)
     } finally {
       setLoading(false)
@@ -132,17 +136,17 @@ function TccIdSearch() {
   const handleCancelTcc = () => {
     if (!result) return
     Modal.confirm({
-      title: `取消 TCC 事务`,
-      content: `将取消 ${result.tcc_id} 下所有 TRYING 分支，释放冻结资金。确认？`,
-      okText: '确认取消',
+      title: t('cancel.tccTitle'),
+      content: t('cancel.tccContent', { tccId: result.tcc_id }),
+      okText: t('cancel.confirmOk'),
       okType: 'danger',
       onOk: async () => {
         try {
           await cancelTcc(result.tcc_id)
-          message.success('取消成功')
+          message.success(t('cancel.success'))
           handleSearch()
         } catch (e: unknown) {
-          message.error(e instanceof Error ? e.message : '取消失败')
+          message.error(e instanceof Error ? e.message : t('cancel.failed'))
         }
       },
     })
@@ -159,14 +163,14 @@ function TccIdSearch() {
     <div>
       <Space style={{ marginBottom: 16 }}>
         <Input
-          placeholder="输入 TCC ID（voucherNo）"
+          placeholder={t('search.placeholder')}
           value={tccId}
           onChange={(e) => setTccId(e.target.value)}
           onPressEnter={handleSearch}
           style={{ width: 340 }}
           prefix={<SearchOutlined />}
         />
-        <Button type="primary" loading={loading} onClick={handleSearch}>查询</Button>
+        <Button type="primary" loading={loading} onClick={handleSearch}>{t('stuck.query')}</Button>
       </Space>
 
       {result && (
@@ -176,14 +180,14 @@ function TccIdSearch() {
             type={overallColor[result.overall_status] as 'success' | 'info' | 'warning' | 'error'}
             message={
               <Descriptions size="small" column={4}>
-                <Descriptions.Item label="TCC ID">{result.tcc_id}</Descriptions.Item>
-                <Descriptions.Item label="整体状态">
+                <Descriptions.Item label={t('overall.tccId')}>{result.tcc_id}</Descriptions.Item>
+                <Descriptions.Item label={t('overall.status')}>
                   <Tag color={overallColor[result.overall_status]}>{result.overall_status}</Tag>
                 </Descriptions.Item>
-                <Descriptions.Item label="分支数">{result.branch_count}</Descriptions.Item>
+                <Descriptions.Item label={t('overall.branchCount')}>{result.branch_count}</Descriptions.Item>
                 <Descriptions.Item label="">
                   {result.overall_status === 'TRYING' || result.overall_status === 'PARTIAL' ? (
-                    <Button size="small" danger onClick={handleCancelTcc}>取消整笔 TCC</Button>
+                    <Button size="small" danger onClick={handleCancelTcc}>{t('overall.cancelWhole')}</Button>
                   ) : null}
                 </Descriptions.Item>
               </Descriptions>
@@ -192,7 +196,7 @@ function TccIdSearch() {
           <Table
             size="small"
             rowKey="branch_id"
-            columns={branchColumns()}
+            columns={branchColumns(t)}
             dataSource={result.branches}
             pagination={false}
             scroll={{ x: 1200 }}
@@ -206,6 +210,7 @@ function TccIdSearch() {
 // ─── Tab2: Stuck 分支监控 ─────────────────────────────────────────────────────
 
 function StuckBranches() {
+  const { t } = useTranslation('tcc')
   const [timeout, setTimeout] = useState(5)
   const [limit, setLimit] = useState(50)
   const [loading, setLoading] = useState(false)
@@ -216,9 +221,9 @@ function StuckBranches() {
     try {
       const data = await listStuckTcc(timeout, limit)
       setBranches(data.branches ?? [])
-      if ((data.branches ?? []).length === 0) message.info('暂无 stuck 分支')
+      if ((data.branches ?? []).length === 0) message.info(t('stuck.noStuck'))
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '查询失败')
+      message.error(e instanceof Error ? e.message : t('search.queryFailed'))
     } finally {
       setLoading(false)
     }
@@ -226,24 +231,24 @@ function StuckBranches() {
 
   const handleCancelBranch = (branch: TccBranch) => {
     Modal.confirm({
-      title: '取消分支',
+      title: t('cancel.branchTitle'),
       content: (
         <div>
-          <p>Branch ID: <b>{branch.branch_id}</b></p>
-          <p>账户号: <b>{branch.account_no}</b></p>
-          <p>冻结金额: <b>{displayMoney(branch.frozen_amount, FALLBACK_CURRENCY)}</b></p>
-          <p>将释放冻结资金，确认取消？</p>
+          <p>{t('branch.id')}: <b>{branch.branch_id}</b></p>
+          <p>{t('cancel.branchAccount')}: <b>{branch.account_no}</b></p>
+          <p>{t('cancel.branchFrozen')}: <b>{displayMoney(branch.frozen_amount, FALLBACK_CURRENCY)}</b></p>
+          <p>{t('cancel.branchConfirm')}</p>
         </div>
       ),
-      okText: '确认取消',
+      okText: t('cancel.confirmOk'),
       okType: 'danger',
       onOk: async () => {
         try {
           await cancelTccBranch(branch.branch_id, branch.account_no)
-          message.success('分支已取消')
+          message.success(t('cancel.branchSuccess'))
           setBranches((prev) => prev.filter((b) => b.branch_id !== branch.branch_id))
         } catch (e: unknown) {
-          message.error(e instanceof Error ? e.message : '取消失败')
+          message.error(e instanceof Error ? e.message : t('cancel.failed'))
         }
       },
     })
@@ -252,39 +257,39 @@ function StuckBranches() {
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
-        <span>超时阈值：</span>
+        <span>{t('stuck.timeoutLabel')}</span>
         <InputNumber
           min={1}
           max={1440}
           value={timeout}
           onChange={(v) => setTimeout(v ?? 5)}
-          addonAfter="分钟"
+          addonAfter={t('stuck.timeoutUnit')}
           style={{ width: 130 }}
         />
-        <span>最多返回：</span>
+        <span>{t('stuck.limitLabel')}</span>
         <InputNumber
           min={1}
           max={200}
           value={limit}
           onChange={(v) => setLimit(v ?? 50)}
-          addonAfter="条"
+          addonAfter={t('stuck.limitUnit')}
           style={{ width: 110 }}
         />
         <Button type="primary" icon={<ReloadOutlined />} loading={loading} onClick={handleLoad}>
-          查询
+          {t('stuck.query')}
         </Button>
         <Button
           danger
           onClick={async () => {
             try {
               const resp = await tccRetryConfirmNow(0)
-              message.success(`立即恢复：${resp.recovered} 个 CONFIRMING 半挂起 TCC 已处理`)
+              message.success(t('stuck.retrySuccess', { recovered: resp.recovered }))
             } catch (e) {
-              message.error(e instanceof Error ? e.message : '恢复失败')
+              message.error(e instanceof Error ? e.message : t('stuck.retryFailed'))
             }
           }}
         >
-          立即 Retry Confirming（0 阈值）
+          {t('stuck.retryButton')}
         </Button>
       </Space>
 
@@ -292,25 +297,25 @@ function StuckBranches() {
         type="info"
         style={{ marginBottom: 12 }}
         showIcon
-        message="Stuck TRYING → 由 TccRecoveryWorker 每 30s 扫一次并 cancel；CONFIRMING 半挂起 → 同 worker 调 RetryStuckConfirmingTcc 补 confirm（需 updated_at > 5min 才触发）。loadtest 后想立即恢复可点上方「立即 Retry Confirming」按钮。"
+        message={t('stuck.infoBanner')}
       />
 
       {branches.length > 0 && (
         <Alert
           type="warning"
           style={{ marginBottom: 12 }}
-          message={`发现 ${branches.length} 条 stuck 分支，请及时处理`}
+          message={t('stuck.warningCount', { count: branches.length })}
         />
       )}
 
       <Table
         size="small"
         rowKey="branch_id"
-        columns={branchColumns(handleCancelBranch)}
+        columns={branchColumns(t, handleCancelBranch)}
         dataSource={branches}
-        pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+        pagination={{ pageSize: 20, showTotal: (total) => t('stuck.totalSuffix', { count: total }) }}
         scroll={{ x: 1300 }}
-        locale={{ emptyText: '暂无数据，点击"查询"加载' }}
+        locale={{ emptyText: t('stuck.emptyText') }}
       />
     </div>
   )
@@ -319,13 +324,14 @@ function StuckBranches() {
 // ─── 主页面 ───────────────────────────────────────────────────────────────────
 
 export default function TccMonitor() {
+  const { t } = useTranslation('tcc')
   return (
     <div>
-      <div style={{ marginBottom: 16, fontWeight: 'bold', fontSize: 16 }}>TCC 分布式事务监控</div>
+      <div style={{ marginBottom: 16, fontWeight: 'bold', fontSize: 16 }}>{t('monitor.title')}</div>
       <Tabs
         items={[
-          { key: 'by-id',  label: '按 TCC ID 查询', children: <TccIdSearch /> },
-          { key: 'stuck',  label: 'Stuck 分支监控', children: <StuckBranches /> },
+          { key: 'by-id',  label: t('monitor.tabs.byId'), children: <TccIdSearch /> },
+          { key: 'stuck',  label: t('monitor.tabs.stuck'), children: <StuckBranches /> },
         ]}
       />
     </div>

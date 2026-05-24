@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { Button, Card, Form, Input, Select, Typography, message } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { testWebhook } from '../../api'
 import type { WebhookTestResponse } from '../../api/types'
 
 export default function WebhookTest() {
+  const { t } = useTranslation('channel')
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<WebhookTestResponse | null>(null)
@@ -15,7 +17,7 @@ export default function WebhookTest() {
     try {
       if (v.headers) headers = JSON.parse(v.headers)
     } catch {
-      message.error('headers 必须是合法 JSON')
+      message.error(t('webhookTest.errors.invalidHeadersJson'))
       setLoading(false)
       return
     }
@@ -35,12 +37,12 @@ export default function WebhookTest() {
 
   return (
     <div>
-      <Typography.Title level={3}>Webhook 调试</Typography.Title>
+      <Typography.Title level={3}>{t('webhookTest.title')}</Typography.Title>
       <Card>
         <Form form={form} layout="vertical" onFinish={onRun}>
           <Form.Item
             name="adapter"
-            label="Adapter"
+            label={t('webhookTest.form.adapter')}
             rules={[{ required: true }]}
             initialValue="gcash"
           >
@@ -58,24 +60,24 @@ export default function WebhookTest() {
           </Form.Item>
           <Form.Item
             name="headers"
-            label="Headers (JSON)"
+            label={t('webhookTest.form.headers')}
             initialValue='{"X-Signature": "abc"}'
           >
             <Input.TextArea rows={3} />
           </Form.Item>
-          <Form.Item name="body" label="Body (raw)" rules={[{ required: true }]}>
-            <Input.TextArea rows={10} placeholder='{"pi": "pi_xxx", "event": "charge.succeeded"}' />
+          <Form.Item name="body" label={t('webhookTest.form.body')} rules={[{ required: true }]}>
+            <Input.TextArea rows={10} placeholder={t('webhookTest.payloadPlaceholder')} />
           </Form.Item>
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={loading}>
-              解析
+              {t('webhookTest.actions.parse')}
             </Button>
           </Form.Item>
         </Form>
       </Card>
 
       {result && (
-        <Card style={{ marginTop: 16 }} title="解析结果">
+        <Card style={{ marginTop: 16 }} title={t('webhookTest.result')}>
           <pre style={{ margin: 0 }}>{JSON.stringify(result, null, 2)}</pre>
         </Card>
       )}

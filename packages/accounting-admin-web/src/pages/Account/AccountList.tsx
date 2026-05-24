@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Table, Button, Input, Space, Tag, Modal, Form, Select, message, Radio } from 'antd'
 import { SearchOutlined, PlusOutlined, LockOutlined, UnlockOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
@@ -16,22 +17,23 @@ import { AccountType, AccountBusinessType, AccountStatus } from '../../types/acc
 import type { Account, BusinessTypeInfo } from '../../types/accounting'
 import { display as displayMoney } from '../../utils/money'
 
-const ACCOUNT_TYPE_LABELS: Record<number, string> = {
-  [AccountType.USER]: '用户账户',
-  [AccountType.MERCHANT]: '商户账户',
-  [AccountType.MERCHANT_PENDING_SETTLE]: '商户待结算账户',
-  [AccountType.PLATFORM]: '平台损益账户',
-  [AccountType.TRANSIT_CHANNEL_RECEIVABLE]: '中间渠道应收账户',
-  [AccountType.TRANSIT_CHANNEL_PAYABLE]: '中间渠道应付账户',
-  [AccountType.TRANSACTION_FEE]: '平台手续费账户',
-  [AccountType.CHARGE_FEE]: '平台服务费账户',
-  [AccountType.TRANSIT]: '中间账户',
-}
-
 
 type SearchMode = 'account_no' | 'user_business_type'
 
 export default function AccountList() {
+  const { t } = useTranslation('account')
+  const ACCOUNT_TYPE_LABELS: Record<number, string> = {
+    [AccountType.USER]: t('accountTypes.user'),
+    [AccountType.MERCHANT]: t('accountTypes.merchant'),
+    [AccountType.MERCHANT_PENDING_SETTLE]: t('accountTypes.merchantPendingSettle'),
+    [AccountType.PLATFORM]: t('accountTypes.platform'),
+    [AccountType.TRANSIT_CHANNEL_RECEIVABLE]: t('accountTypes.transitChannelReceivable'),
+    [AccountType.TRANSIT_CHANNEL_PAYABLE]: t('accountTypes.transitChannelPayable'),
+    [AccountType.TRANSACTION_FEE]: t('accountTypes.transactionFee'),
+    [AccountType.CHARGE_FEE]: t('accountTypes.chargeFee'),
+    [AccountType.TRANSIT]: t('accountTypes.transit'),
+  }
+
   const [searchMode, setSearchMode] = useState<SearchMode>('account_no')
   const [accountNoInput, setAccountNoInput] = useState('')
   const [userIdInput, setUserIdInput] = useState('')
@@ -69,9 +71,9 @@ export default function AccountList() {
   const businessTypeLabel = (v: number): string => {
     const row = btRegistry.find(r => r.business_type === v)
     if (row) return `${v} · ${row.business_type_code}`
-    if (v === AccountBusinessType.USER_BALANCE) return '用户余额'
-    if (v === AccountBusinessType.MERCHANT_BALANCE) return '商户结算'
-    if (v === AccountBusinessType.MERCHANT_PENDING_SETTLE) return '商户待结算'
+    if (v === AccountBusinessType.USER_BALANCE) return t('businessTypes.userBalance')
+    if (v === AccountBusinessType.MERCHANT_BALANCE) return t('businessTypes.merchantBalance')
+    if (v === AccountBusinessType.MERCHANT_PENDING_SETTLE) return t('businessTypes.merchantPendingSettle')
     return String(v)
   }
 
@@ -105,26 +107,26 @@ export default function AccountList() {
     try {
       if (searchMode === 'account_no') {
         if (!accountNoInput.trim()) {
-          message.warning('请输入账户号')
+          message.warning(t('list.messages.requireAccountNo'))
           return
         }
         const acc = await getAccountByQuery(accountNoInput.trim())
         setAccounts([acc])
       } else {
         if (!userIdInput.trim() || bizTypeInput === undefined) {
-          message.warning('请输入用户ID并选择业务类型')
+          message.warning(t('list.messages.requireUserAndBusinessType'))
           return
         }
         const resp = await getAccountByUserAndBusinessType(Number(userIdInput), bizTypeInput)
         setAccounts(resp.accounts || [])
         if ((resp.count ?? 0) === 0) {
-          message.info('没有找到对应账户')
+          message.info(t('list.messages.notFound'))
         } else if ((resp.count ?? 0) > 1) {
-          message.info(`该用户在该业务类型下持有 ${resp.count} 个币种账户`)
+          message.info(t('list.messages.multipleCurrencies', { count: resp.count }))
         }
       }
     } catch (err: any) {
-      message.error(err.message || '查询失败')
+      message.error(err.message || t('list.messages.queryFailed'))
       setAccounts([])
     } finally {
       setLoading(false)
@@ -141,7 +143,7 @@ export default function AccountList() {
         account_business_type: values.accountBusinessType,
         currency: values.currency || 'PHP',
       })
-      message.success('账户创建成功')
+      message.success(t('list.messages.createSuccess'))
       setIsModalVisible(false)
       form.resetFields()
     } catch (err: any) {
@@ -151,47 +153,47 @@ export default function AccountList() {
 
   const columns: ColumnsType<Account> = [
     {
-      title: '账户号',
+      title: t('list.columns.accountNo'),
       dataIndex: 'account_no',
       key: 'account_no',
       fixed: 'left',
     },
     {
-      title: '用户ID',
+      title: t('list.columns.userId'),
       dataIndex: 'user_id',
       key: 'user_id',
     },
     {
-      title: '账户类型',
+      title: t('list.columns.accountType'),
       dataIndex: 'account_type',
       key: 'account_type',
       render: (v: number) => ACCOUNT_TYPE_LABELS[v] ?? v,
     },
     {
-      title: '业务类型',
+      title: t('list.columns.businessType'),
       dataIndex: 'account_business_type',
       key: 'account_business_type',
       render: (v: number) => businessTypeLabel(v),
     },
     {
-      title: '余额',
+      title: t('list.columns.balance'),
       dataIndex: 'balance',
       key: 'balance',
       render: (v: string, row: Account) => displayMoney(v, row.currency),
     },
     {
-      title: '可用余额',
+      title: t('list.columns.availableBalance'),
       dataIndex: 'available_balance',
       key: 'available_balance',
       render: (v: string, row: Account) => displayMoney(v, row.currency),
     },
     {
-      title: '币种',
+      title: t('list.columns.currency'),
       dataIndex: 'currency',
       key: 'currency',
     },
     {
-      title: '状态',
+      title: t('list.columns.status'),
       dataIndex: 'status',
       key: 'status',
       render: (s: AccountStatus) => {
@@ -205,21 +207,21 @@ export default function AccountList() {
       },
     },
     {
-      title: '操作',
+      title: t('common:table.actions'),
       key: 'action',
       fixed: 'right',
       render: (_: any, record: Account) => (
         <Space size="small">
           <Button type="link" size="small" href={`/accounts/${record.account_no}`}>
-            详情
+            {t('list.actions.detail')}
           </Button>
           {record.status === AccountStatus.ACTIVE ? (
             <Button type="link" size="small" danger icon={<LockOutlined />}>
-              冻结
+              {t('list.actions.freeze')}
             </Button>
           ) : (
             <Button type="link" size="small" icon={<UnlockOutlined />}>
-              解冻
+              {t('list.actions.unfreeze')}
             </Button>
           )}
         </Space>
@@ -238,14 +240,14 @@ export default function AccountList() {
               setAccounts([])
             }}
           >
-            <Radio.Button value="account_no">按账户号查询</Radio.Button>
-            <Radio.Button value="user_business_type">按用户ID+业务类型查询</Radio.Button>
+            <Radio.Button value="account_no">{t('list.searchMode.byAccountNo')}</Radio.Button>
+            <Radio.Button value="user_business_type">{t('list.searchMode.byUserAndBusinessType')}</Radio.Button>
           </Radio.Group>
 
           {searchMode === 'account_no' ? (
             <Space>
               <Input
-                placeholder="输入账户号"
+                placeholder={t('list.placeholders.accountNo')}
                 prefix={<SearchOutlined />}
                 value={accountNoInput}
                 onChange={(e) => setAccountNoInput(e.target.value)}
@@ -253,39 +255,39 @@ export default function AccountList() {
                 style={{ width: 280 }}
               />
               <Button type="primary" loading={loading} onClick={handleSearch}>
-                查询
+                {t('common:actions.search')}
               </Button>
             </Space>
           ) : (
             <Space>
               <Input
-                placeholder="用户ID"
+                placeholder={t('list.placeholders.userId')}
                 value={userIdInput}
                 onChange={(e) => setUserIdInput(e.target.value)}
                 style={{ width: 140 }}
               />
               <Select
-                placeholder="业务类型"
+                placeholder={t('list.placeholders.businessType')}
                 value={bizTypeInput}
                 onChange={(v) => setBizTypeInput(v)}
                 style={{ width: 240 }}
                 showSearch
                 optionFilterProp="label"
-                notFoundContent="请先在「业务类型」页登记 business_type"
+                notFoundContent={t('list.businessTypeEmpty')}
                 options={filterBusinessTypes.map(r => ({
                   value: r.business_type,
                   label: `${r.business_type} · ${r.business_type_code}`,
                 }))}
               />
               <Button type="primary" loading={loading} onClick={handleSearch}>
-                查询
+                {t('common:actions.search')}
               </Button>
             </Space>
           )}
         </Space>
 
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setIsModalVisible(true)}>
-          创建账户
+          {t('list.createButton')}
         </Button>
       </div>
 
@@ -295,40 +297,40 @@ export default function AccountList() {
         rowKey="account_no"
         loading={loading}
         pagination={false}
-        locale={{ emptyText: '请输入查询条件' }}
+        locale={{ emptyText: t('list.tableEmpty') }}
       />
 
       <Modal
-        title="创建账户"
+        title={t('list.modal.title')}
         open={isModalVisible}
         onOk={handleCreateAccount}
         onCancel={() => { setIsModalVisible(false); form.resetFields() }}
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="userId" label="用户ID" rules={[{ required: true }]} tooltip="用户 base 1e8、商户 base 9e8、系统保留 [1,10000]">
-            <Input placeholder="请输入用户ID" />
+          <Form.Item name="userId" label={t('list.modal.userIdLabel')} rules={[{ required: true }]} tooltip={t('list.modal.userIdTooltip')}>
+            <Input placeholder={t('list.modal.userIdPlaceholder')} />
           </Form.Item>
-          <Form.Item name="accountType" label="账户类型" rules={[{ required: true }]}>
+          <Form.Item name="accountType" label={t('list.modal.accountTypeLabel')} rules={[{ required: true }]}>
             <Select
-              placeholder="请选择账户类型"
+              placeholder={t('list.modal.accountTypePlaceholder')}
               // 只显示业务账户类型（is_platform=0）；平台账户请去"系统账户"页创建
               options={BUSINESS_ACCOUNT_TYPES.map(t => ({ value: t.value, label: t.label }))}
             />
           </Form.Item>
           <Form.Item
             name="accountBusinessType"
-            label="业务类型"
-            rules={[{ required: true, message: '请先选择账户类型，再选业务类型' }]}
-            tooltip="仅显示与选中账户类型关联、且已在 meta DB 登记的 business_type"
+            label={t('list.modal.businessTypeLabel')}
+            rules={[{ required: true, message: t('list.modal.businessTypeRequired') }]}
+            tooltip={t('list.modal.businessTypeTooltip')}
           >
             <Select
-              placeholder={selectedAccountType ? '请选择业务类型' : '请先选择账户类型'}
+              placeholder={selectedAccountType ? t('list.modal.businessTypePlaceholderSelect') : t('list.modal.businessTypePlaceholderPickType')}
               disabled={!selectedAccountType}
               options={allowedBusinessTypes.map(bt => ({
                 value: bt.business_type,
                 label: `${bt.business_type} · ${bt.business_type_code}`,
               }))}
-              notFoundContent={selectedAccountType ? '该 account_type 下暂无已登记 business_type；请先在"系统账户"页渠道注册' : undefined}
+              notFoundContent={selectedAccountType ? t('list.modal.businessTypeEmpty') : undefined}
             />
           </Form.Item>
           {/*
@@ -336,16 +338,16 @@ export default function AccountList() {
             展示用单独一个只读 Input 映射成 ASSET/LIABILITY/…。避免字符串被提交导致
             后端 json.Unmarshal 报 "cannot unmarshal string into Go struct field .category of type int32"。
           */}
-          <Form.Item name="category" label="账户分类 (自动由业务类型推导)" hidden>
+          <Form.Item name="category" label={t('list.modal.categoryLabel')} hidden>
             <Input />
           </Form.Item>
-          <Form.Item label="账户分类 (自动由业务类型推导)">
-            <Input value={CATEGORY_LABEL[derivedCategory] || ''} readOnly placeholder="选择业务类型后自动填写" />
+          <Form.Item label={t('list.modal.categoryLabel')}>
+            <Input value={CATEGORY_LABEL[derivedCategory] || ''} readOnly placeholder={t('list.modal.categoryPlaceholder')} />
           </Form.Item>
-          <Form.Item name="currency" label="币种" initialValue="PHP">
+          <Form.Item name="currency" label={t('list.modal.currencyLabel')} initialValue="PHP">
             <Select>
-              <Select.Option value="PHP">菲律宾比索</Select.Option>
-              <Select.Option value="USD">美元</Select.Option>
+              <Select.Option value="PHP">{t('list.modal.currencyOptions.php')}</Select.Option>
+              <Select.Option value="USD">{t('list.modal.currencyOptions.usd')}</Select.Option>
             </Select>
           </Form.Item>
         </Form>

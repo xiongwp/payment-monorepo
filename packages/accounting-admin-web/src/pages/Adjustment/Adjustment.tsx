@@ -1,5 +1,6 @@
 import { Form, Input, InputNumber, Radio, Button, Card, message, Descriptions } from 'antd'
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { adjustBalance } from '../../api/accounting'
 import type { AdjustBalanceRequest, AdjustBalanceResponse } from '../../types/accounting'
 import { display as displayMoney } from '../../utils/money'
@@ -11,6 +12,7 @@ import { display as displayMoney } from '../../utils/money'
 const FALLBACK_CURRENCY = 'PHP'
 
 export default function Adjustment() {
+  const { t } = useTranslation('config')
   const [form] = Form.useForm<AdjustBalanceRequest>()
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<AdjustBalanceResponse | null>(null)
@@ -25,10 +27,10 @@ export default function Adjustment() {
         operator: values.operator || 'admin',
       })
       setResult(res)
-      message.success('调账成功')
+      message.success(t('adjustment.messages.success'))
       form.resetFields()
     } catch (err: unknown) {
-      const msg = (err as { message?: string })?.message ?? '调账失败'
+      const msg = (err as { message?: string })?.message ?? t('adjustment.messages.failed')
       message.error(msg)
     } finally {
       setLoading(false)
@@ -37,7 +39,7 @@ export default function Adjustment() {
 
   return (
     <div>
-      <Card title="调账申请" style={{ marginBottom: 16 }}>
+      <Card title={t('adjustment.formTitle')} style={{ marginBottom: 16 }}>
         <Form
           form={form}
           layout="vertical"
@@ -45,56 +47,56 @@ export default function Adjustment() {
           style={{ maxWidth: 600 }}
           initialValues={{ adjustment_type: 'MANUAL', is_increase: true }}
         >
-          <Form.Item name="account_no" label="账户号" rules={[{ required: true, message: '请输入账户号' }]}>
-            <Input placeholder="请输入账户号" />
+          <Form.Item name="account_no" label={t('adjustment.form.accountNoLabel')} rules={[{ required: true, message: t('adjustment.form.accountNoRequired') }]}>
+            <Input placeholder={t('adjustment.form.accountNoPlaceholder')} />
           </Form.Item>
 
-          <Form.Item name="adjustment_type" label="调账类型" rules={[{ required: true }]}>
+          <Form.Item name="adjustment_type" label={t('adjustment.form.typeLabel')} rules={[{ required: true }]}>
             <Radio.Group>
-              <Radio value="CORRECTION">余额修正</Radio>
-              <Radio value="COMPENSATE">补偿调账</Radio>
-              <Radio value="MANUAL">手工调账</Radio>
+              <Radio value="CORRECTION">{t('adjustment.form.typeCorrection')}</Radio>
+              <Radio value="COMPENSATE">{t('adjustment.form.typeCompensate')}</Radio>
+              <Radio value="MANUAL">{t('adjustment.form.typeManual')}</Radio>
             </Radio.Group>
           </Form.Item>
 
-          <Form.Item name="amount" label="调账金额" rules={[{ required: true, message: '请输入调账金额' }]}>
-            <InputNumber min={0} precision={2} style={{ width: '100%' }} placeholder="0.00" />
+          <Form.Item name="amount" label={t('adjustment.form.amountLabel')} rules={[{ required: true, message: t('adjustment.form.amountRequired') }]}>
+            <InputNumber min={0} precision={2} style={{ width: '100%' }} placeholder={t('adjustment.form.amountPlaceholder')} />
           </Form.Item>
 
-          <Form.Item name="is_increase" label="调账方向" rules={[{ required: true }]}>
+          <Form.Item name="is_increase" label={t('adjustment.form.directionLabel')} rules={[{ required: true }]}>
             <Radio.Group>
-              <Radio value={true}>增加余额</Radio>
-              <Radio value={false}>减少余额</Radio>
+              <Radio value={true}>{t('adjustment.form.directionIncrease')}</Radio>
+              <Radio value={false}>{t('adjustment.form.directionDecrease')}</Radio>
             </Radio.Group>
           </Form.Item>
 
-          <Form.Item name="reason" label="调账原因" rules={[{ required: true, message: '请输入调账原因' }]}>
-            <Input.TextArea rows={4} placeholder="请输入调账原因" />
+          <Form.Item name="reason" label={t('adjustment.form.reasonLabel')} rules={[{ required: true, message: t('adjustment.form.reasonRequired') }]}>
+            <Input.TextArea rows={4} placeholder={t('adjustment.form.reasonPlaceholder')} />
           </Form.Item>
 
-          <Form.Item name="approval_no" label="审批单号" rules={[{ required: true, message: '请输入审批单号' }]}>
-            <Input placeholder="请输入审批单号" />
+          <Form.Item name="approval_no" label={t('adjustment.form.approvalLabel')} rules={[{ required: true, message: t('adjustment.form.approvalRequired') }]}>
+            <Input placeholder={t('adjustment.form.approvalPlaceholder')} />
           </Form.Item>
 
-          <Form.Item name="operator" label="操作员">
-            <Input placeholder="可选，默认 admin" />
+          <Form.Item name="operator" label={t('adjustment.form.operatorLabel')}>
+            <Input placeholder={t('adjustment.form.operatorPlaceholder')} />
           </Form.Item>
 
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={loading}>
-              提交调账申请
+              {t('adjustment.submitButton')}
             </Button>
           </Form.Item>
         </Form>
       </Card>
 
       {result && (
-        <Card title="调账结果">
+        <Card title={t('adjustment.resultTitle')}>
           <Descriptions column={2} bordered size="small">
-            <Descriptions.Item label="交易ID">{result.transaction_id}</Descriptions.Item>
-            <Descriptions.Item label="凭证号">{result.voucher_no}</Descriptions.Item>
-            <Descriptions.Item label="调账前余额">{displayMoney(result.balance_before, FALLBACK_CURRENCY)}</Descriptions.Item>
-            <Descriptions.Item label="调账后余额">{displayMoney(result.balance_after, FALLBACK_CURRENCY)}</Descriptions.Item>
+            <Descriptions.Item label={t('adjustment.result.transactionId')}>{result.transaction_id}</Descriptions.Item>
+            <Descriptions.Item label={t('adjustment.result.voucherNo')}>{result.voucher_no}</Descriptions.Item>
+            <Descriptions.Item label={t('adjustment.result.balanceBefore')}>{displayMoney(result.balance_before, FALLBACK_CURRENCY)}</Descriptions.Item>
+            <Descriptions.Item label={t('adjustment.result.balanceAfter')}>{displayMoney(result.balance_after, FALLBACK_CURRENCY)}</Descriptions.Item>
           </Descriptions>
         </Card>
       )}

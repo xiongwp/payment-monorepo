@@ -1,0 +1,31 @@
+{
+  "panel": {
+    "title": "Key management (kms-manage)",
+    "masterKeys": "Master keys",
+    "columns": {
+      "keyId": "Key ID",
+      "active": "ACTIVE",
+      "algorithm": "Algorithm",
+      "createdAt": "Created at"
+    },
+    "encrypt": {
+      "title": "Encrypt",
+      "plaintext": "Plaintext",
+      "context": "AAD context",
+      "contextHint": "Recommended \"svc:<service>:<field>\", e.g. svc:paycore:auth_tokens",
+      "contextPlaceholder": "svc:paycore:auth_tokens",
+      "keyId": "Key ID (blank = active)",
+      "submit": "Encrypt",
+      "resultLabel": "Ciphertext:"
+    },
+    "decrypt": {
+      "title": "Decrypt",
+      "ciphertext": "Ciphertext",
+      "ciphertextPlaceholder": "kms:v1:main:...",
+      "context": "AAD context",
+      "contextPlaceholder": "Same context used when encrypting",
+      "submit": "Decrypt",
+      "resultLabel": "Plaintext:"
+    }
+  }
+}

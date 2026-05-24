@@ -1,0 +1,97 @@
+{
+  "monitor": {
+    "title": "TCC 分布式事务监控",
+    "tabs": {
+      "byId": "按 TCC ID 查询",
+      "stuck": "Stuck 分支监控"
+    }
+  },
+  "search": {
+    "placeholder": "输入 TCC ID（voucherNo）",
+    "emptyInput": "请输入 TCC ID",
+    "queryFailed": "查询失败"
+  },
+  "overall": {
+    "tccId": "TCC ID",
+    "status": "整体状态",
+    "branchCount": "分支数",
+    "cancelWhole": "取消整笔 TCC"
+  },
+  "cancel": {
+    "tccTitle": "取消 TCC 事务",
+    "tccContent": "将取消 {{tccId}} 下所有 TRYING 分支，释放冻结资金。确认？",
+    "confirmOk": "确认取消",
+    "success": "取消成功",
+    "failed": "取消失败",
+    "branchTitle": "取消分支",
+    "branchAccount": "账户号",
+    "branchFrozen": "冻结金额",
+    "branchConfirm": "将释放冻结资金，确认取消？",
+    "branchSuccess": "分支已取消"
+  },
+  "branch": {
+    "id": "Branch ID",
+    "accountNo": "账户号",
+    "balanceDelta": "余额增量",
+    "frozenAmount": "冻结金额",
+    "status": "状态",
+    "db": "DB",
+    "table": "Table",
+    "createdAt": "创建时间",
+    "tccId": "TCC ID",
+    "action": "操作",
+    "cancel": "取消"
+  },
+  "stuck": {
+    "timeoutLabel": "超时阈值：",
+    "timeoutUnit": "分钟",
+    "limitLabel": "最多返回：",
+    "limitUnit": "条",
+    "query": "查询",
+    "retryButton": "立即 Retry Confirming（0 阈值）",
+    "retrySuccess": "立即恢复：{{recovered}} 个 CONFIRMING 半挂起 TCC 已处理",
+    "retryFailed": "恢复失败",
+    "noStuck": "暂无 stuck 分支",
+    "infoBanner": "Stuck TRYING → 由 TccRecoveryWorker 每 30s 扫一次并 cancel；CONFIRMING 半挂起 → 同 worker 调 RetryStuckConfirmingTcc 补 confirm（需 updated_at > 5min 才触发）。loadtest 后想立即恢复可点上方「立即 Retry Confirming」按钮。",
+    "warningCount": "发现 {{count}} 条 stuck 分支，请及时处理",
+    "totalSuffix": "共 {{count}} 条",
+    "emptyText": "暂无数据，点击\"查询\"加载"
+  },
+  "archive": {
+    "title": "TCC 归档",
+    "intro": "定期清理 tcc_transaction 表中已终态（CONFIRMED / CANCELLED）且超过保留期的分支记录，防止表无限增长。业务流水、凭证、日切快照都在独立表长期保存，归档 tcc_transaction 不影响审计。",
+    "tableName": "tcc_transaction",
+    "runModeTitle": "运行方式",
+    "runModeDescPrefix": "后台 worker 每 ",
+    "intervalSecondsTag": "interval_seconds",
+    "runModeDescMiddle": " 自动扫一遍所有 100 个分片，按 ",
+    "batchSizeTag": "batch_size",
+    "runModeDescSuffix": " 分批 DELETE 超期终态记录；手动点击\"立即归档\"会额外触发一轮扫描（两者并发安全）。",
+    "metricsLine": "运行成效观察 Prometheus 指标：",
+    "metricArchived": "accounting_tcc_archived_total",
+    "metricArchivedDesc": "（删除行数累计）、",
+    "metricErrors": "accounting_tcc_archive_errors_total",
+    "metricErrorsDesc": "（失败次数）。",
+    "configTitle": "当前归档配置",
+    "refresh": "刷新",
+    "loadFailed": "加载失败",
+    "intervalLabel": "扫描间隔 (interval_seconds)",
+    "intervalValue": "{{seconds}} 秒 · 约 {{display}}",
+    "retentionLabel": "保留天数 (retention_days)",
+    "retentionValue": "{{days}} 天（updated_at 早于此时限的终态分支会被删除）",
+    "batchSizeLabel": "单分片批次大小 (batch_size)",
+    "batchSizeValue": "{{rows}} 行 / 分片 / 轮",
+    "configMissing": "未能加载配置",
+    "runNowTitle": "立即归档",
+    "runNowDesc": "立即触发一轮归档扫描（每分片 {{batch}} 行上限，所有分片串行）。接口立即返回；真正的 DELETE 在后台 goroutine 中执行，需查指标看进度。",
+    "runNowButton": "立即归档",
+    "runNowSuccess": "已触发归档（异步执行）",
+    "runNowFailed": "触发失败"
+  },
+  "interval": {
+    "none": "-",
+    "hours": "{{value}} 小时",
+    "minutes": "{{value}} 分钟",
+    "seconds": "{{value}} 秒"
+  }
+}
