@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Button, Card, DatePicker, Form, Input, Space, Table, Tag, Typography, Drawer, message,
 } from 'antd'
+import { useTranslation } from 'react-i18next'
 import dayjs, { Dayjs } from 'dayjs'
 import { listAudit } from '../../api'
 import type { AuditEntry } from '../../api'
@@ -10,6 +11,7 @@ import type { AuditEntry } from '../../api'
 // order-core writes every mutating request to via AuditMiddleware.
 // No "delete" or "edit" affordance: audit trails must be tamper-evident.
 export default function AuditLogPage() {
+  const { t } = useTranslation('audit')
   const [loading, setLoading] = useState(false)
   const [rows, setRows] = useState<AuditEntry[]>([])
   const [total, setTotal] = useState(0)
@@ -47,7 +49,7 @@ export default function AuditLogPage() {
 
   return (
     <div>
-      <Typography.Title level={3}>审计日志</Typography.Title>
+      <Typography.Title level={3}>{t('orderAudit.title')}</Typography.Title>
       <Card>
         <Form layout="inline" style={{ marginBottom: 16 }} onFinish={(v) => {
           setPage(1)
@@ -57,17 +59,17 @@ export default function AuditLogPage() {
             range: v.range,
           })
         }}>
-          <Form.Item name="actor"><Input placeholder="actor" allowClear /></Form.Item>
+          <Form.Item name="actor"><Input placeholder={t('orderAudit.filters.actor')} allowClear /></Form.Item>
           <Form.Item name="action">
-            <Input placeholder="action（支持 merchant.* 前缀）" allowClear style={{ width: 220 }} />
+            <Input placeholder={t('orderAudit.filters.action')} allowClear style={{ width: 220 }} />
           </Form.Item>
-          <Form.Item name="target_type"><Input placeholder="target type" allowClear /></Form.Item>
-          <Form.Item name="target_id"><Input placeholder="target id" allowClear /></Form.Item>
+          <Form.Item name="target_type"><Input placeholder={t('orderAudit.filters.targetType')} allowClear /></Form.Item>
+          <Form.Item name="target_id"><Input placeholder={t('orderAudit.filters.targetId')} allowClear /></Form.Item>
           <Form.Item name="range"><DatePicker.RangePicker showTime /></Form.Item>
           <Form.Item>
             <Space>
-              <Button type="primary" htmlType="submit">查询</Button>
-              <Button onClick={load}>刷新</Button>
+              <Button type="primary" htmlType="submit">{t('common:actions.search')}</Button>
+              <Button onClick={load}>{t('common:actions.refresh')}</Button>
             </Space>
           </Form.Item>
         </Form>
@@ -82,26 +84,26 @@ export default function AuditLogPage() {
             showSizeChanger: true, pageSizeOptions: ['20', '50', '100', '200'],
           }}
           columns={[
-            { title: '时间', dataIndex: 'created_ms', width: 170, render: (v) => dayjs(v).format('YYYY-MM-DD HH:mm:ss') },
-            { title: 'Actor', dataIndex: 'actor', width: 160, ellipsis: true },
+            { title: t('orderAudit.columns.time'), dataIndex: 'created_ms', width: 170, render: (v) => dayjs(v).format('YYYY-MM-DD HH:mm:ss') },
+            { title: t('orderAudit.columns.actor'), dataIndex: 'actor', width: 160, ellipsis: true },
             {
-              title: 'Action', dataIndex: 'action', width: 220,
+              title: t('orderAudit.columns.action'), dataIndex: 'action', width: 220,
               render: (v: string) => <Tag>{v}</Tag>,
             },
             {
-              title: 'Target', width: 220,
+              title: t('orderAudit.columns.target'), width: 220,
               render: (_, r) => r.target_type ? `${r.target_type} / ${r.target_id || '-'}` : '-',
             },
             {
-              title: 'HTTP', width: 180,
+              title: t('orderAudit.columns.http'), width: 180,
               render: (_, r) => r.http_method
                 ? `${r.http_method} ${r.http_path} · ${r.http_status ?? ''}`
                 : '-',
             },
-            { title: 'Dur', dataIndex: 'duration_ms', width: 70, render: (v: number) => v ? `${v}ms` : '-' },
+            { title: t('orderAudit.columns.duration'), dataIndex: 'duration_ms', width: 70, render: (v: number) => v ? `${v}ms` : '-' },
             {
               title: '', width: 70,
-              render: (_, r) => <a onClick={() => setDetail(r)}>详情</a>,
+              render: (_, r) => <a onClick={() => setDetail(r)}>{t('orderAudit.columns.detail')}</a>,
             },
           ]}
         />
@@ -116,30 +118,30 @@ export default function AuditLogPage() {
         {detail && (
           <div>
             <Typography.Paragraph>
-              <Typography.Text strong>Actor: </Typography.Text>{detail.actor}
+              <Typography.Text strong>{t('orderAudit.drawer.actor')}: </Typography.Text>{detail.actor}
               {detail.actor_ip && <> · <Typography.Text code>{detail.actor_ip}</Typography.Text></>}
             </Typography.Paragraph>
             <Typography.Paragraph>
-              <Typography.Text strong>Target: </Typography.Text>
+              <Typography.Text strong>{t('orderAudit.drawer.target')}: </Typography.Text>
               {detail.target_type || '-'} / {detail.target_id || '-'}
             </Typography.Paragraph>
             <Typography.Paragraph>
-              <Typography.Text strong>HTTP: </Typography.Text>
+              <Typography.Text strong>{t('orderAudit.drawer.http')}: </Typography.Text>
               {detail.http_method} {detail.http_path} → {detail.http_status}
               {detail.duration_ms != null && ` (${detail.duration_ms}ms)`}
             </Typography.Paragraph>
-            <Typography.Title level={5}>Request body</Typography.Title>
+            <Typography.Title level={5}>{t('orderAudit.drawer.requestBody')}</Typography.Title>
             <Input.TextArea value={detail.request_body || '-'} readOnly autoSize={{ minRows: 3, maxRows: 12 }}
               style={{ fontFamily: 'monospace', fontSize: 12 }} />
             {detail.response_msg && (
               <>
-                <Typography.Title level={5} style={{ marginTop: 12 }}>Response</Typography.Title>
+                <Typography.Title level={5} style={{ marginTop: 12 }}>{t('orderAudit.drawer.response')}</Typography.Title>
                 <Input.TextArea value={detail.response_msg} readOnly autoSize={{ minRows: 2, maxRows: 10 }}
                   style={{ fontFamily: 'monospace', fontSize: 12 }} />
               </>
             )}
             <Typography.Text type="secondary" style={{ display: 'block', marginTop: 16 }}>
-              审计日志不可修改/删除（合规要求保留 ≥7 年）。
+              {t('orderAudit.drawer.footnote')}
             </Typography.Text>
           </div>
         )}

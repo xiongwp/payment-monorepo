@@ -1,5 +1,8 @@
 # ─── Stage 1: Build React ─────────────────────────────────────────────────────
-FROM node:20-alpine AS react-builder
+# Pin 到 20.18 — Node 20.20+ 在 ESM/CJS 双包解析上变严，会导致 vite 5.4.x
+# 'import { build } from "esbuild"' 报 "Named export 'build' not found"。
+# 20.18 是上一个稳定 LTS，与 vite 5.4 + esbuild 0.21 完美兼容。
+FROM node:20.18-alpine AS react-builder
 
 WORKDIR /app
 

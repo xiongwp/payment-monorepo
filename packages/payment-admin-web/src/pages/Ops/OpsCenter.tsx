@@ -14,6 +14,7 @@ import {
   Typography,
   message,
 } from 'antd'
+import { Trans, useTranslation } from 'react-i18next'
 import { request } from '../../api/client'
 
 interface ServiceHealth {
@@ -45,6 +46,7 @@ interface ConfigInfo {
 }
 
 export default function OpsCenter() {
+  const { t } = useTranslation('ops')
   const [health, setHealth] = useState<HealthOverview | null>(null)
   const [rules, setRules] = useState<RiskRule[]>([])
   const [config, setConfig] = useState<ConfigInfo | null>(null)
@@ -70,7 +72,7 @@ export default function OpsCenter() {
   const onReloadRules = async () => {
     try {
       const r = await request<{ loaded: number }>({ url: '/ops/risk/reload', method: 'POST' })
-      message.success(`规则已重载：${r.loaded} 条`)
+      message.success(t('risk.reloadSuccess', { count: r.loaded }))
       reload()
     } catch (e) {
       message.error(String(e))
@@ -82,22 +84,21 @@ export default function OpsCenter() {
 
   return (
     <div>
-      <Typography.Title level={3}>运营中心</Typography.Title>
+      <Typography.Title level={3}>{t('title')}</Typography.Title>
 
       {/* ── 全平台动态配置入口（config-center） ── */}
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="全平台动态配置已收口到 config-center"
+        message={t('configCenter.message')}
         description={
           <div>
             <div style={{ marginBottom: 8 }}>
-              所有动态配置（rate_limit / 风控阈值 / 熔断 / TTL / 路由权重 / 队列参数 等）改一次即可
-              秒级热更新到集群所有副本。下方各服务状态仅作只读监控。
+              {t('configCenter.description')}
             </div>
             <Button type="primary" size="small" href={ccURL} target="_blank">
-              打开 Config Center 管理页
+              {t('configCenter.open')}
             </Button>
             <Button
               size="small"
@@ -105,7 +106,7 @@ export default function OpsCenter() {
               href={ccURL + 'audit'}
               target="_blank"
             >
-              审计日志
+              {t('configCenter.audit')}
             </Button>
             <Button
               size="small"
@@ -113,7 +114,7 @@ export default function OpsCenter() {
               href={ccURL + 'items'}
               target="_blank"
             >
-              全平台 key 检索
+              {t('configCenter.keySearch')}
             </Button>
           </div>
         }
@@ -121,16 +122,16 @@ export default function OpsCenter() {
 
       {/* ── 服务健康 ── */}
       <Card
-        title="服务健康"
+        title={t('health.title')}
         loading={loading}
-        extra={<Button onClick={reload} size="small">刷新</Button>}
+        extra={<Button onClick={reload} size="small">{t('common:actions.refresh')}</Button>}
       >
         {health && (
           <>
             <Alert
               type={health.overall ? 'success' : 'error'}
               showIcon
-              message={health.overall ? '所有服务正常' : '部分服务异常'}
+              message={health.overall ? t('health.allHealthy') : t('health.someUnhealthy')}
               style={{ marginBottom: 16 }}
             />
             <Table<ServiceHealth>
@@ -139,15 +140,15 @@ export default function OpsCenter() {
               pagination={false}
               size="small"
               columns={[
-                { title: '服务', dataIndex: 'name' },
+                { title: t('health.columns.service'), dataIndex: 'name' },
                 {
-                  title: '状态',
+                  title: t('health.columns.status'),
                   dataIndex: 'healthy',
                   render: (v) =>
-                    v ? <Badge status="success" text="健康" /> : <Badge status="error" text="异常" />,
+                    v ? <Badge status="success" text={t('health.healthy')} /> : <Badge status="error" text={t('health.unhealthy')} />,
                 },
-                { title: '延迟', dataIndex: 'latency' },
-                { title: '错误', dataIndex: 'error', render: (v) => v || '—' },
+                { title: t('health.columns.latency'), dataIndex: 'latency' },
+                { title: t('health.columns.error'), dataIndex: 'error', render: (v) => v || '—' },
               ]}
             />
           </>
@@ -158,14 +159,14 @@ export default function OpsCenter() {
 
       {/* ── 风控规则 ── */}
       <Card
-        title="风控规则（只读监控）"
+        title={t('risk.title')}
         extra={
           <Space>
             <Button size="small" href={ccURL + 'ns/risk-manage'} target="_blank">
-              在 Config Center 编辑
+              {t('risk.editInConfigCenter')}
             </Button>
             <Button onClick={onReloadRules} size="small">
-              强制重载（兼容老路径）
+              {t('risk.forceReload')}
             </Button>
           </Space>
         }
@@ -174,14 +175,18 @@ export default function OpsCenter() {
           <Alert
             type="info"
             showIcon
-            message="规则配置已迁到 Config Center"
+            message={t('risk.migrated.title')}
             description={
               <span>
-                修改 / 新增 / 灰度 / 回滚规则请在 Config Center
+                <Trans
+                  i18nKey="risk.migrated.prefix"
+                  ns="ops"
+                />
+                {' '}
                 <a href={ccURL + 'ns/risk-manage'} target="_blank" rel="noreferrer">
-                  {' '}namespace=risk-manage{' '}
+                  {' '}{t('risk.migrated.linkText')}{' '}
                 </a>
-                操作；改完秒级 OnChange 热更新到所有 risk-manage 副本。
+                {t('risk.migrated.suffix')}
               </span>
             }
           />
@@ -192,14 +197,14 @@ export default function OpsCenter() {
             pagination={false}
             size="small"
             columns={[
-              { title: 'ID', dataIndex: 'id', width: 200 },
-              { title: '规则名', dataIndex: 'name' },
-              { title: '类型', dataIndex: 'type', render: (v) => <Tag>{v}</Tag> },
+              { title: t('risk.columns.id'), dataIndex: 'id', width: 200 },
+              { title: t('risk.columns.name'), dataIndex: 'name' },
+              { title: t('risk.columns.type'), dataIndex: 'type', render: (v) => <Tag>{v}</Tag> },
               {
-                title: '状态',
+                title: t('risk.columns.status'),
                 dataIndex: 'enabled',
                 render: (v) =>
-                  v ? <Tag color="green">启用</Tag> : <Tag color="default">停用</Tag>,
+                  v ? <Tag color="green">{t('risk.columns.enabled')}</Tag> : <Tag color="default">{t('risk.columns.disabled')}</Tag>,
               },
             ]}
           />
@@ -210,10 +215,10 @@ export default function OpsCenter() {
 
       {/* ── 系统配置 ── */}
       {config && (
-        <Card title="系统配置">
+        <Card title={t('config.title')}>
           <Row gutter={16}>
             <Col span={12}>
-              <Descriptions column={1} size="small" bordered title="服务端口">
+              <Descriptions column={1} size="small" bordered title={t('config.servicePorts')}>
                 {Object.entries(config.ports || {}).map(([k, v]) => (
                   <Descriptions.Item key={k} label={k}>
                     {v}
@@ -222,10 +227,10 @@ export default function OpsCenter() {
               </Descriptions>
             </Col>
             <Col span={12}>
-              <Descriptions column={1} size="small" bordered title="功能开关">
+              <Descriptions column={1} size="small" bordered title={t('config.featureFlags')}>
                 {Object.entries(config.features || {}).map(([k, v]) => (
                   <Descriptions.Item key={k} label={k}>
-                    {v ? <Tag color="green">ON</Tag> : <Tag color="default">OFF</Tag>}
+                    {v ? <Tag color="green">{t('config.on')}</Tag> : <Tag color="default">{t('config.off')}</Tag>}
                   </Descriptions.Item>
                 ))}
               </Descriptions>

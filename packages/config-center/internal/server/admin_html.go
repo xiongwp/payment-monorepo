@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"github.com/xiongwp/config-center/internal/i18n"
 	"github.com/xiongwp/config-center/internal/service"
 )
 
@@ -168,6 +169,13 @@ func NewAdminHandler(svc *service.Service, logger *zap.Logger, introspect *token
 		"formatTime": formatTime,
 		"truncate":   truncate,
 		"isFuture":   isFuture,
+		// i18n —— 模板里直接 {{T .Lang "key"}} / {{Tf .Lang "key" "K" .V}}
+		"T":          i18n.T,
+		"Tf":         i18n.Tf,
+		"supported":  i18n.Supported,
+		// safeHTML — 把已经 i18n 校对过的 HTML 片段（含 <strong>/<code>）原样输出。
+		// 仅用于 messages_*.json 里手写的可信文案，绝不接受用户输入。
+		"safeHTML": func(s string) template.HTML { return template.HTML(s) },
 	}).Parse(adminTemplates)
 	if err != nil {
 		return nil, err
@@ -192,14 +200,87 @@ func NewAdminHandler(svc *service.Service, logger *zap.Logger, introspect *token
 //	POST /admin/items/new               提交新建
 //	GET  /admin/audit                   审计 log
 func (h *AdminHandler) Mount(mux *http.ServeMux) {
+	// 所有 admin 路由先走鉴权（注入 actor），再走语言检测（注入 lang）。
 	wrap := func(handler http.HandlerFunc) http.HandlerFunc {
-		return h.adminActorMiddleware(handler)
+		return h.adminActorMiddleware(h.adminLangMiddleware(handler))
 	}
+	// /admin/lang 切换语言：写 cookie + 302 回 referer。
+	// 单独走，不需要鉴权（语言偏好是 anonymous-safe），但需要 lang middleware
+	// 自身的不依赖路径。
+	mux.HandleFunc("/admin/lang", h.setLang)
 	mux.HandleFunc("/admin/", wrap(h.index))
 	mux.HandleFunc("/admin/ns/", wrap(h.namespaceOrKey))
 	mux.HandleFunc("/admin/items", wrap(h.listItems))
 	mux.HandleFunc("/admin/items/new", wrap(h.newItem))
 	mux.HandleFunc("/admin/audit", wrap(h.audit))
+}
+
+// ctxLangKey ctx 里保存当前语言。
+const ctxLangKey ctxKey = "config_center_lang"
+
+// WithLang 测试或非 HTTP 调用栈手动塞语言时用。
+func WithLang(ctx context.Context, lang string) context.Context {
+	return context.WithValue(ctx, ctxLangKey, lang)
+}
+
+// langFromCtx 取当前语言；缺省 zh-CN。
+func langFromCtx(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxLangKey).(string); ok && v != "" {
+		return v
+	}
+	return i18n.DefaultLang
+}
+
+// adminLangMiddleware 解析当前语言并注入 ctx。
+// 优先级：cookie admin_lang → query ?lng= → Accept-Language → 默认 zh-CN。
+func (h *AdminHandler) adminLangMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		lang := ""
+		if c, err := r.Cookie("admin_lang"); err == nil {
+			lang = c.Value
+		}
+		if lang == "" {
+			lang = r.URL.Query().Get("lng")
+		}
+		if lang == "" {
+			// 只看 Accept-Language 第一段
+			al := r.Header.Get("Accept-Language")
+			if i := strings.IndexAny(al, ",;"); i > 0 {
+				al = al[:i]
+			}
+			lang = strings.TrimSpace(al)
+		}
+		lang = i18n.NormalizeLang(lang)
+		ctx := WithLang(r.Context(), lang)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	}
+}
+
+// setLang POST /admin/lang form: lang=zh-CN|en-US, redirect=/admin/...
+// 写 cookie（1 年），302 回 referer 或 /admin/。
+func (h *AdminHandler) setLang(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	_ = r.ParseForm()
+	lang := i18n.NormalizeLang(r.FormValue("lang"))
+	http.SetCookie(w, &http.Cookie{
+		Name:     "admin_lang",
+		Value:    lang,
+		Path:     "/",
+		MaxAge:   365 * 24 * 3600,
+		HttpOnly: false, // 用户可读，不敏感
+		SameSite: http.SameSiteLaxMode,
+	})
+	redirect := r.FormValue("redirect")
+	if redirect == "" {
+		redirect = r.Referer()
+	}
+	if redirect == "" || !strings.HasPrefix(redirect, "/admin") {
+		redirect = "/admin/"
+	}
+	http.Redirect(w, r, redirect, http.StatusSeeOther)
 }
 
 // adminActorMiddleware 给所有 admin 请求做真鉴权（mTLS → IntrospectToken）。
@@ -334,9 +415,9 @@ func (h *AdminHandler) listItems(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	h.render(w, "list_items", map[string]any{
-		"Page":      "list_items",
-		"Title":      "All Config Items",
+	h.renderWithRequest(w, r, "list_items", map[string]any{
+		"Page":     "list_items",
+		"TitleKey": "page.listItems.title",
 		"Q":          q,
 		"Subscriber": sub,
 		"Rows":       rows,
@@ -348,9 +429,9 @@ func (h *AdminHandler) listItems(w http.ResponseWriter, r *http.Request) {
 func (h *AdminHandler) newItem(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		h.render(w, "new_item", map[string]any{
-		"Page":      "new_item",
-			"Title": "New Config Item",
+		h.renderWithRequest(w, r, "new_item", map[string]any{
+			"Page":     "new_item",
+			"TitleKey": "page.newItem.title",
 			// 候选 subscriber 列表（也是 namespace 列表）
 			"Services": []string{
 				"card-payment", "card-center", "order-core", "payment-core",
@@ -405,8 +486,11 @@ func (h *AdminHandler) newItem(w http.ResponseWriter, r *http.Request) {
 //   - 全平台动态配置只在本页编辑、版本化、审计、灰度推送
 //   - 改一次 → SDK watch → 集群所有副本秒级 OnChange 热更新
 type namespaceGroup struct {
-	Title string
-	Items []namespaceItem
+	// TitleKey 是 i18n key（在 messages_*.json 里查找）。
+	// 旧的 Title 字段为 fallback；模板会优先取 TitleKey via T func。
+	TitleKey string
+	Title    string
+	Items    []namespaceItem
 }
 type namespaceItem struct {
 	Name string
@@ -418,10 +502,11 @@ func (h *AdminHandler) index(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// 12 namespace 按业务角色分组，让 admin 一目了然
+	// 12 namespace 按业务角色分组，让 admin 一目了然。
+	// TitleKey 走 i18n（zh/en 都已配 messages_*.json）。
 	groups := []namespaceGroup{
 		{
-			Title: "支付核心",
+			TitleKey: "page.index.groupCorePayment",
 			Items: []namespaceItem{
 				{"order-core", "PI / refund / outbox / charge_expire"},
 				{"payment-core", "routing weights / risk fail_policy / breaker"},
@@ -429,14 +514,14 @@ func (h *AdminHandler) index(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		{
-			Title: "卡支付（PCI 隔离）",
+			TitleKey: "page.index.groupCard",
 			Items: []namespaceItem{
 				{"card-center", "tokenize 限流 / session TTL / Luhn 严格 mode"},
 				{"card-payment", "bulkhead / network 超时 / reconcile interval"},
 			},
 		},
 		{
-			Title: "用户 / 商户 / 风控",
+			TitleKey: "page.index.groupRisk",
 			Items: []namespaceItem{
 				{"user-merchant-core", "JWT TTL / OTP / bcrypt cost / retention"},
 				{"risk-manage", "rule thresholds / fail-policy / circuit breaker"},
@@ -444,7 +529,7 @@ func (h *AdminHandler) index(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		{
-			Title: "记账 / 清算 / 对账",
+			TitleKey: "page.index.groupAccounting",
 			Items: []namespaceItem{
 				{"accounting-system", "tcc_recovery / outbox.poll / day_cut.chunk_size"},
 				{"clearing-settlement", "对账批跑窗口 / 异常 case 阈值"},
@@ -452,16 +537,16 @@ func (h *AdminHandler) index(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		{
-			Title: "基础设施",
+			TitleKey: "page.index.groupInfra",
 			Items: []namespaceItem{
 				{"kms-manage", "rate_limit / SAN whitelist (敏感，建议 TARGETED)"},
 			},
 		},
 	}
-	h.render(w, "index", map[string]any{
-		"Page":      "index",
-		"Title":  "Config Center — 全平台动态配置统一入口",
-		"Groups": groups,
+	h.renderWithRequest(w, r, "index", map[string]any{
+		"Page":     "index",
+		"TitleKey": "page.index.title",
+		"Groups":   groups,
 	})
 }
 
@@ -489,9 +574,10 @@ func (h *AdminHandler) listKeys(w http.ResponseWriter, r *http.Request, ns strin
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	h.render(w, "list_keys", map[string]any{
+	lang := langFromCtx(r.Context())
+	h.renderWithRequest(w, r, "list_keys", map[string]any{
 		"Page":      "list_keys",
-		"Title":     "Namespace: " + ns,
+		"Title":     i18n.Tf(lang, "page.listKeys.title", "NS", ns),
 		"Namespace": ns,
 		"Items":     rows,
 	})
@@ -506,9 +592,10 @@ func (h *AdminHandler) keyDetail(w http.ResponseWriter, r *http.Request, ns, key
 	}
 	current, _ := h.svc.GetActiveAdmin(r.Context(), ns, key)
 	subs, _ := h.svc.GetSubscribers(r.Context(), ns, key)
-	h.render(w, "key_detail", map[string]any{
-		"Page":      "key_detail",
+	h.renderWithRequest(w, r, "key_detail", map[string]any{
+		"Page":        "key_detail",
 		"Title":       ns + "/" + key,
+		// Title 本身就是 ns/key 的纯路径标识，无需 i18n。
 		"Namespace":   ns,
 		"Key":         key,
 		"Current":     current,
@@ -541,9 +628,10 @@ func (h *AdminHandler) diff(w http.ResponseWriter, r *http.Request, ns, key stri
 		return
 	}
 	lines := unifiedDiff(a.Value, b.Value)
-	h.render(w, "diff", map[string]any{
-		"Page":      "diff",
-		"Title":     "Diff " + ns + "/" + key,
+	lang := langFromCtx(r.Context())
+	h.renderWithRequest(w, r, "diff", map[string]any{
+		"Page":  "diff",
+		"Title": i18n.Tf(lang, "page.diff.title", "From", from, "To", to) + "  (" + ns + "/" + key + ")",
 		"Namespace": ns,
 		"Key":       key,
 		"From":      a, "To": b,
@@ -623,9 +711,10 @@ func (h *AdminHandler) renderEditForm(w http.ResponseWriter, r *http.Request, ns
 	cur, _ := h.svc.GetActiveAdmin(r.Context(), ns, key)
 	// 取已有最大 effective_at —— 新版本必须严格晚于它（monotonic schedule）
 	latestEff := latestEffectiveAt(r.Context(), h.svc, ns, key)
+	lang := langFromCtx(r.Context())
 	view := map[string]any{
 		"Page":      "edit",
-		"Title":     "Edit " + ns + "/" + key,
+		"Title":     i18n.Tf(lang, "page.edit.title", "NS", ns, "Key", key),
 		"Namespace": ns,
 		"Key":       key,
 		"Current":   cur,
@@ -637,7 +726,7 @@ func (h *AdminHandler) renderEditForm(w http.ResponseWriter, r *http.Request, ns
 		// 给 datetime-local 的 min 属性用（YYYY-MM-DDTHH:MM 本地时间，浏览器原生拦截）
 		view["LatestEffectiveAttrMin"] = latestEff.Local().Add(time.Minute).Format("2006-01-02T15:04")
 	}
-	h.render(w, "edit", view)
+	h.renderWithRequest(w, r, "edit", view)
 }
 
 // latestEffectiveAt 取 (ns, key) 已有版本里最大的 effective_at（含 nil = 立即生效
@@ -808,20 +897,43 @@ func (h *AdminHandler) handleCancelPending(w http.ResponseWriter, r *http.Reques
 func (h *AdminHandler) audit(w http.ResponseWriter, r *http.Request) {
 	// 取最近 100 条 audit log
 	rows, _ := h.svc.RecentAudit(r.Context(), 100)
-	h.render(w, "audit", map[string]any{
-		"Page":      "audit",
-		"Title": "Audit Log",
-		"Rows":  rows,
+	h.renderWithRequest(w, r, "audit", map[string]any{
+		"Page":     "audit",
+		"TitleKey": "page.audit.title",
+		"Rows":     rows,
 	})
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────
 
 func (h *AdminHandler) render(w http.ResponseWriter, name string, data any) {
+	h.renderWithRequest(w, nil, name, data)
+}
+
+// renderWithRequest 是 render 的真实实现：从 ctx 取语言 + 把 Lang/Path 注入 data。
+//
+// 为了兼容已有 25+ 处 h.render(w, ...) 调用站，render 仍然存在，但内部委托到本函数。
+// 新调用建议直接走 renderWithRequest(w, r, ...)，可以让 Path 跟踪准确（影响侧栏 active）。
+func (h *AdminHandler) renderWithRequest(w http.ResponseWriter, r *http.Request, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
+
+	// 把 Lang / Path 注入 data，便于 template 用 {{T .Lang ...}} 和侧栏 active 判断。
+	if m, ok := data.(map[string]any); ok {
+		if _, exists := m["Lang"]; !exists {
+			if r != nil {
+				m["Lang"] = langFromCtx(r.Context())
+			} else {
+				m["Lang"] = i18n.DefaultLang
+			}
+		}
+		if _, exists := m["Path"]; !exists && r != nil {
+			m["Path"] = r.URL.Path
+		}
+	}
+
 	if err := h.tpl.ExecuteTemplate(w, name, data); err != nil {
 		h.logger.Error("template render failed", zap.String("name", name), zap.Error(err))
 	}
@@ -955,11 +1067,11 @@ func parseRFC3339(s string) (time.Time, error) {
 const adminTemplates = `
 {{define "layout"}}
 <!doctype html>
-<html lang="zh-CN">
+<html lang="{{.Lang}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Title}} · Config Center</title>
+<title>{{if .TitleKey}}{{T .Lang .TitleKey}}{{else}}{{.Title}}{{end}} · {{T .Lang "app.appName"}}</title>
 <style>
   /* ── 跟 payment-admin-web / accounting-admin-web (Ant Design v5) 视觉对齐 ── */
   :root {
@@ -1147,13 +1259,13 @@ const adminTemplates = `
 <body>
 <div class="app">
   <aside class="sider">
-    <div class="logo">Config Center<span class="badge-cc">v1</span></div>
+    <div class="logo">{{T .Lang "app.appName"}}<span class="badge-cc">v1</span></div>
     <nav>
-      <div class="group">概览</div>
-      <a href="/admin/" {{if .Groups}}class="active"{{end}}>首页</a>
-      <a href="/admin/items">全平台 key 检索</a>
-      <a href="/admin/audit">审计日志</a>
-      <div class="group">业务命名空间</div>
+      <div class="group">{{T .Lang "sidebar.overviewGroup"}}</div>
+      <a href="/admin/" {{if .Groups}}class="active"{{end}}>{{T .Lang "sidebar.home"}}</a>
+      <a href="/admin/items">{{T .Lang "sidebar.searchAll"}}</a>
+      <a href="/admin/audit">{{T .Lang "sidebar.audit"}}</a>
+      <div class="group">{{T .Lang "sidebar.namespacesGroup"}}</div>
       <a href="/admin/ns/order-core">order-core</a>
       <a href="/admin/ns/payment-core">payment-core</a>
       <a href="/admin/ns/payment-channel">payment-channel</a>
@@ -1169,15 +1281,23 @@ const adminTemplates = `
     </nav>
   </aside>
   <div class="main">
-    <header class="header">
+    <header class="header" style="justify-content:space-between">
       <div class="crumb">
-        <a href="/admin/">Config Center</a>
+        <a href="/admin/">{{T .Lang "header.crumbHome"}}</a>
         {{if .Namespace}}<span class="sep">/</span><a href="/admin/ns/{{.Namespace}}">{{.Namespace}}</a>{{end}}
         {{if .Key}}<span class="sep">/</span>{{.Key}}{{end}}
       </div>
+      <form method="POST" action="/admin/lang" style="display:flex;align-items:center;gap:6px;margin:0">
+        <input type="hidden" name="redirect" value="{{.Path}}">
+        <label style="color:var(--ant-text-secondary);font-size:13px">🌐 {{T .Lang "header.langLabel"}}</label>
+        <select name="lang" onchange="this.form.submit()" style="padding:2px 6px;border:1px solid var(--ant-border);border-radius:4px;font-size:13px">
+          <option value="zh-CN"{{if eq .Lang "zh-CN"}} selected{{end}}>{{T .Lang "header.langZh"}}</option>
+          <option value="en-US"{{if eq .Lang "en-US"}} selected{{end}}>{{T .Lang "header.langEn"}}</option>
+        </select>
+      </form>
     </header>
     <main class="content">
-      <h1 class="page-title">{{.Title}}</h1>
+      <h1 class="page-title">{{if .TitleKey}}{{T .Lang .TitleKey}}{{else}}{{.Title}}{{end}}</h1>
       {{template "body" .}}
     </main>
   </div>
@@ -1199,22 +1319,21 @@ const adminTemplates = `
 
 {{if eq .Page "index"}}
 <div class="alert alert-info">
-  本系统是全平台所有服务的<strong>动态配置统一入口</strong>。
-  改任一 key → SDK watch → 集群所有副本秒级 OnChange 热更新。
+  {{T .Lang "page.index.intro" | safeHTML}}
 </div>
 {{range .Groups}}
 <div class="card">
-  <div class="card-head">{{.Title}}</div>
+  <div class="card-head">{{T $.Lang .TitleKey}}</div>
   <table>
-    <thead><tr><th>Namespace</th><th>主要配置项</th><th style="width:240px">动作</th></tr></thead>
+    <thead><tr><th>{{T $.Lang "page.index.colNamespace"}}</th><th>{{T $.Lang "page.index.colNote"}}</th><th style="width:240px">{{T $.Lang "page.index.colActions"}}</th></tr></thead>
     <tbody>
     {{range .Items}}
     <tr>
       <td><strong>{{.Name}}</strong></td>
       <td class="muted">{{.Note}}</td>
       <td>
-        <a class="btn btn-default" href="/admin/ns/{{.Name}}">查看 keys</a>
-        <a class="btn" href="/admin/items/new?ns={{.Name}}" style="margin-left:6px">+ 新增 key</a>
+        <a class="btn btn-default" href="/admin/ns/{{.Name}}">{{T $.Lang "page.index.btnViewKeys"}}</a>
+        <a class="btn" href="/admin/items/new?ns={{.Name}}" style="margin-left:6px">{{T $.Lang "page.index.btnAddKey"}}</a>
       </td>
     </tr>
     {{end}}
@@ -1225,19 +1344,19 @@ const adminTemplates = `
 
 {{else if eq .Page "list_keys"}}
 <div class="toolbar">
-  <a class="btn" href="/admin/items/new?ns={{.Namespace}}">+ 新增 key</a>
-  <a class="btn btn-default" href="/admin/">← 返回首页</a>
+  <a class="btn" href="/admin/items/new?ns={{.Namespace}}">{{T .Lang "page.listKeys.btnAddKey"}}</a>
+  <a class="btn btn-default" href="/admin/">{{T .Lang "page.listKeys.btnBackHome"}}</a>
 </div>
 <div class="card">
-  <div class="card-head">{{.Namespace}} keys</div>
+  <div class="card-head">{{Tf .Lang "page.listKeys.cardHead" "NS" .Namespace}}</div>
   {{if eq (len .Items) 0}}
   <div class="card-body">
-    <p class="muted">本 namespace 暂无 key。</p>
-    <a class="btn" href="/admin/items/new?ns={{.Namespace}}">+ 写第一条 key</a>
+    <p class="muted">{{T .Lang "page.listKeys.emptyText"}}</p>
+    <a class="btn" href="/admin/items/new?ns={{.Namespace}}">{{T .Lang "page.listKeys.emptyAddFirst"}}</a>
   </div>
   {{else}}
   <table>
-    <thead><tr><th>Key</th><th style="width:120px">Active</th><th style="width:120px">Latest</th><th style="width:180px">Updated</th><th style="width:100px">动作</th></tr></thead>
+    <thead><tr><th>{{T .Lang "page.listKeys.colKey"}}</th><th style="width:120px">{{T .Lang "page.listKeys.colActive"}}</th><th style="width:120px">{{T .Lang "page.listKeys.colLatest"}}</th><th style="width:180px">{{T .Lang "page.listKeys.colUpdated"}}</th><th style="width:100px">{{T .Lang "page.listKeys.colActions"}}</th></tr></thead>
     <tbody>
     {{range .Items}}
     <tr>
@@ -1245,7 +1364,7 @@ const adminTemplates = `
       <td>v{{.ActiveVersionNum}}</td>
       <td>v{{.LatestVersionNum}}</td>
       <td class="muted">{{formatTime .UpdatedAt}}</td>
-      <td><a href="/admin/ns/{{$.Namespace}}/{{.KeyName}}/edit">编辑</a></td>
+      <td><a href="/admin/ns/{{$.Namespace}}/{{.KeyName}}/edit">{{T $.Lang "page.listKeys.btnEdit"}}</a></td>
     </tr>
     {{end}}
     </tbody>
@@ -1255,49 +1374,49 @@ const adminTemplates = `
 
 {{else if eq .Page "key_detail"}}
 <div class="toolbar">
-  <a class="btn" href="/admin/ns/{{.Namespace}}/{{.Key}}/edit">编辑（产新版本）</a>
-  <a class="btn btn-default" href="/admin/ns/{{.Namespace}}">← 返回 {{.Namespace}}</a>
+  <a class="btn" href="/admin/ns/{{.Namespace}}/{{.Key}}/edit">{{T .Lang "page.keyDetail.btnEdit"}}</a>
+  <a class="btn btn-default" href="/admin/ns/{{.Namespace}}">{{Tf .Lang "page.keyDetail.btnBack" "NS" .Namespace}}</a>
 </div>
 {{if .Current}}
 <div class="card">
-  <div class="card-head">当前生效 v{{.Current.Version}}</div>
+  <div class="card-head">{{Tf .Lang "page.keyDetail.currentHead" "Version" .Current.Version}}</div>
   <div class="card-body">
     <table>
-      <tr><th style="width:140px">Strategy</th><td><span class="badge b-{{.Current.Strategy}}">{{.Current.Strategy}}</span></td></tr>
-      <tr><th>Format</th><td>{{.Current.Format}}</td></tr>
-      <tr><th>Effective</th><td>{{formatTime .Current.EffectiveAt}}</td></tr>
-      <tr><th>Expire</th><td>{{formatTime .Current.ExpireAt}}</td></tr>
-      <tr><th>Updated By</th><td>{{.Current.CreatedBy}}</td></tr>
-      <tr><th>Reason</th><td class="muted">{{.Current.ChangeReason}}</td></tr>
-      <tr><th>Value</th><td><pre>{{truncate .Current.Value 2048}}</pre></td></tr>
+      <tr><th style="width:140px">{{T .Lang "page.keyDetail.fieldStrategy"}}</th><td><span class="badge b-{{.Current.Strategy}}">{{.Current.Strategy}}</span></td></tr>
+      <tr><th>{{T .Lang "page.keyDetail.fieldFormat"}}</th><td>{{.Current.Format}}</td></tr>
+      <tr><th>{{T .Lang "page.keyDetail.fieldEffective"}}</th><td>{{formatTime .Current.EffectiveAt}}</td></tr>
+      <tr><th>{{T .Lang "page.keyDetail.fieldExpire"}}</th><td>{{formatTime .Current.ExpireAt}}</td></tr>
+      <tr><th>{{T .Lang "page.keyDetail.fieldUpdatedBy"}}</th><td>{{.Current.CreatedBy}}</td></tr>
+      <tr><th>{{T .Lang "page.keyDetail.fieldReason"}}</th><td class="muted">{{.Current.ChangeReason}}</td></tr>
+      <tr><th>{{T .Lang "page.keyDetail.fieldValue"}}</th><td><pre>{{truncate .Current.Value 2048}}</pre></td></tr>
     </table>
   </div>
 </div>
 {{end}}
 {{if .Subscribers}}
 <div class="card">
-  <div class="card-head">订阅服务</div>
+  <div class="card-head">{{T .Lang "page.keyDetail.subscribersHead"}}</div>
   <div class="card-body">{{range .Subscribers}}<span class="badge b-FULL">{{.}}</span> {{end}}</div>
 </div>
 {{end}}
 <div class="card">
-  <div class="card-head">历史版本</div>
+  <div class="card-head">{{T .Lang "page.keyDetail.historyHead"}}</div>
   {{if eq (len .Versions) 0}}
-  <div class="card-body"><p class="muted">无历史版本</p></div>
+  <div class="card-body"><p class="muted">{{T .Lang "page.keyDetail.historyEmpty"}}</p></div>
   {{else}}
   <table>
-    <thead><tr><th>Version</th><th>状态</th><th>Strategy</th><th>Effective At</th><th>Created By</th><th>Created At</th><th>Reason</th><th style="width:340px">动作</th></tr></thead>
+    <thead><tr><th>{{T .Lang "page.keyDetail.colVersion"}}</th><th>{{T .Lang "page.keyDetail.colStatus"}}</th><th>{{T .Lang "page.keyDetail.fieldStrategy"}}</th><th>{{T .Lang "page.keyDetail.colEffectiveAt"}}</th><th>{{T .Lang "page.keyDetail.colCreatedBy"}}</th><th>{{T .Lang "page.keyDetail.colCreatedAt"}}</th><th>{{T .Lang "page.keyDetail.colReason"}}</th><th style="width:340px">{{T .Lang "page.keyDetail.colActions"}}</th></tr></thead>
     <tbody>
     {{range .Versions}}
     <tr>
       <td>v{{.Version}}</td>
       <td>
-        {{if and $.Current (eq .Version $.Current.Version)}}<span class="badge b-FULL">当前生效</span>
-        {{else if .EffectiveAt}}{{if isFuture .EffectiveAt}}<span class="badge b-CANARY">待生效</span>{{else}}<span class="badge b-TARGETED">历史</span>{{end}}
-        {{else}}<span class="badge b-TARGETED">历史</span>{{end}}
+        {{if and $.Current (eq .Version $.Current.Version)}}<span class="badge b-FULL">{{T $.Lang "page.keyDetail.tagCurrent"}}</span>
+        {{else if .EffectiveAt}}{{if isFuture .EffectiveAt}}<span class="badge b-CANARY">{{T $.Lang "page.keyDetail.tagPending"}}</span>{{else}}<span class="badge b-TARGETED">{{T $.Lang "page.keyDetail.tagHistory"}}</span>{{end}}
+        {{else}}<span class="badge b-TARGETED">{{T $.Lang "page.keyDetail.tagHistory"}}</span>{{end}}
       </td>
       <td><span class="badge b-{{.Strategy}}">{{.Strategy}}</span></td>
-      <td class="muted">{{if .EffectiveAt}}{{formatTime .EffectiveAt}}{{else}}立即{{end}}</td>
+      <td class="muted">{{if .EffectiveAt}}{{formatTime .EffectiveAt}}{{else}}{{T $.Lang "page.keyDetail.effectiveNow"}}{{end}}</td>
       <td>{{.CreatedBy}}</td>
       <td class="muted">{{formatTime .CreatedAt}}</td>
       <td class="muted">{{truncate .ChangeReason 48}}</td>
@@ -1308,19 +1427,19 @@ const adminTemplates = `
           <form method="POST" action="/admin/ns/{{$.Namespace}}/{{$.Key}}/cancel" style="display:inline-flex;gap:4px;align-items:center">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="version" value="{{.Version}}">
-            <input type="text" name="reason" placeholder="取消原因" style="width:140px">
-            <button class="btn btn-danger" type="submit" onclick="return confirm('确认取消 pending v{{.Version}}？此版本将被永久删除')">取消</button>
+            <input type="text" name="reason" placeholder="{{T $.Lang "page.keyDetail.cancelPlaceholder"}}" style="width:140px">
+            <button class="btn btn-danger" type="submit" onclick="return confirm('{{Tf $.Lang "page.keyDetail.cancelConfirm" "Version" .Version}}')">{{T $.Lang "page.keyDetail.btnCancel"}}</button>
           </form>
           {{else}}
           {{/* 已生效过的历史版本：可以 rollback */}}
           <form method="POST" action="/admin/ns/{{$.Namespace}}/{{$.Key}}/rollback" style="display:inline-flex;gap:4px;align-items:center">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <input type="hidden" name="to" value="{{.Version}}">
-            <input type="text" name="reason" placeholder="rollback 原因" style="width:140px">
-            <button class="btn btn-danger" type="submit" onclick="return confirm('确认回滚到 v{{.Version}}？')">回滚</button>
+            <input type="text" name="reason" placeholder="{{T $.Lang "page.keyDetail.rollbackPlaceholder"}}" style="width:140px">
+            <button class="btn btn-danger" type="submit" onclick="return confirm('{{Tf $.Lang "page.keyDetail.rollbackConfirm" "Version" .Version}}')">{{T $.Lang "page.keyDetail.btnRollback"}}</button>
           </form>
           {{end}}
-          <a class="btn btn-default" href="/admin/ns/{{$.Namespace}}/{{$.Key}}/diff?from={{.Version}}&to={{$.Current.Version}}">diff</a>
+          <a class="btn btn-default" href="/admin/ns/{{$.Namespace}}/{{$.Key}}/diff?from={{.Version}}&to={{$.Current.Version}}">{{T $.Lang "page.keyDetail.btnDiff"}}</a>
         {{end}}
       </td>
     </tr>
@@ -1332,12 +1451,12 @@ const adminTemplates = `
 
 {{else if eq .Page "diff"}}
 <div class="toolbar">
-  <a class="btn btn-default" href="/admin/ns/{{.Namespace}}/{{.Key}}">← 返回 {{.Namespace}}/{{.Key}}</a>
+  <a class="btn btn-default" href="/admin/ns/{{.Namespace}}/{{.Key}}">{{Tf .Lang "page.diff.btnBack" "NS" .Namespace "Key" .Key}}</a>
 </div>
 <div class="card">
-  <div class="card-head">Diff v{{.From.Version}} → v{{.To.Version}}</div>
+  <div class="card-head">{{Tf .Lang "page.diff.cardHead" "From" .From.Version "To" .To.Version}}</div>
   <table>
-    <thead><tr><th style="width:60px">old</th><th style="width:60px">new</th><th style="width:80px">kind</th><th>line</th></tr></thead>
+    <thead><tr><th style="width:60px">{{T .Lang "page.diff.colOld"}}</th><th style="width:60px">{{T .Lang "page.diff.colNew"}}</th><th style="width:80px">{{T .Lang "page.diff.colKind"}}</th><th>{{T .Lang "page.diff.colLine"}}</th></tr></thead>
     <tbody>
     {{range .Lines}}
     <tr>
@@ -1353,94 +1472,94 @@ const adminTemplates = `
 
 {{else if eq .Page "edit"}}
 <div class="toolbar">
-  <a class="btn btn-default" href="/admin/ns/{{.Namespace}}/{{.Key}}">← 返回 {{.Namespace}}/{{.Key}}</a>
+  <a class="btn btn-default" href="/admin/ns/{{.Namespace}}/{{.Key}}">{{Tf .Lang "page.edit.btnBack" "NS" .Namespace "Key" .Key}}</a>
 </div>
 <div class="card">
-  <div class="card-head">编辑 {{.Namespace}}/{{.Key}}（提交后产新版本）</div>
+  <div class="card-head">{{Tf .Lang "page.edit.cardHead" "NS" .Namespace "Key" .Key}}</div>
   <div class="card-body">
     <form method="POST" action="/admin/ns/{{.Namespace}}/{{.Key}}/put">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-      <div class="row"><label>Format</label>
+      <div class="row"><label>{{T .Lang "page.edit.labelFormat"}}</label>
         <select name="format">
           <option value="json"{{if and .Current (eq .Current.Format "json")}} selected{{end}}>json</option>
           <option value="plain"{{if and .Current (eq .Current.Format "plain")}} selected{{end}}>plain</option>
           <option value="yaml"{{if and .Current (eq .Current.Format "yaml")}} selected{{end}}>yaml</option>
         </select>
       </div>
-      <div class="row"><label>Strategy（发布策略）</label>
+      <div class="row"><label>{{T .Lang "page.edit.labelStrategy"}}</label>
         <select name="strategy">
-          <option value="FULL"{{if and .Current (eq .Current.Strategy "FULL")}} selected{{end}}>FULL（全量推送）</option>
-          <option value="CANARY"{{if and .Current (eq .Current.Strategy "CANARY")}} selected{{end}}>CANARY（灰度）</option>
-          <option value="TARGETED"{{if and .Current (eq .Current.Strategy "TARGETED")}} selected{{end}}>TARGETED（白名单）</option>
-          <option value="SCHEDULED"{{if and .Current (eq .Current.Strategy "SCHEDULED")}} selected{{end}}>SCHEDULED（按时生效）</option>
+          <option value="FULL"{{if and .Current (eq .Current.Strategy "FULL")}} selected{{end}}>{{T .Lang "page.edit.strategyFull"}}</option>
+          <option value="CANARY"{{if and .Current (eq .Current.Strategy "CANARY")}} selected{{end}}>{{T .Lang "page.edit.strategyCanary"}}</option>
+          <option value="TARGETED"{{if and .Current (eq .Current.Strategy "TARGETED")}} selected{{end}}>{{T .Lang "page.edit.strategyTargeted"}}</option>
+          <option value="SCHEDULED"{{if and .Current (eq .Current.Strategy "SCHEDULED")}} selected{{end}}>{{T .Lang "page.edit.strategyScheduled"}}</option>
         </select>
       </div>
-      <div class="row"><label>Strategy Spec (JSON，CANARY/TARGETED 用)</label><textarea name="strategy_spec" rows="2">{{if .Current}}{{.Current.StrategySpec}}{{end}}</textarea></div>
-      <div class="row"><label>Effective at（留空立即生效；必须晚于当前时间{{if .LatestEffectiveStr}} 且晚于已有最新版本生效时间 {{.LatestEffectiveStr}}{{end}}）</label><input name="effective_at" type="datetime-local"{{if .LatestEffectiveAttrMin}} min="{{.LatestEffectiveAttrMin}}"{{end}}></div>
-      <div class="row"><label>Value</label><textarea name="value" rows="10" required>{{if .Current}}{{.Current.Value}}{{end}}</textarea></div>
-      <div class="row"><label>变更说明（必填，写入 audit log）</label><input name="reason" required></div>
-      <div class="row"><button class="btn" type="submit">提交（产新版本）</button></div>
+      <div class="row"><label>{{T .Lang "page.edit.labelStrategySpec"}}</label><textarea name="strategy_spec" rows="2">{{if .Current}}{{.Current.StrategySpec}}{{end}}</textarea></div>
+      <div class="row"><label>{{T .Lang "page.edit.labelEffectiveAt"}}{{if .LatestEffectiveStr}}{{Tf .Lang "page.edit.labelEffectiveAtTail" "Latest" .LatestEffectiveStr}}{{end}}{{T .Lang "page.edit.labelEffectiveAtClose"}}</label><input name="effective_at" type="datetime-local"{{if .LatestEffectiveAttrMin}} min="{{.LatestEffectiveAttrMin}}"{{end}}></div>
+      <div class="row"><label>{{T .Lang "page.edit.labelValue"}}</label><textarea name="value" rows="10" required>{{if .Current}}{{.Current.Value}}{{end}}</textarea></div>
+      <div class="row"><label>{{T .Lang "page.edit.labelReason"}}</label><input name="reason" required></div>
+      <div class="row"><button class="btn" type="submit">{{T .Lang "page.edit.btnSubmit"}}</button></div>
     </form>
   </div>
 </div>
 
 {{else if eq .Page "new_item"}}
 <div class="toolbar">
-  <a class="btn btn-default" href="/admin/">← 返回首页</a>
+  <a class="btn btn-default" href="/admin/">{{T .Lang "page.newItem.btnBack"}}</a>
 </div>
 <div class="card">
-  <div class="card-head">新增 Config Item</div>
+  <div class="card-head">{{T .Lang "page.newItem.cardHead"}}</div>
   <div class="card-body">
     <form method="POST" action="/admin/items/new">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-      <div class="row"><label>Namespace</label>
+      <div class="row"><label>{{T .Lang "page.newItem.labelNamespace"}}</label>
         <select name="namespace">
           {{range .Services}}<option value="{{.}}">{{.}}</option>{{end}}
         </select>
       </div>
-      <div class="row"><label>Key</label><input name="key" required placeholder="e.g. rate_limit.rps"></div>
-      <div class="row"><label>Format</label>
+      <div class="row"><label>{{T .Lang "page.newItem.labelKey"}}</label><input name="key" required placeholder="e.g. rate_limit.rps"></div>
+      <div class="row"><label>{{T .Lang "page.newItem.labelFormat"}}</label>
         <select name="format">
           <option value="json">json</option>
           <option value="plain">plain</option>
           <option value="yaml">yaml</option>
         </select>
       </div>
-      <div class="row"><label>Strategy</label>
+      <div class="row"><label>{{T .Lang "page.newItem.labelStrategy"}}</label>
         <select name="strategy">
-          <option value="FULL">FULL（全量）</option>
-          <option value="CANARY">CANARY（灰度）</option>
-          <option value="TARGETED">TARGETED（白名单）</option>
-          <option value="SCHEDULED">SCHEDULED（按时生效）</option>
+          <option value="FULL">{{T .Lang "page.newItem.strategyFull"}}</option>
+          <option value="CANARY">{{T .Lang "page.newItem.strategyCanary"}}</option>
+          <option value="TARGETED">{{T .Lang "page.newItem.strategyTargeted"}}</option>
+          <option value="SCHEDULED">{{T .Lang "page.newItem.strategyScheduled"}}</option>
         </select>
       </div>
-      <div class="row"><label>Value</label><textarea name="value" rows="6" required></textarea></div>
-      <div class="row"><label>订阅服务（多选 — 哪些 service 也需要这个 key）</label>
+      <div class="row"><label>{{T .Lang "page.newItem.labelValue"}}</label><textarea name="value" rows="6" required></textarea></div>
+      <div class="row"><label>{{T .Lang "page.newItem.labelSubscribers"}}</label>
         <div style="padding:8px 0">
         {{range .Services}}<label style="display:inline-block;margin-right:14px;font-weight:normal"><input type="checkbox" name="subscribers" value="{{.}}" style="width:auto;margin-right:4px"> {{.}}</label>{{end}}
         </div>
       </div>
-      <div class="row"><label>变更说明</label><input name="reason" placeholder="为什么新增"></div>
-      <div class="row"><button class="btn" type="submit">创建</button></div>
+      <div class="row"><label>{{T .Lang "page.newItem.labelReason"}}</label><input name="reason" placeholder="{{T .Lang "page.newItem.reasonPlaceholder"}}"></div>
+      <div class="row"><button class="btn" type="submit">{{T .Lang "page.newItem.btnSubmit"}}</button></div>
     </form>
   </div>
 </div>
 
 {{else if eq .Page "list_items"}}
 <div class="card">
-  <div class="card-head">全平台 Config 检索</div>
+  <div class="card-head">{{T .Lang "page.listItems.cardHead"}}</div>
   <div class="card-body">
     <form method="GET" class="toolbar">
-      <input name="q" value="{{.Q}}" placeholder="按 key/namespace 模糊搜" style="width:280px">
-      <input name="sub" value="{{.Subscriber}}" placeholder="订阅服务过滤" style="width:200px">
-      <button class="btn" type="submit">搜索</button>
+      <input name="q" value="{{.Q}}" placeholder="{{T .Lang "page.listItems.searchPlaceholder"}}" style="width:280px">
+      <input name="sub" value="{{.Subscriber}}" placeholder="{{T .Lang "page.listItems.subPlaceholder"}}" style="width:200px">
+      <button class="btn" type="submit">{{T .Lang "page.listItems.btnSearch"}}</button>
     </form>
   </div>
   {{if eq (len .Rows) 0}}
-  <div class="card-body"><p class="muted">无匹配结果</p></div>
+  <div class="card-body"><p class="muted">{{T .Lang "page.listItems.emptyText"}}</p></div>
   {{else}}
   <table>
-    <thead><tr><th>Namespace / Key</th><th style="width:100px">Active</th><th style="width:180px">Updated</th></tr></thead>
+    <thead><tr><th>{{T .Lang "page.listItems.colNsKey"}}</th><th style="width:100px">{{T .Lang "page.listItems.colActive"}}</th><th style="width:180px">{{T .Lang "page.listItems.colUpdated"}}</th></tr></thead>
     <tbody>
     {{range .Rows}}
     <tr>
@@ -1456,12 +1575,12 @@ const adminTemplates = `
 
 {{else if eq .Page "audit"}}
 <div class="card">
-  <div class="card-head">审计日志（最近 100 条）</div>
+  <div class="card-head">{{T .Lang "page.audit.cardHead"}}</div>
   {{if eq (len .Rows) 0}}
-  <div class="card-body"><p class="muted">无审计记录</p></div>
+  <div class="card-body"><p class="muted">{{T .Lang "page.audit.emptyText"}}</p></div>
   {{else}}
   <table>
-    <thead><tr><th style="width:170px">时间</th><th style="width:100px">Op</th><th>Namespace / Key</th><th style="width:140px">Actor</th><th>Reason</th></tr></thead>
+    <thead><tr><th style="width:170px">{{T .Lang "page.audit.colTime"}}</th><th style="width:100px">{{T .Lang "page.audit.colOp"}}</th><th>{{T .Lang "page.audit.colNsKey"}}</th><th style="width:140px">{{T .Lang "page.audit.colActor"}}</th><th>{{T .Lang "page.audit.colReason"}}</th></tr></thead>
     <tbody>
     {{range .Rows}}
     <tr>
@@ -1479,8 +1598,8 @@ const adminTemplates = `
 
 {{else}}
 <div class="alert alert-info">
-  未知页面 (Page=<code>{{.Page}}</code>)。
-  <a href="/admin/">返回首页</a>
+  {{Tf .Lang "page.unknown.text" "Page" .Page | safeHTML}}
+  <a href="/admin/">{{T .Lang "page.unknown.linkHome"}}</a>
 </div>
 {{end}}
 {{end}}

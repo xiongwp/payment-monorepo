@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Card, Form, Select, DatePicker, Button, Table, Typography, message, Tag, Space } from 'antd'
 import { SearchOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
@@ -12,6 +13,7 @@ const { Title, Paragraph, Text } = Typography
 const DEFAULT_CURRENCY = 'PHP'
 
 export default function PlatformSnapshotsPage() {
+  const { t } = useTranslation('account')
   const [registry, setRegistry] = useState<BusinessTypeInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [businessType, setBusinessType] = useState<number | undefined>()
@@ -28,11 +30,11 @@ export default function PlatformSnapshotsPage() {
 
   const onQuery = async () => {
     if (!businessType || !date) {
-      message.warning('请选择 business_type 和日期')
+      message.warning(t('snapshots.messages.needBusinessTypeAndDate'))
       return
     }
     if (!currency) {
-      message.warning('请选择币种')
+      message.warning(t('snapshots.messages.needCurrency'))
       return
     }
     setLoading(true)
@@ -40,7 +42,7 @@ export default function PlatformSnapshotsPage() {
       const resp = await getPlatformSnapshots(businessType, date.format('YYYY-MM-DD'), currency)
       setRows(resp.rows || [])
     } catch (e) {
-      message.error(e instanceof Error ? e.message : '查询失败')
+      message.error(e instanceof Error ? e.message : t('snapshots.messages.queryFailed'))
       setRows([])
     } finally {
       setLoading(false)
@@ -69,10 +71,10 @@ export default function PlatformSnapshotsPage() {
   }, [rows])
 
   const columns: ColumnsType<PlatformAccountSnapshotRow> = [
-    { title: 'User ID', dataIndex: ['account', 'user_id'], key: 'user_id', width: 90 },
-    { title: '账户号', dataIndex: ['account', 'account_no'], key: 'account_no', width: 220, ellipsis: true },
+    { title: t('snapshots.columns.userId'), dataIndex: ['account', 'user_id'], key: 'user_id', width: 90 },
+    { title: t('snapshots.columns.accountNo'), dataIndex: ['account', 'account_no'], key: 'account_no', width: 220, ellipsis: true },
     {
-      title: 'Group',
+      title: t('snapshots.columns.group'),
       dataIndex: ['account', 'account_group'],
       key: 'account_group',
       width: 75,
@@ -84,32 +86,32 @@ export default function PlatformSnapshotsPage() {
       render: (g: string) => g === 'B' ? <Tag color="orange">B</Tag> : <Tag color="blue">A</Tag>,
     },
     {
-      title: '期初余额', key: 'beginning',
-      render: (_, r) => r.snapshot ? displayMoney(r.snapshot.beginning_balance, r.snapshot.currency || r.account.currency) : <Tag color="default">无快照</Tag>,
+      title: t('snapshots.columns.beginning'), key: 'beginning',
+      render: (_, r) => r.snapshot ? displayMoney(r.snapshot.beginning_balance, r.snapshot.currency || r.account.currency) : <Tag color="default">{t('snapshots.columns.noSnapshot')}</Tag>,
       width: 140, align: 'right',
     },
     {
-      title: '期末余额', key: 'ending',
+      title: t('snapshots.columns.ending'), key: 'ending',
       render: (_, r) => r.snapshot ? displayMoney(r.snapshot.ending_balance, r.snapshot.currency || r.account.currency) : '-',
       width: 140, align: 'right',
     },
     {
-      title: '借方合计', key: 'debit',
+      title: t('snapshots.columns.debit'), key: 'debit',
       render: (_, r) => r.snapshot ? displayMoney(r.snapshot.total_debit, r.snapshot.currency || r.account.currency) : '-',
       width: 130, align: 'right',
     },
     {
-      title: '贷方合计', key: 'credit',
+      title: t('snapshots.columns.credit'), key: 'credit',
       render: (_, r) => r.snapshot ? displayMoney(r.snapshot.total_credit, r.snapshot.currency || r.account.currency) : '-',
       width: 130, align: 'right',
     },
     {
-      title: '交易笔数', key: 'count',
+      title: t('snapshots.columns.count'), key: 'count',
       render: (_, r) => r.snapshot?.transaction_count ?? '-',
       width: 100, align: 'right',
     },
     {
-      title: '当前余额 (对账)', dataIndex: ['account', 'balance'], key: 'live_balance',
+      title: t('snapshots.columns.liveBalance'), dataIndex: ['account', 'balance'], key: 'live_balance',
       width: 150, align: 'right',
       render: (v: string, r) => {
         const formatted = displayMoney(v, r.account.currency)
@@ -121,24 +123,23 @@ export default function PlatformSnapshotsPage() {
         let diff = 0n
         try { diff = toMinorBigInt(v || '0', cur) - toMinorBigInt(r.snapshot.ending_balance || '0', cur) } catch { /* treat as zero */ }
         if (diff === 0n) return <span style={{ color: '#3f8600' }}>{formatted}</span>
-        return <span style={{ color: '#cf1322' }} title={`与期末差 ${diff.toString()} minor`}>{formatted}</span>
+        return <span style={{ color: '#cf1322' }} title={t('snapshots.messages.diffTitle', { diff: diff.toString() })}>{formatted}</span>
       },
     },
   ]
 
   return (
     <div>
-      <Title level={3}>平台账户快照查询</Title>
+      <Title level={3}>{t('snapshots.pageTitle')}</Title>
       <Paragraph type="secondary">
-        按 <Text code>business_type + 日期</Text> 查询该渠道 100 个平台账户的日切快照。
-        右侧"当前余额"与"期末余额"对账：绿色一致、红色不一致（可能已有新增流水或未 flush）。
+        {t('snapshots.pageDescriptionPrefix')}<Text code>business_type + date</Text>{t('snapshots.pageDescriptionSuffix')}
       </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>
         <Form layout="inline" onFinish={onQuery}>
-          <Form.Item label="Business Type">
+          <Form.Item label={t('snapshots.form.businessTypeLabel')}>
             <Select
-              placeholder="选择业务类型"
+              placeholder={t('snapshots.form.businessTypePlaceholder')}
               style={{ width: 320 }}
               value={businessType}
               onChange={setBusinessType}
@@ -150,10 +151,10 @@ export default function PlatformSnapshotsPage() {
               }))}
             />
           </Form.Item>
-          <Form.Item label="日切日期">
+          <Form.Item label={t('snapshots.form.dateLabel')}>
             <DatePicker value={date} onChange={setDate} allowClear={false} />
           </Form.Item>
-          <Form.Item label="币种">
+          <Form.Item label={t('snapshots.form.currencyLabel')}>
             <Select
               value={currency}
               onChange={setCurrency}
@@ -163,7 +164,7 @@ export default function PlatformSnapshotsPage() {
             />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" icon={<SearchOutlined />} htmlType="submit" loading={loading}>查询</Button>
+            <Button type="primary" icon={<SearchOutlined />} htmlType="submit" loading={loading}>{t('snapshots.form.queryButton')}</Button>
           </Form.Item>
         </Form>
       </Card>
@@ -171,11 +172,11 @@ export default function PlatformSnapshotsPage() {
       {rows.length > 0 && (
         <Card style={{ marginBottom: 16 }}>
           <Space>
-            <Tag>有快照账户: {stats.hasSnapCount} / {rows.length}</Tag>
-            <Tag color="blue">Σ 期初 {formatMinorBigInt(stats.totalBegin, stats.currency)}</Tag>
-            <Tag color="blue">Σ 期末 {formatMinorBigInt(stats.totalEnd, stats.currency)}</Tag>
-            <Tag color="orange">Σ 借方 {formatMinorBigInt(stats.totalDebit, stats.currency)}</Tag>
-            <Tag color="green">Σ 贷方 {formatMinorBigInt(stats.totalCredit, stats.currency)}</Tag>
+            <Tag>{t('snapshots.stats.hasSnapshot', { has: stats.hasSnapCount, total: rows.length })}</Tag>
+            <Tag color="blue">{t('snapshots.stats.sumBeginning', { value: formatMinorBigInt(stats.totalBegin, stats.currency) })}</Tag>
+            <Tag color="blue">{t('snapshots.stats.sumEnding', { value: formatMinorBigInt(stats.totalEnd, stats.currency) })}</Tag>
+            <Tag color="orange">{t('snapshots.stats.sumDebit', { value: formatMinorBigInt(stats.totalDebit, stats.currency) })}</Tag>
+            <Tag color="green">{t('snapshots.stats.sumCredit', { value: formatMinorBigInt(stats.totalCredit, stats.currency) })}</Tag>
           </Space>
         </Card>
       )}

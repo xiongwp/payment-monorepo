@@ -1,0 +1,82 @@
+{
+  "columns": {
+    "status": "状态",
+    "instanceId": "实例 ID",
+    "instance": "实例",
+    "host": "Host",
+    "httpAdminPort": "HTTP Admin 端口",
+    "grpcPort": "gRPC 端口",
+    "lastHeartbeat": "最后心跳",
+    "recentHeartbeat": "最近心跳",
+    "startedAt": "启动时间",
+    "actions": "操作"
+  },
+  "statusTags": {
+    "alive": "活跃",
+    "dead": "失联",
+    "running": "运行中"
+  },
+  "rowActions": {
+    "hotTooltip": "热重载热点账户白名单到此实例",
+    "hot": "热点账户",
+    "bufferTooltip": "热重载缓冲记账配置到此实例",
+    "buffer": "缓冲记账"
+  },
+  "toolbar": {
+    "pushAllHotTooltip": "向所有活跃实例推送热点账户白名单",
+    "pushAllHot": "全量推送热点账户",
+    "pushAllBufferTooltip": "向所有活跃实例推送缓冲记账配置",
+    "pushAllBuffer": "全量推送缓冲记账"
+  },
+  "messages": {
+    "loadFailed": "加载失败",
+    "hotReloadSuccess": "热点账户热重载完成，共 {{count}} 个账户",
+    "bufferReloadSuccess": "缓冲记账配置热重载完成，共 {{count}} 个账户",
+    "reloadFailed": "热重载失败"
+  },
+  "dashboard": {
+    "title": "工作台",
+    "backendUnhealthy": "后端服务连接异常，请检查 accounting-system 是否运行",
+    "stats": {
+      "serviceStatus": "服务状态",
+      "checking": "检测中",
+      "normal": "正常",
+      "abnormal": "异常",
+      "onlineInstances": "在线实例数",
+      "systemName": "复式记账管理系统",
+      "systemTagline": "TCC 分布式事务 · 热路径(Redis+Outbox) · 分库分表(10库×100表) · 日切对账"
+    },
+    "shortcutsCard": "快捷入口",
+    "shortcuts": {
+      "transactions": {
+        "title": "交易流水查询",
+        "desc": "按账户号 / 业务单号 / 交易ID 查询流水"
+      },
+      "accounts": {
+        "title": "账户管理",
+        "desc": "创建、查询账户信息及余额"
+      },
+      "booking": {
+        "title": "手动记账",
+        "desc": "复式记账、调账操作"
+      },
+      "snapshots": {
+        "title": "余额快照",
+        "desc": "查询账户日终余额快照"
+      },
+      "trialBalance": {
+        "title": "试算平衡",
+        "desc": "验证借贷平衡与会计恒等式"
+      },
+      "tcc": {
+        "title": "TCC 监控",
+        "desc": "查看并修复悬挂的 TCC 事务"
+      }
+    },
+    "instancesCard": "服务实例",
+    "loadingText": "加载中...",
+    "emptyText": "暂无实例注册",
+    "tipTag": "提示",
+    "tipText": "「交易流水」查询需指定账户号、业务单号或交易ID，防止全库扫描"
+  }
+}

@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { Alert, Button, Card, Form, Input, InputNumber, Select, Space, Typography, message } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { probeRoute } from '../../api'
 import type { ProbeRouteResponse } from '../../api/types'
 
 export default function ChannelProbe() {
+  const { t } = useTranslation('channel')
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<ProbeRouteResponse | null>(null)
@@ -29,9 +31,9 @@ export default function ChannelProbe() {
 
   return (
     <div>
-      <Typography.Title level={3}>路由探测</Typography.Title>
+      <Typography.Title level={3}>{t('probe.title')}</Typography.Title>
       <Alert
-        message="会向 payment-core 发送一次带 extra.probe=true 的 Charge；确保生产环境的 adapter 识别该标记、不会产生真实扣款。"
+        message={t('probe.warning')}
         type="warning"
         showIcon
         style={{ marginBottom: 16 }}
@@ -44,7 +46,7 @@ export default function ChannelProbe() {
           initialValues={{ country: 'PH', currency: 'PHP', amount: 10000 }}
         >
           <Space wrap>
-            <Form.Item name="country" label="国家" rules={[{ required: true }]}>
+            <Form.Item name="country" label={t('probe.form.country')} rules={[{ required: true }]}>
               <Select
                 style={{ width: 120 }}
                 options={[
@@ -54,7 +56,7 @@ export default function ChannelProbe() {
                 ]}
               />
             </Form.Item>
-            <Form.Item name="payment_method" label="支付方式" rules={[{ required: true }]}>
+            <Form.Item name="payment_method" label={t('probe.form.paymentMethod')} rules={[{ required: true }]}>
               <Select
                 style={{ width: 180 }}
                 options={[
@@ -67,18 +69,18 @@ export default function ChannelProbe() {
                 ]}
               />
             </Form.Item>
-            <Form.Item name="amount" label="金额 (分)" rules={[{ required: true }]}>
+            <Form.Item name="amount" label={t('probe.form.amount')} rules={[{ required: true }]}>
               <InputNumber min={1} style={{ width: 160 }} />
             </Form.Item>
-            <Form.Item name="currency" label="币种">
+            <Form.Item name="currency" label={t('probe.form.currency')}>
               <Input style={{ width: 80 }} />
             </Form.Item>
-            <Form.Item name="merchant" label="商户">
+            <Form.Item name="merchant" label={t('probe.form.merchant')}>
               <Input style={{ width: 160 }} />
             </Form.Item>
             <Form.Item label=" ">
               <Button type="primary" htmlType="submit" loading={loading}>
-                探测
+                {t('probe.actions.run')}
               </Button>
             </Form.Item>
           </Space>
@@ -86,7 +88,7 @@ export default function ChannelProbe() {
       </Card>
 
       {result && (
-        <Card style={{ marginTop: 16 }} title="结果">
+        <Card style={{ marginTop: 16 }} title={t('probe.result')}>
           <pre style={{ margin: 0 }}>{JSON.stringify(result, null, 2)}</pre>
         </Card>
       )}

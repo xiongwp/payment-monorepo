@@ -3,6 +3,7 @@ import {
   Table, Button, Modal, Form, Input, Select, message, Space, Typography, Tag, Popconfirm, Alert,
 } from 'antd'
 import { PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
+import { useTranslation, Trans } from 'react-i18next'
 import {
   listSystemConfig,
   upsertSystemConfig,
@@ -12,13 +13,6 @@ import {
 } from '../../api/accounting'
 
 const { Title, Paragraph, Text } = Typography
-
-const VALUE_TYPES = [
-  { value: 'int', label: 'int (整数)' },
-  { value: 'string', label: 'string (字符串)' },
-  { value: 'bool', label: 'bool (布尔)' },
-  { value: 'json', label: 'json (任意结构：数组 / 对象 / 浮点等)' },
-]
 
 // validateJSONByType 不严格校验类型契约，只校验 value_json 是合法 JSON。
 // （后端 Upsert 也会校验一次，这里前置防止 round-trip 失败）
@@ -32,17 +26,25 @@ function validateJSON(s: string): string | null {
 }
 
 export default function SystemConfig() {
+  const { t } = useTranslation('config')
   const [data, setData] = useState<SystemConfigItem[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<SystemConfigItem | null>(null)
   const [form] = Form.useForm()
 
+  const VALUE_TYPES = [
+    { value: 'int', label: t('system.valueTypes.int') },
+    { value: 'string', label: t('system.valueTypes.string') },
+    { value: 'bool', label: t('system.valueTypes.bool') },
+    { value: 'json', label: t('system.valueTypes.json') },
+  ]
+
   const load = () => {
     setLoading(true)
     listSystemConfig()
       .then((rows) => setData(Array.isArray(rows) ? rows : []))
-      .catch((e) => message.error(e instanceof Error ? e.message : '加载失败'))
+      .catch((e) => message.error(e instanceof Error ? e.message : t('system.messages.loadFailed')))
       .finally(() => setLoading(false))
   }
   useEffect(load, [])
@@ -69,11 +71,11 @@ export default function SystemConfig() {
       const v = await form.validateFields()
       const err = validateJSON(v.value_json)
       if (err) {
-        message.error('value_json 不是合法 JSON: ' + err)
+        message.error(t('system.messages.invalidJson', { err }))
         return
       }
       await upsertSystemConfig(v.config_key, v.value_json, v.value_type, v.description || '', 'admin-web')
-      message.success(editing ? '配置已更新（已推送至所有实例）' : '配置已新增（已推送至所有实例）')
+      message.success(editing ? t('system.messages.updated') : t('system.messages.created'))
       setModalOpen(false)
       load()
     } catch (e) {
@@ -84,65 +86,65 @@ export default function SystemConfig() {
   const handleDelete = async (key: string) => {
     try {
       await deleteSystemConfig(key)
-      message.success('已删除（已推送至所有实例）')
+      message.success(t('system.messages.deleted'))
       load()
     } catch (e) {
-      message.error(e instanceof Error ? e.message : '删除失败')
+      message.error(e instanceof Error ? e.message : t('system.messages.deleteFailed'))
     }
   }
 
   const handleReloadAll = async () => {
     try {
       await reloadSystemConfig()
-      message.success('已强制所有实例 reload 配置')
+      message.success(t('system.messages.reloadAllSuccess'))
       load()
     } catch (e) {
-      message.error(e instanceof Error ? e.message : 'reload 失败')
+      message.error(e instanceof Error ? e.message : t('system.messages.reloadAllFailed'))
     }
   }
 
   const columns = [
     {
-      title: 'Key',
+      title: t('system.columns.key'),
       dataIndex: 'config_key',
       key: 'config_key',
       width: 280,
       render: (v: string) => <Text code>{v}</Text>,
     },
     {
-      title: '类型',
+      title: t('system.columns.type'),
       dataIndex: 'value_type',
       key: 'value_type',
       width: 80,
       render: (v: string) => <Tag color={v === 'json' ? 'purple' : v === 'bool' ? 'gold' : 'blue'}>{v || 'string'}</Tag>,
     },
     {
-      title: 'Value',
+      title: t('system.columns.value'),
       dataIndex: 'value_json',
       key: 'value_json',
       render: (v: string) => <Text code style={{ wordBreak: 'break-all' }}>{v}</Text>,
     },
     {
-      title: '说明',
+      title: t('system.columns.description'),
       dataIndex: 'description',
       key: 'description',
     },
     {
-      title: '更新',
+      title: t('system.columns.updated'),
       dataIndex: 'updated_at',
       key: 'updated_at',
       width: 170,
       render: (v: string) => v ? new Date(v).toLocaleString() : '-',
     },
     {
-      title: '操作',
+      title: t('common:table.actions'),
       key: 'op',
       width: 160,
       render: (_: unknown, item: SystemConfigItem) => (
         <Space>
-          <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(item)}>编辑</Button>
-          <Popconfirm title={`删除 ${item.config_key}?`} onConfirm={() => handleDelete(item.config_key)}>
-            <Button icon={<DeleteOutlined />} size="small" danger>删除</Button>
+          <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(item)}>{t('common:actions.edit')}</Button>
+          <Popconfirm title={t('system.deleteConfirm', { key: item.config_key })} onConfirm={() => handleDelete(item.config_key)}>
+            <Button icon={<DeleteOutlined />} size="small" danger>{t('common:actions.delete')}</Button>
           </Popconfirm>
         </Space>
       ),
@@ -151,23 +153,25 @@ export default function SystemConfig() {
 
   return (
     <div>
-      <Title level={3}>系统配置</Title>
+      <Title level={3}>{t('system.title')}</Title>
       <Paragraph type="secondary">
-        通用 key-value 配置中心，存于 <Text code>account_meta.system_config</Text> 表。修改任意一条会
-        立即 fanout 到所有 alive instances；60s 兜底 tick 也会自动同步。Value 必须是合法 JSON
-        （字符串如 <Text code>"abc"</Text>，数字如 <Text code>123</Text>，对象如 <Text code>{"{\"a\":1}"}</Text>）。
+        <Trans
+          i18nKey="system.description"
+          ns="config"
+          components={{ code: <Text code /> }}
+        />
       </Paragraph>
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="新增 key 后，使用方需要在代码中通过 systemConfigSvc.GetInt/GetString/GetJSON 等读取；硬编码 fallback 默认值仍生效，配置仅作为可在线调整的覆盖。"
+        message={t('system.alert')}
       />
 
       <Space style={{ marginBottom: 12 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增配置</Button>
-        <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
-        <Button onClick={handleReloadAll}>强制所有实例 reload</Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>{t('system.addConfig')}</Button>
+        <Button icon={<ReloadOutlined />} onClick={load}>{t('common:actions.refresh')}</Button>
+        <Button onClick={handleReloadAll}>{t('system.forceReloadAll')}</Button>
       </Space>
 
       <Table
@@ -180,34 +184,34 @@ export default function SystemConfig() {
       />
 
       <Modal
-        title={editing ? `编辑配置: ${editing.config_key}` : '新增配置'}
+        title={editing ? t('system.editModalTitle', { key: editing.config_key }) : t('system.createModalTitle')}
         open={modalOpen}
         onCancel={() => setModalOpen(false)}
         onOk={handleOk}
-        okText="保存并推送"
+        okText={t('system.okText')}
         width={640}
       >
         <Form form={form} layout="vertical">
           <Form.Item
             name="config_key"
-            label="Key"
-            rules={[{ required: true, message: '必填' }, { pattern: /^[a-zA-Z0-9._-]+$/, message: '只允许字母数字 . _ -' }]}
+            label={t('system.form.keyLabel')}
+            rules={[{ required: true, message: t('system.form.keyRequired') }, { pattern: /^[a-zA-Z0-9._-]+$/, message: t('system.form.keyPattern') }]}
           >
-            <Input placeholder="如 tcc_recovery.stuck_timeout_minutes" disabled={!!editing} />
+            <Input placeholder={t('system.form.keyPlaceholder')} disabled={!!editing} />
           </Form.Item>
-          <Form.Item name="value_type" label="类型 hint" rules={[{ required: true }]}>
+          <Form.Item name="value_type" label={t('system.form.typeLabel')} rules={[{ required: true }]}>
             <Select options={VALUE_TYPES} />
           </Form.Item>
           <Form.Item
             name="value_json"
-            label="Value (JSON 格式)"
-            rules={[{ required: true, message: '必填' }]}
-            extra="字符串要带双引号（如 &quot;abc&quot;），数字 / 数组 / 对象直接写。"
+            label={t('system.form.valueLabel')}
+            rules={[{ required: true, message: t('system.form.valueRequired') }]}
+            extra={t('system.form.valueExtra')}
           >
-            <Input.TextArea rows={4} placeholder='例如：5  或  "abc"  或  [1,2,3]  或  {"a":1}' />
+            <Input.TextArea rows={4} placeholder={t('system.form.valuePlaceholder')} />
           </Form.Item>
-          <Form.Item name="description" label="说明">
-            <Input placeholder="简短描述这个 key 的用途" />
+          <Form.Item name="description" label={t('system.form.descLabel')}>
+            <Input placeholder={t('system.form.descPlaceholder')} />
           </Form.Item>
         </Form>
       </Modal>

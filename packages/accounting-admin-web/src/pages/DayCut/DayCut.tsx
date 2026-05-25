@@ -1,6 +1,8 @@
 import { Card, Button, DatePicker, Select, Space, Table, Tag, Alert, message, Tooltip } from 'antd'
 import { ReloadOutlined, SyncOutlined } from '@ant-design/icons'
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import dayjs from 'dayjs'
 import { triggerDayCut, getDayCutHistory } from '../../api/accounting'
 import type { DayCutHistoryEntry } from '../../types/accounting'
@@ -17,11 +19,11 @@ const statusOverall = (entry: DayCutHistoryEntry): 'success' | 'error' | 'proces
   return 'default'
 }
 
-const statusLabel = (entry: DayCutHistoryEntry) => {
-  if (entry.processing > 0 || entry.pending > 0) return '处理中'
-  if (entry.failed > 0) return '失败'
-  if (entry.completed === entry.total_shards) return '完成'
-  return '未知'
+const statusLabel = (entry: DayCutHistoryEntry, t: TFunction) => {
+  if (entry.processing > 0 || entry.pending > 0) return t('status.processing')
+  if (entry.failed > 0) return t('status.failed')
+  if (entry.completed === entry.total_shards) return t('status.completed')
+  return t('status.unknown')
 }
 
 // 系统当前支持的币种。和 accounting-system 的 currency.precisionMap 大类一致；
@@ -29,6 +31,7 @@ const statusLabel = (entry: DayCutHistoryEntry) => {
 const SUPPORTED_CURRENCIES = ['PHP', 'USD', 'CNY', 'EUR', 'JPY', 'HKD', 'SGD', 'THB', 'IDR', 'MYR', 'VND', 'KRW']
 
 export default function DayCut() {
+  const { t } = useTranslation('daycut')
   const [triggerLoading, setTriggerLoading] = useState(false)
   const [selectedDate, setSelectedDate] = useState<dayjs.Dayjs | null>(null)
   const [selectedCurrency, setSelectedCurrency] = useState<string>('PHP')
@@ -47,13 +50,13 @@ export default function DayCut() {
       setHistory(entries)
       return entries
     } catch (err: unknown) {
-      const msg = (err as { message?: string })?.message ?? '加载日切记录失败'
+      const msg = (err as { message?: string })?.message ?? t('history.loadFailed')
       setError(msg)
       return []
     } finally {
       if (!silent) setHistoryLoading(false)
     }
-  }, [])
+  }, [t])
 
   // 有进行中分片时自动轮询
   const scheduleNextPoll = useCallback(() => {
@@ -84,7 +87,7 @@ export default function DayCut() {
 
   const handleTriggerDayCut = async () => {
     if (!selectedCurrency) {
-      message.warning('请选择币种')
+      message.warning(t('trigger.currencyRequired'))
       return
     }
     const cutDate = selectedDate ? selectedDate.format('YYYY-MM-DD') : dayjs().subtract(1, 'day').format('YYYY-MM-DD')
@@ -92,11 +95,11 @@ export default function DayCut() {
     setError(null)
     try {
       await triggerDayCut(cutDate, selectedCurrency)
-      message.success(`日切任务已触发，日期: ${cutDate}, 币种: ${selectedCurrency}`)
+      message.success(t('trigger.triggerSuccess', { date: cutDate, currency: selectedCurrency }))
       await loadHistory()
       startPolling()
     } catch (err: unknown) {
-      const msg = (err as { message?: string })?.message ?? '日切触发失败'
+      const msg = (err as { message?: string })?.message ?? t('trigger.triggerFailed')
       setError(msg)
       message.error(msg)
     } finally {
@@ -109,18 +112,18 @@ export default function DayCut() {
   const handleRetrigger = async (cutDate: string, rowCurrency?: string) => {
     const useCurrency = rowCurrency || selectedCurrency
     if (!useCurrency) {
-      message.warning('请先在上方选币种再重跑')
+      message.warning(t('retrigger.currencyRequired'))
       return
     }
     setRetriggeringDate(cutDate)
     setError(null)
     try {
       await triggerDayCut(cutDate, useCurrency)
-      message.success(`日切重跑已触发，日期: ${cutDate}, 币种: ${useCurrency}`)
+      message.success(t('retrigger.success', { date: cutDate, currency: useCurrency }))
       await loadHistory()
       startPolling()
     } catch (err: unknown) {
-      const msg = (err as { message?: string })?.message ?? '重跑失败'
+      const msg = (err as { message?: string })?.message ?? t('retrigger.failed')
       setError(msg)
       message.error(msg)
     } finally {
@@ -130,79 +133,79 @@ export default function DayCut() {
 
   const columns = [
     {
-      title: '日切日期',
+      title: t('columns.cutDate'),
       dataIndex: 'cut_date',
       key: 'cut_date',
       width: 120,
     },
     {
-      title: '版本号',
+      title: t('columns.runId'),
       dataIndex: 'run_id',
       key: 'run_id',
       width: 70,
       render: (v: number) => <span style={{ color: '#888' }}>v{v}</span>,
     },
     {
-      title: '币种',
+      title: t('columns.currency'),
       dataIndex: 'currency',
       key: 'currency',
       width: 80,
       render: (c: string | undefined) =>
-        c ? <Tag color="blue">{c}</Tag> : <Tag color="default">全部</Tag>,
+        c ? <Tag color="blue">{c}</Tag> : <Tag color="default">{t('columns.currencyAll')}</Tag>,
     },
     {
-      title: '整体状态',
+      title: t('columns.overall'),
       key: 'overall',
       width: 100,
       render: (_: unknown, record: DayCutHistoryEntry) => (
-        <Tag color={statusOverall(record)}>{statusLabel(record)}</Tag>
+        <Tag color={statusOverall(record)}>{statusLabel(record, t)}</Tag>
       ),
     },
     {
-      title: '总分片',
+      title: t('columns.totalShards'),
       dataIndex: 'total_shards',
       key: 'total_shards',
       width: 80,
     },
     {
-      title: '已完成',
+      title: t('columns.completed'),
       dataIndex: 'completed',
       key: 'completed',
       width: 80,
       render: (v: number) => <span style={{ color: v > 0 ? '#3f8600' : undefined }}>{v}</span>,
     },
     {
-      title: '失败',
+      title: t('columns.failed'),
       dataIndex: 'failed',
       key: 'failed',
       width: 70,
       render: (v: number) => <span style={{ color: v > 0 ? '#cf1322' : undefined }}>{v}</span>,
     },
     {
-      title: '处理中',
+      title: t('columns.processing'),
       dataIndex: 'processing',
       key: 'processing',
       width: 80,
     },
     {
-      title: '待处理',
+      title: t('columns.pending'),
       dataIndex: 'pending',
       key: 'pending',
       width: 80,
     },
     {
-      title: '操作',
+      title: t('columns.action'),
       key: 'action',
       width: 100,
       render: (_: unknown, record: DayCutHistoryEntry) => (
-        <Tooltip title="重新执行该日期的日切（新增一个版本，之前数据保留）">
+        <Tooltip title={t('retrigger.tooltip')}>
           <Button
             size="small"
             icon={<ReloadOutlined />}
             loading={retriggeringDate === record.cut_date}
             onClick={() => handleRetrigger(record.cut_date, record.currency)}
           >
-            重跑
+            {t('retrigger.button')}
           </Button>
         </Tooltip>
       ),
@@ -211,10 +214,10 @@ export default function DayCut() {
 
   return (
     <div>
-      <Card title="触发日切" style={{ marginBottom: 16 }}>
+      <Card title={t('trigger.title')} style={{ marginBottom: 16 }}>
         <Space>
           <DatePicker
-            placeholder="选择日切日期（默认昨天）"
+            placeholder={t('trigger.datePlaceholder')}
             value={selectedDate}
             onChange={setSelectedDate}
             disabledDate={(d) => d && d.isAfter(dayjs(), 'day')}
@@ -222,18 +225,17 @@ export default function DayCut() {
           <Select
             value={selectedCurrency}
             onChange={setSelectedCurrency}
-            placeholder="币种"
+            placeholder={t('trigger.currencyPlaceholder')}
             style={{ width: 120 }}
             options={SUPPORTED_CURRENCIES.map((c) => ({ value: c, label: c }))}
             showSearch
           />
           <Button type="primary" loading={triggerLoading} onClick={handleTriggerDayCut}>
-            触发日切
+            {t('trigger.submit')}
           </Button>
         </Space>
         <div style={{ marginTop: 8, color: '#888', fontSize: 13 }}>
-          提示：日切按币种独立执行——不同币种 precision 不同，汇总没有意义。
-          每个币种各跑一次，各自一份 snapshot。重跑同样按上方所选币种过滤。
+          {t('trigger.hint')}
         </div>
       </Card>
 
@@ -242,13 +244,13 @@ export default function DayCut() {
       <Card
         title={
           <Space>
-            历史日切记录
+            {t('history.title')}
             {polling && <SyncOutlined spin style={{ color: '#1890ff', fontSize: 14 }} />}
           </Space>
         }
         extra={
           <Button size="small" icon={<ReloadOutlined />} onClick={() => loadHistory()} loading={historyLoading}>
-            刷新
+            {t('history.refresh')}
           </Button>
         }
       >
@@ -259,7 +261,7 @@ export default function DayCut() {
           loading={historyLoading}
           pagination={{ pageSize: 20, showSizeChanger: false }}
           size="small"
-          locale={{ emptyText: '暂无日切记录' }}
+          locale={{ emptyText: t('history.empty') }}
         />
       </Card>
     </div>

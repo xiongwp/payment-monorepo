@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Card, Form, Select, Button, Table, Typography, message, Statistic, Row, Col, Tag } from 'antd'
 import { SearchOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
@@ -21,6 +22,7 @@ const { Title, Paragraph, Text } = Typography
 const DEFAULT_CURRENCY = 'PHP'
 
 export default function PlatformBalances() {
+  const { t } = useTranslation('account')
   const [registry, setRegistry] = useState<BusinessTypeInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [businessType, setBusinessType] = useState<number | undefined>()
@@ -60,11 +62,11 @@ export default function PlatformBalances() {
 
   const onQuery = async () => {
     if (!businessType) {
-      message.warning('请选择 business_type')
+      message.warning(t('balances.messages.needBusinessType'))
       return
     }
     if (!currency) {
-      message.warning('请选择币种')
+      message.warning(t('balances.messages.needCurrency'))
       return
     }
     setLoading(true)
@@ -72,10 +74,10 @@ export default function PlatformBalances() {
       const resp = await getPlatformBalances(businessType, currency)
       setAccounts(resp.accounts || [])
       if (resp.count < 100) {
-        message.info(`已找到 ${resp.count} 个账户（少于 100 个，可能尚未完成 fleet 注册）`)
+        message.info(t('balances.messages.partialFleet', { count: resp.count }))
       }
     } catch (e) {
-      message.error(e instanceof Error ? e.message : '查询失败')
+      message.error(e instanceof Error ? e.message : t('balances.messages.queryFailed'))
       setAccounts([])
     } finally {
       setLoading(false)
@@ -83,10 +85,10 @@ export default function PlatformBalances() {
   }
 
   const columns: ColumnsType<Account> = [
-    { title: 'User ID (分片)', dataIndex: 'user_id', key: 'user_id', width: 110 },
-    { title: '账户号', dataIndex: 'account_no', key: 'account_no', width: 220, ellipsis: true },
+    { title: t('balances.columns.userIdShard'), dataIndex: 'user_id', key: 'user_id', width: 110 },
+    { title: t('balances.columns.accountNo'), dataIndex: 'account_no', key: 'account_no', width: 220, ellipsis: true },
     {
-      title: 'Group',
+      title: t('balances.columns.group'),
       dataIndex: 'account_group',
       key: 'account_group',
       width: 80,
@@ -101,36 +103,35 @@ export default function PlatformBalances() {
       },
     },
     {
-      title: 'Balance', dataIndex: 'balance', key: 'balance', width: 160, align: 'right',
+      title: t('balances.columns.balance'), dataIndex: 'balance', key: 'balance', width: 160, align: 'right',
       render: (v: string, row: Account) => displayMoney(v, row.currency),
     },
     {
-      title: 'Available', dataIndex: 'available_balance', key: 'available_balance', width: 160, align: 'right',
+      title: t('balances.columns.available'), dataIndex: 'available_balance', key: 'available_balance', width: 160, align: 'right',
       render: (v: string, row: Account) => displayMoney(v, row.currency),
     },
     {
-      title: 'Frozen', dataIndex: 'frozen_balance', key: 'frozen_balance', width: 140, align: 'right',
+      title: t('balances.columns.frozen'), dataIndex: 'frozen_balance', key: 'frozen_balance', width: 140, align: 'right',
       render: (v: string, row: Account) => displayMoney(v, row.currency),
     },
     {
-      title: '状态', dataIndex: 'status', key: 'status', width: 90,
-      render: (s: number) => s === 1 ? <Tag color="green">正常</Tag> : <Tag color="red">异常</Tag>,
+      title: t('balances.columns.status'), dataIndex: 'status', key: 'status', width: 90,
+      render: (s: number) => s === 1 ? <Tag color="green">{t('statusLabels.active')}</Tag> : <Tag color="red">{t('statusLabels.abnormal')}</Tag>,
     },
   ]
 
   return (
     <div>
-      <Title level={3}>平台账户余额查询</Title>
+      <Title level={3}>{t('balances.pageTitle')}</Title>
       <Paragraph type="secondary">
-        按 <Text code>business_type</Text> 查询对应的 100 个平台账户（user_id = 0..99，每分片一个）的当前余额。
-        余额可能含 Redis/buffer 未刷入的增量 —— 以 account.balance 为准，不一定等于 snapshot。
+        {t('balances.pageDescriptionPrefix')}<Text code>business_type</Text>{t('balances.pageDescriptionSuffix')}
       </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>
         <Form layout="inline" onFinish={onQuery}>
-          <Form.Item label="Business Type">
+          <Form.Item label={t('balances.form.businessTypeLabel')}>
             <Select
-              placeholder="选择已注册的业务类型"
+              placeholder={t('balances.form.businessTypePlaceholder')}
               style={{ width: 360 }}
               value={businessType}
               onChange={setBusinessType}
@@ -142,7 +143,7 @@ export default function PlatformBalances() {
               }))}
             />
           </Form.Item>
-          <Form.Item label="币种">
+          <Form.Item label={t('balances.form.currencyLabel')}>
             <Select
               value={currency}
               onChange={setCurrency}
@@ -152,22 +153,22 @@ export default function PlatformBalances() {
             />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" icon={<SearchOutlined />} htmlType="submit" loading={loading}>查询</Button>
+            <Button type="primary" icon={<SearchOutlined />} htmlType="submit" loading={loading}>{t('balances.form.queryButton')}</Button>
           </Form.Item>
         </Form>
       </Card>
 
       {selectedRow && (
         <Row gutter={16} style={{ marginBottom: 16 }}>
-          <Col span={6}><Card><Statistic title="Business Type" value={selectedRow.business_type} /></Card></Col>
-          <Col span={6}><Card><Statistic title="Code" value={selectedRow.business_type_code} /></Card></Col>
-          <Col span={6}><Card><Statistic title="Category (derived)" value={CATEGORY_LABEL[CATEGORY_BY_ACCOUNT_TYPE[selectedRow.account_type]] ?? '-'} /></Card></Col>
-          <Col span={6}><Card><Statistic title="找到账户数" value={accounts.length} suffix="/ 100" /></Card></Col>
+          <Col span={6}><Card><Statistic title={t('balances.stats.businessType')} value={selectedRow.business_type} /></Card></Col>
+          <Col span={6}><Card><Statistic title={t('balances.stats.code')} value={selectedRow.business_type_code} /></Card></Col>
+          <Col span={6}><Card><Statistic title={t('balances.stats.category')} value={CATEGORY_LABEL[CATEGORY_BY_ACCOUNT_TYPE[selectedRow.account_type]] ?? '-'} /></Card></Col>
+          <Col span={6}><Card><Statistic title={t('balances.stats.foundAccounts')} value={accounts.length} suffix={t('balances.stats.foundAccountsSuffix')} /></Card></Col>
         </Row>
       )}
       {accounts.length > 0 && (
         <Card style={{ marginBottom: 16 }}>
-          <Statistic title="所有账户余额汇总 (balance 之和)" value={formatMinorBigInt(totalBalanceMinor, totalCurrency)} />
+          <Statistic title={t('balances.stats.totalBalance')} value={formatMinorBigInt(totalBalanceMinor, totalCurrency)} />
         </Card>
       )}
 

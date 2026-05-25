@@ -12,24 +12,24 @@ import {
   Alert, Button, Card, Drawer, Radio, Select, Space, Table, Tag, Typography, message,
 } from 'antd'
 import dayjs from 'dayjs'
+import { useTranslation } from 'react-i18next'
 import { dashboardCohort, dashboardCohortTimeseries } from '../../api/risk'
 import type {
   CohortBucket, CohortGroupBy, CohortStats, CohortTimeBucket,
 } from '../../api/risk'
 
-const GROUP_BY_LABEL: Record<CohortGroupBy, string> = {
-  merchant_id: '商户',
-  country: '国家',
-  payment_method: '支付方式',
-}
+const GROUP_BY_KEYS: CohortGroupBy[] = ['merchant_id', 'country', 'payment_method']
 
 export default function Cohort() {
+  const { t } = useTranslation('risk')
   const [loading, setLoading] = useState(false)
   const [groupBy, setGroupBy] = useState<CohortGroupBy>('merchant_id')
   const [minTotal, setMinTotal] = useState(10)
   const [rows, setRows] = useState<CohortStats[]>([])
   const [sample, setSample] = useState(0)
   const [timelineKey, setTimelineKey] = useState<string | null>(null)
+
+  const groupByLabel = (k: CohortGroupBy) => t(`cohort.groupBy.${k}`)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -57,39 +57,39 @@ export default function Cohort() {
 
   return (
     <div>
-      <Typography.Title level={3}>Cohort 分析</Typography.Title>
+      <Typography.Title level={3}>{t('cohort.title')}</Typography.Title>
       <Alert
         type="info" showIcon style={{ marginBottom: 16 }}
-        message={`样本来自 audit MemSink ring（约最近 ${sample} 条决策）。生产部署后接 ClickHouse 长期表才有"按月 / 按 vintage"的趋势分析。`}
+        message={t('cohort.infoAlert', { sample })}
       />
       <Card>
         <Space style={{ marginBottom: 16 }} size="large" wrap>
           <Space>
-            <Typography.Text strong>分组维度</Typography.Text>
+            <Typography.Text strong>{t('cohort.groupByLabel')}</Typography.Text>
             <Radio.Group
               value={groupBy} onChange={(e) => setGroupBy(e.target.value)}
               optionType="button" buttonStyle="solid"
-              options={(Object.keys(GROUP_BY_LABEL) as CohortGroupBy[]).map((k) => ({
-                value: k, label: GROUP_BY_LABEL[k],
+              options={GROUP_BY_KEYS.map((k) => ({
+                value: k, label: groupByLabel(k),
               }))}
             />
           </Space>
           <Space>
-            <Typography.Text strong>最小样本</Typography.Text>
+            <Typography.Text strong>{t('cohort.minSampleLabel')}</Typography.Text>
             <Select
               style={{ width: 100 }} value={minTotal} onChange={setMinTotal}
               options={[
-                { value: 0, label: '全部' },
-                { value: 5, label: '≥ 5' },
-                { value: 10, label: '≥ 10' },
-                { value: 50, label: '≥ 50' },
-                { value: 100, label: '≥ 100' },
+                { value: 0, label: t('cohort.minSampleOptions.all') },
+                { value: 5, label: t('cohort.minSampleOptions.ge5') },
+                { value: 10, label: t('cohort.minSampleOptions.ge10') },
+                { value: 50, label: t('cohort.minSampleOptions.ge50') },
+                { value: 100, label: t('cohort.minSampleOptions.ge100') },
               ]}
             />
           </Space>
           <Typography.Text type="secondary">
-            平台 block_rate <strong>{(platformBlockRate * 100).toFixed(2)}%</strong>
-            ；fraud_rate <strong>{(platformFraudRate * 100).toFixed(2)}%</strong>
+            {t('cohort.platformSummaryPart1')}<strong>{(platformBlockRate * 100).toFixed(2)}%</strong>
+            {t('cohort.platformSummaryPart2')}<strong>{(platformFraudRate * 100).toFixed(2)}%</strong>
           </Typography.Text>
         </Space>
         <Table<CohortStats>
@@ -97,19 +97,19 @@ export default function Cohort() {
           pagination={{ pageSize: 50 }}
           columns={[
             {
-              title: GROUP_BY_LABEL[groupBy], dataIndex: 'key', width: 220, ellipsis: true,
+              title: groupByLabel(groupBy), dataIndex: 'key', width: 220, ellipsis: true,
               render: (v) => <Typography.Text code>{v}</Typography.Text>,
             },
             {
-              title: '决策数', dataIndex: 'total', width: 90, align: 'right' as const,
+              title: t('cohort.columns.decisions'), dataIndex: 'total', width: 90, align: 'right' as const,
               sorter: (a, b) => a.total - b.total,
             },
             {
-              title: 'BLOCK 数', width: 100, align: 'right' as const,
+              title: t('cohort.columns.blockCount'), width: 100, align: 'right' as const,
               render: (_v, r) => `${r.block} / ${r.total}`,
             },
             {
-              title: 'block_rate', dataIndex: 'block_rate', width: 110, align: 'right' as const,
+              title: t('cohort.columns.blockRate'), dataIndex: 'block_rate', width: 110, align: 'right' as const,
               sorter: (a, b) => a.block_rate - b.block_rate,
               render: (v: number) => {
                 const pct = (v * 100).toFixed(2) + '%'
@@ -120,16 +120,16 @@ export default function Cohort() {
               },
             },
             {
-              title: '有 outcome', dataIndex: 'labeled_total', width: 100, align: 'right' as const,
+              title: t('cohort.columns.labeledTotal'), dataIndex: 'labeled_total', width: 100, align: 'right' as const,
             },
             {
-              title: '实际 fraud', width: 130, align: 'right' as const,
+              title: t('cohort.columns.actualFraud'), width: 130, align: 'right' as const,
               render: (_v, r) => r.labeled_total > 0
                 ? `${r.actual_fraud} / ${r.labeled_total}`
                 : <Typography.Text type="secondary">-</Typography.Text>,
             },
             {
-              title: 'fraud_rate', dataIndex: 'actual_fraud_rate', width: 110, align: 'right' as const,
+              title: t('cohort.columns.fraudRate'), dataIndex: 'actual_fraud_rate', width: 110, align: 'right' as const,
               sorter: (a, b) => a.actual_fraud_rate - b.actual_fraud_rate,
               render: (v: number, r) => {
                 if (r.labeled_total === 0) return <Typography.Text type="secondary">-</Typography.Text>
@@ -141,27 +141,27 @@ export default function Cohort() {
               },
             },
             {
-              title: 'TP / FP', width: 100, align: 'right' as const,
+              title: t('cohort.columns.tpFp'), width: 100, align: 'right' as const,
               render: (_v, r) => r.blocked_fraud + r.blocked_legit > 0
                 ? `${r.blocked_fraud} / ${r.blocked_legit}`
                 : <Typography.Text type="secondary">-</Typography.Text>,
             },
             {
-              title: 'precision @ BLOCK', dataIndex: 'precision_at_block', width: 130,
+              title: t('cohort.columns.precisionAtBlock'), dataIndex: 'precision_at_block', width: 130,
               align: 'right' as const,
               sorter: (a, b) => a.precision_at_block - b.precision_at_block,
               render: (v: number, r) => {
                 const blockLabeled = r.blocked_fraud + r.blocked_legit
-                if (blockLabeled < 5) return <Typography.Text type="secondary">N&lt;5</Typography.Text>
+                if (blockLabeled < 5) return <Typography.Text type="secondary">{t('cohort.nLessThan5')}</Typography.Text>
                 const color = v < 0.3 ? 'red' : v < 0.6 ? 'orange' : 'green'
                 return <Tag color={color}>{(v * 100).toFixed(1)}%</Tag>
               },
             },
             {
-              title: '趋势', width: 80,
+              title: t('cohort.columns.trend'), width: 80,
               render: (_v, r) => (
                 <Button size="small" type="link" onClick={() => setTimelineKey(r.key)}>
-                  时间线
+                  {t('cohort.timelineButton')}
                 </Button>
               ),
             },
@@ -182,6 +182,7 @@ export default function Cohort() {
 function CohortTimelineDrawer({
   groupBy, cohortKey, onClose,
 }: { groupBy: CohortGroupBy; cohortKey: string | null; onClose: () => void }) {
+  const { t } = useTranslation('risk')
   const [loading, setLoading] = useState(false)
   const [series, setSeries] = useState<CohortTimeBucket[]>([])
   const [bucket, setBucket] = useState<CohortBucket>('day')
@@ -207,29 +208,29 @@ function CohortTimelineDrawer({
   return (
     <Drawer
       open={open} onClose={onClose} width={760}
-      title={`时间线：${cohortKey || ''}（基于最近 ${sample} 条决策）`}
+      title={t('cohort.timeline.title', { key: cohortKey || '', sample })}
     >
       <Space style={{ marginBottom: 16 }}>
-        <Typography.Text strong>桶大小</Typography.Text>
+        <Typography.Text strong>{t('cohort.timeline.bucketLabel')}</Typography.Text>
         <Radio.Group
           value={bucket} onChange={(e) => setBucket(e.target.value)}
           optionType="button" buttonStyle="solid"
           options={[
-            { value: 'hour', label: '小时' },
-            { value: 'day', label: '日' },
-            { value: 'week', label: '周' },
+            { value: 'hour', label: t('cohort.timeline.bucketHour') },
+            { value: 'day', label: t('cohort.timeline.bucketDay') },
+            { value: 'week', label: t('cohort.timeline.bucketWeek') },
           ]}
         />
-        <Button onClick={load} loading={loading}>刷新</Button>
+        <Button onClick={load} loading={loading}>{t('common:actions.refresh')}</Button>
       </Space>
       {series.length > 0 ? (
         <>
           <SparkChart
-            title="Block Rate" color="#fa541c"
+            title={t('cohort.timeline.blockRateTitle')} color="#fa541c"
             buckets={series} valueOf={(b) => b.block_rate}
           />
           <SparkChart
-            title="Actual Fraud Rate" color="#cf1322"
+            title={t('cohort.timeline.fraudRateTitle')} color="#cf1322"
             buckets={series.filter((b) => b.labeled_total > 0)}
             valueOf={(b) => b.actual_fraud_rate}
           />
@@ -238,20 +239,20 @@ function CohortTimelineDrawer({
             pagination={{ pageSize: 30 }}
             columns={[
               {
-                title: '时间', dataIndex: 'bucket_start', width: 160,
+                title: t('cohort.timeline.columns.time'), dataIndex: 'bucket_start', width: 160,
                 render: (v: string) => dayjs(v).format(bucket === 'hour' ? 'MM-DD HH:mm' : 'YYYY-MM-DD'),
               },
-              { title: '决策数', dataIndex: 'total', width: 80, align: 'right' as const },
+              { title: t('cohort.timeline.columns.decisions'), dataIndex: 'total', width: 80, align: 'right' as const },
               {
-                title: 'block', width: 100, align: 'right' as const,
+                title: t('cohort.timeline.columns.block'), width: 100, align: 'right' as const,
                 render: (_v, r) => `${r.block} (${(r.block_rate * 100).toFixed(1)}%)`,
               },
               {
-                title: 'outcome', width: 90, align: 'right' as const,
+                title: t('cohort.timeline.columns.outcome'), width: 90, align: 'right' as const,
                 render: (_v, r) => r.labeled_total > 0 ? r.labeled_total : '-',
               },
               {
-                title: 'fraud_rate', dataIndex: 'actual_fraud_rate', width: 110,
+                title: t('cohort.timeline.columns.fraudRate'), dataIndex: 'actual_fraud_rate', width: 110,
                 align: 'right' as const,
                 render: (v: number, r) => r.labeled_total > 0
                   ? (v * 100).toFixed(2) + '%'
@@ -261,7 +262,7 @@ function CohortTimelineDrawer({
           />
         </>
       ) : (
-        <Typography.Text type="secondary">无数据。换更大的 bucket 试试，或检查 audit MemSink 是否有最近的决策样本。</Typography.Text>
+        <Typography.Text type="secondary">{t('cohort.timeline.emptyText')}</Typography.Text>
       )}
     </Drawer>
   )
@@ -275,12 +276,13 @@ function SparkChart({
   title: string; color: string; buckets: CohortTimeBucket[];
   valueOf: (b: CohortTimeBucket) => number
 }) {
+  const { t } = useTranslation('risk')
   const W = 700, H = 100, padX = 30, padY = 12
   if (buckets.length === 0) {
     return (
       <div style={{ marginBottom: 24 }}>
         <Typography.Text strong>{title}</Typography.Text>
-        <div><Typography.Text type="secondary">（无数据）</Typography.Text></div>
+        <div><Typography.Text type="secondary">{t('cohort.timeline.sparkEmpty')}</Typography.Text></div>
       </div>
     )
   }

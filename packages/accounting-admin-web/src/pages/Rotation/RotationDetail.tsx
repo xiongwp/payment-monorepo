@@ -21,6 +21,7 @@ import {
   WarningOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import { useTranslation, Trans } from 'react-i18next'
 import { getRotationInstanceHistory } from '../../api/accounting'
 import type {
   RotationInstanceHistoryView,
@@ -41,6 +42,7 @@ function fmt(rfc?: string): string {
 }
 
 export default function RotationDetail() {
+  const { t } = useTranslation('rotation')
   const { key } = useParams<{ key: string }>()
   const navigate = useNavigate()
   const decodedKey = decodeURIComponent(key || '')
@@ -55,7 +57,7 @@ export default function RotationDetail() {
       const view = await getRotationInstanceHistory(decodedKey)
       setData(view)
     } catch (e) {
-      message.error(e instanceof Error ? e.message : '加载失败')
+      message.error(e instanceof Error ? e.message : t('detail.loadFailed'))
       setData(null)
     } finally {
       setLoading(false)
@@ -68,9 +70,9 @@ export default function RotationDetail() {
   }, [decodedKey])
 
   const columns: ColumnsType<RotationInstanceHistoryRow> = [
-    { title: 'Account No', dataIndex: 'account_no', key: 'account_no', width: 240, ellipsis: true },
+    { title: t('detail.columns.accountNo'), dataIndex: 'account_no', key: 'account_no', width: 240, ellipsis: true },
     {
-      title: 'Phase',
+      title: t('detail.columns.phase'),
       dataIndex: 'lifecycle_phase',
       key: 'lifecycle_phase',
       width: 130,
@@ -81,7 +83,7 @@ export default function RotationDetail() {
       ),
     },
     {
-      title: 'Balance',
+      title: t('detail.columns.balance'),
       dataIndex: 'balance',
       key: 'balance',
       width: 140,
@@ -90,15 +92,15 @@ export default function RotationDetail() {
         <Space>
           {displayMoney(String(v), row.currency)}
           {row.is_zero ? (
-            <Tag color="green" icon={<CheckCircleOutlined />}>0</Tag>
+            <Tag color="green" icon={<CheckCircleOutlined />}>{t('detail.isZeroTag')}</Tag>
           ) : (
-            <Tag color="orange" icon={<WarningOutlined />}>非零</Tag>
+            <Tag color="orange" icon={<WarningOutlined />}>{t('detail.nonZeroTag')}</Tag>
           )}
         </Space>
       ),
     },
     {
-      title: 'Available',
+      title: t('detail.columns.available'),
       dataIndex: 'available_balance',
       key: 'available_balance',
       width: 140,
@@ -106,26 +108,26 @@ export default function RotationDetail() {
       render: (v: number, row) => displayMoney(String(v), row.currency),
     },
     {
-      title: 'Frozen',
+      title: t('detail.columns.frozen'),
       dataIndex: 'frozen_balance',
       key: 'frozen_balance',
       width: 120,
       align: 'right',
       render: (v: number, row) => displayMoney(String(v), row.currency),
     },
-    { title: '本期开始', dataIndex: 'period_start', key: 'period_start', width: 180, render: fmt },
-    { title: '本期结束', dataIndex: 'period_end', key: 'period_end', width: 180, render: fmt },
+    { title: t('detail.columns.periodStart'), dataIndex: 'period_start', key: 'period_start', width: 180, render: fmt },
+    { title: t('detail.columns.periodEnd'), dataIndex: 'period_end', key: 'period_end', width: 180, render: fmt },
     {
-      title: 'Draining 起',
+      title: t('detail.columns.drainingStartedAt'),
       dataIndex: 'draining_started_at',
       key: 'draining_started_at',
       width: 180,
       render: fmt,
     },
-    { title: 'Frozen 时', dataIndex: 'frozen_at', key: 'frozen_at', width: 180, render: fmt },
-    { title: 'Archived 时', dataIndex: 'archived_at', key: 'archived_at', width: 180, render: fmt },
+    { title: t('detail.columns.frozenAt'), dataIndex: 'frozen_at', key: 'frozen_at', width: 180, render: fmt },
+    { title: t('detail.columns.archivedAt'), dataIndex: 'archived_at', key: 'archived_at', width: 180, render: fmt },
     {
-      title: 'Policy / Override',
+      title: t('detail.columns.policyOverride'),
       key: 'policy',
       width: 220,
       render: (_, row) => (
@@ -150,17 +152,20 @@ export default function RotationDetail() {
     <div>
       <Space style={{ marginBottom: 16 }}>
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/rotation')}>
-          返回列表
+          {t('detail.backToList')}
         </Button>
         <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
-          刷新
+          {t('common:actions.refresh')}
         </Button>
       </Space>
 
       <Title level={3}>{decodedKey}</Title>
       <Paragraph type="secondary">
-        该 logical_account 下所有 instance（含已 archived）的状态 + 余额。
-        归档 instance 的 <Text code>balance</Text> 必须为 0（不变量 I4）；本页用绿色"0"标识。
+        <Trans i18nKey="detail.description" t={t}>
+          {'该 logical_account 下所有 instance（含已 archived）的状态 + 余额。归档 instance 的 '}
+          <Text code>balance</Text>
+          {' 必须为 0（不变量 I4）；本页用绿色"0"标识。'}
+        </Trans>
       </Paragraph>
 
       {data && !data.rotation_enabled && (
@@ -168,8 +173,8 @@ export default function RotationDetail() {
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="该 logical_account 未启用轮换"
-          description="rotation_enabled = false；账户工作在 legacy 模式，单 instance 永久 active。"
+          message={t('detail.rotationDisabledTitle')}
+          description={t('detail.rotationDisabledDesc')}
         />
       )}
       {data && !data.all_instances_zero && (
@@ -177,21 +182,21 @@ export default function RotationDetail() {
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message="存在非零余额的非 active instance"
-          description="archived / frozen 的 instance 余额应为 0；若长期非零，请检查 Convergence Job / Migration Job 日志。"
+          message={t('detail.nonZeroTitle')}
+          description={t('detail.nonZeroDesc')}
         />
       )}
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col span={6}>
           <Card>
-            <Statistic title="Currency" value={data?.currency || '—'} />
+            <Statistic title={t('detail.stats.currency')} value={data?.currency || '—'} />
           </Card>
         </Col>
         <Col span={6}>
           <Card>
             <Statistic
-              title="Instance 总数"
+              title={t('detail.stats.instanceCount')}
               value={data?.instances.length || 0}
             />
           </Card>
@@ -199,7 +204,7 @@ export default function RotationDetail() {
         <Col span={6}>
           <Card>
             <Statistic
-              title="所有余额之和"
+              title={t('detail.stats.totalBalance')}
               value={data ? displayMoney(String(data.total_balance), data.currency) : '—'}
             />
           </Card>
@@ -207,8 +212,8 @@ export default function RotationDetail() {
         <Col span={6}>
           <Card>
             <Statistic
-              title="全部归零?"
-              value={data?.all_instances_zero ? '是 ✓' : '否 ⚠'}
+              title={t('detail.stats.allZero')}
+              value={data?.all_instances_zero ? t('detail.stats.allZeroYes') : t('detail.stats.allZeroNo')}
               valueStyle={{
                 color: data?.all_instances_zero ? '#52c41a' : '#fa8c16',
               }}
@@ -218,7 +223,7 @@ export default function RotationDetail() {
       </Row>
 
       {data && (
-        <Card title="Phase 分布" style={{ marginBottom: 16 }} size="small">
+        <Card title={t('detail.phaseDistribution')} style={{ marginBottom: 16 }} size="small">
           <Space wrap>
             {Object.entries(data.phase_counts).map(([phase, count]) => (
               <Tag key={phase} color="blue">
@@ -230,11 +235,11 @@ export default function RotationDetail() {
       )}
 
       <Descriptions bordered size="small" column={2} style={{ marginBottom: 16 }}>
-        <Descriptions.Item label="logical_account_id">
+        <Descriptions.Item label={t('detail.info.logicalAccountId')}>
           {data?.logical_account_id || '—'}
         </Descriptions.Item>
-        <Descriptions.Item label="rotation_enabled">
-          {data?.rotation_enabled ? '是' : '否'}
+        <Descriptions.Item label={t('detail.info.rotationEnabled')}>
+          {data?.rotation_enabled ? t('common:status.yes') : t('common:status.no')}
         </Descriptions.Item>
       </Descriptions>
 

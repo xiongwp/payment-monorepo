@@ -1,0 +1,30 @@
+{
+  "title": "工作台",
+  "stats": {
+    "ordersTotal": "订单总数",
+    "merchantsTotal": "商户总数",
+    "kycApprovedPending": "KYC 已通过 / 待提交",
+    "kmsKeysTotal": "KMS Key 数量",
+    "activeKmsKey": "当前活跃 KMS Key"
+  },
+  "recentOrders": {
+    "title": "最近订单",
+    "columns": {
+      "orderId": "订单号",
+      "amount": "金额",
+      "status": "状态",
+      "merchant": "商户",
+      "time": "时间"
+    }
+  },
+  "recentMerchantAudit": {
+    "title": "最近商户审计",
+    "viewAll": "全部",
+    "columns": {
+      "time": "时间",
+      "action": "操作",
+      "actor": "Actor",
+      "status": "Status"
+    }
+  }
+}

@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { Button, Input, Layout, Menu, Modal, Space, Tag, Typography, theme } from 'antd'
+import { useTranslation } from 'react-i18next'
 import {
   DashboardOutlined,
   ShoppingCartOutlined,
@@ -17,56 +18,11 @@ import {
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { useAuth } from '../stores/auth'
+import LanguageSwitcher from '../i18n/LanguageSwitcher'
 
 const { Header, Content, Sider } = Layout
 
 type MenuItem = Required<MenuProps>['items'][number]
-
-const items: MenuItem[] = [
-  { key: '/', icon: <DashboardOutlined />, label: '工作台' },
-  { key: '/app', icon: <MobileOutlined />, label: '模拟下单（App）' },
-  { key: '/orders', icon: <ShoppingCartOutlined />, label: '订单管理' },
-  { key: '/merchants', icon: <ShopOutlined />, label: '商户管理' },
-  { key: '/ledger', icon: <BookOutlined />, label: '总账' },
-  { key: '/disputes', icon: <WarningOutlined />, label: 'Disputes' },
-  {
-    key: 'risk',
-    icon: <AlertOutlined />,
-    label: '风控运营',
-    children: [
-      { key: '/risk',           label: '风控总览' },
-      { key: '/risk/workbench', label: 'Case 工作台' },
-      { key: '/risk/reviews',   label: '所有审核' },
-      { key: '/risk/decisions', label: '决策审计' },
-      { key: '/risk/outcomes',  label: '反馈记录' },
-      { key: '/risk/rules',     label: '规则管理' },
-      { key: '/risk/cohort',    label: 'Cohort 分析' },
-      { key: '/risk/abtest',    label: 'ML A/B 检验' },
-    ],
-  },
-  {
-    key: 'channels',
-    icon: <ApartmentOutlined />,
-    label: '渠道',
-    children: [
-      { key: '/channels/probe', label: '路由探测' },
-      { key: '/channels/webhook', label: 'Webhook 调试' },
-      { key: '/channels/ph-tester', label: 'PH 渠道联测' },
-      { key: '/webhooks/deliveries', label: '出站 Webhook' },
-    ],
-  },
-  { key: '/kms', icon: <SafetyCertificateOutlined />, label: '密钥管理' },
-  { key: '/ops', icon: <ControlOutlined />, label: '运营中心' },
-  {
-    key: 'audit-group',
-    icon: <AuditOutlined />,
-    label: '审计日志',
-    children: [
-      { key: '/audit',                label: '订单审计（order-core）' },
-      { key: '/audit/user-merchant',  label: '商户审计（链式签名）' },
-    ],
-  },
-]
 
 const ROLE_COLOR: Record<string, string> = {
   read: 'blue',
@@ -78,6 +34,7 @@ export default function AppLayout() {
   const [collapsed, setCollapsed] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
+  const { t } = useTranslation('menu')
   const {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken()
@@ -98,6 +55,56 @@ export default function AppLayout() {
   const handleMenuClick: MenuProps['onClick'] = (e) => {
     navigate(e.key)
   }
+
+  // 依赖 t：i18n.language 变化时 items 自动重生成
+  const items: MenuItem[] = useMemo(
+    () => [
+      { key: '/', icon: <DashboardOutlined />, label: t('dashboard') },
+      { key: '/app', icon: <MobileOutlined />, label: t('appSimulator') },
+      { key: '/orders', icon: <ShoppingCartOutlined />, label: t('orders') },
+      { key: '/merchants', icon: <ShopOutlined />, label: t('merchants') },
+      { key: '/ledger', icon: <BookOutlined />, label: t('ledger') },
+      { key: '/disputes', icon: <WarningOutlined />, label: t('disputes') },
+      {
+        key: 'risk',
+        icon: <AlertOutlined />,
+        label: t('riskGroup'),
+        children: [
+          { key: '/risk',           label: t('riskOverview') },
+          { key: '/risk/workbench', label: t('riskWorkbench') },
+          { key: '/risk/reviews',   label: t('riskReviews') },
+          { key: '/risk/decisions', label: t('riskDecisions') },
+          { key: '/risk/outcomes',  label: t('riskOutcomes') },
+          { key: '/risk/rules',     label: t('riskRules') },
+          { key: '/risk/cohort',    label: t('riskCohort') },
+          { key: '/risk/abtest',    label: t('riskAbTest') },
+        ],
+      },
+      {
+        key: 'channels',
+        icon: <ApartmentOutlined />,
+        label: t('channelGroup'),
+        children: [
+          { key: '/channels/probe', label: t('channelProbe') },
+          { key: '/channels/webhook', label: t('channelWebhookTest') },
+          { key: '/channels/ph-tester', label: t('channelPhTester') },
+          { key: '/webhooks/deliveries', label: t('channelOutboundWebhook') },
+        ],
+      },
+      { key: '/kms', icon: <SafetyCertificateOutlined />, label: t('kms') },
+      { key: '/ops', icon: <ControlOutlined />, label: t('ops') },
+      {
+        key: 'audit-group',
+        icon: <AuditOutlined />,
+        label: t('auditGroup'),
+        children: [
+          { key: '/audit',                label: t('auditOrder') },
+          { key: '/audit/user-merchant',  label: t('auditUserMerchant') },
+        ],
+      },
+    ],
+    [t],
+  )
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -126,12 +133,12 @@ export default function AppLayout() {
       <Layout>
         <Header style={{ padding: 0, background: colorBgContainer, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ padding: '0 24px', fontSize: 20, fontWeight: 'bold' }}>
-            支付平台管理后台
+            {t('headerTitle')}
           </div>
           <Space style={{ paddingRight: 24 }}>
             {role && (
               <Tag color={ROLE_COLOR[role] || 'default'}>
-                角色: {role}
+                {t('tokenModal.roleLabel', { role })}
               </Tag>
             )}
             {keyID && (
@@ -143,26 +150,26 @@ export default function AppLayout() {
               size="small" icon={<UserOutlined />}
               onClick={() => { setTokenInput(token); setTokenModalOpen(true) }}
             >
-              {token ? '切换 Token' : '登录'}
+              {token ? t('tokenModal.switchToken') : t('tokenModal.login')}
             </Button>
+            <LanguageSwitcher />
           </Space>
         </Header>
         <Modal
           open={tokenModalOpen}
-          title="设置 Admin Token"
+          title={t('tokenModal.title')}
           onCancel={() => setTokenModalOpen(false)}
           onOk={onSaveToken}
-          okText="保存"
-          cancelText="取消"
+          okText={t('tokenModal.okText')}
+          cancelText={t('tokenModal.cancelText')}
         >
           <Typography.Paragraph type="secondary">
-            填入运维分配的 admin token (read / write / danger 三级 RBAC)。
-            空 token = 退出登录 / dev 模式。
+            {t('tokenModal.description')}
           </Typography.Paragraph>
           <Input.Password
             value={tokenInput}
             onChange={(e) => setTokenInput(e.target.value)}
-            placeholder="rsk_admin_xxx"
+            placeholder={t('tokenModal.placeholder')}
             autoComplete="off"
           />
         </Modal>

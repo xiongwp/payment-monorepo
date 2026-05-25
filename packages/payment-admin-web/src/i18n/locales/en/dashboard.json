@@ -1,0 +1,30 @@
+{
+  "title": "Dashboard",
+  "stats": {
+    "ordersTotal": "Total orders",
+    "merchantsTotal": "Total merchants",
+    "kycApprovedPending": "KYC approved / pending",
+    "kmsKeysTotal": "KMS keys",
+    "activeKmsKey": "Active KMS key"
+  },
+  "recentOrders": {
+    "title": "Recent orders",
+    "columns": {
+      "orderId": "Order ID",
+      "amount": "Amount",
+      "status": "Status",
+      "merchant": "Merchant",
+      "time": "Time"
+    }
+  },
+  "recentMerchantAudit": {
+    "title": "Recent merchant audit",
+    "viewAll": "View all",
+    "columns": {
+      "time": "Time",
+      "action": "Action",
+      "actor": "Actor",
+      "status": "Status"
+    }
+  }
+}

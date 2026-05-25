@@ -3,6 +3,7 @@ import {
   Alert, Button, Card, Form, Input, Modal, Select, Space, Table, Tag, Typography, message,
 } from 'antd'
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { createMerchant, listMerchants } from '../../api'
 import type { Merchant, CreateMerchantResponse } from '../../api'
 
@@ -25,6 +26,7 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 export default function MerchantList() {
+  const { t } = useTranslation('merchant')
   const [loading, setLoading] = useState(false)
   const [rows, setRows] = useState<Merchant[]>([])
   const [filters, setFilters] = useState<{ status?: string; kyc_status?: string }>({})
@@ -65,11 +67,11 @@ export default function MerchantList() {
 
   return (
     <div>
-      <Typography.Title level={3}>商户管理</Typography.Title>
+      <Typography.Title level={3}>{t('list.title')}</Typography.Title>
       <Card>
         <Space wrap style={{ marginBottom: 16 }}>
           <Select
-            placeholder="业务状态" allowClear style={{ width: 140 }}
+            placeholder={t('list.filters.statusPlaceholder')} allowClear style={{ width: 140 }}
             onChange={(v) => setFilters((f) => ({ ...f, status: v }))}
             options={[
               { value: 'pending', label: 'pending' },
@@ -79,7 +81,7 @@ export default function MerchantList() {
             ]}
           />
           <Select
-            placeholder="KYC 状态" allowClear style={{ width: 180 }}
+            placeholder={t('list.filters.kycStatusPlaceholder')} allowClear style={{ width: 180 }}
             onChange={(v) => setFilters((f) => ({ ...f, kyc_status: v }))}
             options={[
               { value: 'pending', label: 'pending' },
@@ -92,8 +94,8 @@ export default function MerchantList() {
               { value: 'terminated', label: 'terminated' },
             ]}
           />
-          <Button onClick={load}>刷新</Button>
-          <Button type="primary" onClick={() => setCreateOpen(true)}>新建商户</Button>
+          <Button onClick={load}>{t('common:actions.refresh')}</Button>
+          <Button type="primary" onClick={() => setCreateOpen(true)}>{t('list.actions.create')}</Button>
         </Space>
         <Table<Merchant>
           rowKey="id"
@@ -102,24 +104,24 @@ export default function MerchantList() {
           size="small"
           pagination={{ pageSize: 20 }}
           columns={[
-            { title: 'ID', dataIndex: 'id', width: 140, render: (v) => <Link to={`/merchants/${v}`}>{v}</Link> },
-            { title: '名称', dataIndex: 'name', ellipsis: true },
-            { title: '邮箱', dataIndex: 'contact_email', ellipsis: true },
-            { title: '国家', dataIndex: 'country', width: 70 },
+            { title: t('list.columns.id'), dataIndex: 'id', width: 140, render: (v) => <Link to={`/merchants/${v}`}>{v}</Link> },
+            { title: t('list.columns.name'), dataIndex: 'name', ellipsis: true },
+            { title: t('list.columns.email'), dataIndex: 'contact_email', ellipsis: true },
+            { title: t('list.columns.country'), dataIndex: 'country', width: 70 },
             {
-              title: 'KYC', dataIndex: 'kyc_status', width: 140,
+              title: t('list.columns.kyc'), dataIndex: 'kyc_status', width: 140,
               render: (v: string) => <Tag color={KYC_COLORS[v] || 'default'}>{v}</Tag>,
             },
             {
-              title: '状态', dataIndex: 'status', width: 100,
+              title: t('list.columns.status'), dataIndex: 'status', width: 100,
               render: (v: string) => <Tag color={STATUS_COLORS[v] || 'default'}>{v}</Tag>,
             },
             {
-              title: '风控', dataIndex: 'risk_tier', width: 100,
+              title: t('list.columns.riskTier'), dataIndex: 'risk_tier', width: 100,
               render: (v: string) => <Tag>{v}</Tag>,
             },
             {
-              title: '创建时间', dataIndex: 'created_ms', width: 170,
+              title: t('list.columns.createdAt'), dataIndex: 'created_ms', width: 170,
               render: (v: number) => new Date(v).toLocaleString(),
             },
           ]}
@@ -127,35 +129,35 @@ export default function MerchantList() {
       </Card>
 
       <Modal
-        title="新建商户"
+        title={t('list.createModal.title')}
         open={createOpen}
         onCancel={() => setCreateOpen(false)}
         onOk={() => createForm.submit()}
-        okText="创建"
+        okText={t('list.createModal.okText')}
         width={640}
       >
         <Alert
           type="info" showIcon style={{ marginBottom: 16 }}
-          message="创建成功后会返回 live/test API key 和 webhook secret 明文；仅显示一次，请立即妥善保存。"
+          message={t('list.createModal.alert')}
         />
         <Form
           form={createForm} layout="vertical" onFinish={onCreate}
           initialValues={{ country: 'PH', settle_currency: 'PHP', business_type: 'individual' }}
         >
-          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
+          <Form.Item name="name" label={t('list.createModal.fields.name')} rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="legal_name" label="注册主体全称">
+          <Form.Item name="legal_name" label={t('list.createModal.fields.legalName')}>
             <Input />
           </Form.Item>
-          <Form.Item name="contact_email" label="联系邮箱" rules={[{ required: true, type: 'email' }]}>
+          <Form.Item name="contact_email" label={t('list.createModal.fields.contactEmail')} rules={[{ required: true, type: 'email' }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="contact_phone" label="联系电话"><Input /></Form.Item>
-          <Form.Item name="country" label="国家">
+          <Form.Item name="contact_phone" label={t('list.createModal.fields.contactPhone')}><Input /></Form.Item>
+          <Form.Item name="country" label={t('list.createModal.fields.country')}>
             <Select options={[{ value: 'PH', label: 'Philippines' }]} />
           </Form.Item>
-          <Form.Item name="business_type" label="主体类型">
+          <Form.Item name="business_type" label={t('list.createModal.fields.businessType')}>
             <Select options={[
               { value: 'individual', label: 'individual' },
               { value: 'corporate', label: 'corporate' },
@@ -163,30 +165,30 @@ export default function MerchantList() {
               { value: 'government', label: 'government' },
             ]} />
           </Form.Item>
-          <Form.Item name="tax_id" label="TIN / SEC / DTI"><Input /></Form.Item>
-          <Form.Item name="mcc" label="MCC (ISO 18245)"><Input maxLength={4} /></Form.Item>
-          <Form.Item name="webhook_url" label="Webhook URL">
-            <Input placeholder="https://merchant.example.com/webhooks/payments" />
+          <Form.Item name="tax_id" label={t('list.createModal.fields.taxId')}><Input /></Form.Item>
+          <Form.Item name="mcc" label={t('list.createModal.fields.mcc')}><Input maxLength={4} /></Form.Item>
+          <Form.Item name="webhook_url" label={t('list.createModal.fields.webhookUrl')}>
+            <Input placeholder={t('list.createModal.fields.webhookUrlPlaceholder')} />
           </Form.Item>
-          <Form.Item name="settle_method" label="结算方式">
+          <Form.Item name="settle_method" label={t('list.createModal.fields.settleMethod')}>
             <Select allowClear options={[
               { value: 'bank_transfer', label: 'bank_transfer' },
               { value: 'wallet_topup', label: 'wallet_topup' },
               { value: 'manual', label: 'manual' },
             ]} />
           </Form.Item>
-          <Form.Item name="settle_account" label="结算账户"><Input /></Form.Item>
-          <Form.Item name="settle_bank" label="结算银行"><Input /></Form.Item>
-          <Form.Item name="settle_holder" label="户名"><Input /></Form.Item>
+          <Form.Item name="settle_account" label={t('list.createModal.fields.settleAccount')}><Input /></Form.Item>
+          <Form.Item name="settle_bank" label={t('list.createModal.fields.settleBank')}><Input /></Form.Item>
+          <Form.Item name="settle_holder" label={t('list.createModal.fields.settleHolder')}><Input /></Form.Item>
         </Form>
       </Modal>
 
       <Modal
-        title="商户已创建 — 请妥善保存以下凭据"
+        title={t('list.secretsModal.title')}
         open={!!secretsDialog}
         onCancel={() => setSecretsDialog(null)}
         onOk={() => setSecretsDialog(null)}
-        okText="我已保存"
+        okText={t('list.secretsModal.okText')}
         cancelButtonProps={{ style: { display: 'none' } }}
         width={720}
       >
@@ -194,12 +196,12 @@ export default function MerchantList() {
           <div>
             <Alert
               type="warning" showIcon style={{ marginBottom: 16 }}
-              message="以下凭据只显示一次。关闭后将无法再次查看；如需重置请使用 rotate-key。"
+              message={t('list.secretsModal.alert')}
             />
-            <SecretRow label="商户 ID" value={secretsDialog.merchant?.id} />
-            <SecretRow label="Live Secret Key" value={secretsDialog.live_secret_key} />
-            <SecretRow label="Test Secret Key" value={secretsDialog.test_secret_key} />
-            <SecretRow label="Webhook Secret" value={secretsDialog.webhook_secret} />
+            <SecretRow label={t('list.secretsModal.labels.merchantId')} value={secretsDialog.merchant?.id} />
+            <SecretRow label={t('list.secretsModal.labels.liveSecretKey')} value={secretsDialog.live_secret_key} />
+            <SecretRow label={t('list.secretsModal.labels.testSecretKey')} value={secretsDialog.test_secret_key} />
+            <SecretRow label={t('list.secretsModal.labels.webhookSecret')} value={secretsDialog.webhook_secret} />
           </div>
         )}
       </Modal>

@@ -4,7 +4,7 @@
  * 给运维 / 演示用的两个工具：
  *   1. Resolve Fleet Sub —— 输入 LA key + flow_id，复刻 rotation_router 算法，
  *      返回路由命中的 sub-account（含 sub_idx, account_no, group, phase, balance）。
- *   2. Fleet Test Book ——  端到端 demo：src 走 fleet routing 选 sub，dst 直填，
+ *   2. Fleet Test Book ——  端到端 demo：src 走 fleet routing 选 sub，dst 直填,
  *      调 accounting-system DoubleEntryBooking 真记账，返回 voucher_no + tx_ids。
  *
  * 设计：
@@ -32,6 +32,8 @@ import {
   Col,
 } from 'antd'
 import { ThunderboltOutlined, FunctionOutlined } from '@ant-design/icons'
+import { useTranslation, Trans } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import {
   rotationResolveFleetSub,
   rotationFleetBook,
@@ -67,9 +69,10 @@ function phaseTag(phaseStr: string, phaseCode: number) {
   )
 }
 
-function groupTag(group: string) {
-  if (!group) return <Tag>(legacy)</Tag>
-  return <Tag color={group === 'A' ? 'cyan' : 'purple'}>Group {group}</Tag>
+function GroupTag({ group }: { group: string }) {
+  const { t } = useTranslation('rotation')
+  if (!group) return <Tag>{t('test.groupLegacy')}</Tag>
+  return <Tag color={group === 'A' ? 'cyan' : 'purple'}>{t('test.groupLabel', { group })}</Tag>
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -77,31 +80,32 @@ function groupTag(group: string) {
 // ────────────────────────────────────────────────────────────────
 
 function ResolutionView({ data }: { data: FleetSubResolution }) {
+  const { t } = useTranslation('rotation')
   return (
     <Descriptions bordered size="small" column={1}>
-      <Descriptions.Item label="LA key">
+      <Descriptions.Item label={t('test.resolution.laKey')}>
         <Text code>{data.logical_account_key}</Text>
       </Descriptions.Item>
-      <Descriptions.Item label="LA id">{data.logical_account_id}</Descriptions.Item>
-      <Descriptions.Item label="flow_id">
+      <Descriptions.Item label={t('test.resolution.laId')}>{data.logical_account_id}</Descriptions.Item>
+      <Descriptions.Item label={t('test.resolution.flowId')}>
         <Text code>{data.flow_id}</Text>
       </Descriptions.Item>
-      <Descriptions.Item label="sub_idx">
+      <Descriptions.Item label={t('test.resolution.subIdx')}>
         <Text strong>{data.sub_idx}</Text>{' '}
-        <Text type="secondary">= fnv32a(flow_id) % 100</Text>
+        <Text type="secondary">{t('test.resolution.subIdxHelper')}</Text>
       </Descriptions.Item>
-      <Descriptions.Item label="account_no">
+      <Descriptions.Item label={t('test.resolution.accountNo')}>
         <Text copyable code>
           {data.account_no}
         </Text>
       </Descriptions.Item>
-      <Descriptions.Item label="account_group">{groupTag(data.account_group)}</Descriptions.Item>
-      <Descriptions.Item label="lifecycle_phase">
+      <Descriptions.Item label={t('test.resolution.accountGroup')}><GroupTag group={data.account_group} /></Descriptions.Item>
+      <Descriptions.Item label={t('test.resolution.lifecyclePhase')}>
         {phaseTag(data.lifecycle_phase_str, data.lifecycle_phase)}
       </Descriptions.Item>
-      <Descriptions.Item label="balance">
+      <Descriptions.Item label={t('test.resolution.balance')}>
         <Text>{displayMoney(data.balance, data.currency)}</Text>{' '}
-        <Text type="secondary">({data.balance} {data.currency} minor units)</Text>
+        <Text type="secondary">{t('test.resolution.minorUnitsSuffix', { balance: data.balance, currency: data.currency })}</Text>
       </Descriptions.Item>
     </Descriptions>
   )
@@ -112,6 +116,7 @@ function ResolutionView({ data }: { data: FleetSubResolution }) {
 // ────────────────────────────────────────────────────────────────
 
 function ResolveCard() {
+  const { t } = useTranslation('rotation')
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<FleetSubResolution | null>(null)
@@ -139,40 +144,43 @@ function ResolveCard() {
       title={
         <Space>
           <FunctionOutlined />
-          <span>1. Fleet Routing 解析</span>
+          <span>{t('test.resolve.title')}</span>
         </Space>
       }
       extra={
         <Text type="secondary">
-          GET /v1/rotation/resolve-fleet-sub
+          {t('test.resolve.endpoint')}
         </Text>
       }
     >
       <Paragraph type="secondary" style={{ marginTop: 0 }}>
-        给定 LA key + flow_id，复刻 <Text code>rotation_router.go</Text> 的 fleet 路由算法，
-        返回选中的 sub-account（用于排障 / Demo）。同一个 flow_id 永远命中同一个 sub_idx（幂等）。
+        <Trans i18nKey="test.resolve.description" t={t}>
+          {'给定 LA key + flow_id，复刻 '}
+          <Text code>rotation_router.go</Text>
+          {' 的 fleet 路由算法，返回选中的 sub-account（用于排障 / Demo）。同一个 flow_id 永远命中同一个 sub_idx（幂等）。'}
+        </Trans>
       </Paragraph>
       <Form form={form} layout="vertical" onFinish={submit}>
         <Row gutter={16}>
           <Col span={14}>
             <Form.Item
-              label="logical_account_key"
+              label={t('test.resolve.logicalAccountKeyLabel')}
               name="logical_account_key"
-              rules={[{ required: true, message: '必填' }]}
+              rules={[{ required: true, message: t('test.resolve.requiredMsg') }]}
               initialValue="channel-payable:alipay"
             >
-              <Input placeholder="e.g. channel-payable:alipay" />
+              <Input placeholder={t('test.resolve.logicalAccountKeyPlaceholder')} />
             </Form.Item>
           </Col>
           <Col span={10}>
             <Form.Item
-              label="flow_id"
+              label={t('test.resolve.flowIdLabel')}
               name="flow_id"
-              rules={[{ required: true, message: '必填' }]}
+              rules={[{ required: true, message: t('test.resolve.requiredMsg') }]}
               initialValue="order-12345"
-              tooltip="任意字符串；hash 后选 sub。同 flow_id 路由到同一 sub_idx"
+              tooltip={t('test.resolve.flowIdTooltip')}
             >
-              <Input placeholder="e.g. order-12345" />
+              <Input placeholder={t('test.resolve.flowIdPlaceholder')} />
             </Form.Item>
           </Col>
         </Row>
@@ -182,7 +190,7 @@ function ResolveCard() {
           htmlType="submit"
           loading={loading}
         >
-          解析路由
+          {t('test.resolve.submitButton')}
         </Button>
       </Form>
 
@@ -190,7 +198,7 @@ function ResolveCard() {
         <Alert
           type="error"
           showIcon
-          message="路由失败"
+          message={t('test.resolve.errorTitle')}
           description={error}
           style={{ marginTop: 16 }}
         />
@@ -198,7 +206,7 @@ function ResolveCard() {
       {result && (
         <div style={{ marginTop: 16 }}>
           <Divider orientation="left" plain>
-            <Text type="secondary">路由结果</Text>
+            <Text type="secondary">{t('test.resolve.resultTitle')}</Text>
           </Divider>
           <ResolutionView data={result} />
         </div>
@@ -211,18 +219,21 @@ function ResolveCard() {
 // Card 2: Fleet Test Book — 端到端记账 demo
 // ────────────────────────────────────────────────────────────────
 
-const BUSINESS_TYPE_OPTIONS = [
-  { value: 'TRANSFER', label: 'TRANSFER 转账' },
-  { value: 'PAYMENT', label: 'PAYMENT 支付' },
-  { value: 'REFUND', label: 'REFUND 退款' },
-  { value: 'WITHDRAW', label: 'WITHDRAW 提现' },
-  { value: 'DEPOSIT', label: 'DEPOSIT 充值' },
-  { value: 'COMMISSION', label: 'COMMISSION 佣金' },
-]
+function makeBusinessTypeOptions(t: TFunction) {
+  return [
+    { value: 'TRANSFER', label: t('test.businessTypes.transfer') },
+    { value: 'PAYMENT', label: t('test.businessTypes.payment') },
+    { value: 'REFUND', label: t('test.businessTypes.refund') },
+    { value: 'WITHDRAW', label: t('test.businessTypes.withdraw') },
+    { value: 'DEPOSIT', label: t('test.businessTypes.deposit') },
+    { value: 'COMMISSION', label: t('test.businessTypes.commission') },
+  ]
+}
 
 const CURRENCY_OPTIONS = ['CNY', 'USD', 'PHP', 'HKD', 'SGD', 'JPY', 'EUR']
 
 function BookCard() {
+  const { t } = useTranslation('rotation')
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<FleetTestBookResponse | null>(null)
@@ -244,7 +255,7 @@ function BookCard() {
         operator: v.operator,
       })
       setResult(r)
-      message.success('记账成功')
+      message.success(t('test.book.bookSuccess'))
     } catch (e) {
       if ((e as { errorFields?: unknown }).errorFields) return
       const msg = e instanceof Error ? e.message : String(e)
@@ -260,114 +271,119 @@ function BookCard() {
       title={
         <Space>
           <ThunderboltOutlined />
-          <span>2. Fleet 端到端记账 demo</span>
+          <span>{t('test.book.title')}</span>
         </Space>
       }
-      extra={<Text type="secondary">POST /v1/rotation/fleet-book</Text>}
+      extra={<Text type="secondary">{t('test.book.endpoint')}</Text>}
     >
       <Alert
         type="warning"
         showIcon
-        message="演示性接口"
+        message={t('test.book.alertTitle')}
         description={
           <>
-            源账户走 fleet routing（推荐填 <Text code>src_logical_account_key</Text>），
-            目标账户直填 account_no。生产 caller 应走 gRPC <Text code>CreateTransaction</Text>，
-            此处仅用于运维验证 fleet 链路是否打通。<br />
-            金额从 src（Debit）流向 dst（Credit）；src 余额减、dst 余额加。
+            <Trans i18nKey="test.book.alertDesc1" t={t}>
+              {'源账户走 fleet routing（推荐填 '}
+              <Text code>src_logical_account_key</Text>
+              {'），目标账户直填 account_no。生产 caller 应走 gRPC '}
+              <Text code>CreateTransaction</Text>
+              {'，此处仅用于运维验证 fleet 链路是否打通。'}
+            </Trans>
+            <br />
+            {t('test.book.alertDesc2')}
           </>
         }
         style={{ marginBottom: 16 }}
       />
       <Form form={form} layout="vertical" onFinish={submit}>
         <Divider orientation="left" plain>
-          <Text type="secondary">源账户（二选一）</Text>
+          <Text type="secondary">{t('test.book.srcSectionTitle')}</Text>
         </Divider>
         <Row gutter={16}>
           <Col span={12}>
             <Form.Item
-              label="src_logical_account_key（推荐 — 走 fleet routing）"
+              label={t('test.book.srcLogicalAccountKeyLabel')}
               name="src_logical_account_key"
               initialValue="channel-payable:alipay"
-              tooltip="给 LA key + flow_id 就能自动选中 fleet 里某个 sub-account"
+              tooltip={t('test.book.srcLogicalAccountKeyTooltip')}
             >
-              <Input placeholder="e.g. channel-payable:alipay" allowClear />
+              <Input placeholder={t('test.book.srcLogicalAccountKeyPlaceholder')} allowClear />
             </Form.Item>
           </Col>
           <Col span={12}>
             <Form.Item
-              label="src_account_no（绕过 fleet routing）"
+              label={t('test.book.srcAccountNoLabel')}
               name="src_account_no"
-              tooltip="直接指定源账户号；填了就不走 routing"
+              tooltip={t('test.book.srcAccountNoTooltip')}
             >
-              <Input placeholder="留空则用 LA key" allowClear />
+              <Input placeholder={t('test.book.srcAccountNoPlaceholder')} allowClear />
             </Form.Item>
           </Col>
         </Row>
 
         <Divider orientation="left" plain>
-          <Text type="secondary">目标账户 + 金额</Text>
+          <Text type="secondary">{t('test.book.dstSectionTitle')}</Text>
         </Divider>
         <Row gutter={16}>
           <Col span={12}>
             <Form.Item
-              label="dst_account_no"
+              label={t('test.book.dstAccountNoLabel')}
               name="dst_account_no"
-              rules={[{ required: true, message: '必填，必须是已存在的账户' }]}
+              rules={[{ required: true, message: t('test.book.dstAccountNoRequired') }]}
             >
-              <Input placeholder="e.g. 156020100011099999" />
+              <Input placeholder={t('test.book.dstAccountNoPlaceholder')} />
             </Form.Item>
           </Col>
           <Col span={6}>
             <Form.Item
-              label="amount (minor units)"
+              label={t('test.book.amountLabel')}
               name="amount"
-              rules={[{ required: true, message: '必填' }]}
+              rules={[{ required: true, message: t('test.book.amountRequired') }]}
               initialValue={100}
             >
               <InputNumber min={1} style={{ width: '100%' }} />
             </Form.Item>
           </Col>
           <Col span={6}>
-            <Form.Item label="currency" name="currency" initialValue="CNY">
+            <Form.Item label={t('test.book.currencyLabel')} name="currency" initialValue="CNY">
               <Select options={CURRENCY_OPTIONS.map((c) => ({ value: c, label: c }))} />
             </Form.Item>
           </Col>
         </Row>
 
         <Divider orientation="left" plain>
-          <Text type="secondary">业务 + 审计</Text>
+          <Text type="secondary">{t('test.book.auditSectionTitle')}</Text>
         </Divider>
         <Row gutter={16}>
           <Col span={8}>
             <Form.Item
-              label="flow_id（幂等键 + routing hash）"
+              label={t('test.book.flowIdLabel')}
               name="flow_id"
-              rules={[{ required: true, message: '必填' }]}
+              rules={[{ required: true, message: t('test.book.flowIdRequired') }]}
               initialValue={`fleet-demo-${Date.now()}`}
-              tooltip="同 flow_id 重复调用是幂等的；同时它的 hash 决定 src 选哪个 sub"
+              tooltip={t('test.book.flowIdTooltip')}
             >
               <Input />
             </Form.Item>
           </Col>
           <Col span={8}>
             <Form.Item
-              label="business_type"
+              label={t('test.book.businessTypeLabel')}
               name="business_type"
               initialValue="TRANSFER"
               rules={[{ required: true }]}
             >
-              <Select options={BUSINESS_TYPE_OPTIONS} />
+              <Select options={makeBusinessTypeOptions(t)} />
             </Form.Item>
           </Col>
           <Col span={8}>
             <Form.Item
-              label="operator（审计）"
+              label={t('test.book.operatorLabel')}
               name="operator"
-              rules={[{ required: true, message: '必填' }]}
+              rules={[{ required: true, message: t('test.book.operatorRequired') }]}
               initialValue="demo-user"
             >
-              <Input placeholder="ops-alice@example.com" />
+              <Input placeholder={t('test.book.operatorPlaceholder')} />
             </Form.Item>
           </Col>
         </Row>
@@ -378,7 +394,7 @@ function BookCard() {
           htmlType="submit"
           loading={loading}
         >
-          执行记账
+          {t('test.book.submitButton')}
         </Button>
       </Form>
 
@@ -386,7 +402,7 @@ function BookCard() {
         <Alert
           type="error"
           showIcon
-          message="记账失败"
+          message={t('test.book.errorTitle')}
           description={error}
           style={{ marginTop: 16 }}
         />
@@ -394,15 +410,15 @@ function BookCard() {
       {result && (
         <div style={{ marginTop: 16 }}>
           <Divider orientation="left" plain>
-            <Text type="secondary">记账结果</Text>
+            <Text type="secondary">{t('test.book.resultTitle')}</Text>
           </Divider>
           <Descriptions bordered size="small" column={1}>
-            <Descriptions.Item label="voucher_no">
+            <Descriptions.Item label={t('test.book.voucherNo')}>
               <Text copyable code>
                 {result.voucher_no}
               </Text>
             </Descriptions.Item>
-            <Descriptions.Item label="transaction_ids">
+            <Descriptions.Item label={t('test.book.transactionIds')}>
               <Space direction="vertical" size={0}>
                 {result.transaction_ids.map((id) => (
                   <Text key={id} copyable code>
@@ -411,12 +427,12 @@ function BookCard() {
                 ))}
               </Space>
             </Descriptions.Item>
-            <Descriptions.Item label="booking_time">{result.booking_time}</Descriptions.Item>
+            <Descriptions.Item label={t('test.book.bookingTime')}>{result.booking_time}</Descriptions.Item>
           </Descriptions>
           {result.src_resolution && (
             <>
               <Divider orientation="left" plain>
-                <Text type="secondary">Fleet routing 命中的源 sub-account</Text>
+                <Text type="secondary">{t('test.book.srcResolutionTitle')}</Text>
               </Divider>
               <ResolutionView data={result.src_resolution} />
               <Alert
@@ -424,15 +440,19 @@ function BookCard() {
                 showIcon
                 style={{ marginTop: 16 }}
                 message={
-                  <>
-                    src account 已 Debit{' '}
-                    <Text code>{displayMoney(result.src_resolution.balance, result.src_resolution.currency)}</Text>{' '}
-                    后变为当前 balance；可点{' '}
+                  <Trans
+                    i18nKey="test.book.srcDebitedMessage"
+                    t={t}
+                    values={{ amount: displayMoney(result.src_resolution.balance, result.src_resolution.currency) }}
+                  >
+                    {'src account 已 Debit '}
+                    <Text code>{'{{amount}}'}</Text>
+                    {' 后变为当前 balance；可点 '}
                     <a href={`/rotation/${result.src_resolution.logical_account_key}`}>
                       LA 详情页
-                    </a>{' '}
-                    看 fleet 全 sub 分布。
-                  </>
+                    </a>
+                    {' 看 fleet 全 sub 分布。'}
+                  </Trans>
                 }
               />
             </>
@@ -448,15 +468,20 @@ function BookCard() {
 // ────────────────────────────────────────────────────────────────
 
 export default function FleetRoutingTest() {
+  const { t } = useTranslation('rotation')
   return (
     <div style={{ padding: 24 }}>
-      <Title level={3}>Fleet × Rotation 测试面板</Title>
+      <Title level={3}>{t('test.pageTitle')}</Title>
       <Paragraph type="secondary">
-        Fleet 模式下，一个 Logical Account 背后挂着 100 个 sub-account（按 user_id 0-99
-        分散在 100 个 shard），Booking router 用{' '}
-        <Text code>fnv32a(flow_id) % 100</Text> 选定哪个 sub 承接流量。本页提供两个工具
-        ——
-        <b>解析</b>（看路由命中谁）和 <b>记账</b>（端到端跑一笔验证链路）。
+        <Trans i18nKey="test.pageDescription" t={t}>
+          {'Fleet 模式下，一个 Logical Account 背后挂着 100 个 sub-account（按 user_id 0-99 分散在 100 个 shard），Booking router 用 '}
+          <Text code>fnv32a(flow_id) % 100</Text>
+          {' 选定哪个 sub 承接流量。本页提供两个工具 —— '}
+          <b>解析</b>
+          {'（看路由命中谁）和 '}
+          <b>记账</b>
+          {'（端到端跑一笔验证链路）。'}
+        </Trans>
       </Paragraph>
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
         <ResolveCard />

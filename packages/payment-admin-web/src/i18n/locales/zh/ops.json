@@ -1,0 +1,50 @@
+{
+  "title": "运营中心",
+  "configCenter": {
+    "message": "全平台动态配置已收口到 config-center",
+    "description": "所有动态配置（rate_limit / 风控阈值 / 熔断 / TTL / 路由权重 / 队列参数 等）改一次即可秒级热更新到集群所有副本。下方各服务状态仅作只读监控。",
+    "open": "打开 Config Center 管理页",
+    "audit": "审计日志",
+    "keySearch": "全平台 key 检索"
+  },
+  "health": {
+    "title": "服务健康",
+    "allHealthy": "所有服务正常",
+    "someUnhealthy": "部分服务异常",
+    "healthy": "健康",
+    "unhealthy": "异常",
+    "columns": {
+      "service": "服务",
+      "status": "状态",
+      "latency": "延迟",
+      "error": "错误"
+    }
+  },
+  "risk": {
+    "title": "风控规则（只读监控）",
+    "editInConfigCenter": "在 Config Center 编辑",
+    "forceReload": "强制重载（兼容老路径）",
+    "reloadSuccess": "规则已重载：{{count}} 条",
+    "migrated": {
+      "title": "规则配置已迁到 Config Center",
+      "prefix": "修改 / 新增 / 灰度 / 回滚规则请在 Config Center",
+      "linkText": "namespace=risk-manage",
+      "suffix": "操作；改完秒级 OnChange 热更新到所有 risk-manage 副本。"
+    },
+    "columns": {
+      "id": "ID",
+      "name": "规则名",
+      "type": "类型",
+      "status": "状态",
+      "enabled": "启用",
+      "disabled": "停用"
+    }
+  },
+  "config": {
+    "title": "系统配置",
+    "servicePorts": "服务端口",
+    "featureFlags": "功能开关",
+    "on": "ON",
+    "off": "OFF"
+  }
+}

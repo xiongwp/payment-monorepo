@@ -1,0 +1,70 @@
+{
+  "title": "General ledger",
+  "subtitle": "Double-entry bookkeeping - amounts stored as backend storage (minor x 100), formatted by currency precision on display",
+  "tabs": {
+    "accounts": "Accounts",
+    "transactions": "Transactions"
+  },
+  "ownerTypes": {
+    "platform": "Platform",
+    "merchant": "Merchant",
+    "channel": "Channel"
+  },
+  "accounts": {
+    "filters": {
+      "ownerType": "Owner type",
+      "ownerIdPlaceholder": "owner_id (mch_xxx / gcash)"
+    },
+    "columns": {
+      "id": "ID",
+      "name": "Name",
+      "type": "Type",
+      "ownerType": "Owner type",
+      "owner": "Owner",
+      "debit": "Dr",
+      "credit": "Cr",
+      "net": "Net",
+      "detail": "Detail"
+    },
+    "drawer": {
+      "debit": "Debit",
+      "credit": "Credit",
+      "net": "Net",
+      "recentEntries": "Most recent 100 entries",
+      "entryColumns": {
+        "time": "Time",
+        "txn": "Txn",
+        "debit": "Dr",
+        "credit": "Cr",
+        "memo": "Memo"
+      }
+    }
+  },
+  "transactions": {
+    "filters": {
+      "eventType": "Event type",
+      "refType": "ref_type",
+      "refId": "ref_id"
+    },
+    "columns": {
+      "time": "Time",
+      "txn": "Txn",
+      "event": "Event",
+      "ref": "Ref",
+      "amount": "Amount",
+      "memo": "Memo",
+      "detail": "Detail"
+    },
+    "drawer": {
+      "ref": "Ref",
+      "amount": "Amount",
+      "entries": "Entries",
+      "entryColumns": {
+        "account": "Account",
+        "debit": "Dr",
+        "credit": "Cr",
+        "memo": "Memo"
+      }
+    }
+  }
+}

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import {
   Alert, Button, Card, Descriptions, Form, Progress, Select, Space, Table, Tabs, Tag, Typography, message,
 } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { probeRoute } from '../../api'
 import type { ProbeRouteResponse } from '../../api/types'
 
@@ -9,16 +10,16 @@ import type { ProbeRouteResponse } from '../../api/types'
 // payment-channel mockserver. Single-shot and batch modes both use the same
 // probeRoute backend call — only the driver loop differs.
 
-const SCENARIOS: Array<{ label: string; amount: number; description: string; expect: 'succeeded' | 'requires_action' | 'failed' | 'processing' }> = [
-  { label: '1 · 同步成功',                   amount: 1, description: 'succeeded 立即返回',                      expect: 'succeeded' },
-  { label: '2 · 需要用户跳转',               amount: 2, description: 'requires_action + redirect URL',          expect: 'requires_action' },
-  { label: '3 · 失败 · 卡拒付',              amount: 3, description: 'failure_code=card_declined',              expect: 'failed' },
-  { label: '4 · 失败 · 余额不足',            amount: 4, description: 'failure_code=insufficient_funds',         expect: 'failed' },
-  { label: '5 · 失败 · 风控拦截',            amount: 5, description: 'failure_code=risk_blocked',               expect: 'failed' },
-  { label: '6 · 失败 · 渠道不可用',          amount: 6, description: 'failure_code=channel_unavailable',        expect: 'failed' },
-  { label: '7 · 异步成功（webhook=success）', amount: 7, description: 'processing → webhook success',            expect: 'processing' },
-  { label: '8 · 异步失败（webhook=failed）',  amount: 8, description: 'processing → webhook failure',            expect: 'processing' },
-  { label: '9 · 超时',                       amount: 9, description: 'mock 挂起 30s；adapter 超时会报错',      expect: 'failed' },
+const SCENARIOS: Array<{ id: string; amount: number; expect: 'succeeded' | 'requires_action' | 'failed' | 'processing' }> = [
+  { id: 's1', amount: 1, expect: 'succeeded' },
+  { id: 's2', amount: 2, expect: 'requires_action' },
+  { id: 's3', amount: 3, expect: 'failed' },
+  { id: 's4', amount: 4, expect: 'failed' },
+  { id: 's5', amount: 5, expect: 'failed' },
+  { id: 's6', amount: 6, expect: 'failed' },
+  { id: 's7', amount: 7, expect: 'processing' },
+  { id: 's8', amount: 8, expect: 'processing' },
+  { id: 's9', amount: 9, expect: 'failed' },
 ]
 
 const CHANNELS: Array<{ value: string; label: string; paymentMethod: string }> = [
@@ -49,17 +50,18 @@ interface Cell {
 }
 
 export default function PHChannelTester() {
+  const { t } = useTranslation('channel')
   return (
     <div>
-      <Typography.Title level={3}>PH 渠道联测</Typography.Title>
+      <Typography.Title level={3}>{t('phTester.title')}</Typography.Title>
       <Alert
         type="info" showIcon style={{ marginBottom: 16 }}
-        message="通过 payment-core 发 probe Charge → 选中 adapter → payment-channel mockserver。需 payment-channel 已用 sandbox profile 启动；probe 不计入熔断。"
+        message={t('phTester.intro')}
       />
       <Tabs
         items={[
-          { key: 'single', label: '单次测试', children: <SingleTest /> },
-          { key: 'matrix', label: '一键跑全部场景', children: <MatrixTest /> },
+          { key: 'single', label: t('phTester.tabs.single'), children: <SingleTest /> },
+          { key: 'matrix', label: t('phTester.tabs.matrix'), children: <MatrixTest /> },
         ]}
       />
     </div>
@@ -69,6 +71,7 @@ export default function PHChannelTester() {
 // ─── Single test tab (existing form) ────────────────────────────────────────
 
 function SingleTest() {
+  const { t } = useTranslation('channel')
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<ProbeRouteResponse | null>(null)
@@ -98,25 +101,25 @@ function SingleTest() {
       <Card>
         <Form form={form} layout="vertical" initialValues={{ channel: 'gcash', amount: 1 }} onFinish={onRun}>
           <Space wrap size="large">
-            <Form.Item name="channel" label="渠道" rules={[{ required: true }]}>
+            <Form.Item name="channel" label={t('phTester.form.channel')} rules={[{ required: true }]}>
               <Select style={{ width: 240 }} options={CHANNELS.map((c) => ({ value: c.value, label: c.label }))} />
             </Form.Item>
-            <Form.Item name="amount" label="场景" rules={[{ required: true }]}>
+            <Form.Item name="amount" label={t('phTester.form.scenario')} rules={[{ required: true }]}>
               <Select style={{ width: 320 }}
-                options={SCENARIOS.map((s) => ({ value: s.amount, label: s.label }))}
+                options={SCENARIOS.map((s) => ({ value: s.amount, label: t(`phTester.scenarios.${s.id}.label`) }))}
                 onChange={(v) => setAmount(v)} />
             </Form.Item>
             <Form.Item label=" ">
-              <Button type="primary" htmlType="submit" loading={loading}>发送测试 Charge</Button>
+              <Button type="primary" htmlType="submit" loading={loading}>{t('phTester.actions.sendTest')}</Button>
             </Form.Item>
           </Space>
           {scenarioInfo && (
-            <Typography.Text type="secondary">{scenarioInfo.description}</Typography.Text>
+            <Typography.Text type="secondary">{t(`phTester.scenarios.${scenarioInfo.id}.description`)}</Typography.Text>
           )}
         </Form>
       </Card>
       {result && (
-        <Card title="结果" style={{ marginTop: 16 }}>
+        <Card title={t('phTester.result')} style={{ marginTop: 16 }}>
           <Descriptions column={1} bordered>
             <Descriptions.Item label="result_type">
               <Tag color={resultColor(result.result_type)}>{result.result_type || '(empty)'}</Tag>
@@ -134,6 +137,7 @@ function SingleTest() {
 // ─── Matrix tab: run every (channel × scenario) cell ────────────────────────
 
 function MatrixTest() {
+  const { t } = useTranslation('channel')
   const [selectedChannels, setSelectedChannels] = useState<string[]>(CHANNELS.slice(0, 5).map((c) => c.value))
   const [selectedAmounts, setSelectedAmounts] = useState<number[]>([1, 2, 3, 4, 5, 6, 7, 8]) // skip 9 (timeout) by default
   const [concurrency, setConcurrency] = useState(4)
@@ -209,33 +213,33 @@ function MatrixTest() {
     <Card>
       <Alert
         type="warning" showIcon style={{ marginBottom: 16 }}
-        message="场景 9（超时）会让 mock 挂起 30s；默认勾除。"
+        message={t('phTester.matrix.timeoutWarning')}
       />
       <Space direction="vertical" style={{ width: '100%' }}>
         <Space wrap>
-          <Typography.Text strong>渠道:</Typography.Text>
+          <Typography.Text strong>{t('phTester.matrix.channelLabel')}</Typography.Text>
           <Select mode="multiple" style={{ minWidth: 400 }}
             value={selectedChannels} onChange={setSelectedChannels}
             options={CHANNELS.map((c) => ({ value: c.value, label: c.label }))}
             maxTagCount="responsive" />
-          <Button size="small" onClick={() => setSelectedChannels(CHANNELS.map((c) => c.value))}>全部</Button>
-          <Button size="small" onClick={() => setSelectedChannels(CHANNELS.slice(0, 5).map((c) => c.value))}>前 5</Button>
+          <Button size="small" onClick={() => setSelectedChannels(CHANNELS.map((c) => c.value))}>{t('phTester.matrix.selectAll')}</Button>
+          <Button size="small" onClick={() => setSelectedChannels(CHANNELS.slice(0, 5).map((c) => c.value))}>{t('phTester.matrix.selectTop5')}</Button>
         </Space>
         <Space wrap>
-          <Typography.Text strong>场景:</Typography.Text>
+          <Typography.Text strong>{t('phTester.matrix.scenarioLabel')}</Typography.Text>
           <Select mode="multiple" style={{ minWidth: 400 }}
             value={selectedAmounts} onChange={setSelectedAmounts}
-            options={SCENARIOS.map((s) => ({ value: s.amount, label: s.label }))}
+            options={SCENARIOS.map((s) => ({ value: s.amount, label: t(`phTester.scenarios.${s.id}.label`) }))}
             maxTagCount="responsive" />
-          <Button size="small" onClick={() => setSelectedAmounts(SCENARIOS.map((s) => s.amount))}>全部 (含超时)</Button>
-          <Button size="small" onClick={() => setSelectedAmounts([1, 2, 3, 4, 5, 6, 7, 8])}>排除超时</Button>
+          <Button size="small" onClick={() => setSelectedAmounts(SCENARIOS.map((s) => s.amount))}>{t('phTester.matrix.selectAllWithTimeout')}</Button>
+          <Button size="small" onClick={() => setSelectedAmounts([1, 2, 3, 4, 5, 6, 7, 8])}>{t('phTester.matrix.excludeTimeout')}</Button>
         </Space>
         <Space wrap>
-          <Typography.Text strong>并发:</Typography.Text>
+          <Typography.Text strong>{t('phTester.matrix.concurrencyLabel')}</Typography.Text>
           <Select style={{ width: 100 }} value={concurrency} onChange={setConcurrency}
             options={[1, 2, 4, 8, 16].map((n) => ({ value: n, label: String(n) }))} />
           <Button type="primary" disabled={running || total === 0} onClick={runAll}>
-            {running ? `运行中 ${done}/${total}` : `开始 (共 ${total} 格)`}
+            {running ? t('phTester.matrix.running', { done, total }) : t('phTester.matrix.start', { total })}
           </Button>
           {total > 0 && (
             <Progress percent={Math.round((done / total) * 100)} style={{ width: 200 }} size="small" />
@@ -244,9 +248,9 @@ function MatrixTest() {
 
         {(summary.pass || summary.mismatch || summary.error) > 0 && (
           <Space>
-            <Tag color="green">Pass {summary.pass}</Tag>
-            <Tag color="orange">Mismatch {summary.mismatch}</Tag>
-            <Tag color="red">Error {summary.error}</Tag>
+            <Tag color="green">{t('phTester.matrix.summary.pass', { count: summary.pass })}</Tag>
+            <Tag color="orange">{t('phTester.matrix.summary.mismatch', { count: summary.mismatch })}</Tag>
+            <Tag color="red">{t('phTester.matrix.summary.error', { count: summary.error })}</Tag>
           </Space>
         )}
       </Space>
@@ -259,39 +263,40 @@ function MatrixTest() {
           a.channel === b.channel ? a.amount - b.amount : a.channel.localeCompare(b.channel))}
         pagination={false}
         columns={[
-          { title: '渠道', dataIndex: 'channel', width: 120, render: (v) => <Tag>{v}</Tag> },
+          { title: t('phTester.matrix.columns.channel'), dataIndex: 'channel', width: 120, render: (v) => <Tag>{v}</Tag> },
           {
-            title: '场景', dataIndex: 'amount', width: 100,
+            title: t('phTester.matrix.columns.scenario'), dataIndex: 'amount', width: 100,
             render: (v: number) => {
               const scn = SCENARIOS.find((s) => s.amount === v)
-              return <Typography.Text>{v}·{scn?.label.split('·')[1]?.trim() || ''}</Typography.Text>
+              const label = scn ? t(`phTester.scenarios.${scn.id}.label`) : ''
+              return <Typography.Text>{v}·{label.split('·')[1]?.trim() || ''}</Typography.Text>
             },
           },
           {
-            title: '预期', width: 140,
+            title: t('phTester.matrix.columns.expected'), width: 140,
             render: (_, c) => {
               const scn = SCENARIOS.find((s) => s.amount === c.amount)!
               return <Tag color={resultColor(scn.expect)}>{scn.expect}</Tag>
             },
           },
           {
-            title: '实际 result_type', width: 160,
+            title: t('phTester.matrix.columns.actualResultType'), width: 160,
             render: (_, c) => {
               if (c.status === 'idle') return <Typography.Text type="secondary">—</Typography.Text>
-              if (c.status === 'running') return <Tag color="processing">running…</Tag>
-              if (c.status === 'error') return <Tag color="red">error</Tag>
+              if (c.status === 'running') return <Tag color="processing">{t('phTester.matrix.statusTag.running')}</Tag>
+              if (c.status === 'error') return <Tag color="red">{t('phTester.matrix.statusTag.error')}</Tag>
               return <Tag color={resultColor(c.response?.result_type)}>{c.response?.result_type || '-'}</Tag>
             },
           },
-          { title: 'failure_code', dataIndex: ['response', 'failure_code'], ellipsis: true },
-          { title: 'failure_msg', dataIndex: ['response', 'failure_message'], ellipsis: true },
-          { title: '耗时', dataIndex: 'durationMs', width: 90, render: (v?: number) => v ? `${v}ms` : '-' },
+          { title: t('phTester.matrix.columns.failureCode'), dataIndex: ['response', 'failure_code'], ellipsis: true },
+          { title: t('phTester.matrix.columns.failureMsg'), dataIndex: ['response', 'failure_message'], ellipsis: true },
+          { title: t('phTester.matrix.columns.duration'), dataIndex: 'durationMs', width: 90, render: (v?: number) => v ? `${v}ms` : '-' },
           {
-            title: '结果', width: 100,
+            title: t('phTester.matrix.columns.result'), width: 100,
             render: (_, c) => {
-              if (c.status === 'pass') return <Tag color="green">PASS</Tag>
-              if (c.status === 'mismatch') return <Tag color="orange">MISMATCH</Tag>
-              if (c.status === 'error') return <Tag color="red">ERROR</Tag>
+              if (c.status === 'pass') return <Tag color="green">{t('phTester.matrix.statusTag.pass')}</Tag>
+              if (c.status === 'mismatch') return <Tag color="orange">{t('phTester.matrix.statusTag.mismatch')}</Tag>
+              if (c.status === 'error') return <Tag color="red">{t('phTester.matrix.statusTag.errorBadge')}</Tag>
               return null
             },
           },

@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { Layout, Menu, theme } from 'antd'
+import { useTranslation } from 'react-i18next'
 import {
   DashboardOutlined,
   WalletOutlined,
@@ -25,6 +26,7 @@ import {
   UnorderedListOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
+import LanguageSwitcher from '../i18n/LanguageSwitcher'
 
 const { Header, Content, Sider } = Layout
 
@@ -44,38 +46,43 @@ function getItem(
   } as MenuItem
 }
 
-const items: MenuItem[] = [
-  getItem('工作台', '/', <DashboardOutlined />),
-  getItem('账户管理', '/accounts', <WalletOutlined />),
-  getItem('交易流水', '/transactions', <TransactionOutlined />),
-  getItem('余额快照', '/snapshots', <CameraOutlined />),
-  getItem('调账管理', '/adjustment', <ToolOutlined />),
-  getItem('日切管理', '/daycut', <ScissorOutlined />),
-  getItem('TCC 监控', '/tcc', <BranchesOutlined />),
-  getItem('试算平衡', '/trial-balance', <AuditOutlined />),
-  getItem('热点账户', '/hot-accounts', <FireOutlined />),
-  getItem('缓冲记账', '/buffer-accounts', <DatabaseOutlined />),
-  getItem('服务实例', '/instances', <ClusterOutlined />),
-  getItem('系统账户', '/platform-accounts', <BankOutlined />),
-  getItem('业务类型', '/business-types', <ProfileOutlined />),
-  getItem('平台账户余额', '/platform-balances', <PieChartOutlined />),
-  getItem('平台账户快照', '/platform-snapshots', <AreaChartOutlined />),
-  getItem('账户轮换管理', 'rotation-group', <SwapOutlined />, [
-    getItem('LA 列表', '/rotation', <UnorderedListOutlined />),
-    getItem('Fleet 路由测试', '/rotation/fleet-test', <ThunderboltOutlined />),
-  ]),
-  getItem('TCC 归档', '/tcc-archive', <DeleteOutlined />),
-  getItem('系统配置', '/system-config', <SettingOutlined />),
-  getItem('Redis 重建', '/redis-rebuild', <ReloadOutlined />),
-]
-
 export default function AppLayout() {
   const [collapsed, setCollapsed] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
+  const { t } = useTranslation('menu')
   const {
     token: { colorBgContainer, borderRadiusLG },
   } = theme.useToken()
+
+  // useMemo + t() 依赖：i18n.language 变化时，t 函数引用会变，items 自动刷新。
+  const items: MenuItem[] = useMemo(
+    () => [
+      getItem(t('dashboard'), '/', <DashboardOutlined />),
+      getItem(t('accounts'), '/accounts', <WalletOutlined />),
+      getItem(t('transactions'), '/transactions', <TransactionOutlined />),
+      getItem(t('snapshots'), '/snapshots', <CameraOutlined />),
+      getItem(t('adjustment'), '/adjustment', <ToolOutlined />),
+      getItem(t('daycut'), '/daycut', <ScissorOutlined />),
+      getItem(t('tcc'), '/tcc', <BranchesOutlined />),
+      getItem(t('trialBalance'), '/trial-balance', <AuditOutlined />),
+      getItem(t('hotAccounts'), '/hot-accounts', <FireOutlined />),
+      getItem(t('bufferAccounts'), '/buffer-accounts', <DatabaseOutlined />),
+      getItem(t('instances'), '/instances', <ClusterOutlined />),
+      getItem(t('platformAccounts'), '/platform-accounts', <BankOutlined />),
+      getItem(t('businessTypes'), '/business-types', <ProfileOutlined />),
+      getItem(t('platformBalances'), '/platform-balances', <PieChartOutlined />),
+      getItem(t('platformSnapshots'), '/platform-snapshots', <AreaChartOutlined />),
+      getItem(t('rotationGroup'), 'rotation-group', <SwapOutlined />, [
+        getItem(t('rotationList'), '/rotation', <UnorderedListOutlined />),
+        getItem(t('rotationFleetTest'), '/rotation/fleet-test', <ThunderboltOutlined />),
+      ]),
+      getItem(t('tccArchive'), '/tcc-archive', <DeleteOutlined />),
+      getItem(t('systemConfig'), '/system-config', <SettingOutlined />),
+      getItem(t('redisRebuild'), '/redis-rebuild', <ReloadOutlined />),
+    ],
+    [t],
+  )
 
   const handleMenuClick: MenuProps['onClick'] = (e) => {
     navigate(e.key)
@@ -116,9 +123,20 @@ export default function AppLayout() {
         />
       </Sider>
       <Layout>
-        <Header style={{ padding: 0, background: colorBgContainer }}>
+        <Header
+          style={{
+            padding: 0,
+            background: colorBgContainer,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
           <div style={{ padding: '0 24px', fontSize: 20, fontWeight: 'bold' }}>
-            复式记账管理系统
+            {t('headerTitle')}
+          </div>
+          <div style={{ padding: '0 24px' }}>
+            <LanguageSwitcher />
           </div>
         </Header>
         <Content style={{ margin: '16px' }}>

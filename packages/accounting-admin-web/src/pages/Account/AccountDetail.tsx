@@ -1,57 +1,20 @@
 import { Card, Descriptions, Table, Tag, Spin, Alert } from 'antd'
 import { useParams } from 'react-router-dom'
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { getAccount, getTransactionList } from '../../api/accounting'
 import type { Account, AccountTransaction } from '../../types/accounting'
 import { AccountStatus, AccountType, AccountCategory, BusinessType, BookingType } from '../../types/accounting'
 import { display as displayMoney } from '../../utils/money'
-
-const ACCOUNT_TYPE_LABEL: Record<number, string> = {
-  [AccountType.USER]:     '用户账户',
-  [AccountType.MERCHANT]: '商户账户',
-  [AccountType.PLATFORM]: '平台账户',
-  [AccountType.TRANSIT]:  '中间账户',
-  [AccountType.TRANSIT_CHANNEL_RECEIVABLE]: '中间渠道应收账户',
-  [AccountType.TRANSIT_CHANNEL_PAYABLE]: '中间渠道应付账户',
-  [AccountType.MERCHANT_PENDING_SETTLE]: '商户待结算余额账户',
-  [AccountType.CHARGE_FEE]: '平台服务费账户',
-  [AccountType.TRANSACTION_FEE]: '平台手续费账户',
-}
-
-const BOOKING_TYPE_LABEL: Record<number, string> = {
-  [BookingType.NORMAL_BOOKING]:    '实时记账',
-  [BookingType.BUFFER_BOOKING]:    '缓冲记账',
-}
-
-const ACCOUNT_CATEGORY_LABEL: Record<number, string> = {
-  [AccountCategory.ASSET]:     '资产',
-  [AccountCategory.LIABILITY]: '负债',
-  [AccountCategory.EQUITY]:    '所有者权益',
-  [AccountCategory.REVENUE]:   '收入',
-  [AccountCategory.EXPENSE]:   '费用',
-}
-
-const BUSINESS_TYPE_LABEL: Record<number, string> = {
-  [BusinessType.TRANSFER]:   '转账',
-  [BusinessType.PAYMENT]:    '支付',
-  [BusinessType.REFUND]:     '退款',
-  [BusinessType.WITHDRAW]:   '提现',
-  [BusinessType.DEPOSIT]:    '充值',
-  [BusinessType.COMMISSION]: '手续费',
-}
 
 const STATUS_COLOR: Record<number, string> = {
   [AccountStatus.DISABLED]: 'default',
   [AccountStatus.ACTIVE]:   'green',
   [AccountStatus.FROZEN]:   'orange',
 }
-const STATUS_LABEL: Record<number, string> = {
-  [AccountStatus.DISABLED]: '禁用',
-  [AccountStatus.ACTIVE]:   '正常',
-  [AccountStatus.FROZEN]:   '冻结',
-}
 
 export default function AccountDetail() {
+  const { t } = useTranslation('account')
   const { accountNo } = useParams<{ accountNo: string }>()
   const [account, setAccount] = useState<Account | null>(null)
   const [accountLoading, setAccountLoading] = useState(true)
@@ -63,13 +26,53 @@ export default function AccountDetail() {
   const [page, setPage] = useState(1)
   const pageSize = 10
 
+  const ACCOUNT_TYPE_LABEL: Record<number, string> = {
+    [AccountType.USER]:     t('accountTypes.user'),
+    [AccountType.MERCHANT]: t('accountTypes.merchant'),
+    [AccountType.PLATFORM]: t('accountTypes.platformSimple'),
+    [AccountType.TRANSIT]:  t('accountTypes.transit'),
+    [AccountType.TRANSIT_CHANNEL_RECEIVABLE]: t('accountTypes.transitChannelReceivable'),
+    [AccountType.TRANSIT_CHANNEL_PAYABLE]: t('accountTypes.transitChannelPayable'),
+    [AccountType.MERCHANT_PENDING_SETTLE]: t('accountTypes.merchantPendingSettleLong'),
+    [AccountType.CHARGE_FEE]: t('accountTypes.chargeFee'),
+    [AccountType.TRANSACTION_FEE]: t('accountTypes.transactionFee'),
+  }
+
+  const BOOKING_TYPE_LABEL: Record<number, string> = {
+    [BookingType.NORMAL_BOOKING]:    t('bookingTypes.normal'),
+    [BookingType.BUFFER_BOOKING]:    t('bookingTypes.buffer'),
+  }
+
+  const ACCOUNT_CATEGORY_LABEL: Record<number, string> = {
+    [AccountCategory.ASSET]:     t('categories.asset'),
+    [AccountCategory.LIABILITY]: t('categories.liability'),
+    [AccountCategory.EQUITY]:    t('categories.equity'),
+    [AccountCategory.REVENUE]:   t('categories.revenue'),
+    [AccountCategory.EXPENSE]:   t('categories.expense'),
+  }
+
+  const BUSINESS_TYPE_LABEL: Record<number, string> = {
+    [BusinessType.TRANSFER]:   t('businessTypes.transfer'),
+    [BusinessType.PAYMENT]:    t('businessTypes.payment'),
+    [BusinessType.REFUND]:     t('businessTypes.refund'),
+    [BusinessType.WITHDRAW]:   t('businessTypes.withdraw'),
+    [BusinessType.DEPOSIT]:    t('businessTypes.deposit'),
+    [BusinessType.COMMISSION]: t('businessTypes.commission'),
+  }
+
+  const STATUS_LABEL: Record<number, string> = {
+    [AccountStatus.DISABLED]: t('statusLabels.disabled'),
+    [AccountStatus.ACTIVE]:   t('statusLabels.active'),
+    [AccountStatus.FROZEN]:   t('statusLabels.frozen'),
+  }
+
   useEffect(() => {
     if (!accountNo) return
     setAccountLoading(true)
     setAccountError(null)
     getAccount(accountNo)
       .then(setAccount)
-      .catch((err) => setAccountError(err?.message ?? '查询账户失败'))
+      .catch((err) => setAccountError(err?.message ?? t('detail.loadFailed')))
       .finally(() => setAccountLoading(false))
   }, [accountNo])
 
@@ -86,49 +89,49 @@ export default function AccountDetail() {
   }, [accountNo, page])
 
   const txColumns = [
-    { title: '交易ID', dataIndex: 'transaction_id', key: 'transaction_id', ellipsis: true },
-    { title: '业务订单号', dataIndex: 'business_no', key: 'business_no', ellipsis: true },
+    { title: t('detail.txColumns.transactionId'), dataIndex: 'transaction_id', key: 'transaction_id', ellipsis: true },
+    { title: t('detail.txColumns.businessNo'), dataIndex: 'business_no', key: 'business_no', ellipsis: true },
     {
-      title: '业务类型',
+      title: t('detail.txColumns.businessType'),
       dataIndex: 'business_type',
       key: 'business_type',
       render: (t: number) => BUSINESS_TYPE_LABEL[t] ?? t,
     },
     {
-      title: '借方',
+      title: t('detail.txColumns.debit'),
       dataIndex: 'debit_amount',
       key: 'debit_amount',
       render: (v: string, row: AccountTransaction) => displayMoney(v, row.currency),
     },
     {
-      title: '贷方',
+      title: t('detail.txColumns.credit'),
       dataIndex: 'credit_amount',
       key: 'credit_amount',
       render: (v: string, row: AccountTransaction) => displayMoney(v, row.currency),
     },
     {
-      title: '记账类型',
+      title: t('detail.txColumns.bookingType'),
       dataIndex: 'booking_type',
       key: 'booking_type',
       render: (t: unknown) => BOOKING_TYPE_LABEL[t as number] ?? t,
     },
     {
-      title: '交易前余额',
+      title: t('detail.txColumns.balanceBefore'),
       dataIndex: 'balance_before',
       key: 'balance_before',
       render: (v: string, row: AccountTransaction) => displayMoney(v, row.currency),
     },
     {
-      title: '交易后余额',
+      title: t('detail.txColumns.balanceAfter'),
       dataIndex: 'balance_after',
       key: 'balance_after',
       render: (v: string, row: AccountTransaction) => displayMoney(v, row.currency),
     },
-    { title: '交易日期', dataIndex: 'transaction_date', key: 'transaction_date' },
+    { title: t('detail.txColumns.transactionDate'), dataIndex: 'transaction_date', key: 'transaction_date' },
   ]
 
   if (accountLoading) {
-    return <Spin tip="加载中..." style={{ display: 'block', marginTop: 48 }} />
+    return <Spin tip={t('detail.loading')} style={{ display: 'block', marginTop: 48 }} />
   }
   if (accountError) {
     return <Alert type="error" message={accountError} />
@@ -137,30 +140,30 @@ export default function AccountDetail() {
 
   return (
     <div>
-      <Card title="账户详情" style={{ marginBottom: 16 }}>
+      <Card title={t('detail.cardTitle')} style={{ marginBottom: 16 }}>
         <Descriptions column={2} bordered size="small">
-          <Descriptions.Item label="账户号">{account.account_no}</Descriptions.Item>
-          <Descriptions.Item label="用户ID">{account.user_id}</Descriptions.Item>
-          <Descriptions.Item label="账户类型">
+          <Descriptions.Item label={t('detail.fields.accountNo')}>{account.account_no}</Descriptions.Item>
+          <Descriptions.Item label={t('detail.fields.userId')}>{account.user_id}</Descriptions.Item>
+          <Descriptions.Item label={t('detail.fields.accountType')}>
             {ACCOUNT_TYPE_LABEL[account.account_type] ?? account.account_type}
           </Descriptions.Item>
-          <Descriptions.Item label="账户类别">
+          <Descriptions.Item label={t('detail.fields.accountCategory')}>
             {ACCOUNT_CATEGORY_LABEL[account.account_category] ?? account.account_category}
           </Descriptions.Item>
-          <Descriptions.Item label="账户状态">
+          <Descriptions.Item label={t('detail.fields.status')}>
             <Tag color={STATUS_COLOR[account.status]}>{STATUS_LABEL[account.status]}</Tag>
           </Descriptions.Item>
-          <Descriptions.Item label="币种">{account.currency || 'PHP'}</Descriptions.Item>
-          <Descriptions.Item label="余额">{displayMoney(account.balance, account.currency)}</Descriptions.Item>
-          <Descriptions.Item label="可用余额">{displayMoney(account.available_balance, account.currency)}</Descriptions.Item>
-          <Descriptions.Item label="冻结余额">{displayMoney(account.frozen_balance, account.currency)}</Descriptions.Item>
-          <Descriptions.Item label="版本号">{account.version}</Descriptions.Item>
-          <Descriptions.Item label="创建时间">{account.created_at}</Descriptions.Item>
-          <Descriptions.Item label="更新时间">{account.updated_at}</Descriptions.Item>
+          <Descriptions.Item label={t('detail.fields.currency')}>{account.currency || 'PHP'}</Descriptions.Item>
+          <Descriptions.Item label={t('detail.fields.balance')}>{displayMoney(account.balance, account.currency)}</Descriptions.Item>
+          <Descriptions.Item label={t('detail.fields.availableBalance')}>{displayMoney(account.available_balance, account.currency)}</Descriptions.Item>
+          <Descriptions.Item label={t('detail.fields.frozenBalance')}>{displayMoney(account.frozen_balance, account.currency)}</Descriptions.Item>
+          <Descriptions.Item label={t('detail.fields.version')}>{account.version}</Descriptions.Item>
+          <Descriptions.Item label={t('detail.fields.createdAt')}>{account.created_at}</Descriptions.Item>
+          <Descriptions.Item label={t('detail.fields.updatedAt')}>{account.updated_at}</Descriptions.Item>
         </Descriptions>
       </Card>
 
-      <Card title="交易记录">
+      <Card title={t('detail.txCardTitle')}>
         <Table
           columns={txColumns}
           dataSource={transactions}
@@ -170,7 +173,7 @@ export default function AccountDetail() {
             current: page,
             pageSize,
             total,
-            showTotal: (t) => `共 ${t} 条`,
+            showTotal: (count) => t('detail.pagination.showTotal', { count }),
             onChange: setPage,
           }}
         />

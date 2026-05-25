@@ -1,0 +1,97 @@
+{
+  "monitor": {
+    "title": "TCC Distributed Transaction Monitor",
+    "tabs": {
+      "byId": "Query by TCC ID",
+      "stuck": "Stuck Branch Monitor"
+    }
+  },
+  "search": {
+    "placeholder": "Enter TCC ID (voucherNo)",
+    "emptyInput": "Please enter a TCC ID",
+    "queryFailed": "Query failed"
+  },
+  "overall": {
+    "tccId": "TCC ID",
+    "status": "Overall Status",
+    "branchCount": "Branch Count",
+    "cancelWhole": "Cancel Entire TCC"
+  },
+  "cancel": {
+    "tccTitle": "Cancel TCC Transaction",
+    "tccContent": "This will cancel all TRYING branches under {{tccId}} and release frozen funds. Confirm?",
+    "confirmOk": "Confirm Cancel",
+    "success": "Cancellation successful",
+    "failed": "Cancellation failed",
+    "branchTitle": "Cancel Branch",
+    "branchAccount": "Account No",
+    "branchFrozen": "Frozen Amount",
+    "branchConfirm": "Frozen funds will be released. Confirm cancellation?",
+    "branchSuccess": "Branch cancelled"
+  },
+  "branch": {
+    "id": "Branch ID",
+    "accountNo": "Account No",
+    "balanceDelta": "Balance Delta",
+    "frozenAmount": "Frozen Amount",
+    "status": "Status",
+    "db": "DB",
+    "table": "Table",
+    "createdAt": "Created At",
+    "tccId": "TCC ID",
+    "action": "Actions",
+    "cancel": "Cancel"
+  },
+  "stuck": {
+    "timeoutLabel": "Timeout threshold:",
+    "timeoutUnit": "minutes",
+    "limitLabel": "Max results:",
+    "limitUnit": "rows",
+    "query": "Query",
+    "retryButton": "Retry Confirming Now (0 threshold)",
+    "retrySuccess": "Recovered now: {{recovered}} half-suspended CONFIRMING TCCs processed",
+    "retryFailed": "Recovery failed",
+    "noStuck": "No stuck branches found",
+    "infoBanner": "Stuck TRYING -> TccRecoveryWorker scans every 30s and cancels; half-suspended CONFIRMING -> same worker calls RetryStuckConfirmingTcc to complete confirm (requires updated_at > 5min). After loadtest, click the \"Retry Confirming Now\" button above to recover immediately.",
+    "warningCount": "Found {{count}} stuck branches, please handle promptly",
+    "totalSuffix": "Total {{count}}",
+    "emptyText": "No data. Click \"Query\" to load."
+  },
+  "archive": {
+    "title": "TCC Archive",
+    "intro": "Periodically cleans up branch records in tcc_transaction that have reached terminal state (CONFIRMED / CANCELLED) and exceeded the retention period, preventing unbounded table growth. Business journals, vouchers, and day-cut snapshots are stored in separate long-term tables; archiving tcc_transaction does not affect auditing.",
+    "tableName": "tcc_transaction",
+    "runModeTitle": "Execution Mode",
+    "runModeDescPrefix": "A background worker scans all 100 shards every ",
+    "intervalSecondsTag": "interval_seconds",
+    "runModeDescMiddle": ", DELETEing expired terminal records in batches of ",
+    "batchSizeTag": "batch_size",
+    "runModeDescSuffix": ". Clicking \"Archive Now\" triggers an additional scan (both are concurrency-safe).",
+    "metricsLine": "Track progress via Prometheus metrics: ",
+    "metricArchived": "accounting_tcc_archived_total",
+    "metricArchivedDesc": " (cumulative deleted rows), ",
+    "metricErrors": "accounting_tcc_archive_errors_total",
+    "metricErrorsDesc": " (failure count).",
+    "configTitle": "Current Archive Config",
+    "refresh": "Refresh",
+    "loadFailed": "Load failed",
+    "intervalLabel": "Scan Interval (interval_seconds)",
+    "intervalValue": "{{seconds}} seconds (~ {{display}})",
+    "retentionLabel": "Retention Days (retention_days)",
+    "retentionValue": "{{days}} days (terminal branches with updated_at older than this will be deleted)",
+    "batchSizeLabel": "Batch Size Per Shard (batch_size)",
+    "batchSizeValue": "{{rows}} rows / shard / round",
+    "configMissing": "Failed to load config",
+    "runNowTitle": "Archive Now",
+    "runNowDesc": "Immediately trigger an archive scan (up to {{batch}} rows per shard, shards run serially). The endpoint returns immediately; the actual DELETE runs in a background goroutine — check metrics for progress.",
+    "runNowButton": "Archive Now",
+    "runNowSuccess": "Archive triggered (async execution)",
+    "runNowFailed": "Trigger failed"
+  },
+  "interval": {
+    "none": "-",
+    "hours": "{{value}} h",
+    "minutes": "{{value}} min",
+    "seconds": "{{value}} s"
+  }
+}

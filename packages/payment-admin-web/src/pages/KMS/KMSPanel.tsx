@@ -13,11 +13,13 @@ import {
   Typography,
   message,
 } from 'antd'
+import { useTranslation } from 'react-i18next'
 import dayjs from 'dayjs'
 import { kmsDecrypt, kmsEncrypt, listKeys } from '../../api'
 import type { KMSKey } from '../../api/types'
 
 export default function KMSPanel() {
+  const { t } = useTranslation('kms')
   const [keys, setKeys] = useState<KMSKey[]>([])
   const [activeID, setActiveID] = useState<string>('')
   const [loading, setLoading] = useState(false)
@@ -66,11 +68,11 @@ export default function KMSPanel() {
 
   return (
     <div>
-      <Typography.Title level={3}>密钥管理 (kms-manage)</Typography.Title>
+      <Typography.Title level={3}>{t('panel.title')}</Typography.Title>
       <Card
-        title="Master Keys"
+        title={t('panel.masterKeys')}
         loading={loading}
-        extra={<Button onClick={reload}>刷新</Button>}
+        extra={<Button onClick={reload}>{t('common:actions.refresh')}</Button>}
       >
         <Table<KMSKey>
           rowKey="key_id"
@@ -79,18 +81,18 @@ export default function KMSPanel() {
           size="small"
           columns={[
             {
-              title: 'Key ID',
+              title: t('panel.columns.keyId'),
               dataIndex: 'key_id',
               render: (v) => (
                 <Space>
                   <span>{v}</span>
-                  {v === activeID && <Tag color="green">ACTIVE</Tag>}
+                  {v === activeID && <Tag color="green">{t('panel.columns.active')}</Tag>}
                 </Space>
               ),
             },
-            { title: '算法', dataIndex: 'algorithm' },
+            { title: t('panel.columns.algorithm'), dataIndex: 'algorithm' },
             {
-              title: '创建时间',
+              title: t('panel.columns.createdAt'),
               dataIndex: 'created_at',
               render: (v) => (v ? dayjs(v * 1000).format('YYYY-MM-DD HH:mm:ss') : '—'),
             },
@@ -102,34 +104,34 @@ export default function KMSPanel() {
 
       <Row gutter={16}>
         <Col span={12}>
-          <Card title="Encrypt">
+          <Card title={t('panel.encrypt.title')}>
             <Form form={encForm} layout="vertical" onFinish={onEncrypt}>
               <Form.Item
                 name="plaintext"
-                label="明文"
+                label={t('panel.encrypt.plaintext')}
                 rules={[{ required: true }]}
               >
                 <Input.TextArea rows={3} />
               </Form.Item>
               <Form.Item
                 name="context"
-                label="AAD Context"
-                extra='推荐 "svc:<service>:<field>"，如 svc:paycore:auth_tokens'
+                label={t('panel.encrypt.context')}
+                extra={t('panel.encrypt.contextHint')}
               >
-                <Input placeholder="svc:paycore:auth_tokens" />
+                <Input placeholder={t('panel.encrypt.contextPlaceholder')} />
               </Form.Item>
-              <Form.Item name="key_id" label="Key ID (留空=active)">
+              <Form.Item name="key_id" label={t('panel.encrypt.keyId')}>
                 <Input placeholder={activeID} />
               </Form.Item>
               <Form.Item>
                 <Button type="primary" htmlType="submit">
-                  加密
+                  {t('panel.encrypt.submit')}
                 </Button>
               </Form.Item>
             </Form>
             {encResult && (
               <div>
-                <strong>密文：</strong>
+                <strong>{t('panel.encrypt.resultLabel')}</strong>
                 <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
                   {encResult}
                 </pre>
@@ -139,27 +141,27 @@ export default function KMSPanel() {
         </Col>
 
         <Col span={12}>
-          <Card title="Decrypt">
+          <Card title={t('panel.decrypt.title')}>
             <Form form={decForm} layout="vertical" onFinish={onDecrypt}>
               <Form.Item
                 name="ciphertext"
-                label="密文"
+                label={t('panel.decrypt.ciphertext')}
                 rules={[{ required: true }]}
               >
-                <Input.TextArea rows={3} placeholder="kms:v1:main:..." />
+                <Input.TextArea rows={3} placeholder={t('panel.decrypt.ciphertextPlaceholder')} />
               </Form.Item>
-              <Form.Item name="context" label="AAD Context">
-                <Input placeholder="加密时使用的同一 context" />
+              <Form.Item name="context" label={t('panel.decrypt.context')}>
+                <Input placeholder={t('panel.decrypt.contextPlaceholder')} />
               </Form.Item>
               <Form.Item>
                 <Button type="primary" htmlType="submit">
-                  解密
+                  {t('panel.decrypt.submit')}
                 </Button>
               </Form.Item>
             </Form>
             {decResult && (
               <div>
-                <strong>明文：</strong>
+                <strong>{t('panel.decrypt.resultLabel')}</strong>
                 <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
                   {decResult}
                 </pre>

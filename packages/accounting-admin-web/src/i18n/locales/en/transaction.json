@@ -1,0 +1,32 @@
+{
+  "columns": {
+    "transactionId": "Transaction ID",
+    "accountNo": "Account No.",
+    "businessNo": "Business Order No.",
+    "businessType": "Business Type",
+    "debitAmount": "Debit Amount",
+    "creditAmount": "Credit Amount",
+    "balanceBefore": "Balance Before",
+    "balanceAfter": "Balance After",
+    "bookingType": "Booking Type",
+    "transactionDate": "Transaction Date",
+    "transactionTime": "Transaction Time"
+  },
+  "businessTypes": {
+    "transfer": "Transfer",
+    "payment": "Payment",
+    "refund": "Refund",
+    "withdraw": "Withdrawal",
+    "deposit": "Deposit",
+    "commission": "Commission"
+  },
+  "bookingTypes": {
+    "normal": "Real-time Booking",
+    "buffer": "Buffered Booking"
+  },
+  "filters": {
+    "accountNoPlaceholder": "Account No.",
+    "businessNoPlaceholder": "Business Order No.",
+    "transactionIdPlaceholder": "Transaction ID"
+  }
+}

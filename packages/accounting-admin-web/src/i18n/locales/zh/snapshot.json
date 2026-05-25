@@ -1,0 +1,21 @@
+{
+  "title": "余额快照",
+  "filters": {
+    "accountNoPlaceholder": "账户号",
+    "snapshotDatePlaceholder": "快照日期（默认最新）"
+  },
+  "errors": {
+    "accountNoRequired": "请输入账户号",
+    "queryFailed": "查询失败"
+  },
+  "columns": {
+    "accountNo": "账户号",
+    "snapshotDate": "快照日期",
+    "beginningBalance": "期初余额",
+    "endingBalance": "期末余额",
+    "totalDebit": "借方总额",
+    "totalCredit": "贷方总额",
+    "transactionCount": "交易笔数",
+    "currency": "币种"
+  }
+}

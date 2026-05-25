@@ -1,0 +1,263 @@
+{
+  "accountTypes": {
+    "user": "User Account",
+    "merchant": "Merchant Account",
+    "merchantPendingSettle": "Merchant Pending Settlement Account",
+    "merchantPendingSettleLong": "Merchant Pending Settlement Balance Account",
+    "platform": "Platform P&L Account",
+    "platformSimple": "Platform Account",
+    "transitChannelReceivable": "Transit Channel Receivable Account",
+    "transitChannelPayable": "Transit Channel Payable Account",
+    "transactionFee": "Platform Transaction Fee Account",
+    "chargeFee": "Platform Service Fee Account",
+    "transit": "Transit Account"
+  },
+  "businessTypes": {
+    "userBalance": "User Balance",
+    "merchantBalance": "Merchant Settlement",
+    "merchantPendingSettle": "Merchant Pending Settlement",
+    "transfer": "Transfer",
+    "payment": "Payment",
+    "refund": "Refund",
+    "withdraw": "Withdraw",
+    "deposit": "Deposit",
+    "commission": "Commission"
+  },
+  "bookingTypes": {
+    "normal": "Real-time Booking",
+    "buffer": "Buffered Booking"
+  },
+  "categories": {
+    "asset": "Asset",
+    "liability": "Liability",
+    "equity": "Equity",
+    "revenue": "Revenue",
+    "expense": "Expense"
+  },
+  "statusLabels": {
+    "active": "Active",
+    "frozen": "Frozen",
+    "disabled": "Disabled",
+    "abnormal": "Abnormal"
+  },
+  "list": {
+    "searchMode": {
+      "byAccountNo": "Search by Account No.",
+      "byUserAndBusinessType": "Search by User ID + Business Type"
+    },
+    "placeholders": {
+      "accountNo": "Enter account number",
+      "userId": "User ID",
+      "businessType": "Business Type"
+    },
+    "businessTypeEmpty": "Register a business_type on the Business Types page first",
+    "tableEmpty": "Enter search criteria",
+    "createButton": "Create Account",
+    "columns": {
+      "accountNo": "Account No.",
+      "userId": "User ID",
+      "accountType": "Account Type",
+      "businessType": "Business Type",
+      "balance": "Balance",
+      "availableBalance": "Available Balance",
+      "currency": "Currency",
+      "status": "Status"
+    },
+    "actions": {
+      "detail": "Detail",
+      "freeze": "Freeze",
+      "unfreeze": "Unfreeze"
+    },
+    "messages": {
+      "requireAccountNo": "Please enter an account number",
+      "requireUserAndBusinessType": "Please enter user ID and select a business type",
+      "notFound": "No matching account found",
+      "multipleCurrencies": "This user holds {{count}} currency accounts under this business type",
+      "queryFailed": "Query failed",
+      "createSuccess": "Account created successfully"
+    },
+    "modal": {
+      "title": "Create Account",
+      "userIdLabel": "User ID",
+      "userIdTooltip": "User base 1e8, merchant base 9e8, system reserved [1,10000]",
+      "userIdPlaceholder": "Please enter user ID",
+      "accountTypeLabel": "Account Type",
+      "accountTypePlaceholder": "Please select an account type",
+      "businessTypeLabel": "Business Type",
+      "businessTypeRequired": "Please select an account type first, then a business type",
+      "businessTypeTooltip": "Only business_types linked to the selected account type and registered in the meta DB are shown",
+      "businessTypePlaceholderSelect": "Please select a business type",
+      "businessTypePlaceholderPickType": "Please select an account type first",
+      "businessTypeEmpty": "No registered business_type under this account_type; please register a channel on the System Accounts page first",
+      "categoryLabel": "Account Category (derived from business type)",
+      "categoryPlaceholder": "Auto-filled after selecting a business type",
+      "currencyLabel": "Currency",
+      "currencyOptions": {
+        "php": "Philippine Peso",
+        "usd": "US Dollar"
+      }
+    }
+  },
+  "detail": {
+    "loading": "Loading...",
+    "loadFailed": "Failed to fetch account",
+    "cardTitle": "Account Detail",
+    "txCardTitle": "Transaction Records",
+    "fields": {
+      "accountNo": "Account No.",
+      "userId": "User ID",
+      "accountType": "Account Type",
+      "accountCategory": "Account Category",
+      "status": "Account Status",
+      "currency": "Currency",
+      "balance": "Balance",
+      "availableBalance": "Available Balance",
+      "frozenBalance": "Frozen Balance",
+      "version": "Version",
+      "createdAt": "Created At",
+      "updatedAt": "Updated At"
+    },
+    "txColumns": {
+      "transactionId": "Transaction ID",
+      "businessNo": "Business Order No.",
+      "businessType": "Business Type",
+      "debit": "Debit",
+      "credit": "Credit",
+      "bookingType": "Booking Type",
+      "balanceBefore": "Balance Before",
+      "balanceAfter": "Balance After",
+      "transactionDate": "Transaction Date"
+    },
+    "pagination": {
+      "showTotal": "Total {{count}}"
+    }
+  },
+  "platformAccounts": {
+    "pageTitle": "System Account Management",
+    "pageDescription": "Manage internal system accounts: platform, transit, fee, equity, etc. owner_id is reserved [1, 10000]; user base 1e8, merchant base 9e8. Each channel maps to 100 sharded accounts (user_id = 0..99); business_type uniquely identifies a channel. For the business type registry and audit, go to the Business Types page.",
+    "tabs": {
+      "fleet": "Channel Registration (100 Accounts)",
+      "single": "Single Account"
+    },
+    "fleet": {
+      "alertTitle": "Create 100 sharded accounts from a registered business_type",
+      "alertLine1": "First register a business_type on the Business Types page, then come back here and select it to create 100 sharded accounts (user_id = 0..99).",
+      "alertLine2Prefix": "This action only creates accounts, ",
+      "alertLine2Bold": "it does not register in the registry",
+      "alertLine2Suffix": "; if the dropdown is missing the business_type you want, register it first. Re-running with the same parameters is idempotent: it only fills missing shards.",
+      "selectLabel": "Select a Registered Business Type",
+      "selectRequired": "Please select a business_type",
+      "selectPlaceholderHas": "Select a business_type registered in the registry",
+      "selectPlaceholderEmpty": "Please register on the Business Types page first",
+      "descriptions": {
+        "accountType": "Account Type",
+        "category": "Category (derived)",
+        "code": "Code",
+        "description": "Description"
+      },
+      "currencyLabel": "Currency",
+      "submitButton": "Create 100 Accounts",
+      "messages": {
+        "needSelect": "Please select a registered business_type first",
+        "allDone": "Accounts created",
+        "partialDone": "Partial success {{created}}/100; rerun with the same parameters to fill the gaps",
+        "createFailed": "Create failed",
+        "resultFleet": "Created {{created}}/100 sharded accounts · business_type={{businessType}} · {{code}}"
+      }
+    },
+    "single": {
+      "alertTitle": "Single Account (Rarely Used)",
+      "alertDescription": "Adds an account for a single shard only. Most of the time use \"Channel Registration\" to create 100 at once.",
+      "reservedIdLabel": "Reserved ID (1-10000)",
+      "reservedIdPlaceholder": "owner_id for this account within the reserved range",
+      "accountTypeLabel": "Account Type",
+      "accountTypePlaceholder": "Select a platform account type",
+      "currencyLabel": "Currency",
+      "submitButton": "Create Account",
+      "resultTitle": "Create Result",
+      "messages": {
+        "createSuccess": "Account created: {{accountNo}}",
+        "createFailed": "Create failed"
+      },
+      "fields": {
+        "accountNo": "Account No.",
+        "userId": "User ID",
+        "accountType": "Account Type",
+        "businessType": "Business Type",
+        "category": "Category",
+        "currency": "Currency"
+      }
+    }
+  },
+  "balances": {
+    "pageTitle": "Platform Account Balances",
+    "pageDescriptionPrefix": "Query the current balances of the 100 platform accounts (user_id = 0..99, one per shard) for a given ",
+    "pageDescriptionSuffix": ". Balances may include increments still in Redis/buffer that haven't been flushed — use account.balance as the source of truth; it may not match the snapshot.",
+    "form": {
+      "businessTypeLabel": "Business Type",
+      "businessTypePlaceholder": "Select a registered business type",
+      "currencyLabel": "Currency",
+      "queryButton": "Search"
+    },
+    "stats": {
+      "businessType": "Business Type",
+      "code": "Code",
+      "category": "Category (derived)",
+      "foundAccounts": "Accounts Found",
+      "foundAccountsSuffix": "/ 100",
+      "totalBalance": "Total Balance (sum of all accounts)"
+    },
+    "columns": {
+      "userIdShard": "User ID (shard)",
+      "accountNo": "Account No.",
+      "group": "Group",
+      "balance": "Balance",
+      "available": "Available",
+      "frozen": "Frozen",
+      "status": "Status"
+    },
+    "messages": {
+      "needBusinessType": "Please select a business_type",
+      "needCurrency": "Please select a currency",
+      "queryFailed": "Query failed",
+      "partialFleet": "Found {{count}} accounts (fewer than 100; fleet registration may be incomplete)"
+    }
+  },
+  "snapshots": {
+    "pageTitle": "Platform Account Snapshots",
+    "pageDescriptionPrefix": "Query the daily snapshots of 100 platform accounts for a channel by ",
+    "pageDescriptionSuffix": ". The \"Live Balance\" column on the right reconciles against \"Ending Balance\": green means equal, red means mismatch (new entries may have arrived or haven't flushed).",
+    "form": {
+      "businessTypeLabel": "Business Type",
+      "businessTypePlaceholder": "Select a business type",
+      "dateLabel": "Snapshot Date",
+      "currencyLabel": "Currency",
+      "queryButton": "Search"
+    },
+    "columns": {
+      "userId": "User ID",
+      "accountNo": "Account No.",
+      "group": "Group",
+      "beginning": "Beginning Balance",
+      "ending": "Ending Balance",
+      "debit": "Total Debit",
+      "credit": "Total Credit",
+      "count": "Txn Count",
+      "liveBalance": "Live Balance (Reconcile)",
+      "noSnapshot": "No Snapshot"
+    },
+    "stats": {
+      "hasSnapshot": "Accounts with snapshot: {{has}} / {{total}}",
+      "sumBeginning": "Σ Beginning {{value}}",
+      "sumEnding": "Σ Ending {{value}}",
+      "sumDebit": "Σ Debit {{value}}",
+      "sumCredit": "Σ Credit {{value}}"
+    },
+    "messages": {
+      "needBusinessTypeAndDate": "Please select a business_type and date",
+      "needCurrency": "Please select a currency",
+      "queryFailed": "Query failed",
+      "diffTitle": "Differs from ending by {{diff}} minor"
+    }
+  }
+}

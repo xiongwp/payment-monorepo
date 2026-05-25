@@ -14,6 +14,7 @@
 // 注意：本 UI 的修改是 runtime-only；下次 reload yaml 配置会盖掉。要持久化必须改
 // configmap 然后 POST /admin/rules/reload。这个 trade-off 写在 Alert 里告知运营。
 import { useCallback, useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../../stores/auth'
 import {
   Alert, Button, Card, Drawer, Form, Input, InputNumber, Modal, Popconfirm,
@@ -49,6 +50,7 @@ interface DrawerState {
 }
 
 export default function Rules() {
+  const { t } = useTranslation('risk')
   const [loading, setLoading] = useState(false)
   const [rules, setRules] = useState<RuleDef[]>([])
   const [drawer, setDrawer] = useState<DrawerState>({ open: false, rule: null, isNew: false })
@@ -82,7 +84,7 @@ export default function Rules() {
   const onToggleMode = async (rule: RuleDef, shadow: boolean) => {
     try {
       await setRuleMode({ id: rule.id, shadow })
-      message.success(`规则 ${rule.id} → ${shadow ? 'shadow' : 'enforce'}`)
+      message.success(t('rules.modeSwitched', { id: rule.id, mode: shadow ? 'shadow' : 'enforce' }))
       load()
     } catch (e) { message.error(String(e)) }
   }
@@ -90,24 +92,24 @@ export default function Rules() {
   const onDelete = async (rule: RuleDef) => {
     let reason = ''
     Modal.confirm({
-      title: `删除规则 ${rule.id}？`,
+      title: t('rules.deleteModal.title', { id: rule.id }),
       content: (
         <div>
           <Alert
             type="warning" showIcon style={{ marginBottom: 12 }}
-            message="软停：仅从当前 engine 移除。下次 reload yaml 还会长出来。"
+            message={t('rules.deleteModal.warning')}
           />
           <Input.TextArea
-            rows={3} placeholder="说明删除原因（落审计日志）"
+            rows={3} placeholder={t('rules.deleteModal.reasonPlaceholder')}
             onChange={(e) => { reason = e.target.value }}
           />
         </div>
       ),
-      okText: '确认删除', okButtonProps: { danger: true },
+      okText: t('rules.deleteModal.okText'), okButtonProps: { danger: true },
       onOk: async () => {
         try {
           await deleteRule({ id: rule.id, reason })
-          message.success('已删除')
+          message.success(t('rules.deleted'))
           load()
         } catch (e) { message.error(String(e)) }
       },
@@ -116,15 +118,15 @@ export default function Rules() {
 
   return (
     <div>
-      <Typography.Title level={3}>风控规则管理</Typography.Title>
+      <Typography.Title level={3}>{t('rules.title')}</Typography.Title>
       <Alert
         type="info" showIcon style={{ marginBottom: 16 }}
-        message="本页操作即时生效（heap-resident）。要持久化请同步改 ConfigMap 后 POST /admin/rules/reload，否则下次重启 / 重载会丢失。"
+        message={t('rules.topAlert')}
       />
       <Tabs
         items={[
           {
-            key: 'rules', label: '规则列表',
+            key: 'rules', label: t('rules.tabs.rules'),
             children: (
               <Card>
                 <Space style={{ marginBottom: 16 }}>
@@ -135,26 +137,26 @@ export default function Rules() {
                       mode: 'shadow', weight: 0, config_json: '{}',
                       rollout: { enable_pct: 0, bucket_seed: '' },
                     },
-                  })}>新建规则</Button>
-                  <Button onClick={load}>刷新</Button>
-                  <Button onClick={onExportYAML}>导出 YAML</Button>
-                  <Button onClick={() => setImportOpen(true)}>导入 YAML</Button>
-                  <Typography.Text type="secondary">{rules.length} 条规则</Typography.Text>
+                  })}>{t('rules.createButton')}</Button>
+                  <Button onClick={load}>{t('common:actions.refresh')}</Button>
+                  <Button onClick={onExportYAML}>{t('rules.exportYaml')}</Button>
+                  <Button onClick={() => setImportOpen(true)}>{t('rules.importYaml')}</Button>
+                  <Typography.Text type="secondary">{t('rules.ruleCountSuffix', { count: rules.length })}</Typography.Text>
                 </Space>
                 <Table<RuleDef>
                   rowKey="id" size="small" loading={loading} dataSource={rules}
                   pagination={{ pageSize: 25 }}
                   columns={[
-                    { title: 'ID', dataIndex: 'id', width: 220, ellipsis: true,
+                    { title: t('rules.columns.id'), dataIndex: 'id', width: 220, ellipsis: true,
                       render: (v) => <Typography.Text code>{v}</Typography.Text> },
-                    { title: '名称', dataIndex: 'name', width: 200 },
-                    { title: 'Type', dataIndex: 'type', width: 140,
+                    { title: t('rules.columns.name'), dataIndex: 'name', width: 200 },
+                    { title: t('rules.columns.type'), dataIndex: 'type', width: 140,
                       render: (v) => <Tag>{v}</Tag> },
-                    { title: 'Decision', dataIndex: 'decision', width: 110,
+                    { title: t('rules.columns.decision'), dataIndex: 'decision', width: 110,
                       render: (v: string) => <Tag color={v === 'DENY' ? 'error' : 'warning'}>{v}</Tag> },
-                    { title: '权重', dataIndex: 'weight', width: 70, align: 'right' as const },
+                    { title: t('rules.columns.weight'), dataIndex: 'weight', width: 70, align: 'right' as const },
                     {
-                      title: '模式', dataIndex: 'mode', width: 130,
+                      title: t('rules.columns.mode'), dataIndex: 'mode', width: 130,
                       render: (mode: string, rec: RuleDef) => (
                         <Space>
                           <Tag color={MODE_COLOR[mode] || 'default'}>{mode || 'enforce'}</Tag>
@@ -167,22 +169,22 @@ export default function Rules() {
                       ),
                     },
                     {
-                      title: '灰度 %', width: 90, align: 'right' as const,
+                      title: t('rules.columns.rollout'), width: 90, align: 'right' as const,
                       render: (_v, rec) => rec.rollout?.enable_pct ?? 100,
                     },
                     {
-                      title: '启用', dataIndex: 'enabled', width: 70,
-                      render: (v: boolean) => v ? <Tag color="success">on</Tag> : <Tag>off</Tag>,
+                      title: t('rules.columns.enabled'), dataIndex: 'enabled', width: 70,
+                      render: (v: boolean) => v ? <Tag color="success">{t('rules.tag.on')}</Tag> : <Tag>{t('rules.tag.off')}</Tag>,
                     },
                     {
-                      title: '操作', width: 160,
+                      title: t('rules.columns.actions'), width: 160,
                       render: (_v, rec) => (
                         <Space>
                           <Button size="small" onClick={() => setDrawer({
                             open: true, isNew: false, rule: { ...rec },
-                          })}>编辑</Button>
-                          <Popconfirm title="确认删除？" onConfirm={() => onDelete(rec)}>
-                            <Button size="small" danger>删除</Button>
+                          })}>{t('common:actions.edit')}</Button>
+                          <Popconfirm title={t('rules.popconfirmDelete')} onConfirm={() => onDelete(rec)}>
+                            <Button size="small" danger>{t('common:actions.delete')}</Button>
                           </Popconfirm>
                         </Space>
                       ),
@@ -193,15 +195,15 @@ export default function Rules() {
             ),
           },
           {
-            key: 'insights', label: '规则 KPI',
+            key: 'insights', label: t('rules.tabs.insights'),
             children: <RuleInsightsPanel />,
           },
           {
-            key: 'overlap', label: '冗余 / 冲突',
+            key: 'overlap', label: t('rules.tabs.overlap'),
             children: <RuleOverlapPanel />,
           },
           {
-            key: 'audit', label: '变更审计',
+            key: 'audit', label: t('rules.tabs.audit'),
             children: <RuleAuditPanel />,
           },
         ]}
@@ -225,6 +227,7 @@ export default function Rules() {
 function RuleEditDrawer({
   state, onClose, onSaved,
 }: { state: DrawerState; onClose: () => void; onSaved: () => void }) {
+  const { t } = useTranslation('risk')
   const [form] = Form.useForm<RuleDef>()
   const [submitting, setSubmitting] = useState(false)
   const [simulating, setSimulating] = useState(false)
@@ -250,7 +253,7 @@ function RuleEditDrawer({
     if (v.config_json) {
       try { JSON.parse(v.config_json) }
       catch (e) {
-        setValidateErr(`config_json 不是合法 JSON: ${e}`)
+        setValidateErr(t('rules.editDrawer.configInvalid', { error: String(e) }))
         return null
       }
     }
@@ -283,7 +286,10 @@ function RuleEditDrawer({
     setValidateErr('')
     try {
       const r = await updateRule(v)
-      message.success(`规则 ${v.id} → ${r.action === 'create' ? '已创建' : '已更新'}`)
+      message.success(t('rules.editDrawer.saveSuccess', {
+        id: v.id,
+        action: r.action === 'create' ? t('rules.editDrawer.createAction') : t('rules.editDrawer.updateAction'),
+      }))
       onSaved()
     } catch (e: unknown) {
       // BFF 透传了 risk-manage 的 400 响应：{"error": "..."}
@@ -299,19 +305,19 @@ function RuleEditDrawer({
   return (
     <Drawer
       open={state.open} onClose={onClose} width={640}
-      title={state.isNew ? '新建规则' : `编辑规则 ${state.rule?.id || ''}`}
+      title={state.isNew ? t('rules.editDrawer.createTitle') : t('rules.editDrawer.editTitle', { id: state.rule?.id || '' })}
       extra={
         <Space>
-          <Button onClick={onClose}>取消</Button>
-          <Button loading={simulating} onClick={onSimulate}>试运行</Button>
+          <Button onClick={onClose}>{t('common:actions.cancel')}</Button>
+          <Button loading={simulating} onClick={onSimulate}>{t('rules.editDrawer.simulateButton')}</Button>
           <Button
             type="primary"
             loading={submitting}
             onClick={onSubmit}
             disabled={!canDanger}
-            title={!canDanger ? '需要 danger 角色才能改风控规则' : ''}
+            title={!canDanger ? t('rules.editDrawer.saveDisabledTitle') : ''}
           >
-            保存
+            {t('rules.editDrawer.saveButton')}
           </Button>
         </Space>
       }
@@ -319,7 +325,7 @@ function RuleEditDrawer({
       {validateErr && (
         <Alert
           type="error" showIcon closable
-          message="校验失败" description={validateErr}
+          message={t('rules.editDrawer.validateErrorTitle')} description={validateErr}
           style={{ marginBottom: 16 }}
           onClose={() => setValidateErr('')}
         />
@@ -332,23 +338,25 @@ function RuleEditDrawer({
           onClose={() => setSimResult(null)}
           message={
             <span>
-              试运行结果：重放 <strong>{simResult.sample}</strong> 笔历史决策
-              ，候选规则命中 <strong>{simResult.hits}</strong> 笔
-              （命中率 <strong>{(simResult.hit_rate * 100).toFixed(2)}%</strong>）
+              {t('rules.editDrawer.simulate.messagePart1')}<strong>{simResult.sample}</strong>
+              {t('rules.editDrawer.simulate.messagePart2')}<strong>{simResult.hits}</strong>
+              {t('rules.editDrawer.simulate.messagePart3')}<strong>{(simResult.hit_rate * 100).toFixed(2)}%</strong>
+              {t('rules.editDrawer.simulate.messagePart4')}
             </span>
           }
           description={
             <div>
               <div>
-                新增 BLOCK <strong>{simResult.would_newly_block}</strong> 笔
-                ；与现行 BLOCK 一致 <strong>{simResult.would_keep_block}</strong> 笔
+                {t('rules.editDrawer.simulate.newBlockPrefix')}<strong>{simResult.would_newly_block}</strong>
+                {t('rules.editDrawer.simulate.newBlockMid')}<strong>{simResult.would_keep_block}</strong>
+                {t('rules.editDrawer.simulate.newBlockSuffix')}
               </div>
               <div>
-                有 outcome 反馈 <strong>{simResult.hits_with_outcome}</strong>
-                ；其中真欺诈 <strong>{simResult.hits_true_fraud}</strong>
+                {t('rules.editDrawer.simulate.outcomePrefix')}<strong>{simResult.hits_with_outcome}</strong>
+                {t('rules.editDrawer.simulate.outcomeMid')}<strong>{simResult.hits_true_fraud}</strong>
                 {simResult.estimated_precision > 0 && (
                   <span>
-                    ；估算 precision <Tag color={
+                    {t('rules.editDrawer.simulate.precisionPrefix')}<Tag color={
                       simResult.estimated_precision < 0.3 ? 'red'
                         : simResult.estimated_precision < 0.6 ? 'orange' : 'green'
                     }>{(simResult.estimated_precision * 100).toFixed(1)}%</Tag>
@@ -365,48 +373,48 @@ function RuleEditDrawer({
         />
       )}
       <Form<RuleDef> form={form} layout="vertical">
-        <Form.Item name="id" label="ID" rules={[{ required: true, message: '必填' }]}>
+        <Form.Item name="id" label={t('rules.editDrawer.fields.id')} rules={[{ required: true, message: t('rules.editDrawer.fields.idRequired') }]}>
           <Input disabled={!state.isNew} placeholder="e.g. r_velocity_5m" />
         </Form.Item>
-        <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-          <Input placeholder="给运营看的描述" />
+        <Form.Item name="name" label={t('rules.editDrawer.fields.name')} rules={[{ required: true }]}>
+          <Input placeholder={t('rules.editDrawer.fields.namePlaceholder')} />
         </Form.Item>
-        <Form.Item name="type" label="类型" rules={[{ required: true }]}>
-          <Input placeholder="e.g. velocity / amount / blacklist / mlscore" />
+        <Form.Item name="type" label={t('rules.editDrawer.fields.type')} rules={[{ required: true }]}>
+          <Input placeholder={t('rules.editDrawer.fields.typePlaceholder')} />
         </Form.Item>
-        <Form.Item name="decision" label="决策">
+        <Form.Item name="decision" label={t('rules.editDrawer.fields.decision')}>
           <Select options={[
             { value: 'DENY', label: 'DENY' },
             { value: 'REVIEW', label: 'REVIEW' },
           ]} />
         </Form.Item>
         <Space size="large">
-          <Form.Item name="enabled" label="启用" valuePropName="checked">
+          <Form.Item name="enabled" label={t('rules.editDrawer.fields.enabled')} valuePropName="checked">
             <Switch />
           </Form.Item>
-          <Form.Item name="mode" label="模式">
+          <Form.Item name="mode" label={t('rules.editDrawer.fields.mode')}>
             <Select style={{ width: 140 }} options={[
               { value: 'enforce', label: 'enforce' },
               { value: 'shadow', label: 'shadow' },
             ]} />
           </Form.Item>
-          <Form.Item name="weight" label="权重 (0=按 decision 默认)">
+          <Form.Item name="weight" label={t('rules.editDrawer.fields.weight')}>
             <InputNumber min={0} max={100} />
           </Form.Item>
         </Space>
-        <Form.Item label="灰度">
+        <Form.Item label={t('rules.editDrawer.fields.rollout')}>
           <Space>
             <Form.Item name={['rollout', 'enable_pct']} noStyle>
               <InputNumber min={0} max={100} addonAfter="%" />
             </Form.Item>
             <Form.Item name={['rollout', 'bucket_seed']} noStyle>
-              <Input placeholder="bucket_seed (空 = 用 rule_id)" style={{ width: 220 }} />
+              <Input placeholder={t('rules.editDrawer.fields.bucketSeedPlaceholder')} style={{ width: 220 }} />
             </Form.Item>
           </Space>
         </Form.Item>
         <Form.Item
-          name="config_json" label="config (JSON)"
-          extra="规则 type-specific 配置；提交时后端 BuildRule 会跑 schema 校验。"
+          name="config_json" label={t('rules.editDrawer.fields.configLabel')}
+          extra={t('rules.editDrawer.fields.configExtra')}
         >
           <Input.TextArea rows={8} style={{ fontFamily: 'ui-monospace, monospace' }} />
         </Form.Item>
@@ -418,6 +426,7 @@ function RuleEditDrawer({
 // ── 审计日志 panel ────────────────────────────────────────────
 
 function RuleAuditPanel() {
+  const { t } = useTranslation('risk')
   const [loading, setLoading] = useState(false)
   const [rows, setRows] = useState<RuleAuditEntry[]>([])
   const [ruleID, setRuleID] = useState('')
@@ -437,11 +446,11 @@ function RuleAuditPanel() {
     <Card>
       <Space style={{ marginBottom: 16 }}>
         <Input.Search
-          placeholder="按 rule_id 过滤" allowClear style={{ width: 280 }}
+          placeholder={t('rules.audit.filterPlaceholder')} allowClear style={{ width: 280 }}
           onSearch={(v) => setRuleID(v.trim())}
         />
-        <Button onClick={load}>刷新</Button>
-        <Typography.Text type="secondary">{rows.length} 条变更</Typography.Text>
+        <Button onClick={load}>{t('common:actions.refresh')}</Button>
+        <Typography.Text type="secondary">{t('rules.audit.totalSuffix', { count: rows.length })}</Typography.Text>
       </Space>
       <Table<RuleAuditEntry>
         rowKey={(r) => `${r.occurred_at}-${r.rule_id || ''}-${r.action}`}
@@ -457,14 +466,14 @@ function RuleAuditPanel() {
           ),
         }}
         columns={[
-          { title: '时间', dataIndex: 'occurred_at', width: 170,
+          { title: t('rules.audit.columns.time'), dataIndex: 'occurred_at', width: 170,
             render: (v) => dayjs(v).format('MM-DD HH:mm:ss') },
-          { title: '动作', dataIndex: 'action', width: 110,
+          { title: t('rules.audit.columns.action'), dataIndex: 'action', width: 110,
             render: (v: string) => <Tag color={ACTION_COLOR[v] || 'default'}>{v}</Tag> },
-          { title: '操作人', dataIndex: 'actor', width: 140 },
-          { title: 'Rule ID', dataIndex: 'rule_id', width: 200, ellipsis: true,
+          { title: t('rules.audit.columns.actor'), dataIndex: 'actor', width: 140 },
+          { title: t('rules.audit.columns.ruleId'), dataIndex: 'rule_id', width: 200, ellipsis: true,
             render: (v) => v ? <Typography.Text code>{v}</Typography.Text> : '-' },
-          { title: '原因', dataIndex: 'reason', ellipsis: true },
+          { title: t('rules.audit.columns.reason'), dataIndex: 'reason', ellipsis: true },
         ]}
       />
     </Card>
@@ -474,6 +483,7 @@ function RuleAuditPanel() {
 // ── 规则 KPI panel：silence / precision / ROI 排行 ──────────
 
 function RuleInsightsPanel() {
+  const { t } = useTranslation('risk')
   const [loading, setLoading] = useState(false)
   const [rows, setRows] = useState<RuleInsight[]>([])
   const [windowDays, setWindowDays] = useState(7)
@@ -497,57 +507,57 @@ function RuleInsightsPanel() {
     <Card>
       <Alert
         type="info" showIcon style={{ marginBottom: 16 }}
-        message={`silence 窗口 ${windowDays} 天；ROI = hits × precision；precision 至少 5 条 outcome 反馈才计算（避免噪音）。`}
+        message={t('rules.insights.alert', { days: windowDays })}
       />
       <Space style={{ marginBottom: 16 }} size="large">
         <Typography.Text>
-          总规则 <strong>{rows.length}</strong>
+          {t('rules.insights.totalRules')}<strong>{rows.length}</strong>
         </Typography.Text>
         <Typography.Text type={silentCount > 0 ? 'danger' : 'success'}>
-          silent ({windowDays}d 0 hit) <strong>{silentCount}</strong>
+          {t('rules.insights.silentLabel', { days: windowDays })}<strong>{silentCount}</strong>
         </Typography.Text>
         <Typography.Text type={lowPrecCount > 0 ? 'warning' : 'secondary'}>
-          低 precision (&lt;0.3) <strong>{lowPrecCount}</strong>
+          {t('rules.insights.lowPrecisionLabel')}<strong>{lowPrecCount}</strong>
         </Typography.Text>
-        <Button onClick={load}>刷新</Button>
+        <Button onClick={load}>{t('common:actions.refresh')}</Button>
       </Space>
       <Table<RuleInsight>
         rowKey="rule_id" size="small" loading={loading} dataSource={rows}
         pagination={{ pageSize: 50 }}
         columns={[
           {
-            title: '规则 ID', dataIndex: 'rule_id', width: 220, ellipsis: true,
+            title: t('rules.insights.columns.ruleId'), dataIndex: 'rule_id', width: 220, ellipsis: true,
             render: (v) => <Typography.Text code>{v}</Typography.Text>,
           },
           {
-            title: '状态', dataIndex: 'is_silent', width: 90,
+            title: t('rules.insights.columns.status'), dataIndex: 'is_silent', width: 90,
             render: (silent: boolean, rec) => silent
-              ? <Tag color="error">silent</Tag>
-              : (rec.hits_in_window > 0 ? <Tag color="success">active</Tag> : <Tag>idle</Tag>),
+              ? <Tag color="error">{t('rules.insights.statusTags.silent')}</Tag>
+              : (rec.hits_in_window > 0 ? <Tag color="success">{t('rules.insights.statusTags.active')}</Tag> : <Tag>{t('rules.insights.statusTags.idle')}</Tag>),
           },
           {
-            title: '最近命中', dataIndex: 'last_hit_at', width: 180,
+            title: t('rules.insights.columns.lastHit'), dataIndex: 'last_hit_at', width: 180,
             render: (v: string, rec) => rec.days_since_hit < 0
-              ? <Typography.Text type="secondary">从未</Typography.Text>
-              : <span>{dayjs(v).format('MM-DD HH:mm')} <Typography.Text type="secondary">（{rec.days_since_hit.toFixed(1)}d 前）</Typography.Text></span>,
+              ? <Typography.Text type="secondary">{t('rules.insights.neverHit')}</Typography.Text>
+              : <span>{dayjs(v).format('MM-DD HH:mm')} <Typography.Text type="secondary">{t('rules.insights.daysAgo', { days: rec.days_since_hit.toFixed(1) })}</Typography.Text></span>,
           },
-          { title: '命中次数', dataIndex: 'hits_in_window', width: 100, align: 'right' as const },
+          { title: t('rules.insights.columns.hits'), dataIndex: 'hits_in_window', width: 100, align: 'right' as const },
           {
-            title: 'Outcome', width: 130, align: 'right' as const,
+            title: t('rules.insights.columns.outcome'), width: 130, align: 'right' as const,
             render: (_v, rec) => rec.label_count > 0
-              ? <span>{rec.fraud_count}/{rec.label_count} fraud</span>
+              ? <span>{t('rules.insights.fraudCount', { fraud: rec.fraud_count, total: rec.label_count })}</span>
               : <Typography.Text type="secondary">-</Typography.Text>,
           },
           {
-            title: 'Precision', dataIndex: 'precision', width: 110, align: 'right' as const,
+            title: t('rules.insights.columns.precision'), dataIndex: 'precision', width: 110, align: 'right' as const,
             render: (v: number, rec) => {
-              if (rec.label_count < 5) return <Typography.Text type="secondary">N&lt;5</Typography.Text>
+              if (rec.label_count < 5) return <Typography.Text type="secondary">{t('rules.insights.nLessThan5')}</Typography.Text>
               const color = v < 0.3 ? 'red' : v < 0.6 ? 'orange' : 'green'
               return <Tag color={color}>{(v * 100).toFixed(1)}%</Tag>
             },
           },
           {
-            title: 'ROI', dataIndex: 'roi', width: 100, align: 'right' as const,
+            title: t('rules.insights.columns.roi'), dataIndex: 'roi', width: 100, align: 'right' as const,
             render: (v: number) => v > 0
               ? <strong>{v.toFixed(1)}</strong>
               : <Typography.Text type="secondary">-</Typography.Text>,
@@ -570,6 +580,7 @@ const DIFF_COLOR: Record<string, string> = {
 function RuleImportDrawer({
   open, onClose, onApplied,
 }: { open: boolean; onClose: () => void; onApplied: () => void }) {
+  const { t } = useTranslation('risk')
   const [yaml, setYaml] = useState('')
   const [dryRunResult, setDryRunResult] = useState<RuleImportResult | null>(null)
   const [applying, setApplying] = useState(false)
@@ -593,7 +604,7 @@ function RuleImportDrawer({
     setApplying(true)
     try {
       await importRulesYAML(yaml, false)
-      message.success(`已应用 ${dryRunResult.imported} 条规则`)
+      message.success(t('rules.importDrawer.appliedSuccess', { count: dryRunResult.imported }))
       setYaml('')
       setDryRunResult(null)
       onApplied()
@@ -617,28 +628,28 @@ function RuleImportDrawer({
   return (
     <Drawer
       open={open} onClose={onClose} width={760}
-      title="导入规则 YAML"
+      title={t('rules.importDrawer.title')}
       extra={
         <Space>
-          <Button onClick={onClose}>取消</Button>
-          <Button onClick={onDryRun} disabled={!yaml}>预览 diff</Button>
+          <Button onClick={onClose}>{t('common:actions.cancel')}</Button>
+          <Button onClick={onDryRun} disabled={!yaml}>{t('rules.importDrawer.previewButton')}</Button>
           <Button
             type="primary" danger
             disabled={!dryRunResult || dryRunResult.diff.every((d) => d.action === 'unchanged')}
             loading={applying}
             onClick={onApply}
           >
-            确认应用
+            {t('rules.importDrawer.applyButton')}
           </Button>
         </Space>
       }
     >
       <Alert
         type="info" showIcon style={{ marginBottom: 16 }}
-        message="先粘贴 YAML 点 “预览 diff” 校验 + 看变更，确认无误再 “确认应用”。所有规则过 schema 校验全部通过才落地，单条失败 → 整批拒绝。"
+        message={t('rules.importDrawer.infoAlert')}
       />
       {err && (
-        <Alert type="error" showIcon message="校验失败" description={err}
+        <Alert type="error" showIcon message={t('rules.importDrawer.validateFailed')} description={err}
           style={{ marginBottom: 16 }} closable onClose={() => setErr('')} />
       )}
       <Input.TextArea
@@ -651,7 +662,7 @@ function RuleImportDrawer({
       {dryRunResult && (
         <>
           <Space style={{ marginBottom: 12 }} size="large">
-            <Typography.Text strong>导入 {dryRunResult.imported} 条</Typography.Text>
+            <Typography.Text strong>{t('rules.importDrawer.importedPrefix', { count: dryRunResult.imported })}</Typography.Text>
             {(['create', 'update', 'delete', 'unchanged'] as const).map((a) => (
               <Typography.Text key={a}>
                 {a}: <Tag color={DIFF_COLOR[a]}>{counts[a] || 0}</Tag>
@@ -665,19 +676,19 @@ function RuleImportDrawer({
             pagination={false}
             columns={[
               {
-                title: 'Rule ID', dataIndex: 'rule_id', width: 200, ellipsis: true,
+                title: t('rules.importDrawer.columns.ruleId'), dataIndex: 'rule_id', width: 200, ellipsis: true,
                 render: (v) => <Typography.Text code>{v}</Typography.Text>,
               },
               {
-                title: '动作', dataIndex: 'action', width: 100,
+                title: t('rules.importDrawer.columns.action'), dataIndex: 'action', width: 100,
                 render: (v: string) => <Tag color={DIFF_COLOR[v]}>{v}</Tag>,
               },
               {
-                title: '说明', render: (_v, r) => {
-                  if (r.action === 'create') return '新规则将被添加'
-                  if (r.action === 'delete') return '现有规则将被移除'
-                  if (r.action === 'unchanged') return '<Typography.Text type="secondary">无变化</Typography.Text>'
-                  return '已存在的规则将被更新'
+                title: t('rules.importDrawer.columns.description'), render: (_v, r) => {
+                  if (r.action === 'create') return t('rules.importDrawer.actionDesc.create')
+                  if (r.action === 'delete') return t('rules.importDrawer.actionDesc.delete')
+                  if (r.action === 'unchanged') return t('rules.importDrawer.actionDesc.unchanged')
+                  return t('rules.importDrawer.actionDesc.update')
                 },
               },
             ]}
@@ -691,6 +702,7 @@ function RuleImportDrawer({
 // ── 规则冗余 / 冲突 panel：co-fire 矩阵 ────────────────────
 
 function RuleOverlapPanel() {
+  const { t } = useTranslation('risk')
   const [loading, setLoading] = useState(false)
   const [pairs, setPairs] = useState<RuleOverlapPair[]>([])
   const [minBoth, setMinBoth] = useState(5)
@@ -715,46 +727,46 @@ function RuleOverlapPanel() {
     <Card>
       <Alert
         type="info" showIcon style={{ marginBottom: 16 }}
-        message={`基于最近 ${sample} 条决策的命中数据。Jaccard > 0.8 = 高度重叠；蕴含率 > 95% = 一条规则是另一条的子集（可能冗余）；verdict 不一致 = 设计冲突。`}
+        message={t('rules.overlap.alert', { sample })}
       />
       <Space style={{ marginBottom: 16 }} size="large">
         <Space>
-          <Typography.Text strong>最小共同命中</Typography.Text>
+          <Typography.Text strong>{t('rules.overlap.minBothLabel')}</Typography.Text>
           <InputNumber min={1} max={100} value={minBoth} onChange={(v) => setMinBoth(v || 5)} />
         </Space>
         <Typography.Text type={conflicts > 0 ? 'danger' : 'success'}>
-          冲突 <strong>{conflicts}</strong>
+          {t('rules.overlap.conflictLabel')}<strong>{conflicts}</strong>
         </Typography.Text>
         <Typography.Text type={redundant > 0 ? 'warning' : 'secondary'}>
-          疑似冗余 <strong>{redundant}</strong>
+          {t('rules.overlap.redundantLabel')}<strong>{redundant}</strong>
         </Typography.Text>
-        <Typography.Text type="secondary">总对 {pairs.length}</Typography.Text>
-        <Button onClick={load} loading={loading}>刷新</Button>
+        <Typography.Text type="secondary">{t('rules.overlap.totalPairs', { count: pairs.length })}</Typography.Text>
+        <Button onClick={load} loading={loading}>{t('common:actions.refresh')}</Button>
       </Space>
       <Table<RuleOverlapPair>
         rowKey={(r) => `${r.rule_a}::${r.rule_b}`}
         size="small" loading={loading} dataSource={pairs}
         pagination={{ pageSize: 50 }}
         columns={[
-          { title: '规则 A', dataIndex: 'rule_a', width: 180, ellipsis: true,
+          { title: t('rules.overlap.columns.ruleA'), dataIndex: 'rule_a', width: 180, ellipsis: true,
             render: (v, r) => (
               <span>
                 <Typography.Text code>{v}</Typography.Text>
                 {r.verdict_a && <Tag style={{ marginLeft: 4 }}>{r.verdict_a}</Tag>}
               </span>
             )},
-          { title: '规则 B', dataIndex: 'rule_b', width: 180, ellipsis: true,
+          { title: t('rules.overlap.columns.ruleB'), dataIndex: 'rule_b', width: 180, ellipsis: true,
             render: (v, r) => (
               <span>
                 <Typography.Text code>{v}</Typography.Text>
                 {r.verdict_b && <Tag style={{ marginLeft: 4 }}>{r.verdict_b}</Tag>}
               </span>
             )},
-          { title: 'A 命中', dataIndex: 'hits_a', width: 80, align: 'right' as const },
-          { title: 'B 命中', dataIndex: 'hits_b', width: 80, align: 'right' as const },
-          { title: '同时', dataIndex: 'both', width: 70, align: 'right' as const },
+          { title: t('rules.overlap.columns.hitsA'), dataIndex: 'hits_a', width: 80, align: 'right' as const },
+          { title: t('rules.overlap.columns.hitsB'), dataIndex: 'hits_b', width: 80, align: 'right' as const },
+          { title: t('rules.overlap.columns.both'), dataIndex: 'both', width: 70, align: 'right' as const },
           {
-            title: 'Jaccard', dataIndex: 'jaccard', width: 100, align: 'right' as const,
+            title: t('rules.overlap.columns.jaccard'), dataIndex: 'jaccard', width: 100, align: 'right' as const,
             sorter: (a, b) => a.jaccard - b.jaccard,
             render: (v: number) => {
               const color = v >= 0.8 ? 'red' : v >= 0.5 ? 'orange' : undefined
@@ -764,32 +776,32 @@ function RuleOverlapPanel() {
             },
           },
           {
-            title: 'A→B', dataIndex: 'a_implies_b', width: 90, align: 'right' as const,
+            title: t('rules.overlap.columns.aImpliesB'), dataIndex: 'a_implies_b', width: 90, align: 'right' as const,
             render: (v: number) => v >= 0.95
               ? <Tag color="orange">{(v * 100).toFixed(1)}%</Tag>
               : (v * 100).toFixed(1) + '%',
           },
           {
-            title: 'B→A', dataIndex: 'b_implies_a', width: 90, align: 'right' as const,
+            title: t('rules.overlap.columns.bImpliesA'), dataIndex: 'b_implies_a', width: 90, align: 'right' as const,
             render: (v: number) => v >= 0.95
               ? <Tag color="orange">{(v * 100).toFixed(1)}%</Tag>
               : (v * 100).toFixed(1) + '%',
           },
           {
-            title: '诊断', width: 200,
+            title: t('rules.overlap.columns.diagnosis'), width: 200,
             render: (_v, r) => {
               const tags = []
               if (r.is_conflict) {
-                tags.push(<Tag key="c" color="red">verdict 冲突</Tag>)
+                tags.push(<Tag key="c" color="red">{t('rules.overlap.diagnosisTags.verdictConflict')}</Tag>)
               }
               if (r.a_implies_b >= 0.95 && r.b_implies_a >= 0.95) {
-                tags.push(<Tag key="dup" color="purple">两规则等价</Tag>)
+                tags.push(<Tag key="dup" color="purple">{t('rules.overlap.diagnosisTags.equivalent')}</Tag>)
               } else if (r.a_implies_b >= 0.95) {
-                tags.push(<Tag key="ab" color="orange">A 蕴含 B</Tag>)
+                tags.push(<Tag key="ab" color="orange">{t('rules.overlap.diagnosisTags.aImpliesB')}</Tag>)
               } else if (r.b_implies_a >= 0.95) {
-                tags.push(<Tag key="ba" color="orange">B 蕴含 A</Tag>)
+                tags.push(<Tag key="ba" color="orange">{t('rules.overlap.diagnosisTags.bImpliesA')}</Tag>)
               } else if (r.jaccard >= 0.8) {
-                tags.push(<Tag key="j" color="orange">高度重叠</Tag>)
+                tags.push(<Tag key="j" color="orange">{t('rules.overlap.diagnosisTags.highOverlap')}</Tag>)
               }
               return tags.length > 0 ? <Space size={4}>{tags}</Space>
                 : <Typography.Text type="secondary">-</Typography.Text>

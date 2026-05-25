@@ -1,0 +1,64 @@
+{
+  "orderAudit": {
+    "title": "Audit log",
+    "filters": {
+      "actor": "actor",
+      "action": "action (supports merchant.* prefix)",
+      "targetType": "target type",
+      "targetId": "target id"
+    },
+    "columns": {
+      "time": "Time",
+      "actor": "Actor",
+      "action": "Action",
+      "target": "Target",
+      "http": "HTTP",
+      "duration": "Dur",
+      "detail": "Detail"
+    },
+    "drawer": {
+      "actor": "Actor",
+      "target": "Target",
+      "http": "HTTP",
+      "requestBody": "Request body",
+      "response": "Response",
+      "footnote": "Audit log is immutable (compliance retention >= 7 years)."
+    }
+  },
+  "userMerchantAudit": {
+    "title": "Merchant audit log (user-merchant-core)",
+    "subtitle": "append-only - chained row_hash - written automatically on mutations (Create/Rotate/SubmitKyc/Put...)",
+    "chainBroken": "Hash chain broken at row {{idx}} - run audit-verify CLI immediately",
+    "filters": {
+      "actorLabel": "Actor",
+      "actorPlaceholder": "admin user / bearer prefix",
+      "targetLabel": "Target merchant_id",
+      "targetPlaceholder": "mch_xxx",
+      "clear": "Clear"
+    },
+    "totalSuffix": "{{count}} entries",
+    "columns": {
+      "time": "Time",
+      "actor": "Actor",
+      "ip": "IP",
+      "method": "Method",
+      "target": "Target",
+      "status": "Status",
+      "duration": "Duration"
+    },
+    "drawer": {
+      "title": "Audit entry #{{id}}",
+      "method": "Method",
+      "actor": "Actor",
+      "target": "Target",
+      "status": "Status",
+      "duration": "Duration",
+      "trace": "Trace",
+      "prevHash": "Prev hash",
+      "rowHash": "Row hash",
+      "requestBody": "Request body",
+      "genesis": "(genesis)",
+      "empty": "(empty)"
+    }
+  }
+}

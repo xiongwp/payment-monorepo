@@ -1,0 +1,168 @@
+{
+  "probe": {
+    "title": "Routing Probe",
+    "warning": "Sends a Charge with extra.probe=true to payment-core; make sure adapters in production recognize this flag and do not perform a real debit.",
+    "form": {
+      "country": "Country",
+      "paymentMethod": "Payment Method",
+      "amount": "Amount (minor units)",
+      "currency": "Currency",
+      "merchant": "Merchant"
+    },
+    "actions": {
+      "run": "Probe"
+    },
+    "result": "Result"
+  },
+  "phTester": {
+    "title": "PH Channel Tester",
+    "intro": "Drives probe Charge through payment-core → selected adapter → payment-channel mockserver. Requires payment-channel running with the sandbox profile; probes do not affect the circuit breaker.",
+    "tabs": {
+      "single": "Single Test",
+      "matrix": "Run All Scenarios"
+    },
+    "form": {
+      "channel": "Channel",
+      "scenario": "Scenario",
+      "amount": "Amount"
+    },
+    "actions": {
+      "sendTest": "Send Test Charge"
+    },
+    "result": "Result",
+    "scenarios": {
+      "s1": {
+        "label": "1 · Sync Success",
+        "description": "succeeded returned immediately"
+      },
+      "s2": {
+        "label": "2 · Requires Redirect",
+        "description": "requires_action + redirect URL"
+      },
+      "s3": {
+        "label": "3 · Failed · Card Declined",
+        "description": "failure_code=card_declined"
+      },
+      "s4": {
+        "label": "4 · Failed · Insufficient Funds",
+        "description": "failure_code=insufficient_funds"
+      },
+      "s5": {
+        "label": "5 · Failed · Risk Blocked",
+        "description": "failure_code=risk_blocked"
+      },
+      "s6": {
+        "label": "6 · Failed · Channel Unavailable",
+        "description": "failure_code=channel_unavailable"
+      },
+      "s7": {
+        "label": "7 · Async Success (webhook=success)",
+        "description": "processing → webhook success"
+      },
+      "s8": {
+        "label": "8 · Async Failure (webhook=failed)",
+        "description": "processing → webhook failure"
+      },
+      "s9": {
+        "label": "9 · Timeout",
+        "description": "mock hangs for 30s; adapter timeout will surface as an error"
+      }
+    },
+    "matrix": {
+      "timeoutWarning": "Scenario 9 (timeout) makes the mock hang for 30s; excluded by default.",
+      "channelLabel": "Channels:",
+      "scenarioLabel": "Scenarios:",
+      "concurrencyLabel": "Concurrency:",
+      "selectAll": "All",
+      "selectTop5": "Top 5",
+      "selectAllWithTimeout": "All (with timeout)",
+      "excludeTimeout": "Exclude timeout",
+      "running": "Running {{done}}/{{total}}",
+      "start": "Start ({{total}} cells)",
+      "summary": {
+        "pass": "Pass {{count}}",
+        "mismatch": "Mismatch {{count}}",
+        "error": "Error {{count}}"
+      },
+      "columns": {
+        "channel": "Channel",
+        "scenario": "Scenario",
+        "expected": "Expected",
+        "actualResultType": "Actual result_type",
+        "failureCode": "failure_code",
+        "failureMsg": "failure_msg",
+        "duration": "Duration",
+        "result": "Result"
+      },
+      "statusTag": {
+        "running": "running…",
+        "error": "error",
+        "pass": "PASS",
+        "mismatch": "MISMATCH",
+        "errorBadge": "ERROR"
+      }
+    }
+  },
+  "webhookTest": {
+    "title": "Webhook Debugger",
+    "form": {
+      "adapter": "Adapter",
+      "headers": "Headers (JSON)",
+      "body": "Body (raw)"
+    },
+    "actions": {
+      "parse": "Parse"
+    },
+    "result": "Parse Result",
+    "errors": {
+      "invalidHeadersJson": "headers must be valid JSON"
+    },
+    "payloadPlaceholder": "{\"pi\": \"pi_xxx\", \"event\": \"charge.succeeded\"}"
+  },
+  "deliveries": {
+    "title": "Outbound Webhook Deliveries",
+    "subtitle": "HMAC-SHA256 signature · exponential backoff retries · 0s/30s/2min/15min/2h",
+    "signatureHint": "Merchants verify via header X-Signature: t=<unix_ts>,v1=<HMAC-SHA256 hex>; signed payload = t + '.' + body.",
+    "filters": {
+      "merchantIdPlaceholder": "merchant_id",
+      "statusPlaceholder": "Status"
+    },
+    "actions": {
+      "sendTest": "Send Test Webhook",
+      "detail": "Details",
+      "retryNow": "Retry Now"
+    },
+    "columns": {
+      "id": "ID",
+      "time": "Time",
+      "merchant": "Merchant",
+      "event": "Event",
+      "status": "Status",
+      "http": "HTTP",
+      "nextRetry": "Next Retry"
+    },
+    "drawer": {
+      "url": "URL: ",
+      "event": "Event: ",
+      "status": "Status: ",
+      "attemptsHttp": " · {{attempts}}/{{max}} attempts · http={{http}}",
+      "lastErrorTitle": "Last Failure Reason",
+      "payload": "Payload"
+    },
+    "testModal": {
+      "title": "Send Test Webhook",
+      "intro": "Calls the merchant's configured webhook_url, signed with their webhook_secret using HMAC-SHA256.",
+      "merchantId": "Merchant ID",
+      "merchantIdPlaceholder": "mch_xxx",
+      "eventType": "Event Type",
+      "eventTypePlaceholder": "webhook.test (default)",
+      "payload": "Payload (JSON)",
+      "payloadPlaceholder": "{\"message\":\"hello\"}"
+    },
+    "messages": {
+      "retryQueued": "Retry queued",
+      "invalidPayloadJson": "payload must be valid JSON",
+      "testSent": "Test webhook sent, delivery id={{id}}"
+    }
+  }
+}

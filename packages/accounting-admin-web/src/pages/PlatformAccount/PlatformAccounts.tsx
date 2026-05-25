@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   Card, Form, InputNumber, Select, Button, Input, message,
   Descriptions, Alert, Typography, Tabs,
@@ -20,6 +21,7 @@ const { Title, Paragraph, Text } = Typography
 // ─── 基于已登记 business_type 批量建 100 账户 ─────────────────────────────────
 
 function CreateChannelFleetPanel() {
+  const { t } = useTranslation('account')
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [registry, setRegistry] = useState<BusinessTypeInfo[]>([])
@@ -45,7 +47,7 @@ function CreateChannelFleetPanel() {
     currency?: string
   }) => {
     if (!selectedRow) {
-      message.warning('请先选择一个已登记的 business_type')
+      message.warning(t('platformAccounts.fleet.messages.needSelect'))
       return
     }
     setLoading(true)
@@ -56,15 +58,19 @@ function CreateChannelFleetPanel() {
         channel_business_type: values.channel_business_type,
         currency: values.currency || 'PHP',
       })
-      setResultMsg(`已创建 ${resp.created}/100 个分片账户 · business_type=${resp.channel_business_type} · ${resp.business_type_code}`)
+      setResultMsg(t('platformAccounts.fleet.messages.resultFleet', {
+        created: resp.created,
+        businessType: resp.channel_business_type,
+        code: resp.business_type_code,
+      }))
       if (resp.created === 100) {
-        message.success(`账户创建完成`)
+        message.success(t('platformAccounts.fleet.messages.allDone'))
       } else {
-        message.warning(`部分成功 ${resp.created}/100，可用相同参数重跑补齐`)
+        message.warning(t('platformAccounts.fleet.messages.partialDone', { created: resp.created }))
       }
       loadRegistry()
     } catch (e) {
-      message.error(e instanceof Error ? e.message : '创建失败')
+      message.error(e instanceof Error ? e.message : t('platformAccounts.fleet.messages.createFailed'))
     } finally {
       setLoading(false)
     }
@@ -84,25 +90,24 @@ function CreateChannelFleetPanel() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="基于已登记 business_type 创建 100 个分片账户"
+        message={t('platformAccounts.fleet.alertTitle')}
         description={
           <>
-            <div>先到"业务类型"页登记一条 business_type，再到这里选它来创建 100 个分片账户（user_id = 0..99）。</div>
+            <div>{t('platformAccounts.fleet.alertLine1')}</div>
             <div style={{ marginTop: 6 }}>
-              本操作只建账户，<b>不再注册 registry</b>；所以下拉里如果没看到你要的 business_type，先去登记。
-              相同参数重跑幂等：只补齐缺失分片。
+              {t('platformAccounts.fleet.alertLine2Prefix')}<b>{t('platformAccounts.fleet.alertLine2Bold')}</b>{t('platformAccounts.fleet.alertLine2Suffix')}
             </div>
           </>
         }
       />
       <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ currency: 'PHP' }}>
         <Form.Item
-          label="选择已登记的 Business Type"
+          label={t('platformAccounts.fleet.selectLabel')}
           name="channel_business_type"
-          rules={[{ required: true, message: '请选择 business_type' }]}
+          rules={[{ required: true, message: t('platformAccounts.fleet.selectRequired') }]}
         >
           <Select
-            placeholder={registry.length ? '选择已在 registry 登记的 business_type' : '请先到"业务类型"页注册'}
+            placeholder={registry.length ? t('platformAccounts.fleet.selectPlaceholderHas') : t('platformAccounts.fleet.selectPlaceholderEmpty')}
             options={btOptions}
             showSearch
             optionFilterProp="label"
@@ -111,23 +116,23 @@ function CreateChannelFleetPanel() {
 
         {selectedRow && (
           <Descriptions bordered size="small" column={2} style={{ marginBottom: 12 }}>
-            <Descriptions.Item label="Account Type">
+            <Descriptions.Item label={t('platformAccounts.fleet.descriptions.accountType')}>
               {ACCOUNT_TYPE_LABEL[selectedRow.account_type] ?? '?'} ({selectedRow.account_type})
             </Descriptions.Item>
-            <Descriptions.Item label="Category (derived)">
+            <Descriptions.Item label={t('platformAccounts.fleet.descriptions.category')}>
               {CATEGORY_LABEL[CATEGORY_BY_ACCOUNT_TYPE[selectedRow.account_type]] ?? '?'}
             </Descriptions.Item>
-            <Descriptions.Item label="Code"><Text code>{selectedRow.business_type_code}</Text></Descriptions.Item>
-            <Descriptions.Item label="描述">{selectedRow.description || '-'}</Descriptions.Item>
+            <Descriptions.Item label={t('platformAccounts.fleet.descriptions.code')}><Text code>{selectedRow.business_type_code}</Text></Descriptions.Item>
+            <Descriptions.Item label={t('platformAccounts.fleet.descriptions.description')}>{selectedRow.description || '-'}</Descriptions.Item>
           </Descriptions>
         )}
 
-        <Form.Item label="币种" name="currency">
+        <Form.Item label={t('platformAccounts.fleet.currencyLabel')} name="currency">
           <Input placeholder="PHP" />
         </Form.Item>
         <Form.Item>
           <Button type="primary" htmlType="submit" loading={loading} disabled={!selectedRow}>
-            创建 100 个账户
+            {t('platformAccounts.fleet.submitButton')}
           </Button>
         </Form.Item>
       </Form>
@@ -139,6 +144,7 @@ function CreateChannelFleetPanel() {
 // ─── 单点创建面板 ─────────────────────────────────────────────────────────────
 
 function CreateSingleAccountPanel() {
+  const { t } = useTranslation('account')
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [created, setCreated] = useState<Account | null>(null)
@@ -153,9 +159,9 @@ function CreateSingleAccountPanel() {
         currency: values.currency || 'PHP',
       })
       setCreated(acc)
-      message.success(`账户已创建: ${acc.account_no}`)
+      message.success(t('platformAccounts.single.messages.createSuccess', { accountNo: acc.account_no }))
     } catch (e) {
-      message.error(e instanceof Error ? e.message : '创建失败')
+      message.error(e instanceof Error ? e.message : t('platformAccounts.single.messages.createFailed'))
     } finally {
       setLoading(false)
     }
@@ -167,34 +173,34 @@ function CreateSingleAccountPanel() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="单点创建（少用）"
-        description='只为某一分片补一个账户。大多数情况应该用"渠道注册"批量建 100 个。'
+        message={t('platformAccounts.single.alertTitle')}
+        description={t('platformAccounts.single.alertDescription')}
       />
       <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ currency: 'PHP' }}>
-        <Form.Item label="Reserved ID (1-10000)" name="reserved_id" rules={[{ required: true, type: 'number', min: 1, max: 10000 }]}>
-          <InputNumber min={1} max={10000} style={{ width: '100%' }} placeholder="该账户在保留段的 owner_id" />
+        <Form.Item label={t('platformAccounts.single.reservedIdLabel')} name="reserved_id" rules={[{ required: true, type: 'number', min: 1, max: 10000 }]}>
+          <InputNumber min={1} max={10000} style={{ width: '100%' }} placeholder={t('platformAccounts.single.reservedIdPlaceholder')} />
         </Form.Item>
-        <Form.Item label="账户类型" name="account_type" rules={[{ required: true }]}>
+        <Form.Item label={t('platformAccounts.single.accountTypeLabel')} name="account_type" rules={[{ required: true }]}>
           <Select
-            placeholder="选择平台账户类型"
+            placeholder={t('platformAccounts.single.accountTypePlaceholder')}
             options={PLATFORM_ACCOUNT_TYPES.map(t => ({ value: t.value, label: t.label }))}
           />
         </Form.Item>
-        <Form.Item label="币种" name="currency">
+        <Form.Item label={t('platformAccounts.single.currencyLabel')} name="currency">
           <Input placeholder="PHP" />
         </Form.Item>
         <Form.Item>
-          <Button type="primary" htmlType="submit" loading={loading}>创建账户</Button>
+          <Button type="primary" htmlType="submit" loading={loading}>{t('platformAccounts.single.submitButton')}</Button>
         </Form.Item>
       </Form>
       {created && (
-        <Descriptions title="创建结果" bordered column={1} size="small">
-          <Descriptions.Item label="账户号">{created.account_no}</Descriptions.Item>
-          <Descriptions.Item label="User ID">{created.user_id}</Descriptions.Item>
-          <Descriptions.Item label="Account Type">{created.account_type}</Descriptions.Item>
-          <Descriptions.Item label="Business Type">{created.account_business_type}</Descriptions.Item>
-          <Descriptions.Item label="Category">{created.account_category}</Descriptions.Item>
-          <Descriptions.Item label="Currency">{created.currency}</Descriptions.Item>
+        <Descriptions title={t('platformAccounts.single.resultTitle')} bordered column={1} size="small">
+          <Descriptions.Item label={t('platformAccounts.single.fields.accountNo')}>{created.account_no}</Descriptions.Item>
+          <Descriptions.Item label={t('platformAccounts.single.fields.userId')}>{created.user_id}</Descriptions.Item>
+          <Descriptions.Item label={t('platformAccounts.single.fields.accountType')}>{created.account_type}</Descriptions.Item>
+          <Descriptions.Item label={t('platformAccounts.single.fields.businessType')}>{created.account_business_type}</Descriptions.Item>
+          <Descriptions.Item label={t('platformAccounts.single.fields.category')}>{created.account_category}</Descriptions.Item>
+          <Descriptions.Item label={t('platformAccounts.single.fields.currency')}>{created.currency}</Descriptions.Item>
         </Descriptions>
       )}
     </Card>
@@ -204,13 +210,12 @@ function CreateSingleAccountPanel() {
 // ─── 页面主容器 ────────────────────────────────────────────────────────────────
 
 export default function PlatformAccounts() {
+  const { t } = useTranslation('account')
   return (
     <div>
-      <Title level={3}>系统账户管理</Title>
+      <Title level={3}>{t('platformAccounts.pageTitle')}</Title>
       <Paragraph type="secondary">
-        管理平台 / 中间 / 手续费 / 权益 / 中转等系统内部账户。owner_id 预留 [1, 10000]；用户 base 1e8、商户 base 9e8。
-        每个渠道对应 100 个分片账户（user_id = 0..99），business_type 唯一区分渠道。
-        业务类型清单与审计请到"业务类型"页面。
+        {t('platformAccounts.pageDescription')}
       </Paragraph>
 
       <Tabs
@@ -218,12 +223,12 @@ export default function PlatformAccounts() {
         items={[
           {
             key: 'fleet',
-            label: '渠道注册（100 账户）',
+            label: t('platformAccounts.tabs.fleet'),
             children: <CreateChannelFleetPanel />,
           },
           {
             key: 'single',
-            label: '单点创建',
+            label: t('platformAccounts.tabs.single'),
             children: <CreateSingleAccountPanel />,
           },
         ]}

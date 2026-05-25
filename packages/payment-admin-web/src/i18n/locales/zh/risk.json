@@ -1,0 +1,632 @@
+{
+  "common": {
+    "decisionId": "决策 ID",
+    "time": "时间",
+    "verdict": "Verdict",
+    "riskScore": "风险分",
+    "riskLevel": "风险等级",
+    "hitRules": "命中规则",
+    "merchant": "商户",
+    "customer": "客户",
+    "actor": "操作人",
+    "noData": "无",
+    "dash": "—",
+    "none": "无",
+    "never": "从未"
+  },
+  "dashboard": {
+    "title": "风控运营工作台",
+    "dataSourceAlert": "数据来源：risk-manage 进程内 ring buffer（最近 500 条决策 / 200 条 outcome）。生产应配 ClickHouse + Grafana 看长期 SLA。",
+    "systemStatus": "系统状态",
+    "ruleCount": "规则数",
+    "queuePending": "待领取",
+    "queueInReview": "审核中",
+    "queueEscalated": "已升级",
+    "queueOverdue": "超期未决",
+    "championLabel": "ML champion",
+    "challengersPrefix": "challengers: {{names}}",
+    "recallTitle": "系统召回 / 准确率（最近 {{days}} 天，{{samples}} 条已 label 样本）",
+    "precision": "Precision",
+    "precisionHint": "BLOCK 中真欺诈",
+    "recall": "Recall",
+    "recallHint": "真欺诈被抓到",
+    "fpr": "FPR",
+    "fprHint": "正常被误杀",
+    "f1": "F1",
+    "actualFraud": "实际欺诈",
+    "actualLegit": "实际正常",
+    "rulePretestTitle": "规则预测试（mode 切换）",
+    "rulePretestAlert": "新规则上线 SOP：先 mode=shadow 跑 N 天观察 shadow_hits → 对照真值 → 切 enforce。本切换不重启。",
+    "ruleIdLabel": "规则 ID",
+    "shadowLabel": "Shadow",
+    "applyButton": "应用",
+    "shadowHint": "shadow=on 表示规则只观察不影响 verdict；off 表示进入决策路径",
+    "ruleSwitched": "规则 {{id}} 切到 {{mode}}",
+    "pendingReview": "待审核",
+    "allowRate": "ALLOW 比例",
+    "reviewRate": "REVIEW 比例",
+    "denyRate": "DENY 比例",
+    "feedbackSamples": "反馈样本",
+    "markedFraud": "标记欺诈",
+    "markedLegit": "标记正常",
+    "fraudRate": "欺诈率",
+    "unitItem": "条",
+    "recentDenyTitle": "最近 DENY 决策",
+    "recentDenyEmpty": "没有 DENY 决策（说明大盘风险偏低）"
+  },
+  "workbench": {
+    "title": "风控 Case 工作台",
+    "currentAnalystLabel": "当前 Analyst：",
+    "analystPlaceholder": "alice / bob",
+    "noActorWarning": "先在右上角设置 Analyst ID，否则不能 Claim / 决议（abuse trace 会缺）",
+    "tabs": {
+      "mine": "我的工作台 (in_review)",
+      "queue": "待领取队列 (pending)",
+      "overdue": "超期未决 (overdue)"
+    },
+    "totalRows": "共 {{count}} 条",
+    "requireActorWarning": "请先设置当前 analyst ID（页面右上角）",
+    "claimed": "已抢占",
+    "released": "已释放回队列",
+    "escalated": "已升级",
+    "noteAdded": "已添加",
+    "approved": "已批准",
+    "rejected": "已拒绝",
+    "columns": {
+      "decisionId": "决策 ID",
+      "merchant": "商户",
+      "customer": "客户",
+      "amount": "金额",
+      "riskScore": "风险分",
+      "status": "状态",
+      "assignee": "Assignee",
+      "sla": "SLA",
+      "actions": "操作"
+    },
+    "openButton": "打开",
+    "slaOverdue": "{{minutes}}m 前已过期",
+    "slaInHours": "{{hours}}h 后到期",
+    "slaInMinutes": "{{minutes}}m 后到期",
+    "drawer": {
+      "title": "Case 详情",
+      "claim": "抢占",
+      "release": "释放",
+      "escalate": "升级",
+      "decide": "决议",
+      "addNote": "加备注",
+      "basicInfo": "基本信息",
+      "id": "ID",
+      "status": "状态",
+      "assignedTo": "分配给",
+      "riskScore": "风险分",
+      "amount": "金额",
+      "merchant": "商户",
+      "customer": "客户",
+      "created": "创建",
+      "sla": "SLA",
+      "escalateLevel": "升级层级",
+      "decidedAt": "决议时间",
+      "decidedBy": "决议人",
+      "decideReason": "决议原因",
+      "hitRules": "命中规则",
+      "noteCount": "备注 ({{count}})",
+      "noNotes": "还没有备注"
+    },
+    "escalateModal": {
+      "title": "升级到 Senior",
+      "reasonLabel": "原因",
+      "reasonPlaceholder": "为什么需要升级？"
+    },
+    "noteModal": {
+      "title": "添加备注",
+      "bodyLabel": "内容"
+    },
+    "decideModal": {
+      "title": "决议",
+      "actionLabel": "动作",
+      "approve": "批准（放行）",
+      "reject": "拒绝（拦截）",
+      "reasonLabel": "原因（写到 audit）",
+      "reasonPlaceholder": "为什么这么判？"
+    }
+  },
+  "reviews": {
+    "title": "风控人工审核队列",
+    "infoAlert": "风控引擎判 verdict=Review 的交易会进入此队列。决议结果（approve/reject）会自动写到 feedback recorder，作为 ML 模型的训练 label。",
+    "statusFilter": {
+      "pending": "待审核",
+      "approved": "已批准",
+      "rejected": "已拒绝"
+    },
+    "totalRows": "共 {{count}} 条",
+    "selectedSuffix": " · 已选 {{count}}",
+    "bulkApprove": "批量批准",
+    "bulkReject": "批量拒绝",
+    "clearSelection": "取消选中",
+    "bulkSelectWarning": "请先勾选要批量处理的条目",
+    "bulkConfirmTitle": "批量{{verb}} {{count}} 笔审核？",
+    "bulkVerbApprove": "批准",
+    "bulkVerbReject": "拒绝",
+    "bulkAlertMessage": "将对选中的 {{count}} 笔同时执行 {{action}}",
+    "bulkActorPlaceholder": "actor (操作人 ID，必填)",
+    "bulkReasonPlaceholder": "reason (原因，落审计 + ML 训练 label)",
+    "bulkConfirmOkText": "确认",
+    "bulkActorRequired": "actor 必填",
+    "bulkResult": "批量{{verb}}：{{success}}/{{total}} 成功，{{notPending}} 已变更状态，{{failed}} 失败",
+    "approvedSingleSuccess": "已批准（放行）",
+    "rejectedSingleSuccess": "已拒绝（拦截）",
+    "columns": {
+      "decisionId": "决策 ID",
+      "merchant": "商户",
+      "customer": "客户",
+      "pi": "PI",
+      "amount": "金额",
+      "riskScore": "风险分",
+      "hitRules": "命中规则",
+      "status": "状态",
+      "createdAt": "创建时间"
+    },
+    "detailLink": "详情",
+    "drawerTitle": "Review {{id}}",
+    "decideButton": "决议",
+    "drawerSections": {
+      "basic": "基本",
+      "hitRules": "命中规则"
+    },
+    "fields": {
+      "decisionId": "决策 ID",
+      "merchant": "商户",
+      "customer": "客户",
+      "pi": "PI",
+      "amount": "金额",
+      "riskScore": "风险分",
+      "status": "状态",
+      "createdAt": "创建时间",
+      "decidedAt": "决议时间",
+      "decidedBy": "决议人",
+      "decideReason": "决议原因"
+    },
+    "decideModal": {
+      "title": "决议",
+      "alert": "approve = 放行该笔交易；reject = 标记为欺诈并阻止放款。决议后会自动写一条 SourceReviewHuman 的 outcome 给 ML 训练。",
+      "actionLabel": "动作",
+      "approveOption": "approve（放行 / 非欺诈）",
+      "rejectOption": "reject（拒绝 / 是欺诈）",
+      "actorLabel": "操作人",
+      "actorPlaceholder": "如 ops:zhang.san",
+      "reasonLabel": "决议原因",
+      "reasonPlaceholder": "如：客户致电确认本人交易；或：与历史 chargeback 设备指纹一致"
+    }
+  },
+  "decisions": {
+    "title": "决策审计日志",
+    "infoAlert": "每笔 Screen 调用都会落一条 audit；这里只展示进程内 ring buffer 的最近 500 条。生产应配 ClickHouse / Kafka 长期留存（参见 risk-manage COMMERCIAL.md § 3.1）。",
+    "search": {
+      "merchantPlaceholder": "merchant_id",
+      "customerPlaceholder": "customer_id",
+      "ipPlaceholder": "ip",
+      "verdictPlaceholder": "verdict",
+      "sincePlaceholder": "since",
+      "untilPlaceholder": "until",
+      "clearButton": "清空筛选",
+      "localFilterPlaceholder": "按 decision_id 子串过滤（本地）",
+      "serverPrefix": "服务端搜索: ",
+      "latestPrefix": "最新: ",
+      "hitSummary": "命中 {{shown}} / {{total}} 条"
+    },
+    "verifyChainButton": "验证审计链",
+    "columns": {
+      "decisionId": "决策 ID",
+      "time": "时间",
+      "verdict": "Verdict",
+      "riskScore": "风险分",
+      "riskLevel": "风险等级",
+      "hitRules": "命中规则",
+      "evalMs": "耗时(ms)",
+      "actions": "操作"
+    },
+    "explainButton": "解释",
+    "explainDrawer": {
+      "title": "决策解释：{{id}}",
+      "loading": "加载中...",
+      "loadFailed": "加载失败",
+      "driftMessage": "原决策与当前规则集重放结果不一致",
+      "driftDescPrefix": "规则改过之后，这笔交易的判定从 ",
+      "driftDescConnector": " 变为 ",
+      "driftScore": "，风险分 {{orig}} → {{replay}}",
+      "driftSuffix": "。差异说明规则集已变化；想精确复盘需要 ClickHouse 长期 audit。",
+      "originalVerdict": "原 Verdict",
+      "replayedVerdict": "重放 Verdict",
+      "originalScore": "原 Score",
+      "replayedScore": "重放 Score",
+      "occurredAt": "时间",
+      "inputSnapshot": "输入快照",
+      "amountLabel": "金额: ",
+      "paymentMethodLabel": "支付方式: ",
+      "countryLabel": "国家: ",
+      "hitCompareTitle": "命中规则对比",
+      "shadowHitsTitle": "Shadow 命中（仅观察）",
+      "shadowColumns": {
+        "rule": "规则",
+        "decision": "决策",
+        "detail": "detail"
+      }
+    },
+    "hitsCompare": {
+      "statusLabels": {
+        "both": "都命中",
+        "onlyOrig": "原命中（现已 miss）",
+        "onlyReplay": "现命中（原 miss）"
+      },
+      "columns": {
+        "rule": "规则",
+        "status": "状态",
+        "originalDecision": "原决策",
+        "replayedDecision": "重放决策",
+        "detail": "detail"
+      }
+    },
+    "chainVerify": {
+      "successTitle": "审计链完整性验证通过",
+      "failureTitle": "⚠️ 审计链完整性失败",
+      "successDescPart1": "已验证 ",
+      "successDescPart2": " 条审计记录，链式 hash 全部一致。",
+      "successAlgorithm": "算法：sha256(prev_hash || canonical_json(record))。从 ring buffer 老 → 新按序 verify，任一行 hash 对不上立刻报错。",
+      "failurePart1": "已扫描 ",
+      "failurePart2": " 条记录后失败。",
+      "failureIndex": "失败索引：",
+      "failureField": "失败字段：",
+      "expected": "预期: ",
+      "actual": "实际: ",
+      "diagnosis": "诊断：record 被篡改 / 删除 / 重排，或者服务重启时 chain 没续 prev_hash。"
+    }
+  },
+  "outcomes": {
+    "title": "风控反馈记录（Outcome）",
+    "infoAlert": "每条 Outcome 关联到一个 decision_id，记录该笔最终是不是欺诈的真实结果。来源：人工 review / dispute / 商户主动确认。ML pipeline 离线导出做训练 label。",
+    "recordButton": "记录 Outcome",
+    "recentCount": "最近 {{count}} 条",
+    "recorded": "已记录",
+    "sourceLabels": {
+      "review_human": "人工 review",
+      "dispute": "dispute / chargeback",
+      "merchant_confirm": "商户确认"
+    },
+    "columns": {
+      "decisionId": "决策 ID",
+      "time": "时间",
+      "source": "来源",
+      "verdict": "判定",
+      "actor": "操作人",
+      "notes": "备注"
+    },
+    "modal": {
+      "title": "记录 Outcome 反馈",
+      "warning": "一般 dispute 系统在终态时自动写入；此处是给运营手动补录用的（如商户邮件确认是 / 不是欺诈）。",
+      "decisionIdLabel": "决策 ID",
+      "decisionIdPlaceholder": "32 hex（来自 audit / review）",
+      "sourceLabel": "来源",
+      "isFraudLabel": "是否欺诈",
+      "isFraudYes": "是",
+      "isFraudNo": "否",
+      "actorLabel": "操作人",
+      "actorPlaceholder": "如 ops:zhang.san",
+      "notesLabel": "备注",
+      "notesPlaceholder": "证据 / 关联工单号 / 备注"
+    }
+  },
+  "rules": {
+    "title": "风控规则管理",
+    "topAlert": "本页操作即时生效（heap-resident）。要持久化请同步改 ConfigMap 后 POST /admin/rules/reload，否则下次重启 / 重载会丢失。",
+    "tabs": {
+      "rules": "规则列表",
+      "insights": "规则 KPI",
+      "overlap": "冗余 / 冲突",
+      "audit": "变更审计"
+    },
+    "createButton": "新建规则",
+    "exportYaml": "导出 YAML",
+    "importYaml": "导入 YAML",
+    "ruleCountSuffix": "{{count}} 条规则",
+    "columns": {
+      "id": "ID",
+      "name": "名称",
+      "type": "Type",
+      "decision": "Decision",
+      "weight": "权重",
+      "mode": "模式",
+      "rollout": "灰度 %",
+      "enabled": "启用",
+      "actions": "操作"
+    },
+    "tag": {
+      "on": "on",
+      "off": "off"
+    },
+    "popconfirmDelete": "确认删除？",
+    "modeSwitched": "规则 {{id}} → {{mode}}",
+    "deleteModal": {
+      "title": "删除规则 {{id}}？",
+      "warning": "软停：仅从当前 engine 移除。下次 reload yaml 还会长出来。",
+      "reasonPlaceholder": "说明删除原因（落审计日志）",
+      "okText": "确认删除"
+    },
+    "deleted": "已删除",
+    "editDrawer": {
+      "createTitle": "新建规则",
+      "editTitle": "编辑规则 {{id}}",
+      "simulateButton": "试运行",
+      "saveButton": "保存",
+      "saveDisabledTitle": "需要 danger 角色才能改风控规则",
+      "validateErrorTitle": "校验失败",
+      "configInvalid": "config_json 不是合法 JSON: {{error}}",
+      "saveSuccess": "规则 {{id}} → {{action}}",
+      "createAction": "已创建",
+      "updateAction": "已更新",
+      "simulate": {
+        "messagePart1": "试运行结果：重放 ",
+        "messagePart2": " 笔历史决策，候选规则命中 ",
+        "messagePart3": " 笔（命中率 ",
+        "messagePart4": "）",
+        "newBlockPrefix": "新增 BLOCK ",
+        "newBlockMid": " 笔；与现行 BLOCK 一致 ",
+        "newBlockSuffix": " 笔",
+        "outcomePrefix": "有 outcome 反馈 ",
+        "outcomeMid": "；其中真欺诈 ",
+        "precisionPrefix": "；估算 precision "
+      },
+      "fields": {
+        "id": "ID",
+        "idRequired": "必填",
+        "name": "名称",
+        "namePlaceholder": "给运营看的描述",
+        "type": "类型",
+        "typePlaceholder": "e.g. velocity / amount / blacklist / mlscore",
+        "decision": "决策",
+        "enabled": "启用",
+        "mode": "模式",
+        "weight": "权重 (0=按 decision 默认)",
+        "rollout": "灰度",
+        "bucketSeedPlaceholder": "bucket_seed (空 = 用 rule_id)",
+        "configLabel": "config (JSON)",
+        "configExtra": "规则 type-specific 配置；提交时后端 BuildRule 会跑 schema 校验。"
+      }
+    },
+    "audit": {
+      "filterPlaceholder": "按 rule_id 过滤",
+      "totalSuffix": "{{count}} 条变更",
+      "columns": {
+        "time": "时间",
+        "action": "动作",
+        "actor": "操作人",
+        "ruleId": "Rule ID",
+        "reason": "原因"
+      }
+    },
+    "insights": {
+      "alert": "silence 窗口 {{days}} 天；ROI = hits × precision；precision 至少 5 条 outcome 反馈才计算（避免噪音）。",
+      "totalRules": "总规则 ",
+      "silentLabel": "silent ({{days}}d 0 hit) ",
+      "lowPrecisionLabel": "低 precision (<0.3) ",
+      "columns": {
+        "ruleId": "规则 ID",
+        "status": "状态",
+        "lastHit": "最近命中",
+        "hits": "命中次数",
+        "outcome": "Outcome",
+        "precision": "Precision",
+        "roi": "ROI"
+      },
+      "statusTags": {
+        "silent": "silent",
+        "active": "active",
+        "idle": "idle"
+      },
+      "daysAgo": "（{{days}}d 前）",
+      "neverHit": "从未",
+      "fraudCount": "{{fraud}}/{{total}} fraud",
+      "nLessThan5": "N<5"
+    },
+    "overlap": {
+      "alert": "基于最近 {{sample}} 条决策的命中数据。Jaccard > 0.8 = 高度重叠；蕴含率 > 95% = 一条规则是另一条的子集（可能冗余）；verdict 不一致 = 设计冲突。",
+      "minBothLabel": "最小共同命中",
+      "conflictLabel": "冲突 ",
+      "redundantLabel": "疑似冗余 ",
+      "totalPairs": "总对 {{count}}",
+      "columns": {
+        "ruleA": "规则 A",
+        "ruleB": "规则 B",
+        "hitsA": "A 命中",
+        "hitsB": "B 命中",
+        "both": "同时",
+        "jaccard": "Jaccard",
+        "aImpliesB": "A→B",
+        "bImpliesA": "B→A",
+        "diagnosis": "诊断"
+      },
+      "diagnosisTags": {
+        "verdictConflict": "verdict 冲突",
+        "equivalent": "两规则等价",
+        "aImpliesB": "A 蕴含 B",
+        "bImpliesA": "B 蕴含 A",
+        "highOverlap": "高度重叠"
+      }
+    },
+    "importDrawer": {
+      "title": "导入规则 YAML",
+      "previewButton": "预览 diff",
+      "applyButton": "确认应用",
+      "infoAlert": "先粘贴 YAML 点 \"预览 diff\" 校验 + 看变更，确认无误再 \"确认应用\"。所有规则过 schema 校验全部通过才落地，单条失败 → 整批拒绝。",
+      "validateFailed": "校验失败",
+      "appliedSuccess": "已应用 {{count}} 条规则",
+      "importedPrefix": "导入 {{count}} 条",
+      "columns": {
+        "ruleId": "Rule ID",
+        "action": "动作",
+        "description": "说明"
+      },
+      "actionDesc": {
+        "create": "新规则将被添加",
+        "delete": "现有规则将被移除",
+        "unchanged": "无变化",
+        "update": "已存在的规则将被更新"
+      }
+    }
+  },
+  "cohort": {
+    "title": "Cohort 分析",
+    "infoAlert": "样本来自 audit MemSink ring（约最近 {{sample}} 条决策）。生产部署后接 ClickHouse 长期表才有\"按月 / 按 vintage\"的趋势分析。",
+    "groupByLabel": "分组维度",
+    "groupBy": {
+      "merchant_id": "商户",
+      "country": "国家",
+      "payment_method": "支付方式"
+    },
+    "minSampleLabel": "最小样本",
+    "minSampleOptions": {
+      "all": "全部",
+      "ge5": "≥ 5",
+      "ge10": "≥ 10",
+      "ge50": "≥ 50",
+      "ge100": "≥ 100"
+    },
+    "platformSummaryPart1": "平台 block_rate ",
+    "platformSummaryPart2": "；fraud_rate ",
+    "columns": {
+      "decisions": "决策数",
+      "blockCount": "BLOCK 数",
+      "blockRate": "block_rate",
+      "labeledTotal": "有 outcome",
+      "actualFraud": "实际 fraud",
+      "fraudRate": "fraud_rate",
+      "tpFp": "TP / FP",
+      "precisionAtBlock": "precision @ BLOCK",
+      "trend": "趋势"
+    },
+    "timelineButton": "时间线",
+    "nLessThan5": "N<5",
+    "timeline": {
+      "title": "时间线：{{key}}（基于最近 {{sample}} 条决策）",
+      "bucketLabel": "桶大小",
+      "bucketHour": "小时",
+      "bucketDay": "日",
+      "bucketWeek": "周",
+      "emptyText": "无数据。换更大的 bucket 试试，或检查 audit MemSink 是否有最近的决策样本。",
+      "blockRateTitle": "Block Rate",
+      "fraudRateTitle": "Actual Fraud Rate",
+      "columns": {
+        "time": "时间",
+        "decisions": "决策数",
+        "block": "block",
+        "outcome": "outcome",
+        "fraudRate": "fraud_rate"
+      },
+      "sparkEmpty": "（无数据）"
+    }
+  },
+  "abtest": {
+    "title": "ML A/B 显著性检验",
+    "tabs": {
+      "manage": "模型管理 (challenger)",
+      "report": "显著性报告",
+      "override": "紧急降级 / 强制分数"
+    },
+    "recLabels": {
+      "promote": "升级 (promote)",
+      "drop": "下线 (drop)",
+      "hold": "继续观察 (hold)"
+    },
+    "manage": {
+      "scoringDisabledTitle": "ML scoring 已禁用",
+      "scoringDisabledDesc": "服务启动时 mlscore.enabled=false，无法注册 challenger。改 config 后重启。",
+      "currentChampionPrefix": "当前 Champion: ",
+      "challengersPrefix": "Challengers: ",
+      "infoDesc": "Challenger 跟 champion 并行打分但不影响主决策；显著优于 champion 时升级。从 cmd/retrain 训出来后填到 \"注册 challenger\" 表单。",
+      "registerButton": "注册 challenger",
+      "promoteButton": "升级为 champion",
+      "dropButton": "下线",
+      "promoteConfirm": "升级 {{name}} 为 champion？",
+      "promoteContent": "当前 champion {{champion}} 会自动降级为 challenger 留观。",
+      "promoteSuccess": "已升级：{{champion}}（原 champion {{demoted}} 已降级为 challenger）",
+      "dropConfirm": "下线 {{name}}？",
+      "dropSuccess": "已下线 {{name}}",
+      "emptyText": "没有 challenger。点 \"注册 challenger\" 添加。",
+      "columns": {
+        "name": "Name",
+        "actions": "操作"
+      }
+    },
+    "register": {
+      "title": "注册 Challenger 模型",
+      "registerButton": "注册",
+      "infoAlert": "把 cmd/retrain 输出的 LogisticConfig JSON 整段粘贴到下方，再点 \"从 JSON 填表\" 自动填入 intercept / weights / Platt 校准参数。",
+      "errorTitle": "错误",
+      "pasteJsonLabel": "LogisticConfig JSON 粘贴",
+      "fillFromJson": "从 JSON 填表",
+      "parseFailed": "paste JSON 解析失败: {{error}}",
+      "filledFromJson": "已从 JSON 填入字段",
+      "registered": "challenger {{name}} 已注册",
+      "fields": {
+        "name": "Challenger Name",
+        "modelVer": "Model Version",
+        "intercept": "Intercept",
+        "featureWeights": "FeatureWeights",
+        "plattA": "Platt A (校准)",
+        "plattB": "Platt B (校准)"
+      }
+    },
+    "report": {
+      "infoMessage": "基于 ABTracker ring buffer（最近 4096 条决策）+ outcome 反馈。需要 outcome 标签 ≥ min_labeled 才输出某 challenger。",
+      "infoDesc": "bootstrap CI 全 > 0 → 升级；全 < 0 → 下线；跨 0 → 继续观察直到样本足够。",
+      "minLabeledLabel": "最小样本",
+      "bootstrapLabel": "Bootstrap 次数",
+      "empty": "无 challenger 数据。先去 \"模型管理\" 注册 challenger，等积累足够 outcome 反馈后回来查看显著性。",
+      "columns": {
+        "challenger": "Challenger",
+        "labeledSamples": "Labeled 样本",
+        "championAuc": "Champion AUC",
+        "challengerAuc": "Challenger AUC",
+        "aucDiff": "AUC Diff",
+        "ci": "95% CI on diff",
+        "ciNotComputed": "未计算",
+        "recommend": "推荐"
+      },
+      "stats": {
+        "totalChallengers": "Challenger 总数",
+        "canPromote": "可升级 (promote)",
+        "shouldDrop": "该下线 (drop)",
+        "keepHold": "继续观察 (hold)"
+      }
+    },
+    "override": {
+      "activeTitle": "⚠️ ML 降级当前已激活",
+      "normalTitle": "正常运行",
+      "setByLine": "由 {{actor}} 在 {{time}} 设置",
+      "unknownActor": "unknown",
+      "clearButton": "清空 (恢复)",
+      "warningTitle": "紧急工具：仅用于 ML 推理质量突降 / 误伤大批合法交易 / 调试 ml_threshold 规则。",
+      "warningDesc": "disabled=true 跳过整段 ML 推理。force_score 非 0 时即使 ML 跑成功也用强制值覆盖。所有变更立即生效（不重启）+ 落 audit。",
+      "switchDisabled": "禁用 ML",
+      "switchEnabled": "启用 ML",
+      "willSkip": "ML 推理将被跳过",
+      "runningNormal": "ML 推理正常运行",
+      "forceScoreLabel": "强制 score",
+      "forceScoreHint": "0 = 不强制；非 0 时即使 ML 成功也覆盖",
+      "reasonLabel": "原因 (落审计)",
+      "reasonPlaceholder": "e.g. drift 告警 / 误伤升级 / 调试 ml_threshold",
+      "applyButton": "应用降级",
+      "reasonRequired": "请填写降级原因（≥ 4 字符），会落审计",
+      "applyConfirmTitle": "确认应用 ML 降级？",
+      "applyConfirmDisabled": "整段 ML 推理将被跳过",
+      "applyConfirmDisabledSuffix": "，所有交易的 MLScore 用 force_score 或 0。",
+      "applyConfirmForceScore": "ML 推理结果将被 ",
+      "applyConfirmForceScoreSuffix": " 覆盖。",
+      "applyConfirmNoop": "这条配置不会改变行为（disabled=false 且 force_score=0）。",
+      "applyConfirmReason": "原因：{{reason}}",
+      "applied": "已应用",
+      "clearConfirmTitle": "清空 ML 降级？",
+      "clearConfirmContent": "将恢复正常 ML 推理路径。",
+      "cleared": "已清空"
+    }
+  }
+}

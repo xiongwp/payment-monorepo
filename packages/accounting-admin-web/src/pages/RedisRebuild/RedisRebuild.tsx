@@ -17,6 +17,7 @@ import {
 } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
+import { useTranslation, Trans } from 'react-i18next'
 import { rebuildHotAccounts } from '../../api/accounting'
 import type { RebuildReport, RebuildEntry } from '../../api/accounting'
 
@@ -33,6 +34,7 @@ interface FormValues {
 }
 
 export default function RedisRebuildPage() {
+  const { t } = useTranslation('redis')
   const [form] = Form.useForm<FormValues>()
   const [loading, setLoading] = useState(false)
   const [report, setReport] = useState<RebuildReport | null>(null)
@@ -64,10 +66,15 @@ export default function RedisRebuildPage() {
         dry_run: !!values.dryRun,
       })
       setReport(r)
-      const verb = values.dryRun ? '已模拟（dry-run）' : '已重建'
-      message.success(`${verb}：updated=${r.updated} skipped=${r.skipped} failed=${r.failed}`)
+      const verb = values.dryRun ? t('verbs.dryRun') : t('verbs.executed')
+      message.success(t('messages.result', {
+        verb,
+        updated: r.updated,
+        skipped: r.skipped,
+        failed: r.failed,
+      }))
     } catch (err: unknown) {
-      const msg = (err as { message?: string })?.message ?? '调用失败'
+      const msg = (err as { message?: string })?.message ?? t('messages.callFailed')
       setError(msg)
       message.error(msg)
     } finally {
@@ -76,29 +83,29 @@ export default function RedisRebuildPage() {
   }
 
   const columns: ColumnsType<RebuildEntry> = [
-    { title: '账户号', dataIndex: 'account_no', key: 'account_no', width: 240 },
+    { title: t('columns.accountNo'), dataIndex: 'account_no', key: 'account_no', width: 240 },
     {
-      title: 'Redis 当前',
+      title: t('columns.redisCurrent'),
       dataIndex: 'balance_before',
       key: 'balance_before',
-      render: (v: string) => (v === '' || v == null ? <Tag color="default">cache miss</Tag> : <Text code>{v}</Text>),
+      render: (v: string) => (v === '' || v == null ? <Tag color="default">{t('tags.cacheMiss')}</Tag> : <Text code>{v}</Text>),
     },
     {
-      title: '目标余额',
+      title: t('columns.targetBalance'),
       dataIndex: 'balance_after',
       key: 'balance_after',
       render: (v: string) => <Text code>{v}</Text>,
     },
     {
-      title: '差量',
+      title: t('columns.delta'),
       key: 'delta',
       render: (_: unknown, r: RebuildEntry) => {
-        if (r.balance_before === '' || r.balance_before == null) return <Tag color="orange">N/A</Tag>
+        if (r.balance_before === '' || r.balance_before == null) return <Tag color="orange">{t('tags.na')}</Tag>
         try {
           const before = BigInt(r.balance_before)
           const after = BigInt(r.balance_after)
           const diff = after - before
-          if (diff === 0n) return <Tag color="green">一致</Tag>
+          if (diff === 0n) return <Tag color="green">{t('tags.consistent')}</Tag>
           const sign = diff > 0n ? '+' : ''
           return <Tag color={diff > 0n ? 'blue' : 'red'}>{sign}{diff.toString()}</Tag>
         } catch {
@@ -107,26 +114,26 @@ export default function RedisRebuildPage() {
       },
     },
     {
-      title: '来源',
+      title: t('columns.source'),
       dataIndex: 'source',
       key: 'source',
       render: (s: string) => {
-        if (s === 'transaction_journal') return <Tag color="purple">流水回放</Tag>
-        if (s === 'account') return <Tag color="blue">account 表</Tag>
+        if (s === 'transaction_journal') return <Tag color="purple">{t('tags.sourceJournal')}</Tag>
+        if (s === 'account') return <Tag color="blue">{t('tags.sourceAccount')}</Tag>
         return s
       },
     },
     {
-      title: '状态',
+      title: t('columns.status'),
       key: 'status',
       render: (_: unknown, r: RebuildEntry) => {
-        if (r.reason && !r.skipped) return <Tag color="red">失败</Tag>
-        if (r.skipped) return <Tag color="default">skipped</Tag>
-        return <Tag color="green">已写</Tag>
+        if (r.reason && !r.skipped) return <Tag color="red">{t('tags.failed')}</Tag>
+        if (r.skipped) return <Tag color="default">{t('tags.skipped')}</Tag>
+        return <Tag color="green">{t('tags.written')}</Tag>
       },
     },
     {
-      title: '说明',
+      title: t('columns.reason'),
       dataIndex: 'reason',
       key: 'reason',
       ellipsis: true,
@@ -135,10 +142,9 @@ export default function RedisRebuildPage() {
 
   return (
     <div>
-      <Title level={3}>Redis 热账户重建</Title>
+      <Title level={3}>{t('title')}</Title>
       <Paragraph type="secondary">
-        从 MySQL 重建 Redis 热账户余额（仅 <Text code>hot_account_config</Text> 中 enabled=1 的账户）。
-        典型场景：Redis 数据丢失 / 损坏 / 怀疑被脏写。<b>建议先 dry-run 看 diff 再正式执行。</b>
+        <Trans i18nKey="description" ns="redis" components={{ code: <Text code />, b: <b /> }} />
       </Paragraph>
 
       <Card style={{ marginBottom: 16 }}>
@@ -148,11 +154,11 @@ export default function RedisRebuildPage() {
           initialValues={{ asOfMode: 'now', dryRun: true }}
           onFinish={onFinish}
         >
-          <Form.Item label="时间点" name="asOfMode">
+          <Form.Item label={t('form.asOfModeLabel')} name="asOfMode">
             <Radio.Group>
-              <Radio value="now">当前 MySQL 余额（最常用，Redis 重启后恢复）</Radio>
-              <Radio value="duration">回滚到 N 分钟前（怀疑最近写入有问题）</Radio>
-              <Radio value="timestamp">回滚到指定时间戳</Radio>
+              <Radio value="now">{t('form.asOfModeNow')}</Radio>
+              <Radio value="duration">{t('form.asOfModeDuration')}</Radio>
+              <Radio value="timestamp">{t('form.asOfModeTimestamp')}</Radio>
             </Radio.Group>
           </Form.Item>
 
@@ -165,22 +171,22 @@ export default function RedisRebuildPage() {
               if (mode === 'duration') {
                 return (
                   <Form.Item
-                    label="时长（如 5m / 1h / 24h）"
+                    label={t('form.durationLabel')}
                     name="asOfDuration"
-                    rules={[{ required: true, message: '请输入时长' }]}
+                    rules={[{ required: true, message: t('form.durationRequired') }]}
                   >
-                    <Input style={{ width: 200 }} placeholder="5m" />
+                    <Input style={{ width: 200 }} placeholder={t('form.durationPlaceholder')} />
                   </Form.Item>
                 )
               }
               if (mode === 'timestamp') {
                 return (
                   <Form.Item
-                    label="RFC3339 时间戳（如 2026-04-24T15:00:00Z）"
+                    label={t('form.timestampLabel')}
                     name="asOfTimestamp"
-                    rules={[{ required: true, message: '请输入时间戳' }]}
+                    rules={[{ required: true, message: t('form.timestampRequired') }]}
                   >
-                    <Input style={{ width: 320 }} placeholder="2026-04-24T15:00:00Z" />
+                    <Input style={{ width: 320 }} placeholder={t('form.timestampPlaceholder')} />
                   </Form.Item>
                 )
               }
@@ -191,19 +197,19 @@ export default function RedisRebuildPage() {
           <Form.Item
             label={
               <Space>
-                <span>账户号过滤</span>
-                <Tooltip title="留空 = 重建全部启用的热账户。多个账户用逗号或换行分隔。账户必须仍在 hot_account_config 中。">
+                <span>{t('form.accountNosLabel')}</span>
+                <Tooltip title={t('form.accountNosTooltip')}>
                   <span style={{ color: '#888' }}>?</span>
                 </Tooltip>
               </Space>
             }
             name="accountNos"
           >
-            <Input.TextArea rows={3} placeholder="010100001-001, 010100002-002 ..." />
+            <Input.TextArea rows={3} placeholder={t('form.accountNosPlaceholder')} />
           </Form.Item>
 
-          <Form.Item label="Dry run（只算 diff 不写 Redis）" name="dryRun" valuePropName="checked">
-            <Switch checkedChildren="dry-run" unCheckedChildren="正式执行" />
+          <Form.Item label={t('form.dryRunLabel')} name="dryRun" valuePropName="checked">
+            <Switch checkedChildren={t('form.dryRunOn')} unCheckedChildren={t('form.dryRunOff')} />
           </Form.Item>
 
           <Form.Item>
@@ -214,7 +220,7 @@ export default function RedisRebuildPage() {
               icon={<ReloadOutlined />}
               danger={!form.getFieldValue('dryRun')}
             >
-              {form.getFieldValue('dryRun') ? '模拟重建' : '执行重建'}
+              {form.getFieldValue('dryRun') ? t('submit.dryRun') : t('submit.execute')}
             </Button>
           </Form.Item>
         </Form>
@@ -226,13 +232,13 @@ export default function RedisRebuildPage() {
         <>
           <Card style={{ marginBottom: 16 }}>
             <Space size="large">
-              <Statistic title="总数" value={report.total} />
-              <Statistic title="已写入" value={report.updated} valueStyle={{ color: '#3f8600' }} />
-              <Statistic title="跳过" value={report.skipped} />
-              <Statistic title="失败" value={report.failed} valueStyle={{ color: report.failed > 0 ? '#cf1322' : undefined }} />
-              <Statistic title="耗时" value={report.duration} />
-              {report.dry_run && <Tag color="orange">dry-run</Tag>}
-              {report.as_of && <Tag color="purple">as_of: {report.as_of}</Tag>}
+              <Statistic title={t('stats.total')} value={report.total} />
+              <Statistic title={t('stats.updated')} value={report.updated} valueStyle={{ color: '#3f8600' }} />
+              <Statistic title={t('stats.skipped')} value={report.skipped} />
+              <Statistic title={t('stats.failed')} value={report.failed} valueStyle={{ color: report.failed > 0 ? '#cf1322' : undefined }} />
+              <Statistic title={t('stats.duration')} value={report.duration} />
+              {report.dry_run && <Tag color="orange">{t('stats.dryRunTag')}</Tag>}
+              {report.as_of && <Tag color="purple">{t('stats.asOfTag', { value: report.as_of })}</Tag>}
             </Space>
           </Card>
 

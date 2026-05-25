@@ -1,0 +1,50 @@
+{
+  "title": "Ops center",
+  "configCenter": {
+    "message": "Platform-wide dynamic config is consolidated in config-center",
+    "description": "All dynamic configs (rate_limit / risk thresholds / circuit breakers / TTLs / routing weights / queue params, etc.) update once and propagate to every replica in seconds. The service status below is read-only monitoring.",
+    "open": "Open Config Center",
+    "audit": "Audit log",
+    "keySearch": "Platform-wide key search"
+  },
+  "health": {
+    "title": "Service health",
+    "allHealthy": "All services healthy",
+    "someUnhealthy": "Some services unhealthy",
+    "healthy": "Healthy",
+    "unhealthy": "Unhealthy",
+    "columns": {
+      "service": "Service",
+      "status": "Status",
+      "latency": "Latency",
+      "error": "Error"
+    }
+  },
+  "risk": {
+    "title": "Risk rules (read-only monitoring)",
+    "editInConfigCenter": "Edit in Config Center",
+    "forceReload": "Force reload (legacy path)",
+    "reloadSuccess": "Rules reloaded: {{count}}",
+    "migrated": {
+      "title": "Rule configuration has moved to Config Center",
+      "prefix": "Edit / add / canary / roll back rules in Config Center",
+      "linkText": "namespace=risk-manage",
+      "suffix": "Changes hot-reload to all risk-manage replicas within seconds via OnChange."
+    },
+    "columns": {
+      "id": "ID",
+      "name": "Rule name",
+      "type": "Type",
+      "status": "Status",
+      "enabled": "Enabled",
+      "disabled": "Disabled"
+    }
+  },
+  "config": {
+    "title": "System configuration",
+    "servicePorts": "Service ports",
+    "featureFlags": "Feature flags",
+    "on": "ON",
+    "off": "OFF"
+  }
+}

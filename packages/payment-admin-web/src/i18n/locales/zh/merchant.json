@@ -1,0 +1,194 @@
+{
+  "list": {
+    "title": "商户管理",
+    "filters": {
+      "statusPlaceholder": "业务状态",
+      "kycStatusPlaceholder": "KYC 状态"
+    },
+    "actions": {
+      "create": "新建商户"
+    },
+    "columns": {
+      "id": "ID",
+      "name": "名称",
+      "email": "邮箱",
+      "country": "国家",
+      "kyc": "KYC",
+      "status": "状态",
+      "riskTier": "风控",
+      "createdAt": "创建时间"
+    },
+    "createModal": {
+      "title": "新建商户",
+      "okText": "创建",
+      "alert": "创建成功后会返回 live/test API key 和 webhook secret 明文；仅显示一次，请立即妥善保存。",
+      "fields": {
+        "name": "名称",
+        "legalName": "注册主体全称",
+        "contactEmail": "联系邮箱",
+        "contactPhone": "联系电话",
+        "country": "国家",
+        "businessType": "主体类型",
+        "taxId": "TIN / SEC / DTI",
+        "mcc": "MCC (ISO 18245)",
+        "webhookUrl": "Webhook URL",
+        "webhookUrlPlaceholder": "https://merchant.example.com/webhooks/payments",
+        "settleMethod": "结算方式",
+        "settleAccount": "结算账户",
+        "settleBank": "结算银行",
+        "settleHolder": "户名"
+      }
+    },
+    "secretsModal": {
+      "title": "商户已创建 — 请妥善保存以下凭据",
+      "okText": "我已保存",
+      "alert": "以下凭据只显示一次。关闭后将无法再次查看；如需重置请使用 rotate-key。",
+      "labels": {
+        "merchantId": "商户 ID",
+        "liveSecretKey": "Live Secret Key",
+        "testSecretKey": "Test Secret Key",
+        "webhookSecret": "Webhook Secret"
+      }
+    }
+  },
+  "detail": {
+    "title": "商户详情 · {{name}}",
+    "loading": "加载中...",
+    "basicInfo": {
+      "cardTitle": "基本信息",
+      "id": "ID",
+      "email": "邮箱",
+      "country": "国家",
+      "businessType": "主体",
+      "taxId": "TIN/SEC",
+      "mcc": "MCC",
+      "riskTier": "风控分层",
+      "rateRps": "Rate RPS",
+      "webhookUrl": "Webhook URL",
+      "settleCurrency": "结算币种",
+      "settleMethod": "结算方式",
+      "settleAccount": "结算账户",
+      "settleHolderSuffix": "（{{holder}}）"
+    },
+    "kyc": {
+      "cardTitle": "KYC 操作",
+      "terminal": "终态，无可用操作",
+      "reasonLabel": "当前原因：{{reason}}",
+      "actions": {
+        "submit": "提交审核",
+        "resubmit": "重新提交",
+        "review": "开始审核",
+        "reReview": "重新核查",
+        "approve": "通过",
+        "reject": "驳回",
+        "requestMoreInfo": "需补材料",
+        "suspend": "暂停",
+        "unsuspend": "恢复",
+        "terminate": "终止"
+      },
+      "modal": {
+        "titleTemplate": "KYC · {{label}}",
+        "doneMessage": "已{{label}}",
+        "actorLabel": "操作人（admin user）",
+        "actorPlaceholder": "你的 admin ID",
+        "reasonLabel": "原因",
+        "reasonPlaceholder": "选填。驳回/补材料/暂停/终止建议填"
+      }
+    },
+    "apiKey": {
+      "cardTitle": "API Key 轮换",
+      "resetLive": "重置 Live Key",
+      "resetTest": "重置 Test Key",
+      "rotatedTitle": "{{kind}} key 已轮换",
+      "rotatedAlert": "只显示一次，请立即保存。"
+    },
+    "channelCredentials": {
+      "cardTitle": "渠道凭据",
+      "description": "每家 PH 渠道的 partner_id / signing_key / webhook_secret 加密存放，支持多商户隔离。",
+      "openLink": "打开渠道凭据管理 →"
+    },
+    "documents": {
+      "cardTitle": "KYC 文档",
+      "uploadButton": "上传文档",
+      "columns": {
+        "id": "ID",
+        "docType": "类型",
+        "docNumber": "编号",
+        "url": "URL",
+        "review": "审核",
+        "actions": "操作"
+      },
+      "actions": {
+        "accept": "通过",
+        "reject": "拒绝"
+      },
+      "reviewedMessage": "文档已标记为 {{status}}",
+      "addedMessage": "已新增文档",
+      "uploadModal": {
+        "title": "新增 KYC 文档",
+        "alert": "文档正文需先上传到对象存储（S3/R2/GCS），这里只落元信息 + 访问 URL。",
+        "fields": {
+          "docType": "类型",
+          "docTypePlaceholder": "gov_id / sec_registration / dti / bir_2303 / bank_statement / utility_bill",
+          "docNumber": "编号",
+          "fileUrl": "文件 URL",
+          "fileUrlPlaceholder": "https://s3...",
+          "mimeType": "MIME",
+          "uploadedBy": "上传者"
+        }
+      }
+    },
+    "audits": {
+      "cardTitle": "KYC 审计流转日志",
+      "columns": {
+        "time": "时间",
+        "from": "From",
+        "to": "To",
+        "actor": "Actor",
+        "reason": "原因"
+      }
+    }
+  },
+  "secrets": {
+    "title": "{{name}} · 渠道凭据",
+    "titleSuffix": "渠道凭据",
+    "warningAlert": "所有明文凭据经 kms-manage 加密后存储；admin 界面永远只显示 masked hint（如 sk_l***abc）。请在 yaml 中配置 kms.endpoint 才能真正调用 KMS。",
+    "filters": {
+      "channelPlaceholder": "按渠道过滤"
+    },
+    "actions": {
+      "create": "新建/覆盖凭据"
+    },
+    "columns": {
+      "channel": "渠道",
+      "field": "字段",
+      "masked": "Masked",
+      "version": "ver",
+      "updatedBy": "更新人",
+      "updatedAt": "更新时间"
+    },
+    "delete": {
+      "link": "删除",
+      "title": "删除此凭据？",
+      "description": "删除后该字段将从数据库中消失；有需要可重新 Put 同名字段。",
+      "okText": "确认删除",
+      "doneMessage": "已删除"
+    },
+    "putModal": {
+      "title": "存入商户渠道凭据",
+      "alert": "明文仅提交一次；kms-manage 加密后永不再能从 UI 取回。遗失需重新 Put。",
+      "savedMessage": "已保存 {{channel}}/{{field}} (加密)",
+      "fields": {
+        "channel": "渠道",
+        "fieldName": "字段名",
+        "fieldNamePlaceholder": "必填 · 未填写的字段",
+        "fieldNameInputPlaceholder": "如 client_secret / webhook_secret",
+        "missingSuffix": " (未填)",
+        "overrideSuffix": " (覆盖)",
+        "plaintext": "明文",
+        "plaintextPlaceholder": "明文 API key / secret / signing material",
+        "actor": "操作人"
+      }
+    }
+  }
+}
