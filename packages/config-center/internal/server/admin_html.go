@@ -416,8 +416,8 @@ func (h *AdminHandler) listItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.renderWithRequest(w, r, "list_items", map[string]any{
-		"Page":      "list_items",
-		"Title":      "All Config Items",
+		"Page":     "list_items",
+		"TitleKey": "page.listItems.title",
 		"Q":          q,
 		"Subscriber": sub,
 		"Rows":       rows,
@@ -430,8 +430,8 @@ func (h *AdminHandler) newItem(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		h.renderWithRequest(w, r, "new_item", map[string]any{
-		"Page":      "new_item",
-			"Title": "New Config Item",
+			"Page":     "new_item",
+			"TitleKey": "page.newItem.title",
 			// 候选 subscriber 列表（也是 namespace 列表）
 			"Services": []string{
 				"card-payment", "card-center", "order-core", "payment-core",
@@ -574,9 +574,10 @@ func (h *AdminHandler) listKeys(w http.ResponseWriter, r *http.Request, ns strin
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	lang := langFromCtx(r.Context())
 	h.renderWithRequest(w, r, "list_keys", map[string]any{
 		"Page":      "list_keys",
-		"Title":     "Namespace: " + ns,
+		"Title":     i18n.Tf(lang, "page.listKeys.title", "NS", ns),
 		"Namespace": ns,
 		"Items":     rows,
 	})
@@ -592,8 +593,9 @@ func (h *AdminHandler) keyDetail(w http.ResponseWriter, r *http.Request, ns, key
 	current, _ := h.svc.GetActiveAdmin(r.Context(), ns, key)
 	subs, _ := h.svc.GetSubscribers(r.Context(), ns, key)
 	h.renderWithRequest(w, r, "key_detail", map[string]any{
-		"Page":      "key_detail",
+		"Page":        "key_detail",
 		"Title":       ns + "/" + key,
+		// Title 本身就是 ns/key 的纯路径标识，无需 i18n。
 		"Namespace":   ns,
 		"Key":         key,
 		"Current":     current,
@@ -626,9 +628,10 @@ func (h *AdminHandler) diff(w http.ResponseWriter, r *http.Request, ns, key stri
 		return
 	}
 	lines := unifiedDiff(a.Value, b.Value)
+	lang := langFromCtx(r.Context())
 	h.renderWithRequest(w, r, "diff", map[string]any{
-		"Page":      "diff",
-		"Title":     "Diff " + ns + "/" + key,
+		"Page":  "diff",
+		"Title": i18n.Tf(lang, "page.diff.title", "From", from, "To", to) + "  (" + ns + "/" + key + ")",
 		"Namespace": ns,
 		"Key":       key,
 		"From":      a, "To": b,
@@ -708,9 +711,10 @@ func (h *AdminHandler) renderEditForm(w http.ResponseWriter, r *http.Request, ns
 	cur, _ := h.svc.GetActiveAdmin(r.Context(), ns, key)
 	// 取已有最大 effective_at —— 新版本必须严格晚于它（monotonic schedule）
 	latestEff := latestEffectiveAt(r.Context(), h.svc, ns, key)
+	lang := langFromCtx(r.Context())
 	view := map[string]any{
 		"Page":      "edit",
-		"Title":     "Edit " + ns + "/" + key,
+		"Title":     i18n.Tf(lang, "page.edit.title", "NS", ns, "Key", key),
 		"Namespace": ns,
 		"Key":       key,
 		"Current":   cur,
@@ -894,9 +898,9 @@ func (h *AdminHandler) audit(w http.ResponseWriter, r *http.Request) {
 	// 取最近 100 条 audit log
 	rows, _ := h.svc.RecentAudit(r.Context(), 100)
 	h.renderWithRequest(w, r, "audit", map[string]any{
-		"Page":      "audit",
-		"Title": "Audit Log",
-		"Rows":  rows,
+		"Page":     "audit",
+		"TitleKey": "page.audit.title",
+		"Rows":     rows,
 	})
 }
 
@@ -1543,19 +1547,19 @@ const adminTemplates = `
 
 {{else if eq .Page "list_items"}}
 <div class="card">
-  <div class="card-head">全平台 Config 检索</div>
+  <div class="card-head">{{T .Lang "page.listItems.cardHead"}}</div>
   <div class="card-body">
     <form method="GET" class="toolbar">
-      <input name="q" value="{{.Q}}" placeholder="按 key/namespace 模糊搜" style="width:280px">
-      <input name="sub" value="{{.Subscriber}}" placeholder="订阅服务过滤" style="width:200px">
-      <button class="btn" type="submit">搜索</button>
+      <input name="q" value="{{.Q}}" placeholder="{{T .Lang "page.listItems.searchPlaceholder"}}" style="width:280px">
+      <input name="sub" value="{{.Subscriber}}" placeholder="{{T .Lang "page.listItems.subPlaceholder"}}" style="width:200px">
+      <button class="btn" type="submit">{{T .Lang "page.listItems.btnSearch"}}</button>
     </form>
   </div>
   {{if eq (len .Rows) 0}}
-  <div class="card-body"><p class="muted">无匹配结果</p></div>
+  <div class="card-body"><p class="muted">{{T .Lang "page.listItems.emptyText"}}</p></div>
   {{else}}
   <table>
-    <thead><tr><th>Namespace / Key</th><th style="width:100px">Active</th><th style="width:180px">Updated</th></tr></thead>
+    <thead><tr><th>{{T .Lang "page.listItems.colNsKey"}}</th><th style="width:100px">{{T .Lang "page.listItems.colActive"}}</th><th style="width:180px">{{T .Lang "page.listItems.colUpdated"}}</th></tr></thead>
     <tbody>
     {{range .Rows}}
     <tr>
@@ -1571,12 +1575,12 @@ const adminTemplates = `
 
 {{else if eq .Page "audit"}}
 <div class="card">
-  <div class="card-head">审计日志（最近 100 条）</div>
+  <div class="card-head">{{T .Lang "page.audit.cardHead"}}</div>
   {{if eq (len .Rows) 0}}
-  <div class="card-body"><p class="muted">无审计记录</p></div>
+  <div class="card-body"><p class="muted">{{T .Lang "page.audit.emptyText"}}</p></div>
   {{else}}
   <table>
-    <thead><tr><th style="width:170px">时间</th><th style="width:100px">Op</th><th>Namespace / Key</th><th style="width:140px">Actor</th><th>Reason</th></tr></thead>
+    <thead><tr><th style="width:170px">{{T .Lang "page.audit.colTime"}}</th><th style="width:100px">{{T .Lang "page.audit.colOp"}}</th><th>{{T .Lang "page.audit.colNsKey"}}</th><th style="width:140px">{{T .Lang "page.audit.colActor"}}</th><th>{{T .Lang "page.audit.colReason"}}</th></tr></thead>
     <tbody>
     {{range .Rows}}
     <tr>
@@ -1594,8 +1598,8 @@ const adminTemplates = `
 
 {{else}}
 <div class="alert alert-info">
-  未知页面 (Page=<code>{{.Page}}</code>)。
-  <a href="/admin/">返回首页</a>
+  {{Tf .Lang "page.unknown.text" "Page" .Page | safeHTML}}
+  <a href="/admin/">{{T .Lang "page.unknown.linkHome"}}</a>
 </div>
 {{end}}
 {{end}}
