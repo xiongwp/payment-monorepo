@@ -42,9 +42,11 @@ export default function LanguageSwitcher() {
 //   <ConfigProvider locale={antdLocale}>{children}</ConfigProvider>
 import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
-import type { Locale } from 'antd/locale';
 
-export function useAntdLocale(): Locale {
+// 不显式标注返回类型 — TS 自动推断为 zhCN/enUS 联合类型，避免 antd v5 没在
+// `antd/locale` 顶层导出 Locale 类型造成的 build 报错（真实类型路径是
+// antd/es/locale，但用 type-inferred 返回更稳，不绑死内部目录结构）。
+export function useAntdLocale() {
   const { i18n } = useTranslation();
   return i18n.language?.startsWith('en') ? enUS : zhCN;
 }
