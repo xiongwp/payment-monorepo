@@ -176,9 +176,20 @@ func DefaultProbes() []Probe {
 					IPAddress:  "203.0.113.10", // RFC 5737 documentation range
 					DeviceID:   "synthetic-clean",
 					UserAgent:  "Mozilla/5.0 SyntheticProbe",
+					// Platform=ios 让 client_tampering 规则跳过 direct_api_call 信号
+					// （移动端 API 调用本来就没 RiskSessionID，不算"绕过 SDK"）
+					Platform: "ios",
+					// RiskSessionID + DeviceFingerprintHash 模拟 SDK 上送过信号，
+					// 避免 client_tampering 的 direct_api_call(+2 score) 触发。
+					RiskSessionID:         "synth_sess_clean",
+					DeviceFingerprintHash: "fp_synth_clean_abc123",
+					SignalCoverageRatio:   0.9,
 					Metadata: map[string]string{
 						"email_domain":     "gmail.com",
 						"account_age_days": "30",
+						// full_name 喂给 sanction_check：required=true 时缺即 REVIEW；
+						// 合成探针提供假名走 OK 路径，避免"未筛查"挡住 ALLOW。
+						"full_name": "Synthetic TestUser",
 					},
 				}
 			},
@@ -186,7 +197,7 @@ func DefaultProbes() []Probe {
 		},
 		{
 			Name:        "disposable_email_register_deny",
-			Description: "mailinator.com 注册必须 deny（disposable_email_register 规则）",
+			Description: "mailinator.com 注册必须 deny（disposable_email 规则；规则实际 ID 是 disposable_email 非 _register）",
 			Build: func() *engine.TxnContext {
 				return &engine.TxnContext{
 					EventType:  "register",
@@ -201,7 +212,9 @@ func DefaultProbes() []Probe {
 				}
 			},
 			ExpectedVerdict:  engine.Deny,
-			ExpectedRuleHits: []string{"disposable_email_register"},
+			// 改正 ExpectedRuleHits：旧值 "disposable_email_register" 是错的；
+			// 实际规则注册名是 "disposable_email"（cmd/server/main.go:801）。
+			ExpectedRuleHits: []string{"disposable_email"},
 		},
 		{
 			Name:        "high_risk_country_review",

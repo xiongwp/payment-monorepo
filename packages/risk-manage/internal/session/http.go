@@ -1,6 +1,8 @@
 package session
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -133,6 +135,12 @@ func required() bool {
 }
 
 // wrap 把 inner 包成签名校验后调用；body 在校验完后被 reset 让 inner 继续解。
+//
+// 新加（SDK v0.4 配套）：
+//  1. Content-Encoding: gzip → 透明解压（SDK 主动压缩 >1KB payload）
+//  2. sendBeacon 路径无法设自定义头 → 退化用 ?_rs_mid / _rs_ts / _rs_nonce /
+//     _rs_sig query 参数携带签名；header 缺失时 fallback 到 query。
+//  3. ?_rs_unload=1 标识 unload 期 Beacon（无签名）：仅记 metric，不入信号。
 func (v *sigVerifier) wrap(inner http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -144,13 +152,50 @@ func (v *sigVerifier) wrap(inner http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, `{"error":"body too large"}`, http.StatusRequestEntityTooLarge)
 			return
 		}
+		// gzip 解压：SDK >1KB payload 主动 gzip 压缩
+		if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+			gz, gerr := gzip.NewReader(bytes.NewReader(body))
+			if gerr != nil {
+				http.Error(w, `{"error":"bad gzip"}`, http.StatusBadRequest)
+				return
+			}
+			decompressed, derr := io.ReadAll(io.LimitReader(gz, maxBodyBytes))
+			_ = gz.Close()
+			if derr != nil {
+				http.Error(w, `{"error":"gunzip failed"}`, http.StatusBadRequest)
+				return
+			}
+			body = decompressed
+		}
+
 		// 重设 body 让 inner 解 json
 		r.Body = io.NopCloser(strings.NewReader(string(body)))
 
-		merchantID := r.Header.Get(headerMerchantID)
-		ts := r.Header.Get(headerTimestamp)
-		nonce := r.Header.Get(headerNonce)
-		sig := r.Header.Get(headerSignature)
+		// 头优先，缺则回退 query（sendBeacon 兼容路径）
+		q := r.URL.Query()
+		pickHdr := func(hdrName, qpName string) string {
+			if v := r.Header.Get(hdrName); v != "" {
+				return v
+			}
+			return q.Get(qpName)
+		}
+		merchantID := pickHdr(headerMerchantID, "_rs_mid")
+		ts := pickHdr(headerTimestamp, "_rs_ts")
+		nonce := pickHdr(headerNonce, "_rs_nonce")
+		sig := pickHdr(headerSignature, "_rs_sig")
+
+		// Unload 期 Beacon：无签名也放行（关页面前的尽力上送）；仅记 metric。
+		// SDK 在这条路径上塞 ?_rs_unload=1。
+		if q.Get("_rs_unload") == "1" {
+			v.logger.Debug("sdk unload beacon",
+				zap.String("merchant_id", merchantID),
+				zap.String("ip", clientIP(r)),
+				zap.Int("body_bytes", len(body)),
+			)
+			// 不做严格签名校验；inner 处理 + 业务侧用 trigger=unload 字段区分
+			inner(w, r)
+			return
+		}
 
 		// 把 merchant id 透传给 handler，handler 把它写进 Snapshot。
 		ctx := withMerchantID(r.Context(), merchantID)

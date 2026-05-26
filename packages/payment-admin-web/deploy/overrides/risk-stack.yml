@@ -59,6 +59,35 @@ services:
       timeout: 5s
       retries: 10
 
+  # ── Kafka topic 一次性创建 ─────────────────────────────────────
+  # 即使 KAFKA_AUTO_CREATE_TOPICS_ENABLE=true，risk-manage 首条 batch 写入时
+  # topic 可能还没自动建好（producer 缓存里看到的 metadata 错位），结果报
+  # "Unknown Topic Or Partition"。这里用一次性 job 显式 CREATE，确保启动
+  # 顺序正确：kafka healthy → topic init → risk-manage 开始写。
+  #
+  # 幂等：--if-not-exists；多次 up 不报错。
+  risk-kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    restart: "no"
+    networks: [payment-stack]
+    depends_on:
+      risk-kafka:
+        condition: service_healthy
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        echo "[kafka-init] creating topic risk.decision.v1 ..."
+        kafka-topics --bootstrap-server risk-kafka:9092 --create --if-not-exists \
+          --topic risk.decision.v1 --partitions 12 --replication-factor 1 \
+          --config retention.ms=2592000000 --config cleanup.policy=delete
+        echo "[kafka-init] creating topic risk.outcome.v1 ..."
+        kafka-topics --bootstrap-server risk-kafka:9092 --create --if-not-exists \
+          --topic risk.outcome.v1 --partitions 6 --replication-factor 1
+        echo "[kafka-init] done; listing topics:"
+        kafka-topics --bootstrap-server risk-kafka:9092 --list
+
   # ── ClickHouse (audit 长期留存 + OLAP) ────────────────────────
   risk-clickhouse:
     image: clickhouse/clickhouse-server:24.3
@@ -75,6 +104,8 @@ services:
     volumes:
       - risk_clickhouse_data:/var/lib/clickhouse
       # init SQL 路径：deploy.sh 启动前会从 risk-manage repo cp 过来
+      # 注意：/docker-entrypoint-initdb.d 仅在 volume 首次创建时执行；
+      # 旧 volume + 新 schema 不会自动跑 → 用下面 risk-clickhouse-init 兜底。
       - ./risk-clickhouse-init:/docker-entrypoint-initdb.d:ro
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
@@ -83,6 +114,33 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  # ── ClickHouse schema 一次性 migration ─────────────────────────
+  # 解决：旧 volume 启动时不再跑 /docker-entrypoint-initdb.d 的脚本，导致
+  # 添加 / 修改表结构（如新增列、新表）后必须手 exec 进 CH 才能生效。
+  # 此 job 每次 up 都跑（幂等：CREATE TABLE IF NOT EXISTS），确保 schema 最新。
+  risk-clickhouse-migrate:
+    image: clickhouse/clickhouse-server:24.3
+    restart: "no"
+    networks: [payment-stack]
+    depends_on:
+      risk-clickhouse:
+        condition: service_healthy
+    volumes:
+      - ./risk-clickhouse-init:/init:ro
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        set -e
+        echo "[ch-migrate] applying schema from /init/*.sql ..."
+        for f in /init/*.sql; do
+          echo "[ch-migrate] >>> $$f"
+          clickhouse-client --host=risk-clickhouse --user=risk_writer --password=change_me \
+            --multiquery --queries-file="$$f"
+        done
+        echo "[ch-migrate] done; tables in db=risk:"
+        clickhouse-client --host=risk-clickhouse --user=risk_writer --password=change_me \
+          --query="SHOW TABLES FROM risk"
 
   # ── NebulaGraph 3 节点 ─────────────────────────────────────────
   risk-nebula-metad:
