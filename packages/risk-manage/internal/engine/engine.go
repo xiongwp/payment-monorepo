@@ -373,6 +373,14 @@ type TxnContext struct {
 	// 给规则做单点判断（如 canvas=fail → 真实浏览器极少；audio=timeout → 异常）
 	SignalStatus map[string]string
 
+	// BehaviorAnomalyScore 来自 mlscore.BehaviorLSTMService 的输出 ∈ [0,1]：
+	//   0   = 高置信"真人"
+	//   0.5 = 信号不足 / 模型未启用（中性 fallback）
+	//   1.0 = 高置信"自动化 / 脚本"
+	// 由 service/risk.go 的可选 behavior_lstm stage 写入（feature flag 控制）。
+	// 规则 behavior_lstm_threshold 用它做阈值判断。
+	BehaviorAnomalyScore float64
+
 	// ── 业务自定义 ─────────────────────────────────
 	Metadata map[string]string
 }
