@@ -1,10 +1,10 @@
 SET NAMES utf8mb4;
-CREATE DATABASE IF NOT EXISTS `user_merchant_db_4` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
-USE `user_merchant_db_4`;
+CREATE DATABASE IF NOT EXISTS `user_merchant_db_7` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+USE `user_merchant_db_7`;
 
--- 分片表 schema 模板。4 和 40 由 generate.sh 替换：
---   4     = 0..9         分库 idx
---   40  = 00..99       全局表 idx (zero-padded)
+-- 分片表 schema 模板。7 和 70 由 generate.sh 替换：
+--   7     = 0..9         分库 idx
+--   70  = 00..99       全局表 idx (zero-padded)
 --
 -- 路由：globalTblIdx = id % 100；dbIdx = globalTblIdx / 10
 --
@@ -14,7 +14,7 @@ USE `user_merchant_db_4`;
 --   按 merchant_id 分片：merchants / merchant_kyc_document / merchant_channel_secret
 
 -- ─── users 分片表 ────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS `users_40` (
+CREATE TABLE IF NOT EXISTS `users_70` (
     `id`                   BIGINT       NOT NULL,
     `username`             VARCHAR(50)  NULL,
     `email`                VARCHAR(100) NULL,
@@ -37,9 +37,9 @@ CREATE TABLE IF NOT EXISTS `users_40` (
     UNIQUE KEY `uk_phone`    (`phone`),
     KEY `idx_status`         (`status`),
     KEY `idx_locked_until`   (`locked_until`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 40)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 70)';
 
-CREATE TABLE IF NOT EXISTS `user_profiles_40` (
+CREATE TABLE IF NOT EXISTS `user_profiles_70` (
     `user_id`   BIGINT       NOT NULL,
     `nickname`  VARCHAR(50)  NULL,
     `avatar`    VARCHAR(255) NULL,
@@ -47,9 +47,9 @@ CREATE TABLE IF NOT EXISTS `user_profiles_40` (
     `birthday`  DATE         NULL,
     `bio`       TEXT         NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 40)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 70)';
 
-CREATE TABLE IF NOT EXISTS `user_auths_40` (
+CREATE TABLE IF NOT EXISTS `user_auths_70` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `auth_type`   VARCHAR(20)  NOT NULL,
@@ -60,9 +60,9 @@ CREATE TABLE IF NOT EXISTS `user_auths_40` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_auth` (`auth_type`, `identifier`),
     KEY `idx_user_id` (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 40)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 70)';
 
-CREATE TABLE IF NOT EXISTS `login_logs_40` (
+CREATE TABLE IF NOT EXISTS `login_logs_70` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NULL COMMENT '失败时可空（用户名不存在）',
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
@@ -74,9 +74,9 @@ CREATE TABLE IF NOT EXISTS `login_logs_40` (
     PRIMARY KEY (`id`),
     KEY `idx_user_id`    (`user_id`),
     KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 40)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 70)';
 
-CREATE TABLE IF NOT EXISTS `user_sessions_40` (
+CREATE TABLE IF NOT EXISTS `user_sessions_70` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
@@ -89,15 +89,15 @@ CREATE TABLE IF NOT EXISTS `user_sessions_40` (
     UNIQUE KEY `uk_token` (`token`),
     KEY `idx_user_id`     (`user_id`),
     KEY `idx_expires_at`  (`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 40)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 70)';
 
-CREATE TABLE IF NOT EXISTS `user_roles_40` (
+CREATE TABLE IF NOT EXISTS `user_roles_70` (
     `user_id`  BIGINT NOT NULL,
     `role_id`  BIGINT NOT NULL,
     PRIMARY KEY (`user_id`, `role_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 40)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 70)';
 
-CREATE TABLE IF NOT EXISTS `user_accounts_40` (
+CREATE TABLE IF NOT EXISTS `user_accounts_70` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `currency`    VARCHAR(8)   NOT NULL,
@@ -107,13 +107,13 @@ CREATE TABLE IF NOT EXISTS `user_accounts_40` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_user_currency` (`user_id`, `currency`),
     KEY `idx_account_id` (`account_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 40)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 70)';
 
-CREATE TABLE IF NOT EXISTS `user_settings_40` (
+CREATE TABLE IF NOT EXISTS `user_settings_70` (
     `user_id`   BIGINT NOT NULL,
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 40)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 70)';
 
 -- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
 -- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS `user_settings_40` (
 -- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
 -- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
 -- 那边的 KMS key rotation。
-CREATE TABLE IF NOT EXISTS `user_card_40` (
+CREATE TABLE IF NOT EXISTS `user_card_70` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`        BIGINT       NOT NULL,
     `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
@@ -140,10 +140,10 @@ CREATE TABLE IF NOT EXISTS `user_card_40` (
     UNIQUE KEY `uk_token_hash` (`token_hash`),
     KEY `idx_user_status` (`user_id`, `status`),
     KEY `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 40)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 70)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
-CREATE TABLE IF NOT EXISTS `merchants_40` (
+CREATE TABLE IF NOT EXISTS `merchants_70` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
     `name`              VARCHAR(128) NOT NULL,
     `legal_name`        VARCHAR(256) DEFAULT NULL,
@@ -183,9 +183,9 @@ CREATE TABLE IF NOT EXISTS `merchants_40` (
     INDEX       `idx_status`      (`status`),
     INDEX       `idx_country`     (`country`),
     INDEX       `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 40)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 70)';
 
-CREATE TABLE IF NOT EXISTS `merchant_kyc_document_40` (
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_70` (
     `id`              VARCHAR(32)  NOT NULL,
     `merchant_id`     VARCHAR(32)  NOT NULL,
     `doc_type`        VARCHAR(32)  NOT NULL,
@@ -203,9 +203,9 @@ CREATE TABLE IF NOT EXISTS `merchant_kyc_document_40` (
     KEY `idx_merchant`      (`merchant_id`),
     KEY `idx_review_status` (`review_status`),
     KEY `idx_doc_type`      (`doc_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 40)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 70)';
 
-CREATE TABLE IF NOT EXISTS `merchant_channel_secret_40` (
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_70` (
     `id`           BIGINT       NOT NULL AUTO_INCREMENT,
     `merchant_id`  VARCHAR(32)  NOT NULL,
     `channel`      VARCHAR(32)  NOT NULL,
@@ -220,12 +220,12 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_40` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 40)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 70)';
 
--- ─── admin_audit_log_40：管理台 / 用户操作审计（按 actor 路由） ────────
+-- ─── admin_audit_log_70：管理台 / 用户操作审计（按 actor 路由） ────────
 -- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
 -- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
-CREATE TABLE IF NOT EXISTS `admin_audit_log_40` (
+CREATE TABLE IF NOT EXISTS `admin_audit_log_70` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
     `actor_ip`       VARCHAR(64)           DEFAULT NULL,
@@ -245,11 +245,11 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_40` (
     KEY `idx_target`  (`target_id`),
     KEY `idx_trace`   (`trace_id`),
     KEY `idx_created` (`created`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 40';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 70';
 
--- 分片表 schema 模板。4 和 41 由 generate.sh 替换：
---   4     = 0..9         分库 idx
---   41  = 00..99       全局表 idx (zero-padded)
+-- 分片表 schema 模板。7 和 71 由 generate.sh 替换：
+--   7     = 0..9         分库 idx
+--   71  = 00..99       全局表 idx (zero-padded)
 --
 -- 路由：globalTblIdx = id % 100；dbIdx = globalTblIdx / 10
 --
@@ -259,7 +259,7 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_40` (
 --   按 merchant_id 分片：merchants / merchant_kyc_document / merchant_channel_secret
 
 -- ─── users 分片表 ────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS `users_41` (
+CREATE TABLE IF NOT EXISTS `users_71` (
     `id`                   BIGINT       NOT NULL,
     `username`             VARCHAR(50)  NULL,
     `email`                VARCHAR(100) NULL,
@@ -282,9 +282,9 @@ CREATE TABLE IF NOT EXISTS `users_41` (
     UNIQUE KEY `uk_phone`    (`phone`),
     KEY `idx_status`         (`status`),
     KEY `idx_locked_until`   (`locked_until`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 41)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 71)';
 
-CREATE TABLE IF NOT EXISTS `user_profiles_41` (
+CREATE TABLE IF NOT EXISTS `user_profiles_71` (
     `user_id`   BIGINT       NOT NULL,
     `nickname`  VARCHAR(50)  NULL,
     `avatar`    VARCHAR(255) NULL,
@@ -292,9 +292,9 @@ CREATE TABLE IF NOT EXISTS `user_profiles_41` (
     `birthday`  DATE         NULL,
     `bio`       TEXT         NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 41)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 71)';
 
-CREATE TABLE IF NOT EXISTS `user_auths_41` (
+CREATE TABLE IF NOT EXISTS `user_auths_71` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `auth_type`   VARCHAR(20)  NOT NULL,
@@ -305,9 +305,9 @@ CREATE TABLE IF NOT EXISTS `user_auths_41` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_auth` (`auth_type`, `identifier`),
     KEY `idx_user_id` (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 41)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 71)';
 
-CREATE TABLE IF NOT EXISTS `login_logs_41` (
+CREATE TABLE IF NOT EXISTS `login_logs_71` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NULL COMMENT '失败时可空（用户名不存在）',
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
@@ -319,9 +319,9 @@ CREATE TABLE IF NOT EXISTS `login_logs_41` (
     PRIMARY KEY (`id`),
     KEY `idx_user_id`    (`user_id`),
     KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 41)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 71)';
 
-CREATE TABLE IF NOT EXISTS `user_sessions_41` (
+CREATE TABLE IF NOT EXISTS `user_sessions_71` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
@@ -334,15 +334,15 @@ CREATE TABLE IF NOT EXISTS `user_sessions_41` (
     UNIQUE KEY `uk_token` (`token`),
     KEY `idx_user_id`     (`user_id`),
     KEY `idx_expires_at`  (`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 41)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 71)';
 
-CREATE TABLE IF NOT EXISTS `user_roles_41` (
+CREATE TABLE IF NOT EXISTS `user_roles_71` (
     `user_id`  BIGINT NOT NULL,
     `role_id`  BIGINT NOT NULL,
     PRIMARY KEY (`user_id`, `role_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 41)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 71)';
 
-CREATE TABLE IF NOT EXISTS `user_accounts_41` (
+CREATE TABLE IF NOT EXISTS `user_accounts_71` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `currency`    VARCHAR(8)   NOT NULL,
@@ -352,13 +352,13 @@ CREATE TABLE IF NOT EXISTS `user_accounts_41` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_user_currency` (`user_id`, `currency`),
     KEY `idx_account_id` (`account_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 41)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 71)';
 
-CREATE TABLE IF NOT EXISTS `user_settings_41` (
+CREATE TABLE IF NOT EXISTS `user_settings_71` (
     `user_id`   BIGINT NOT NULL,
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 41)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 71)';
 
 -- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
 -- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
@@ -366,7 +366,7 @@ CREATE TABLE IF NOT EXISTS `user_settings_41` (
 -- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
 -- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
 -- 那边的 KMS key rotation。
-CREATE TABLE IF NOT EXISTS `user_card_41` (
+CREATE TABLE IF NOT EXISTS `user_card_71` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`        BIGINT       NOT NULL,
     `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
@@ -385,10 +385,10 @@ CREATE TABLE IF NOT EXISTS `user_card_41` (
     UNIQUE KEY `uk_token_hash` (`token_hash`),
     KEY `idx_user_status` (`user_id`, `status`),
     KEY `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 41)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 71)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
-CREATE TABLE IF NOT EXISTS `merchants_41` (
+CREATE TABLE IF NOT EXISTS `merchants_71` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
     `name`              VARCHAR(128) NOT NULL,
     `legal_name`        VARCHAR(256) DEFAULT NULL,
@@ -428,9 +428,9 @@ CREATE TABLE IF NOT EXISTS `merchants_41` (
     INDEX       `idx_status`      (`status`),
     INDEX       `idx_country`     (`country`),
     INDEX       `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 41)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 71)';
 
-CREATE TABLE IF NOT EXISTS `merchant_kyc_document_41` (
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_71` (
     `id`              VARCHAR(32)  NOT NULL,
     `merchant_id`     VARCHAR(32)  NOT NULL,
     `doc_type`        VARCHAR(32)  NOT NULL,
@@ -448,9 +448,9 @@ CREATE TABLE IF NOT EXISTS `merchant_kyc_document_41` (
     KEY `idx_merchant`      (`merchant_id`),
     KEY `idx_review_status` (`review_status`),
     KEY `idx_doc_type`      (`doc_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 41)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 71)';
 
-CREATE TABLE IF NOT EXISTS `merchant_channel_secret_41` (
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_71` (
     `id`           BIGINT       NOT NULL AUTO_INCREMENT,
     `merchant_id`  VARCHAR(32)  NOT NULL,
     `channel`      VARCHAR(32)  NOT NULL,
@@ -465,12 +465,12 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_41` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 41)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 71)';
 
--- ─── admin_audit_log_41：管理台 / 用户操作审计（按 actor 路由） ────────
+-- ─── admin_audit_log_71：管理台 / 用户操作审计（按 actor 路由） ────────
 -- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
 -- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
-CREATE TABLE IF NOT EXISTS `admin_audit_log_41` (
+CREATE TABLE IF NOT EXISTS `admin_audit_log_71` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
     `actor_ip`       VARCHAR(64)           DEFAULT NULL,
@@ -490,11 +490,11 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_41` (
     KEY `idx_target`  (`target_id`),
     KEY `idx_trace`   (`trace_id`),
     KEY `idx_created` (`created`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 41';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 71';
 
--- 分片表 schema 模板。4 和 42 由 generate.sh 替换：
---   4     = 0..9         分库 idx
---   42  = 00..99       全局表 idx (zero-padded)
+-- 分片表 schema 模板。7 和 72 由 generate.sh 替换：
+--   7     = 0..9         分库 idx
+--   72  = 00..99       全局表 idx (zero-padded)
 --
 -- 路由：globalTblIdx = id % 100；dbIdx = globalTblIdx / 10
 --
@@ -504,7 +504,7 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_41` (
 --   按 merchant_id 分片：merchants / merchant_kyc_document / merchant_channel_secret
 
 -- ─── users 分片表 ────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS `users_42` (
+CREATE TABLE IF NOT EXISTS `users_72` (
     `id`                   BIGINT       NOT NULL,
     `username`             VARCHAR(50)  NULL,
     `email`                VARCHAR(100) NULL,
@@ -527,9 +527,9 @@ CREATE TABLE IF NOT EXISTS `users_42` (
     UNIQUE KEY `uk_phone`    (`phone`),
     KEY `idx_status`         (`status`),
     KEY `idx_locked_until`   (`locked_until`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 42)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 72)';
 
-CREATE TABLE IF NOT EXISTS `user_profiles_42` (
+CREATE TABLE IF NOT EXISTS `user_profiles_72` (
     `user_id`   BIGINT       NOT NULL,
     `nickname`  VARCHAR(50)  NULL,
     `avatar`    VARCHAR(255) NULL,
@@ -537,9 +537,9 @@ CREATE TABLE IF NOT EXISTS `user_profiles_42` (
     `birthday`  DATE         NULL,
     `bio`       TEXT         NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 42)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 72)';
 
-CREATE TABLE IF NOT EXISTS `user_auths_42` (
+CREATE TABLE IF NOT EXISTS `user_auths_72` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `auth_type`   VARCHAR(20)  NOT NULL,
@@ -550,9 +550,9 @@ CREATE TABLE IF NOT EXISTS `user_auths_42` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_auth` (`auth_type`, `identifier`),
     KEY `idx_user_id` (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 42)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 72)';
 
-CREATE TABLE IF NOT EXISTS `login_logs_42` (
+CREATE TABLE IF NOT EXISTS `login_logs_72` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NULL COMMENT '失败时可空（用户名不存在）',
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
@@ -564,9 +564,9 @@ CREATE TABLE IF NOT EXISTS `login_logs_42` (
     PRIMARY KEY (`id`),
     KEY `idx_user_id`    (`user_id`),
     KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 42)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 72)';
 
-CREATE TABLE IF NOT EXISTS `user_sessions_42` (
+CREATE TABLE IF NOT EXISTS `user_sessions_72` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
@@ -579,15 +579,15 @@ CREATE TABLE IF NOT EXISTS `user_sessions_42` (
     UNIQUE KEY `uk_token` (`token`),
     KEY `idx_user_id`     (`user_id`),
     KEY `idx_expires_at`  (`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 42)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 72)';
 
-CREATE TABLE IF NOT EXISTS `user_roles_42` (
+CREATE TABLE IF NOT EXISTS `user_roles_72` (
     `user_id`  BIGINT NOT NULL,
     `role_id`  BIGINT NOT NULL,
     PRIMARY KEY (`user_id`, `role_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 42)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 72)';
 
-CREATE TABLE IF NOT EXISTS `user_accounts_42` (
+CREATE TABLE IF NOT EXISTS `user_accounts_72` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `currency`    VARCHAR(8)   NOT NULL,
@@ -597,13 +597,13 @@ CREATE TABLE IF NOT EXISTS `user_accounts_42` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_user_currency` (`user_id`, `currency`),
     KEY `idx_account_id` (`account_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 42)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 72)';
 
-CREATE TABLE IF NOT EXISTS `user_settings_42` (
+CREATE TABLE IF NOT EXISTS `user_settings_72` (
     `user_id`   BIGINT NOT NULL,
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 42)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 72)';
 
 -- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
 -- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
@@ -611,7 +611,7 @@ CREATE TABLE IF NOT EXISTS `user_settings_42` (
 -- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
 -- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
 -- 那边的 KMS key rotation。
-CREATE TABLE IF NOT EXISTS `user_card_42` (
+CREATE TABLE IF NOT EXISTS `user_card_72` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`        BIGINT       NOT NULL,
     `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
@@ -630,10 +630,10 @@ CREATE TABLE IF NOT EXISTS `user_card_42` (
     UNIQUE KEY `uk_token_hash` (`token_hash`),
     KEY `idx_user_status` (`user_id`, `status`),
     KEY `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 42)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 72)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
-CREATE TABLE IF NOT EXISTS `merchants_42` (
+CREATE TABLE IF NOT EXISTS `merchants_72` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
     `name`              VARCHAR(128) NOT NULL,
     `legal_name`        VARCHAR(256) DEFAULT NULL,
@@ -673,9 +673,9 @@ CREATE TABLE IF NOT EXISTS `merchants_42` (
     INDEX       `idx_status`      (`status`),
     INDEX       `idx_country`     (`country`),
     INDEX       `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 42)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 72)';
 
-CREATE TABLE IF NOT EXISTS `merchant_kyc_document_42` (
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_72` (
     `id`              VARCHAR(32)  NOT NULL,
     `merchant_id`     VARCHAR(32)  NOT NULL,
     `doc_type`        VARCHAR(32)  NOT NULL,
@@ -693,9 +693,9 @@ CREATE TABLE IF NOT EXISTS `merchant_kyc_document_42` (
     KEY `idx_merchant`      (`merchant_id`),
     KEY `idx_review_status` (`review_status`),
     KEY `idx_doc_type`      (`doc_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 42)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 72)';
 
-CREATE TABLE IF NOT EXISTS `merchant_channel_secret_42` (
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_72` (
     `id`           BIGINT       NOT NULL AUTO_INCREMENT,
     `merchant_id`  VARCHAR(32)  NOT NULL,
     `channel`      VARCHAR(32)  NOT NULL,
@@ -710,12 +710,12 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_42` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 42)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 72)';
 
--- ─── admin_audit_log_42：管理台 / 用户操作审计（按 actor 路由） ────────
+-- ─── admin_audit_log_72：管理台 / 用户操作审计（按 actor 路由） ────────
 -- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
 -- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
-CREATE TABLE IF NOT EXISTS `admin_audit_log_42` (
+CREATE TABLE IF NOT EXISTS `admin_audit_log_72` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
     `actor_ip`       VARCHAR(64)           DEFAULT NULL,
@@ -735,11 +735,11 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_42` (
     KEY `idx_target`  (`target_id`),
     KEY `idx_trace`   (`trace_id`),
     KEY `idx_created` (`created`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 42';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 72';
 
--- 分片表 schema 模板。4 和 43 由 generate.sh 替换：
---   4     = 0..9         分库 idx
---   43  = 00..99       全局表 idx (zero-padded)
+-- 分片表 schema 模板。7 和 73 由 generate.sh 替换：
+--   7     = 0..9         分库 idx
+--   73  = 00..99       全局表 idx (zero-padded)
 --
 -- 路由：globalTblIdx = id % 100；dbIdx = globalTblIdx / 10
 --
@@ -749,7 +749,7 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_42` (
 --   按 merchant_id 分片：merchants / merchant_kyc_document / merchant_channel_secret
 
 -- ─── users 分片表 ────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS `users_43` (
+CREATE TABLE IF NOT EXISTS `users_73` (
     `id`                   BIGINT       NOT NULL,
     `username`             VARCHAR(50)  NULL,
     `email`                VARCHAR(100) NULL,
@@ -772,9 +772,9 @@ CREATE TABLE IF NOT EXISTS `users_43` (
     UNIQUE KEY `uk_phone`    (`phone`),
     KEY `idx_status`         (`status`),
     KEY `idx_locked_until`   (`locked_until`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 43)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 73)';
 
-CREATE TABLE IF NOT EXISTS `user_profiles_43` (
+CREATE TABLE IF NOT EXISTS `user_profiles_73` (
     `user_id`   BIGINT       NOT NULL,
     `nickname`  VARCHAR(50)  NULL,
     `avatar`    VARCHAR(255) NULL,
@@ -782,9 +782,9 @@ CREATE TABLE IF NOT EXISTS `user_profiles_43` (
     `birthday`  DATE         NULL,
     `bio`       TEXT         NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 43)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 73)';
 
-CREATE TABLE IF NOT EXISTS `user_auths_43` (
+CREATE TABLE IF NOT EXISTS `user_auths_73` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `auth_type`   VARCHAR(20)  NOT NULL,
@@ -795,9 +795,9 @@ CREATE TABLE IF NOT EXISTS `user_auths_43` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_auth` (`auth_type`, `identifier`),
     KEY `idx_user_id` (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 43)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 73)';
 
-CREATE TABLE IF NOT EXISTS `login_logs_43` (
+CREATE TABLE IF NOT EXISTS `login_logs_73` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NULL COMMENT '失败时可空（用户名不存在）',
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
@@ -809,9 +809,9 @@ CREATE TABLE IF NOT EXISTS `login_logs_43` (
     PRIMARY KEY (`id`),
     KEY `idx_user_id`    (`user_id`),
     KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 43)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 73)';
 
-CREATE TABLE IF NOT EXISTS `user_sessions_43` (
+CREATE TABLE IF NOT EXISTS `user_sessions_73` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
@@ -824,15 +824,15 @@ CREATE TABLE IF NOT EXISTS `user_sessions_43` (
     UNIQUE KEY `uk_token` (`token`),
     KEY `idx_user_id`     (`user_id`),
     KEY `idx_expires_at`  (`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 43)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 73)';
 
-CREATE TABLE IF NOT EXISTS `user_roles_43` (
+CREATE TABLE IF NOT EXISTS `user_roles_73` (
     `user_id`  BIGINT NOT NULL,
     `role_id`  BIGINT NOT NULL,
     PRIMARY KEY (`user_id`, `role_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 43)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 73)';
 
-CREATE TABLE IF NOT EXISTS `user_accounts_43` (
+CREATE TABLE IF NOT EXISTS `user_accounts_73` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `currency`    VARCHAR(8)   NOT NULL,
@@ -842,13 +842,13 @@ CREATE TABLE IF NOT EXISTS `user_accounts_43` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_user_currency` (`user_id`, `currency`),
     KEY `idx_account_id` (`account_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 43)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 73)';
 
-CREATE TABLE IF NOT EXISTS `user_settings_43` (
+CREATE TABLE IF NOT EXISTS `user_settings_73` (
     `user_id`   BIGINT NOT NULL,
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 43)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 73)';
 
 -- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
 -- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
@@ -856,7 +856,7 @@ CREATE TABLE IF NOT EXISTS `user_settings_43` (
 -- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
 -- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
 -- 那边的 KMS key rotation。
-CREATE TABLE IF NOT EXISTS `user_card_43` (
+CREATE TABLE IF NOT EXISTS `user_card_73` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`        BIGINT       NOT NULL,
     `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
@@ -875,10 +875,10 @@ CREATE TABLE IF NOT EXISTS `user_card_43` (
     UNIQUE KEY `uk_token_hash` (`token_hash`),
     KEY `idx_user_status` (`user_id`, `status`),
     KEY `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 43)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 73)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
-CREATE TABLE IF NOT EXISTS `merchants_43` (
+CREATE TABLE IF NOT EXISTS `merchants_73` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
     `name`              VARCHAR(128) NOT NULL,
     `legal_name`        VARCHAR(256) DEFAULT NULL,
@@ -918,9 +918,9 @@ CREATE TABLE IF NOT EXISTS `merchants_43` (
     INDEX       `idx_status`      (`status`),
     INDEX       `idx_country`     (`country`),
     INDEX       `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 43)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 73)';
 
-CREATE TABLE IF NOT EXISTS `merchant_kyc_document_43` (
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_73` (
     `id`              VARCHAR(32)  NOT NULL,
     `merchant_id`     VARCHAR(32)  NOT NULL,
     `doc_type`        VARCHAR(32)  NOT NULL,
@@ -938,9 +938,9 @@ CREATE TABLE IF NOT EXISTS `merchant_kyc_document_43` (
     KEY `idx_merchant`      (`merchant_id`),
     KEY `idx_review_status` (`review_status`),
     KEY `idx_doc_type`      (`doc_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 43)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 73)';
 
-CREATE TABLE IF NOT EXISTS `merchant_channel_secret_43` (
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_73` (
     `id`           BIGINT       NOT NULL AUTO_INCREMENT,
     `merchant_id`  VARCHAR(32)  NOT NULL,
     `channel`      VARCHAR(32)  NOT NULL,
@@ -955,12 +955,12 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_43` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 43)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 73)';
 
--- ─── admin_audit_log_43：管理台 / 用户操作审计（按 actor 路由） ────────
+-- ─── admin_audit_log_73：管理台 / 用户操作审计（按 actor 路由） ────────
 -- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
 -- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
-CREATE TABLE IF NOT EXISTS `admin_audit_log_43` (
+CREATE TABLE IF NOT EXISTS `admin_audit_log_73` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
     `actor_ip`       VARCHAR(64)           DEFAULT NULL,
@@ -980,11 +980,11 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_43` (
     KEY `idx_target`  (`target_id`),
     KEY `idx_trace`   (`trace_id`),
     KEY `idx_created` (`created`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 43';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 73';
 
--- 分片表 schema 模板。4 和 44 由 generate.sh 替换：
---   4     = 0..9         分库 idx
---   44  = 00..99       全局表 idx (zero-padded)
+-- 分片表 schema 模板。7 和 74 由 generate.sh 替换：
+--   7     = 0..9         分库 idx
+--   74  = 00..99       全局表 idx (zero-padded)
 --
 -- 路由：globalTblIdx = id % 100；dbIdx = globalTblIdx / 10
 --
@@ -994,7 +994,7 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_43` (
 --   按 merchant_id 分片：merchants / merchant_kyc_document / merchant_channel_secret
 
 -- ─── users 分片表 ────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS `users_44` (
+CREATE TABLE IF NOT EXISTS `users_74` (
     `id`                   BIGINT       NOT NULL,
     `username`             VARCHAR(50)  NULL,
     `email`                VARCHAR(100) NULL,
@@ -1017,9 +1017,9 @@ CREATE TABLE IF NOT EXISTS `users_44` (
     UNIQUE KEY `uk_phone`    (`phone`),
     KEY `idx_status`         (`status`),
     KEY `idx_locked_until`   (`locked_until`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 44)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 74)';
 
-CREATE TABLE IF NOT EXISTS `user_profiles_44` (
+CREATE TABLE IF NOT EXISTS `user_profiles_74` (
     `user_id`   BIGINT       NOT NULL,
     `nickname`  VARCHAR(50)  NULL,
     `avatar`    VARCHAR(255) NULL,
@@ -1027,9 +1027,9 @@ CREATE TABLE IF NOT EXISTS `user_profiles_44` (
     `birthday`  DATE         NULL,
     `bio`       TEXT         NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 44)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 74)';
 
-CREATE TABLE IF NOT EXISTS `user_auths_44` (
+CREATE TABLE IF NOT EXISTS `user_auths_74` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `auth_type`   VARCHAR(20)  NOT NULL,
@@ -1040,9 +1040,9 @@ CREATE TABLE IF NOT EXISTS `user_auths_44` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_auth` (`auth_type`, `identifier`),
     KEY `idx_user_id` (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 44)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 74)';
 
-CREATE TABLE IF NOT EXISTS `login_logs_44` (
+CREATE TABLE IF NOT EXISTS `login_logs_74` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NULL COMMENT '失败时可空（用户名不存在）',
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
@@ -1054,9 +1054,9 @@ CREATE TABLE IF NOT EXISTS `login_logs_44` (
     PRIMARY KEY (`id`),
     KEY `idx_user_id`    (`user_id`),
     KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 44)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 74)';
 
-CREATE TABLE IF NOT EXISTS `user_sessions_44` (
+CREATE TABLE IF NOT EXISTS `user_sessions_74` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
@@ -1069,15 +1069,15 @@ CREATE TABLE IF NOT EXISTS `user_sessions_44` (
     UNIQUE KEY `uk_token` (`token`),
     KEY `idx_user_id`     (`user_id`),
     KEY `idx_expires_at`  (`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 44)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 74)';
 
-CREATE TABLE IF NOT EXISTS `user_roles_44` (
+CREATE TABLE IF NOT EXISTS `user_roles_74` (
     `user_id`  BIGINT NOT NULL,
     `role_id`  BIGINT NOT NULL,
     PRIMARY KEY (`user_id`, `role_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 44)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 74)';
 
-CREATE TABLE IF NOT EXISTS `user_accounts_44` (
+CREATE TABLE IF NOT EXISTS `user_accounts_74` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `currency`    VARCHAR(8)   NOT NULL,
@@ -1087,13 +1087,13 @@ CREATE TABLE IF NOT EXISTS `user_accounts_44` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_user_currency` (`user_id`, `currency`),
     KEY `idx_account_id` (`account_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 44)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 74)';
 
-CREATE TABLE IF NOT EXISTS `user_settings_44` (
+CREATE TABLE IF NOT EXISTS `user_settings_74` (
     `user_id`   BIGINT NOT NULL,
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 44)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 74)';
 
 -- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
 -- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
@@ -1101,7 +1101,7 @@ CREATE TABLE IF NOT EXISTS `user_settings_44` (
 -- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
 -- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
 -- 那边的 KMS key rotation。
-CREATE TABLE IF NOT EXISTS `user_card_44` (
+CREATE TABLE IF NOT EXISTS `user_card_74` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`        BIGINT       NOT NULL,
     `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
@@ -1120,10 +1120,10 @@ CREATE TABLE IF NOT EXISTS `user_card_44` (
     UNIQUE KEY `uk_token_hash` (`token_hash`),
     KEY `idx_user_status` (`user_id`, `status`),
     KEY `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 44)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 74)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
-CREATE TABLE IF NOT EXISTS `merchants_44` (
+CREATE TABLE IF NOT EXISTS `merchants_74` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
     `name`              VARCHAR(128) NOT NULL,
     `legal_name`        VARCHAR(256) DEFAULT NULL,
@@ -1163,9 +1163,9 @@ CREATE TABLE IF NOT EXISTS `merchants_44` (
     INDEX       `idx_status`      (`status`),
     INDEX       `idx_country`     (`country`),
     INDEX       `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 44)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 74)';
 
-CREATE TABLE IF NOT EXISTS `merchant_kyc_document_44` (
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_74` (
     `id`              VARCHAR(32)  NOT NULL,
     `merchant_id`     VARCHAR(32)  NOT NULL,
     `doc_type`        VARCHAR(32)  NOT NULL,
@@ -1183,9 +1183,9 @@ CREATE TABLE IF NOT EXISTS `merchant_kyc_document_44` (
     KEY `idx_merchant`      (`merchant_id`),
     KEY `idx_review_status` (`review_status`),
     KEY `idx_doc_type`      (`doc_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 44)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 74)';
 
-CREATE TABLE IF NOT EXISTS `merchant_channel_secret_44` (
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_74` (
     `id`           BIGINT       NOT NULL AUTO_INCREMENT,
     `merchant_id`  VARCHAR(32)  NOT NULL,
     `channel`      VARCHAR(32)  NOT NULL,
@@ -1200,12 +1200,12 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_44` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 44)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 74)';
 
--- ─── admin_audit_log_44：管理台 / 用户操作审计（按 actor 路由） ────────
+-- ─── admin_audit_log_74：管理台 / 用户操作审计（按 actor 路由） ────────
 -- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
 -- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
-CREATE TABLE IF NOT EXISTS `admin_audit_log_44` (
+CREATE TABLE IF NOT EXISTS `admin_audit_log_74` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
     `actor_ip`       VARCHAR(64)           DEFAULT NULL,
@@ -1225,11 +1225,11 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_44` (
     KEY `idx_target`  (`target_id`),
     KEY `idx_trace`   (`trace_id`),
     KEY `idx_created` (`created`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 44';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 74';
 
--- 分片表 schema 模板。4 和 45 由 generate.sh 替换：
---   4     = 0..9         分库 idx
---   45  = 00..99       全局表 idx (zero-padded)
+-- 分片表 schema 模板。7 和 75 由 generate.sh 替换：
+--   7     = 0..9         分库 idx
+--   75  = 00..99       全局表 idx (zero-padded)
 --
 -- 路由：globalTblIdx = id % 100；dbIdx = globalTblIdx / 10
 --
@@ -1239,7 +1239,7 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_44` (
 --   按 merchant_id 分片：merchants / merchant_kyc_document / merchant_channel_secret
 
 -- ─── users 分片表 ────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS `users_45` (
+CREATE TABLE IF NOT EXISTS `users_75` (
     `id`                   BIGINT       NOT NULL,
     `username`             VARCHAR(50)  NULL,
     `email`                VARCHAR(100) NULL,
@@ -1262,9 +1262,9 @@ CREATE TABLE IF NOT EXISTS `users_45` (
     UNIQUE KEY `uk_phone`    (`phone`),
     KEY `idx_status`         (`status`),
     KEY `idx_locked_until`   (`locked_until`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 45)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 75)';
 
-CREATE TABLE IF NOT EXISTS `user_profiles_45` (
+CREATE TABLE IF NOT EXISTS `user_profiles_75` (
     `user_id`   BIGINT       NOT NULL,
     `nickname`  VARCHAR(50)  NULL,
     `avatar`    VARCHAR(255) NULL,
@@ -1272,9 +1272,9 @@ CREATE TABLE IF NOT EXISTS `user_profiles_45` (
     `birthday`  DATE         NULL,
     `bio`       TEXT         NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 45)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 75)';
 
-CREATE TABLE IF NOT EXISTS `user_auths_45` (
+CREATE TABLE IF NOT EXISTS `user_auths_75` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `auth_type`   VARCHAR(20)  NOT NULL,
@@ -1285,9 +1285,9 @@ CREATE TABLE IF NOT EXISTS `user_auths_45` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_auth` (`auth_type`, `identifier`),
     KEY `idx_user_id` (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 45)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 75)';
 
-CREATE TABLE IF NOT EXISTS `login_logs_45` (
+CREATE TABLE IF NOT EXISTS `login_logs_75` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NULL COMMENT '失败时可空（用户名不存在）',
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
@@ -1299,9 +1299,9 @@ CREATE TABLE IF NOT EXISTS `login_logs_45` (
     PRIMARY KEY (`id`),
     KEY `idx_user_id`    (`user_id`),
     KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 45)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 75)';
 
-CREATE TABLE IF NOT EXISTS `user_sessions_45` (
+CREATE TABLE IF NOT EXISTS `user_sessions_75` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
@@ -1314,15 +1314,15 @@ CREATE TABLE IF NOT EXISTS `user_sessions_45` (
     UNIQUE KEY `uk_token` (`token`),
     KEY `idx_user_id`     (`user_id`),
     KEY `idx_expires_at`  (`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 45)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 75)';
 
-CREATE TABLE IF NOT EXISTS `user_roles_45` (
+CREATE TABLE IF NOT EXISTS `user_roles_75` (
     `user_id`  BIGINT NOT NULL,
     `role_id`  BIGINT NOT NULL,
     PRIMARY KEY (`user_id`, `role_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 45)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 75)';
 
-CREATE TABLE IF NOT EXISTS `user_accounts_45` (
+CREATE TABLE IF NOT EXISTS `user_accounts_75` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `currency`    VARCHAR(8)   NOT NULL,
@@ -1332,13 +1332,13 @@ CREATE TABLE IF NOT EXISTS `user_accounts_45` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_user_currency` (`user_id`, `currency`),
     KEY `idx_account_id` (`account_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 45)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 75)';
 
-CREATE TABLE IF NOT EXISTS `user_settings_45` (
+CREATE TABLE IF NOT EXISTS `user_settings_75` (
     `user_id`   BIGINT NOT NULL,
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 45)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 75)';
 
 -- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
 -- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
@@ -1346,7 +1346,7 @@ CREATE TABLE IF NOT EXISTS `user_settings_45` (
 -- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
 -- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
 -- 那边的 KMS key rotation。
-CREATE TABLE IF NOT EXISTS `user_card_45` (
+CREATE TABLE IF NOT EXISTS `user_card_75` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`        BIGINT       NOT NULL,
     `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
@@ -1365,10 +1365,10 @@ CREATE TABLE IF NOT EXISTS `user_card_45` (
     UNIQUE KEY `uk_token_hash` (`token_hash`),
     KEY `idx_user_status` (`user_id`, `status`),
     KEY `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 45)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 75)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
-CREATE TABLE IF NOT EXISTS `merchants_45` (
+CREATE TABLE IF NOT EXISTS `merchants_75` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
     `name`              VARCHAR(128) NOT NULL,
     `legal_name`        VARCHAR(256) DEFAULT NULL,
@@ -1408,9 +1408,9 @@ CREATE TABLE IF NOT EXISTS `merchants_45` (
     INDEX       `idx_status`      (`status`),
     INDEX       `idx_country`     (`country`),
     INDEX       `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 45)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 75)';
 
-CREATE TABLE IF NOT EXISTS `merchant_kyc_document_45` (
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_75` (
     `id`              VARCHAR(32)  NOT NULL,
     `merchant_id`     VARCHAR(32)  NOT NULL,
     `doc_type`        VARCHAR(32)  NOT NULL,
@@ -1428,9 +1428,9 @@ CREATE TABLE IF NOT EXISTS `merchant_kyc_document_45` (
     KEY `idx_merchant`      (`merchant_id`),
     KEY `idx_review_status` (`review_status`),
     KEY `idx_doc_type`      (`doc_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 45)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 75)';
 
-CREATE TABLE IF NOT EXISTS `merchant_channel_secret_45` (
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_75` (
     `id`           BIGINT       NOT NULL AUTO_INCREMENT,
     `merchant_id`  VARCHAR(32)  NOT NULL,
     `channel`      VARCHAR(32)  NOT NULL,
@@ -1445,12 +1445,12 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_45` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 45)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 75)';
 
--- ─── admin_audit_log_45：管理台 / 用户操作审计（按 actor 路由） ────────
+-- ─── admin_audit_log_75：管理台 / 用户操作审计（按 actor 路由） ────────
 -- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
 -- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
-CREATE TABLE IF NOT EXISTS `admin_audit_log_45` (
+CREATE TABLE IF NOT EXISTS `admin_audit_log_75` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
     `actor_ip`       VARCHAR(64)           DEFAULT NULL,
@@ -1470,11 +1470,11 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_45` (
     KEY `idx_target`  (`target_id`),
     KEY `idx_trace`   (`trace_id`),
     KEY `idx_created` (`created`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 45';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 75';
 
--- 分片表 schema 模板。4 和 46 由 generate.sh 替换：
---   4     = 0..9         分库 idx
---   46  = 00..99       全局表 idx (zero-padded)
+-- 分片表 schema 模板。7 和 76 由 generate.sh 替换：
+--   7     = 0..9         分库 idx
+--   76  = 00..99       全局表 idx (zero-padded)
 --
 -- 路由：globalTblIdx = id % 100；dbIdx = globalTblIdx / 10
 --
@@ -1484,7 +1484,7 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_45` (
 --   按 merchant_id 分片：merchants / merchant_kyc_document / merchant_channel_secret
 
 -- ─── users 分片表 ────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS `users_46` (
+CREATE TABLE IF NOT EXISTS `users_76` (
     `id`                   BIGINT       NOT NULL,
     `username`             VARCHAR(50)  NULL,
     `email`                VARCHAR(100) NULL,
@@ -1507,9 +1507,9 @@ CREATE TABLE IF NOT EXISTS `users_46` (
     UNIQUE KEY `uk_phone`    (`phone`),
     KEY `idx_status`         (`status`),
     KEY `idx_locked_until`   (`locked_until`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 46)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 76)';
 
-CREATE TABLE IF NOT EXISTS `user_profiles_46` (
+CREATE TABLE IF NOT EXISTS `user_profiles_76` (
     `user_id`   BIGINT       NOT NULL,
     `nickname`  VARCHAR(50)  NULL,
     `avatar`    VARCHAR(255) NULL,
@@ -1517,9 +1517,9 @@ CREATE TABLE IF NOT EXISTS `user_profiles_46` (
     `birthday`  DATE         NULL,
     `bio`       TEXT         NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 46)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 76)';
 
-CREATE TABLE IF NOT EXISTS `user_auths_46` (
+CREATE TABLE IF NOT EXISTS `user_auths_76` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `auth_type`   VARCHAR(20)  NOT NULL,
@@ -1530,9 +1530,9 @@ CREATE TABLE IF NOT EXISTS `user_auths_46` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_auth` (`auth_type`, `identifier`),
     KEY `idx_user_id` (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 46)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 76)';
 
-CREATE TABLE IF NOT EXISTS `login_logs_46` (
+CREATE TABLE IF NOT EXISTS `login_logs_76` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NULL COMMENT '失败时可空（用户名不存在）',
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
@@ -1544,9 +1544,9 @@ CREATE TABLE IF NOT EXISTS `login_logs_46` (
     PRIMARY KEY (`id`),
     KEY `idx_user_id`    (`user_id`),
     KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 46)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 76)';
 
-CREATE TABLE IF NOT EXISTS `user_sessions_46` (
+CREATE TABLE IF NOT EXISTS `user_sessions_76` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
@@ -1559,15 +1559,15 @@ CREATE TABLE IF NOT EXISTS `user_sessions_46` (
     UNIQUE KEY `uk_token` (`token`),
     KEY `idx_user_id`     (`user_id`),
     KEY `idx_expires_at`  (`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 46)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 76)';
 
-CREATE TABLE IF NOT EXISTS `user_roles_46` (
+CREATE TABLE IF NOT EXISTS `user_roles_76` (
     `user_id`  BIGINT NOT NULL,
     `role_id`  BIGINT NOT NULL,
     PRIMARY KEY (`user_id`, `role_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 46)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 76)';
 
-CREATE TABLE IF NOT EXISTS `user_accounts_46` (
+CREATE TABLE IF NOT EXISTS `user_accounts_76` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `currency`    VARCHAR(8)   NOT NULL,
@@ -1577,13 +1577,13 @@ CREATE TABLE IF NOT EXISTS `user_accounts_46` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_user_currency` (`user_id`, `currency`),
     KEY `idx_account_id` (`account_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 46)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 76)';
 
-CREATE TABLE IF NOT EXISTS `user_settings_46` (
+CREATE TABLE IF NOT EXISTS `user_settings_76` (
     `user_id`   BIGINT NOT NULL,
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 46)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 76)';
 
 -- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
 -- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
@@ -1591,7 +1591,7 @@ CREATE TABLE IF NOT EXISTS `user_settings_46` (
 -- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
 -- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
 -- 那边的 KMS key rotation。
-CREATE TABLE IF NOT EXISTS `user_card_46` (
+CREATE TABLE IF NOT EXISTS `user_card_76` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`        BIGINT       NOT NULL,
     `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
@@ -1610,10 +1610,10 @@ CREATE TABLE IF NOT EXISTS `user_card_46` (
     UNIQUE KEY `uk_token_hash` (`token_hash`),
     KEY `idx_user_status` (`user_id`, `status`),
     KEY `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 46)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 76)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
-CREATE TABLE IF NOT EXISTS `merchants_46` (
+CREATE TABLE IF NOT EXISTS `merchants_76` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
     `name`              VARCHAR(128) NOT NULL,
     `legal_name`        VARCHAR(256) DEFAULT NULL,
@@ -1653,9 +1653,9 @@ CREATE TABLE IF NOT EXISTS `merchants_46` (
     INDEX       `idx_status`      (`status`),
     INDEX       `idx_country`     (`country`),
     INDEX       `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 46)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 76)';
 
-CREATE TABLE IF NOT EXISTS `merchant_kyc_document_46` (
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_76` (
     `id`              VARCHAR(32)  NOT NULL,
     `merchant_id`     VARCHAR(32)  NOT NULL,
     `doc_type`        VARCHAR(32)  NOT NULL,
@@ -1673,9 +1673,9 @@ CREATE TABLE IF NOT EXISTS `merchant_kyc_document_46` (
     KEY `idx_merchant`      (`merchant_id`),
     KEY `idx_review_status` (`review_status`),
     KEY `idx_doc_type`      (`doc_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 46)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 76)';
 
-CREATE TABLE IF NOT EXISTS `merchant_channel_secret_46` (
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_76` (
     `id`           BIGINT       NOT NULL AUTO_INCREMENT,
     `merchant_id`  VARCHAR(32)  NOT NULL,
     `channel`      VARCHAR(32)  NOT NULL,
@@ -1690,12 +1690,12 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_46` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 46)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 76)';
 
--- ─── admin_audit_log_46：管理台 / 用户操作审计（按 actor 路由） ────────
+-- ─── admin_audit_log_76：管理台 / 用户操作审计（按 actor 路由） ────────
 -- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
 -- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
-CREATE TABLE IF NOT EXISTS `admin_audit_log_46` (
+CREATE TABLE IF NOT EXISTS `admin_audit_log_76` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
     `actor_ip`       VARCHAR(64)           DEFAULT NULL,
@@ -1715,11 +1715,11 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_46` (
     KEY `idx_target`  (`target_id`),
     KEY `idx_trace`   (`trace_id`),
     KEY `idx_created` (`created`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 46';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 76';
 
--- 分片表 schema 模板。4 和 47 由 generate.sh 替换：
---   4     = 0..9         分库 idx
---   47  = 00..99       全局表 idx (zero-padded)
+-- 分片表 schema 模板。7 和 77 由 generate.sh 替换：
+--   7     = 0..9         分库 idx
+--   77  = 00..99       全局表 idx (zero-padded)
 --
 -- 路由：globalTblIdx = id % 100；dbIdx = globalTblIdx / 10
 --
@@ -1729,7 +1729,7 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_46` (
 --   按 merchant_id 分片：merchants / merchant_kyc_document / merchant_channel_secret
 
 -- ─── users 分片表 ────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS `users_47` (
+CREATE TABLE IF NOT EXISTS `users_77` (
     `id`                   BIGINT       NOT NULL,
     `username`             VARCHAR(50)  NULL,
     `email`                VARCHAR(100) NULL,
@@ -1752,9 +1752,9 @@ CREATE TABLE IF NOT EXISTS `users_47` (
     UNIQUE KEY `uk_phone`    (`phone`),
     KEY `idx_status`         (`status`),
     KEY `idx_locked_until`   (`locked_until`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 47)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 77)';
 
-CREATE TABLE IF NOT EXISTS `user_profiles_47` (
+CREATE TABLE IF NOT EXISTS `user_profiles_77` (
     `user_id`   BIGINT       NOT NULL,
     `nickname`  VARCHAR(50)  NULL,
     `avatar`    VARCHAR(255) NULL,
@@ -1762,9 +1762,9 @@ CREATE TABLE IF NOT EXISTS `user_profiles_47` (
     `birthday`  DATE         NULL,
     `bio`       TEXT         NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 47)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 77)';
 
-CREATE TABLE IF NOT EXISTS `user_auths_47` (
+CREATE TABLE IF NOT EXISTS `user_auths_77` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `auth_type`   VARCHAR(20)  NOT NULL,
@@ -1775,9 +1775,9 @@ CREATE TABLE IF NOT EXISTS `user_auths_47` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_auth` (`auth_type`, `identifier`),
     KEY `idx_user_id` (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 47)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 77)';
 
-CREATE TABLE IF NOT EXISTS `login_logs_47` (
+CREATE TABLE IF NOT EXISTS `login_logs_77` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NULL COMMENT '失败时可空（用户名不存在）',
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
@@ -1789,9 +1789,9 @@ CREATE TABLE IF NOT EXISTS `login_logs_47` (
     PRIMARY KEY (`id`),
     KEY `idx_user_id`    (`user_id`),
     KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 47)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 77)';
 
-CREATE TABLE IF NOT EXISTS `user_sessions_47` (
+CREATE TABLE IF NOT EXISTS `user_sessions_77` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
@@ -1804,15 +1804,15 @@ CREATE TABLE IF NOT EXISTS `user_sessions_47` (
     UNIQUE KEY `uk_token` (`token`),
     KEY `idx_user_id`     (`user_id`),
     KEY `idx_expires_at`  (`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 47)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 77)';
 
-CREATE TABLE IF NOT EXISTS `user_roles_47` (
+CREATE TABLE IF NOT EXISTS `user_roles_77` (
     `user_id`  BIGINT NOT NULL,
     `role_id`  BIGINT NOT NULL,
     PRIMARY KEY (`user_id`, `role_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 47)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 77)';
 
-CREATE TABLE IF NOT EXISTS `user_accounts_47` (
+CREATE TABLE IF NOT EXISTS `user_accounts_77` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `currency`    VARCHAR(8)   NOT NULL,
@@ -1822,13 +1822,13 @@ CREATE TABLE IF NOT EXISTS `user_accounts_47` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_user_currency` (`user_id`, `currency`),
     KEY `idx_account_id` (`account_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 47)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 77)';
 
-CREATE TABLE IF NOT EXISTS `user_settings_47` (
+CREATE TABLE IF NOT EXISTS `user_settings_77` (
     `user_id`   BIGINT NOT NULL,
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 47)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 77)';
 
 -- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
 -- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
@@ -1836,7 +1836,7 @@ CREATE TABLE IF NOT EXISTS `user_settings_47` (
 -- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
 -- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
 -- 那边的 KMS key rotation。
-CREATE TABLE IF NOT EXISTS `user_card_47` (
+CREATE TABLE IF NOT EXISTS `user_card_77` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`        BIGINT       NOT NULL,
     `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
@@ -1855,10 +1855,10 @@ CREATE TABLE IF NOT EXISTS `user_card_47` (
     UNIQUE KEY `uk_token_hash` (`token_hash`),
     KEY `idx_user_status` (`user_id`, `status`),
     KEY `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 47)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 77)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
-CREATE TABLE IF NOT EXISTS `merchants_47` (
+CREATE TABLE IF NOT EXISTS `merchants_77` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
     `name`              VARCHAR(128) NOT NULL,
     `legal_name`        VARCHAR(256) DEFAULT NULL,
@@ -1898,9 +1898,9 @@ CREATE TABLE IF NOT EXISTS `merchants_47` (
     INDEX       `idx_status`      (`status`),
     INDEX       `idx_country`     (`country`),
     INDEX       `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 47)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 77)';
 
-CREATE TABLE IF NOT EXISTS `merchant_kyc_document_47` (
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_77` (
     `id`              VARCHAR(32)  NOT NULL,
     `merchant_id`     VARCHAR(32)  NOT NULL,
     `doc_type`        VARCHAR(32)  NOT NULL,
@@ -1918,9 +1918,9 @@ CREATE TABLE IF NOT EXISTS `merchant_kyc_document_47` (
     KEY `idx_merchant`      (`merchant_id`),
     KEY `idx_review_status` (`review_status`),
     KEY `idx_doc_type`      (`doc_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 47)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 77)';
 
-CREATE TABLE IF NOT EXISTS `merchant_channel_secret_47` (
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_77` (
     `id`           BIGINT       NOT NULL AUTO_INCREMENT,
     `merchant_id`  VARCHAR(32)  NOT NULL,
     `channel`      VARCHAR(32)  NOT NULL,
@@ -1935,12 +1935,12 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_47` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 47)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 77)';
 
--- ─── admin_audit_log_47：管理台 / 用户操作审计（按 actor 路由） ────────
+-- ─── admin_audit_log_77：管理台 / 用户操作审计（按 actor 路由） ────────
 -- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
 -- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
-CREATE TABLE IF NOT EXISTS `admin_audit_log_47` (
+CREATE TABLE IF NOT EXISTS `admin_audit_log_77` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
     `actor_ip`       VARCHAR(64)           DEFAULT NULL,
@@ -1960,11 +1960,11 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_47` (
     KEY `idx_target`  (`target_id`),
     KEY `idx_trace`   (`trace_id`),
     KEY `idx_created` (`created`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 47';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 77';
 
--- 分片表 schema 模板。4 和 48 由 generate.sh 替换：
---   4     = 0..9         分库 idx
---   48  = 00..99       全局表 idx (zero-padded)
+-- 分片表 schema 模板。7 和 78 由 generate.sh 替换：
+--   7     = 0..9         分库 idx
+--   78  = 00..99       全局表 idx (zero-padded)
 --
 -- 路由：globalTblIdx = id % 100；dbIdx = globalTblIdx / 10
 --
@@ -1974,7 +1974,7 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_47` (
 --   按 merchant_id 分片：merchants / merchant_kyc_document / merchant_channel_secret
 
 -- ─── users 分片表 ────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS `users_48` (
+CREATE TABLE IF NOT EXISTS `users_78` (
     `id`                   BIGINT       NOT NULL,
     `username`             VARCHAR(50)  NULL,
     `email`                VARCHAR(100) NULL,
@@ -1997,9 +1997,9 @@ CREATE TABLE IF NOT EXISTS `users_48` (
     UNIQUE KEY `uk_phone`    (`phone`),
     KEY `idx_status`         (`status`),
     KEY `idx_locked_until`   (`locked_until`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 48)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 78)';
 
-CREATE TABLE IF NOT EXISTS `user_profiles_48` (
+CREATE TABLE IF NOT EXISTS `user_profiles_78` (
     `user_id`   BIGINT       NOT NULL,
     `nickname`  VARCHAR(50)  NULL,
     `avatar`    VARCHAR(255) NULL,
@@ -2007,9 +2007,9 @@ CREATE TABLE IF NOT EXISTS `user_profiles_48` (
     `birthday`  DATE         NULL,
     `bio`       TEXT         NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 48)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 78)';
 
-CREATE TABLE IF NOT EXISTS `user_auths_48` (
+CREATE TABLE IF NOT EXISTS `user_auths_78` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `auth_type`   VARCHAR(20)  NOT NULL,
@@ -2020,9 +2020,9 @@ CREATE TABLE IF NOT EXISTS `user_auths_48` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_auth` (`auth_type`, `identifier`),
     KEY `idx_user_id` (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 48)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 78)';
 
-CREATE TABLE IF NOT EXISTS `login_logs_48` (
+CREATE TABLE IF NOT EXISTS `login_logs_78` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NULL COMMENT '失败时可空（用户名不存在）',
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
@@ -2034,9 +2034,9 @@ CREATE TABLE IF NOT EXISTS `login_logs_48` (
     PRIMARY KEY (`id`),
     KEY `idx_user_id`    (`user_id`),
     KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 48)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 78)';
 
-CREATE TABLE IF NOT EXISTS `user_sessions_48` (
+CREATE TABLE IF NOT EXISTS `user_sessions_78` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
@@ -2049,15 +2049,15 @@ CREATE TABLE IF NOT EXISTS `user_sessions_48` (
     UNIQUE KEY `uk_token` (`token`),
     KEY `idx_user_id`     (`user_id`),
     KEY `idx_expires_at`  (`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 48)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 78)';
 
-CREATE TABLE IF NOT EXISTS `user_roles_48` (
+CREATE TABLE IF NOT EXISTS `user_roles_78` (
     `user_id`  BIGINT NOT NULL,
     `role_id`  BIGINT NOT NULL,
     PRIMARY KEY (`user_id`, `role_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 48)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 78)';
 
-CREATE TABLE IF NOT EXISTS `user_accounts_48` (
+CREATE TABLE IF NOT EXISTS `user_accounts_78` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `currency`    VARCHAR(8)   NOT NULL,
@@ -2067,13 +2067,13 @@ CREATE TABLE IF NOT EXISTS `user_accounts_48` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_user_currency` (`user_id`, `currency`),
     KEY `idx_account_id` (`account_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 48)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 78)';
 
-CREATE TABLE IF NOT EXISTS `user_settings_48` (
+CREATE TABLE IF NOT EXISTS `user_settings_78` (
     `user_id`   BIGINT NOT NULL,
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 48)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 78)';
 
 -- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
 -- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
@@ -2081,7 +2081,7 @@ CREATE TABLE IF NOT EXISTS `user_settings_48` (
 -- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
 -- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
 -- 那边的 KMS key rotation。
-CREATE TABLE IF NOT EXISTS `user_card_48` (
+CREATE TABLE IF NOT EXISTS `user_card_78` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`        BIGINT       NOT NULL,
     `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
@@ -2100,10 +2100,10 @@ CREATE TABLE IF NOT EXISTS `user_card_48` (
     UNIQUE KEY `uk_token_hash` (`token_hash`),
     KEY `idx_user_status` (`user_id`, `status`),
     KEY `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 48)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 78)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
-CREATE TABLE IF NOT EXISTS `merchants_48` (
+CREATE TABLE IF NOT EXISTS `merchants_78` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
     `name`              VARCHAR(128) NOT NULL,
     `legal_name`        VARCHAR(256) DEFAULT NULL,
@@ -2143,9 +2143,9 @@ CREATE TABLE IF NOT EXISTS `merchants_48` (
     INDEX       `idx_status`      (`status`),
     INDEX       `idx_country`     (`country`),
     INDEX       `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 48)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 78)';
 
-CREATE TABLE IF NOT EXISTS `merchant_kyc_document_48` (
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_78` (
     `id`              VARCHAR(32)  NOT NULL,
     `merchant_id`     VARCHAR(32)  NOT NULL,
     `doc_type`        VARCHAR(32)  NOT NULL,
@@ -2163,9 +2163,9 @@ CREATE TABLE IF NOT EXISTS `merchant_kyc_document_48` (
     KEY `idx_merchant`      (`merchant_id`),
     KEY `idx_review_status` (`review_status`),
     KEY `idx_doc_type`      (`doc_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 48)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 78)';
 
-CREATE TABLE IF NOT EXISTS `merchant_channel_secret_48` (
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_78` (
     `id`           BIGINT       NOT NULL AUTO_INCREMENT,
     `merchant_id`  VARCHAR(32)  NOT NULL,
     `channel`      VARCHAR(32)  NOT NULL,
@@ -2180,12 +2180,12 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_48` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 48)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 78)';
 
--- ─── admin_audit_log_48：管理台 / 用户操作审计（按 actor 路由） ────────
+-- ─── admin_audit_log_78：管理台 / 用户操作审计（按 actor 路由） ────────
 -- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
 -- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
-CREATE TABLE IF NOT EXISTS `admin_audit_log_48` (
+CREATE TABLE IF NOT EXISTS `admin_audit_log_78` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
     `actor_ip`       VARCHAR(64)           DEFAULT NULL,
@@ -2205,11 +2205,11 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_48` (
     KEY `idx_target`  (`target_id`),
     KEY `idx_trace`   (`trace_id`),
     KEY `idx_created` (`created`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 48';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 78';
 
--- 分片表 schema 模板。4 和 49 由 generate.sh 替换：
---   4     = 0..9         分库 idx
---   49  = 00..99       全局表 idx (zero-padded)
+-- 分片表 schema 模板。7 和 79 由 generate.sh 替换：
+--   7     = 0..9         分库 idx
+--   79  = 00..99       全局表 idx (zero-padded)
 --
 -- 路由：globalTblIdx = id % 100；dbIdx = globalTblIdx / 10
 --
@@ -2219,7 +2219,7 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_48` (
 --   按 merchant_id 分片：merchants / merchant_kyc_document / merchant_channel_secret
 
 -- ─── users 分片表 ────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS `users_49` (
+CREATE TABLE IF NOT EXISTS `users_79` (
     `id`                   BIGINT       NOT NULL,
     `username`             VARCHAR(50)  NULL,
     `email`                VARCHAR(100) NULL,
@@ -2242,9 +2242,9 @@ CREATE TABLE IF NOT EXISTS `users_49` (
     UNIQUE KEY `uk_phone`    (`phone`),
     KEY `idx_status`         (`status`),
     KEY `idx_locked_until`   (`locked_until`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 49)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户 (shard 79)';
 
-CREATE TABLE IF NOT EXISTS `user_profiles_49` (
+CREATE TABLE IF NOT EXISTS `user_profiles_79` (
     `user_id`   BIGINT       NOT NULL,
     `nickname`  VARCHAR(50)  NULL,
     `avatar`    VARCHAR(255) NULL,
@@ -2252,9 +2252,9 @@ CREATE TABLE IF NOT EXISTS `user_profiles_49` (
     `birthday`  DATE         NULL,
     `bio`       TEXT         NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 49)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户资料 (shard 79)';
 
-CREATE TABLE IF NOT EXISTS `user_auths_49` (
+CREATE TABLE IF NOT EXISTS `user_auths_79` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `auth_type`   VARCHAR(20)  NOT NULL,
@@ -2265,9 +2265,9 @@ CREATE TABLE IF NOT EXISTS `user_auths_49` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_auth` (`auth_type`, `identifier`),
     KEY `idx_user_id` (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 49)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='多渠道认证 (shard 79)';
 
-CREATE TABLE IF NOT EXISTS `login_logs_49` (
+CREATE TABLE IF NOT EXISTS `login_logs_79` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NULL COMMENT '失败时可空（用户名不存在）',
     `ip`          VARCHAR(45)  NOT NULL DEFAULT '',
@@ -2279,9 +2279,9 @@ CREATE TABLE IF NOT EXISTS `login_logs_49` (
     PRIMARY KEY (`id`),
     KEY `idx_user_id`    (`user_id`),
     KEY `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 49)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录日志 (shard 79)';
 
-CREATE TABLE IF NOT EXISTS `user_sessions_49` (
+CREATE TABLE IF NOT EXISTS `user_sessions_79` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     -- token VARCHAR(512)：JWT 加 kid claim 后约 264 字符，旧 VARCHAR(255) 截断。
@@ -2294,15 +2294,15 @@ CREATE TABLE IF NOT EXISTS `user_sessions_49` (
     UNIQUE KEY `uk_token` (`token`),
     KEY `idx_user_id`     (`user_id`),
     KEY `idx_expires_at`  (`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 49)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='登录会话 (shard 79)';
 
-CREATE TABLE IF NOT EXISTS `user_roles_49` (
+CREATE TABLE IF NOT EXISTS `user_roles_79` (
     `user_id`  BIGINT NOT NULL,
     `role_id`  BIGINT NOT NULL,
     PRIMARY KEY (`user_id`, `role_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 49)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='RBAC user-role (shard 79)';
 
-CREATE TABLE IF NOT EXISTS `user_accounts_49` (
+CREATE TABLE IF NOT EXISTS `user_accounts_79` (
     `id`          BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`     BIGINT       NOT NULL,
     `currency`    VARCHAR(8)   NOT NULL,
@@ -2312,13 +2312,13 @@ CREATE TABLE IF NOT EXISTS `user_accounts_49` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_user_currency` (`user_id`, `currency`),
     KEY `idx_account_id` (`account_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 49)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='C 端用户多币种账户引用 (shard 79)';
 
-CREATE TABLE IF NOT EXISTS `user_settings_49` (
+CREATE TABLE IF NOT EXISTS `user_settings_79` (
     `user_id`   BIGINT NOT NULL,
     `settings`  JSON   NULL,
     PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 49)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='UI 偏好 (shard 79)';
 
 -- ─── user_card：用户存卡引用（指向 card-center 的 stored_token）──────────────
 -- 本表**不存** PAN / CVV / 任何敏感数据；只存 card-center 颁发的 stored_token
@@ -2326,7 +2326,7 @@ CREATE TABLE IF NOT EXISTS `user_settings_49` (
 -- 真实 PAN 在 card-center 内的 KMS-encrypted token 里，本服务永不见。
 -- 删除 = soft delete（status=deleted + deleted_at）。物理失效靠 card-center
 -- 那边的 KMS key rotation。
-CREATE TABLE IF NOT EXISTS `user_card_49` (
+CREATE TABLE IF NOT EXISTS `user_card_79` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `user_id`        BIGINT       NOT NULL,
     `stored_token`   VARCHAR(1024) NOT NULL COMMENT 'card-center 颁发的长期 token',
@@ -2345,10 +2345,10 @@ CREATE TABLE IF NOT EXISTS `user_card_49` (
     UNIQUE KEY `uk_token_hash` (`token_hash`),
     KEY `idx_user_status` (`user_id`, `status`),
     KEY `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 49)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='User stored card index (NO PAN, only token + masked) (shard 79)';
 
 -- ─── merchants 分片表（按 merchant_id 路由）─────────────────────────────────
-CREATE TABLE IF NOT EXISTS `merchants_49` (
+CREATE TABLE IF NOT EXISTS `merchants_79` (
     `id`                VARCHAR(32)  NOT NULL COMMENT 'mch_xxx (按位编码 numeric)',
     `name`              VARCHAR(128) NOT NULL,
     `legal_name`        VARCHAR(256) DEFAULT NULL,
@@ -2388,9 +2388,9 @@ CREATE TABLE IF NOT EXISTS `merchants_49` (
     INDEX       `idx_status`      (`status`),
     INDEX       `idx_country`     (`country`),
     INDEX       `idx_deleted_at`  (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 49)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户主表 (shard 79)';
 
-CREATE TABLE IF NOT EXISTS `merchant_kyc_document_49` (
+CREATE TABLE IF NOT EXISTS `merchant_kyc_document_79` (
     `id`              VARCHAR(32)  NOT NULL,
     `merchant_id`     VARCHAR(32)  NOT NULL,
     `doc_type`        VARCHAR(32)  NOT NULL,
@@ -2408,9 +2408,9 @@ CREATE TABLE IF NOT EXISTS `merchant_kyc_document_49` (
     KEY `idx_merchant`      (`merchant_id`),
     KEY `idx_review_status` (`review_status`),
     KEY `idx_doc_type`      (`doc_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 49)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户 KYC 文档 (shard 79)';
 
-CREATE TABLE IF NOT EXISTS `merchant_channel_secret_49` (
+CREATE TABLE IF NOT EXISTS `merchant_channel_secret_79` (
     `id`           BIGINT       NOT NULL AUTO_INCREMENT,
     `merchant_id`  VARCHAR(32)  NOT NULL,
     `channel`      VARCHAR(32)  NOT NULL,
@@ -2425,12 +2425,12 @@ CREATE TABLE IF NOT EXISTS `merchant_channel_secret_49` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_merchant_channel_field` (`merchant_id`, `channel`, `field_name`),
     KEY `idx_merchant_channel` (`merchant_id`, `channel`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 49)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='商户渠道凭据 (shard 79)';
 
--- ─── admin_audit_log_49：管理台 / 用户操作审计（按 actor 路由） ────────
+-- ─── admin_audit_log_79：管理台 / 用户操作审计（按 actor 路由） ────────
 -- 从 meta 移到 shard 解 10K TPS 写瓶颈。actor 哈希路由：同一 admin/user
 -- 的所有操作落同一 shard，取证查全。链式签名 per-shard。
-CREATE TABLE IF NOT EXISTS `admin_audit_log_49` (
+CREATE TABLE IF NOT EXISTS `admin_audit_log_79` (
     `id`             BIGINT       NOT NULL AUTO_INCREMENT,
     `actor`          VARCHAR(64)  NOT NULL COMMENT 'admin user id / service account',
     `actor_ip`       VARCHAR(64)           DEFAULT NULL,
@@ -2450,5 +2450,5 @@ CREATE TABLE IF NOT EXISTS `admin_audit_log_49` (
     KEY `idx_target`  (`target_id`),
     KEY `idx_trace`   (`trace_id`),
     KEY `idx_created` (`created`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 49';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='admin 审计日志 shard 79';
 
