@@ -1,0 +1,91 @@
+{
+  "_meta": {
+    "schema_version": 1,
+    "description": "每个 attack 跑完后实际 verdict / signals 跟这里 diff；不一致 = SDK regression。",
+    "verdict_enum": ["allow", "review", "deny"],
+    "signal_naming": "snake_case；详见 web-sdk/SIGNALS.md"
+  },
+
+  "01-bare-puppeteer": {
+    "expected_verdict": "deny",
+    "expected_score_min": 0.85,
+    "expected_signals_present": [
+      "navigator_webdriver",
+      "headless_ua",
+      "missing_window_chrome",
+      "plugins_zero"
+    ],
+    "expected_signals_absent": [
+      "mouse_trajectory_human",
+      "keystroke_human_dwell"
+    ],
+    "notes": "无任何掩饰；任何 commercial fingerprint SDK 都能秒识"
+  },
+
+  "02-puppeteer-stealth": {
+    "expected_verdict_in": ["deny", "review"],
+    "expected_score_min": 0.65,
+    "expected_signals_present": [
+      "iframe_contentwindow_chrome_leak",
+      "stack_trace_chromium_signature",
+      "webgl_renderer_mismatch_ua"
+    ],
+    "expected_signals_absent": [
+      "navigator_webdriver"
+    ],
+    "notes": "stealth plugin 修了 navigator.webdriver 但 iframe / stack 仍漏；SDK 应该抓 indirect signal"
+  },
+
+  "03-playwright-headed": {
+    "expected_verdict_in": ["review", "deny"],
+    "expected_score_min": 0.55,
+    "expected_signals_present": [
+      "mouse_trajectory_too_straight",
+      "no_human_pauses",
+      "click_interval_too_uniform"
+    ],
+    "expected_signals_absent": [
+      "headless_ua"
+    ],
+    "notes": "headed + xvfb 让 UA / userAgentData 干净；靠行为信号兜底"
+  },
+
+  "04-fake-mouse": {
+    "expected_verdict_in": ["review", "deny"],
+    "expected_score_min": 0.6,
+    "expected_signals_present": [
+      "mouse_straightness_ratio_high",
+      "mouse_acceleration_kurtosis_low",
+      "behavior_lstm_anomaly"
+    ],
+    "expected_signals_absent": [],
+    "notes": "真浏览器 + JS dispatchEvent 注入直线轨迹；轨迹形态 + LSTM 异常分必须抓"
+  },
+
+  "05-replay-attack": {
+    "expected_verdict": "deny",
+    "expected_score_min": 0.9,
+    "expected_signals_present": [
+      "nonce_reuse",
+      "signature_timestamp_expired",
+      "session_id_duplicate_finalize"
+    ],
+    "expected_signals_absent": [],
+    "notes": "录第一次合法 payload 再 POST 一遍；攻击哪个层先触发都行"
+  },
+
+  "06-cookie-clear-replay": {
+    "expected_verdict_in": ["review", "deny"],
+    "expected_score_min": 0.7,
+    "expected_signals_present": [
+      "visitor_id_dbscan_cluster_match",
+      "canvas_fp_reuse",
+      "webgl_fp_reuse",
+      "audio_fp_reuse"
+    ],
+    "expected_signals_absent": [
+      "first_seen_device"
+    ],
+    "notes": "5 通道 visitorID（canvas+webgl+audio+font+webrtc）DBSCAN 聚类应该关联回原账户"
+  }
+}

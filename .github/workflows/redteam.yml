@@ -1,0 +1,93 @@
+name: redteam-lab
+
+# 红蓝对抗：每周一 + 手动触发。**不**跑在 PR（headed Chromium 太重，会拖慢 pipeline）。
+# 失败 → SDK lead 收 Slack alert，按 P1 处理（攻击通过 = 安全 regression）。
+
+on:
+  schedule:
+    # 每周一 03:00 UTC = 北京时间 周一 11:00
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target URL of the SDK demo page'
+        required: false
+        default: 'http://localhost:8080/demo/checkout.html'
+      attacks:
+        description: 'Subset of attacks (comma-separated). Empty = all.'
+        required: false
+        default: ''
+
+jobs:
+  redteam:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: packages/risk-manage/redteam
+
+    services:
+      # 起一份 risk-manage server 在本机 8080；redteam 攻击直接打它
+      # demo 镜像必须含 SDK demo checkout.html 页（service window.__riskSdkResult）
+      risk-manage:
+        image: ghcr.io/xiongwp/risk-manage:demo
+        ports:
+          - 8080:8080
+        env:
+          # 故意拉满检测严格度
+          RISK_FAIL_OPEN: 'false'
+          BEHAVIOR_LSTM_ENABLED: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: packages/risk-manage/redteam/package-lock.json
+
+      - name: Install deps
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Install xvfb for headed Chromium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb jq
+
+      - name: Run red team
+        env:
+          TARGET_URL: ${{ inputs.target_url || 'http://localhost:8080/demo/checkout.html' }}
+          HEADED: '1'
+          DISPLAY: ':99'
+        run: |
+          # 起 xvfb
+          Xvfb :99 -screen 0 1280x800x24 -ac > /tmp/xvfb.log 2>&1 &
+          sleep 2
+          if [[ -n "${{ inputs.attacks }}" ]]; then
+            for a in $(echo "${{ inputs.attacks }}" | tr ',' ' '); do
+              ./runner.sh "$a" || true
+            done
+          else
+            ./runner.sh
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redteam-results-${{ github.run_id }}
+          path: |
+            packages/risk-manage/redteam/results/
+            packages/risk-manage/redteam/logs/
+          retention-days: 7
+
+      - name: Slack alert on failure
+        if: failure()
+        # 仅 SDK regression = 红队攻击通过；P1 按值班 oncall 处理
+        run: |
+          echo "TODO: post to #risk-manage-alerts channel"
+          echo "Report: packages/risk-manage/redteam/results/_report.txt"

@@ -1,0 +1,27 @@
+{
+  "name": "risk-manage-redteam",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Adversarial test suite against risk-manage SDK (Puppeteer/Playwright/stealth attack chains).",
+  "scripts": {
+    "test": "bash ./runner.sh",
+    "test:single": "node",
+    "lint": "echo 'no lint configured (intentional — attack scripts are deliberately ugly)'"
+  },
+  "dependencies": {
+    "playwright": "^1.45.0",
+    "puppeteer": "^22.12.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "selenium-webdriver": "^4.22.0",
+    "undici": "^6.19.0",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "//": "undetected-chromedriver 是 Python 包，对应 Node 生态用 selenium-webdriver + chromedriver 手动 patch；脚本里 03/06 走 selenium 路径"
+}
