@@ -46,7 +46,18 @@ func main() {
 		"k-fold cross-validation 折数 (0=disable，5=典型 5-fold)，开启后报告 AUC mean/std")
 	calibrate := flag.Bool("calibrate", true,
 		"训练完跑 Platt scaling 校准概率（class_weight 模式下尤其需要）")
+	outputFormat := flag.String("output-format", "json",
+		"输出格式：json=LogisticConfig（默认）/ onnx=GBDT.onnx（本工具不直接产 ONNX，"+
+			"打印 ML 同学的工作流指引，详见 internal/mlscore/ONNX_PIPELINE.md）")
 	flag.Parse()
+
+	// --output-format=onnx 分支：Go 工具不直接产 ONNX，只是给 ML 同学打印
+	// 精确的工作流指引（python notebook → lightgbm/xgboost → skl2onnx → 上传 .onnx）。
+	// 详见 internal/mlscore/ONNX_PIPELINE.md。
+	if *outputFormat == "onnx" {
+		printOnnxPipelineGuide(*modelVer)
+		os.Exit(0)
+	}
 
 	X, y, err := readSnapshots(os.Stdin)
 	if err != nil {
@@ -593,4 +604,65 @@ func featureImportance(w []float64) []featureScore {
 		return math.Abs(out[i].weight) > math.Abs(out[j].weight)
 	})
 	return out
+}
+
+// printOnnxPipelineGuide --output-format=onnx 时的输出：精确告诉 ML 同学怎么
+// 接管这一步。本 Go 工具不直接产 GBDT.onnx（避免重复 Python 工具链；ML 团
+// 队已有自己的 notebook 环境）。
+//
+// 输出走 stdout（避免跟 stderr 训练日志混），方便 ML 同学 redirect 到文件
+// 或 grep。
+func printOnnxPipelineGuide(modelVer string) {
+	const guide = `# ONNX GBDT pipeline — TODO: integrate skl2onnx
+#
+# 这个 Go 工具只产 LogisticRegression（--output-format=json 默认行为）。
+# GBDT (lightgbm / xgboost) ONNX 产出由 ML 团队的 Python notebook 负责。
+#
+# 完整流程（详见 packages/risk-manage/internal/mlscore/ONNX_PIPELINE.md）：
+#
+# 1. 离线 join：把 feature_snapshot stream + risk_outcome 落到 parquet
+#    （Go retrain 当前从 JSONL stdin 读；ML 团队走 Spark / DuckDB query）
+#
+# 2. Python 训练（ML 同学的活）：
+#    import lightgbm as lgb
+#    import pandas as pd
+#    from onnxmltools.convert import convert_lightgbm
+#    from skl2onnx.common.data_types import FloatTensorType
+#
+#    df = pd.read_parquet("snapshots.parquet")
+#    FEATURE_ORDER = [  # 必须跟 Go OnnxService featOrder 一致！
+#      "amount", "ip_proxy", "ip_vpn", "ip_datacenter",
+#      "ip_country_mismatch", "no_fingerprint", "headless_renderer",
+#      "low_concurrency", "rapid_checkout", "no_mouse_entropy",
+#      "bot_typing_rhythm", "no_keystrokes", "high_risk_country",
+#    ]
+#    X = df[FEATURE_ORDER].values.astype("float32")
+#    y = df["outcome_label"].values
+#    clf = lgb.LGBMClassifier(num_leaves=31, n_estimators=200, class_weight="balanced")
+#    clf.fit(X, y)
+#    onnx_model = convert_lightgbm(
+#      clf,
+#      initial_types=[("input", FloatTensorType([None, len(FEATURE_ORDER)]))],
+#      target_opset=12,
+#    )
+#    with open("model_%s_$(git rev-parse --short HEAD).onnx","wb") as f:
+#      f.write(onnx_model.SerializeToString())
+#
+# 3. 上传 .onnx 到 S3 / OSS：
+#    aws s3 cp model_%s_*.onnx s3://risk-ml-models/onnx/
+#
+# 4. 工程侧 admin reload（rolling 重启 不需要）：
+#    curl -X POST $RISK_HOST/admin/ml/onnx/reload \
+#      -H 'Content-Type: application/json' \
+#      -d '{"model_path":"/var/models/model_%s_<sha>.onnx",
+#           "feature_order":["amount",...,"high_risk_country"]}'
+#
+# 5. 验证：
+#    curl $RISK_HOST/admin/ml/onnx/info
+#    # 应该看到 model_ver / feature_order 跟训练时一致
+#
+# 6. 灰度 / champion-challenger：用现有 ChampionChallengerService
+#    register 新 onnx svc 作为 challenger，跑 1-2 周再 promote。
+`
+	fmt.Printf(guide, modelVer, modelVer, modelVer)
 }
