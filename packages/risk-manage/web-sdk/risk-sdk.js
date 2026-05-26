@@ -101,25 +101,19 @@
   // ─── 设备指纹（硬件 + 软件环境）────────────────────────────────────
 
   function canvasFingerprint() {
-    const canvas = document.createElement('canvas');
-    canvas.width = 280;
-    canvas.height = 60;
-    const ctx = canvas.getContext('2d');
+    const c = document.createElement('canvas');
+    c.width = 280; c.height = 60;
+    const ctx = c.getContext('2d');
     if (!ctx) throw new Error('no 2d ctx');
-    ctx.textBaseline = 'top';
-    ctx.font = '14px Arial';
-    ctx.fillStyle = '#f60';
-    ctx.fillRect(125, 1, 62, 20);
-    ctx.fillStyle = '#069';
-    ctx.fillText('risk-sdk: 你好 🌍', 2, 15);
-    ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
-    ctx.fillText('risk-sdk: 你好 🌍', 4, 17);
-    return hashStr(canvas.toDataURL());
+    ctx.textBaseline = 'top'; ctx.font = '14px Arial';
+    ctx.fillStyle = '#f60'; ctx.fillRect(125, 1, 62, 20);
+    ctx.fillStyle = '#069'; ctx.fillText('risk-sdk: 你好 🌍', 2, 15);
+    ctx.fillStyle = 'rgba(102, 204, 0, 0.7)'; ctx.fillText('risk-sdk: 你好 🌍', 4, 17);
+    return hashStr(c.toDataURL());
   }
-
   function webglRenderer() {
-    const canvas = document.createElement('canvas');
-    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
     if (!gl) throw new Error('no webgl');
     const ext = gl.getExtension('WEBGL_debug_renderer_info');
     if (!ext) return gl.getParameter(gl.RENDERER) || '';
@@ -131,13 +125,10 @@
     const Ctx = global.OfflineAudioContext || global.webkitOfflineAudioContext;
     if (!Ctx) throw new Error('no offlineAudio');
     const ctx = new Ctx(1, 44100, 44100);
-    const osc = ctx.createOscillator();
-    const compressor = ctx.createDynamicsCompressor();
+    const osc = ctx.createOscillator(), comp = ctx.createDynamicsCompressor();
     osc.type = 'triangle';
     osc.frequency.setValueAtTime(10000, ctx.currentTime);
-    osc.connect(compressor);
-    compressor.connect(ctx.destination);
-    osc.start(0);
+    osc.connect(comp); comp.connect(ctx.destination); osc.start(0);
     const buf = await ctx.startRendering();
     const data = buf.getChannelData(0).slice(4500, 5000);
     let acc = 0;
@@ -233,29 +224,18 @@
     return await new Promise((resolve, reject) => {
       let pc;
       const ips = new Set();
-      try {
-        pc = new PC({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-      } catch (e) {
-        reject(e);
-        return;
-      }
+      try { pc = new PC({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }); }
+      catch (e) { reject(e); return; }
       pc.createDataChannel('');
       pc.onicecandidate = (ev) => {
-        if (!ev.candidate) {
-          try { pc.close(); } catch (_) {}
-          resolve(Array.from(ips));
-          return;
-        }
-        // candidate string 形如 "candidate:842163049 1 udp 1677729535 1.2.3.4 38470 ..."
+        if (!ev.candidate) { try { pc.close(); } catch (_) {} resolve(Array.from(ips)); return; }
+        // candidate 形如 "candidate:842163049 1 udp 1677729535 1.2.3.4 38470 ..."
         const m = /([0-9a-f:.]{7,})/i.exec(ev.candidate.candidate || '');
         if (m && m[1]) ips.add(m[1]);
       };
       pc.createOffer().then((o) => pc.setLocalDescription(o)).catch(reject);
-      // 兜底：1500ms 没收到 final null 就把已收的返回
-      setTimeout(() => {
-        try { pc.close(); } catch (_) {}
-        resolve(Array.from(ips));
-      }, 1500);
+      // 兜底：1500ms 没收到 final null 就返已收
+      setTimeout(() => { try { pc.close(); } catch (_) {} resolve(Array.from(ips)); }, 1500);
     });
   }
 
@@ -322,7 +302,7 @@
   }
 
   function detectPlatform() {
-    const ua = (global.navigator && global.navigator.userAgent || '').toLowerCase();
+    const ua = ((global.navigator && global.navigator.userAgent) || '').toLowerCase();
     if (/iphone|ipad|ipod/.test(ua)) return 'ios';
     if (/android/.test(ua)) return 'android';
     if (/windows phone/.test(ua)) return 'windows-phone';
@@ -380,37 +360,29 @@
     }
 
     // 基础字段（基本不会失败）
-    const screen = (global.screen && global.screen.width + 'x' + global.screen.height) || '';
-    const tz = (global.Intl && Intl.DateTimeFormat && Intl.DateTimeFormat().resolvedOptions().timeZone) || '';
-    const lang = (global.navigator && global.navigator.language) || '';
-    const hwConc = (global.navigator && global.navigator.hardwareConcurrency) || 0;
-    const platform = detectPlatform();
-    const userAgent = (global.navigator && global.navigator.userAgent) || '';
+    const n = global.navigator || {};
+    fields.screenWxH = (global.screen && global.screen.width + 'x' + global.screen.height) || '';
+    fields.timezone = (global.Intl && Intl.DateTimeFormat && Intl.DateTimeFormat().resolvedOptions().timeZone) || '';
+    fields.language = n.language || '';
+    fields.hardwareConcurrency = n.hardwareConcurrency || 0;
+    fields.platform = detectPlatform();
+    fields.userAgent = n.userAgent || '';
 
-    fields.screenWxH = screen;
-    fields.timezone = tz;
-    fields.language = lang;
-    fields.hardwareConcurrency = hwConc;
-    fields.platform = platform;
-    fields.userAgent = userAgent;
-
-    // 综合指纹：把稳定的硬件信号 hash 一起，行为信号不进 hash
-    const composite = [
+    // 综合指纹：把稳定硬件信号 hash 一起，行为信号不进 hash
+    fields.fingerprintHash = hashStr([
       fields.canvasFingerprint, fields.webglRenderer, fields.audioContextHash,
       fields.fontHash, fields.pluginsHash, fields.codecHash,
       fields.screenWxH, fields.timezone, fields.language,
       fields.hardwareConcurrency, fields.platform, fields.userAgent,
       fields.deviceMemory, fields.pixelRatio, fields.colorDepth, fields.touchSupport,
-    ].join('|');
-    fields.fingerprintHash = hashStr(composite);
+    ].join('|'));
 
     // signalCoverage：ok 数 / 总数
     const total = Object.keys(status).length;
     let ok = 0;
     for (const k in status) if (status[k] === 'ok') ok++;
     return {
-      fields,
-      signalStatus: status,
+      fields, signalStatus: status,
       signalCoverage: { ok, total, ratio: total ? round(ok / total, 3) : 0 },
     };
   }
@@ -586,29 +558,26 @@
 
   // ─── 签名 hook + 网络 ──────────────────────────────────────────────
 
-  // 用 crypto.getRandomValues 生成 nonce；服务端要求 16 byte hex（32 字符）。
+  // 16 byte hex (32 chars) nonce —— 服务端 isHexLower 校验
   function genNonce() {
     const c = global.crypto || global.msCrypto;
     if (c && c.getRandomValues) {
-      const b = new Uint8Array(16);
-      c.getRandomValues(b);
+      const b = new Uint8Array(16); c.getRandomValues(b);
       let s = '';
       for (let i = 0; i < b.length; i++) s += ('0' + b[i].toString(16)).slice(-2);
       return s;
     }
-    // Fallback：性能不敏感场景下用 Math.random（不推荐生产，但好过 throw）
     let s = '';
     for (let i = 0; i < 32; i++) s += Math.floor(Math.random() * 16).toString(16);
     return s;
   }
 
-  // applySignature：调用用户传的 signRequest hook 拿 {timestamp, nonce, signature}，
-  // 写到 headers。hook 没传 → 不签；后端如果要求签名会返 401（SDK 走 fail-open
-  // 不阻塞 checkout，但会 console.warn 提示）。
+  // applySignature: 调用 signRequest hook 拿 {timestamp,nonce,signature} 写头；
+  // hook 没传时只写 merchant/ts/nonce，让后端在 signature_required=false 灰度时仍识别 merchant。
+  // 后端要求强校验时 → 401 时由 postSession 控台 warn 提示。
   async function applySignature(headers, body, sdkOpts) {
+    if (sdkOpts.merchantId) headers['X-Risk-Merchant-Id'] = sdkOpts.merchantId;
     if (typeof sdkOpts.signRequest !== 'function') {
-      // 没传 hook —— 自己造 ts + nonce 让后端 signature_required=false 时仍能识别 merchant
-      if (sdkOpts.merchantId) headers['X-Risk-Merchant-Id'] = sdkOpts.merchantId;
       headers['X-Risk-Timestamp'] = String(Date.now());
       headers['X-Risk-Nonce'] = genNonce();
       return;
@@ -616,12 +585,11 @@
     try {
       const out = await sdkOpts.signRequest(body);
       if (!out || !out.signature) throw new Error('signRequest returned no signature');
-      if (sdkOpts.merchantId) headers['X-Risk-Merchant-Id'] = sdkOpts.merchantId;
       headers['X-Risk-Timestamp'] = String(out.timestamp || Date.now());
       headers['X-Risk-Nonce'] = out.nonce || genNonce();
-      headers['X-Risk-Signature'] = out.signature.indexOf('sha256=') === 0 ? out.signature : ('sha256=' + out.signature);
+      headers['X-Risk-Signature'] = out.signature.indexOf('sha256=') === 0
+        ? out.signature : ('sha256=' + out.signature);
     } catch (e) {
-      // 让上层决定是否阻塞；这里只警告
       if (sdkOpts.debug) console.warn('[risk-sdk] signRequest failed', e);
     }
   }
@@ -634,8 +602,8 @@
       const resp = await fetch(url, { method: 'POST', headers, body: raw });
       if (!resp.ok) {
         if (resp.status === 401 && typeof sdkOpts.signRequest !== 'function') {
-          console.warn('[risk-sdk] server requires signed request but signRequest hook is not provided. ' +
-            'Implement a server-side signer (HMAC secret must NOT live in the browser) and pass it as init({signRequest}).');
+          console.warn('[risk-sdk] server requires signed request but signRequest hook missing. ' +
+            'Provide init({signRequest}) — HMAC secret MUST live on your server, not in browser.');
         }
         return '';
       }
@@ -651,14 +619,9 @@
 
   let _session = null;
 
-  /**
-   * init({ endpoint, merchantId, signRequest, debug }) → Promise<{ id, fingerprint, signalCoverage }>
-   *  endpoint    必填：服务端 session 创建 URL
-   *  merchantId  可选：商户 ID（带在 X-Risk-Merchant-Id 头，后端选 secret 验签）
-   *  signRequest 可选：async (body) => ({timestamp, nonce, signature})
-   *                   不传时，若后端启用强签名校验，会 401（SDK fail-open + console 提示）
-   *  debug       可选：true 打 console.debug
-   */
+  // init({endpoint, merchantId, signRequest, debug}) → {id, fingerprint, signalCoverage}
+  //   signRequest 可选：async (body) => ({timestamp,nonce,signature})
+  //   不传 → 后端要求强签名时 401（fail-open + 控台提示）
   async function init(opts) {
     if (!opts || !opts.endpoint) throw new Error('RiskSDK.init: endpoint required');
     const sdkOpts = {
@@ -672,20 +635,14 @@
     const collector = newCollector();
     _session = { fp, collector, opts: sdkOpts };
     bindGlobalListeners(collector);
-    const initial = {
-      sdk_version: VERSION,
-      ...fp.fields,
-      signalStatus: fp.signalStatus,
-      signalCoverage: fp.signalCoverage,
-    };
+    const initial = { sdk_version: VERSION, ...fp.fields,
+      signalStatus: fp.signalStatus, signalCoverage: fp.signalCoverage };
     const id = await postSession(sdkOpts.endpoint, initial, sdkOpts);
     _session.id = id;
     return { id, fingerprint: fp.fields, signalCoverage: fp.signalCoverage };
   }
 
-  /**
-   * attach(formEl) — submit 时把行为快照 POST 到 endpoint+'/finalize'。
-   */
+  // attach(formEl) — submit 时把行为快照 POST 到 endpoint+'/finalize'
   function attach(formEl) {
     if (!_session || !formEl) return;
     formEl.addEventListener('submit', async () => {
@@ -696,14 +653,9 @@
       const raw = JSON.stringify(body);
       await applySignature(headers, raw, _session.opts);
       try {
-        await fetch(_session.opts.endpoint + '/finalize', {
-          method: 'POST',
-          headers,
-          body: raw,
-          keepalive: true,
-        });
+        await fetch(_session.opts.endpoint + '/finalize',
+          { method: 'POST', headers, body: raw, keepalive: true });
       } catch (err) {
-        // fail-open：不阻断 checkout
         if (_session.opts.debug) console.warn('[risk-sdk] finalize failed', err);
       }
     });
@@ -720,19 +672,13 @@
 
   function sessionId() { return _session ? _session.id : ''; }
 
-  // 内部：暴露算法给测试用（node test 直接 require 时拿到）
-  const _internals = {
-    hashStr, round, avg, stddev, cv,
+  // 暴露算法给 node test（require 拿到内部函数）
+  const _internals = { hashStr, round, avg, stddev, cv,
     newMouseBuffer, newKeystrokeBuffer,
     PROBE_FONTS, CDC_PROBES, CODEC_TYPES,
-    SIGNAL_TIMEOUT_MS, MOUSE_BUF_MAX, MOUSE_WINDOW_MS, PAUSE_THRESHOLD_MS,
-  };
+    SIGNAL_TIMEOUT_MS, MOUSE_BUF_MAX, MOUSE_WINDOW_MS, PAUSE_THRESHOLD_MS };
 
   const api = { init, attach, sessionId, version: VERSION, _internals };
   global.RiskSDK = api;
-
-  // CommonJS export（让 node test 直接 require 拿到内部函数）
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = api;
-  }
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));

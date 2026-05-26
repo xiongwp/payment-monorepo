@@ -334,15 +334,20 @@ func makeFinalizeHandler(store Store, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 		var body struct {
-			SessionID            string   `json:"session_id"`
-			TimeToCheckoutMs     int64    `json:"timeToCheckoutMs"`
-			MouseMovementEntropy float64  `json:"mouseMovementEntropy"`
-			ClickIntervalMs      int      `json:"clickIntervalMs"`
-			ScrollSpeedPxPerSec  float64  `json:"scrollSpeedPxPerSec"`
-			TypingRhythmCV       float64  `json:"typingRhythmCV"`
-			KeystrokeCount       int      `json:"keystrokeCount"`
-			MouseMoves           int      `json:"mouseMoves"`
-			PastedFields         []string `json:"pastedFields"`
+			SessionID            string           `json:"session_id"`
+			TimeToCheckoutMs     int64            `json:"timeToCheckoutMs"`
+			MouseMovementEntropy float64          `json:"mouseMovementEntropy"`
+			ClickIntervalMs      int              `json:"clickIntervalMs"`
+			ScrollSpeedPxPerSec  float64          `json:"scrollSpeedPxPerSec"`
+			TypingRhythmCV       float64          `json:"typingRhythmCV"`
+			KeystrokeCount       int              `json:"keystrokeCount"`
+			MouseMoves           int              `json:"mouseMoves"`
+			PastedFields         []string         `json:"pastedFields"`
+			MouseTrajectory      *MouseTrajectory `json:"mouseTrajectory"`
+			KeystrokeDwellMean   float64          `json:"keystrokeDwellMean"`
+			KeystrokeDwellCV     float64          `json:"keystrokeDwellCV"`
+			KeystrokeFlightMean  float64          `json:"keystrokeFlightMean"`
+			KeystrokeFlightCV    float64          `json:"keystrokeFlightCV"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&body); err != nil {
 			http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
@@ -352,7 +357,9 @@ func makeFinalizeHandler(store Store, logger *zap.Logger) http.HandlerFunc {
 			http.Error(w, `{"error":"session_id required"}`, http.StatusBadRequest)
 			return
 		}
-		err := store.Finalize(body.SessionID, BehaviorPatch{
+		// 兼容老 SDK：未传 mouseTrajectory 但传了老 mouseMovementEntropy → 合成最小 trajectory
+		// 旧字段 keystrokeDwell* 为 0 时不强制 fallback；规则可用 ratio 检测覆盖率。
+		patch := BehaviorPatch{
 			TimeToCheckoutMs:     body.TimeToCheckoutMs,
 			MouseMovementEntropy: body.MouseMovementEntropy,
 			ClickIntervalMs:      body.ClickIntervalMs,
@@ -361,7 +368,13 @@ func makeFinalizeHandler(store Store, logger *zap.Logger) http.HandlerFunc {
 			KeystrokeCount:       body.KeystrokeCount,
 			MouseMoves:           body.MouseMoves,
 			PastedFields:         body.PastedFields,
-		})
+			MouseTrajectory:      body.MouseTrajectory,
+			KeystrokeDwellMean:   body.KeystrokeDwellMean,
+			KeystrokeDwellCV:     body.KeystrokeDwellCV,
+			KeystrokeFlightMean:  body.KeystrokeFlightMean,
+			KeystrokeFlightCV:    body.KeystrokeFlightCV,
+		}
+		err := store.Finalize(body.SessionID, patch)
 		if err != nil {
 			var nf ErrNotFound
 			if errors.As(err, &nf) {

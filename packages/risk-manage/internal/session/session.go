@@ -54,18 +54,70 @@ type Snapshot struct {
 	Platform            string `json:"platform,omitempty"`
 	UserAgent           string `json:"userAgent,omitempty"` // hex hash（NormalizeForStorage）
 
+	// 扩展硬件信号（SDK v0.2.0+ 上报；填到 TxnContext 对应字段）
+	FontHash       string  `json:"fontHash,omitempty"`
+	PluginsHash    string  `json:"pluginsHash,omitempty"`
+	DeviceMemory   float64 `json:"deviceMemory,omitempty"`
+	PixelRatio     float64 `json:"pixelRatio,omitempty"`
+	ColorDepth     int     `json:"colorDepth,omitempty"`
+	TouchSupport   int     `json:"touchSupport,omitempty"`
+	CodecHash      string  `json:"codecHash,omitempty"`
+	ConnectionType string  `json:"connectionType,omitempty"`
+	CookieEnabled  bool    `json:"cookieEnabled,omitempty"`
+	DoNotTrack     string  `json:"doNotTrack,omitempty"`
+
+	// 反自动化信号
+	Webdriver           bool     `json:"webdriver,omitempty"`
+	CDCGlobals          []string `json:"cdcGlobals,omitempty"`
+	ChromeRuntime       bool     `json:"chromeRuntime,omitempty"`
+	PermissionsMismatch bool     `json:"permissionsMismatch,omitempty"`
+	BatteryPresent      bool     `json:"batteryPresent,omitempty"`
+	WebRTCLocalIPs      []string `json:"webRTCLocalIPs,omitempty"`
+
+	// SDK 自身采集质量
+	SignalStatus   map[string]string `json:"signalStatus,omitempty"`
+	SignalCoverage *SignalCoverage   `json:"signalCoverage,omitempty"`
+
 	// Behavior
 	TimeToCheckoutMs     int64    `json:"timeToCheckoutMs,omitempty"`
-	MouseMovementEntropy float64  `json:"mouseMovementEntropy,omitempty"`
+	MouseMovementEntropy float64  `json:"mouseMovementEntropy,omitempty"` // 兼容老字段；等于 mouseTrajectory.trajectoryEntropy
 	ClickIntervalMs      int      `json:"clickIntervalMs,omitempty"`
 	ScrollSpeedPxPerSec  float64  `json:"scrollSpeedPxPerSec,omitempty"`
-	TypingRhythmCV       float64  `json:"typingRhythmCV,omitempty"`
+	TypingRhythmCV       float64  `json:"typingRhythmCV,omitempty"` // 兼容老字段；等于 keystrokeFlightCV
 	KeystrokeCount       int      `json:"keystrokeCount,omitempty"`
 	MouseMoves           int      `json:"mouseMoves,omitempty"`
 	PastedFields         []string `json:"pastedFields,omitempty"`
 
+	// v0.2 行为信号
+	MouseTrajectory     *MouseTrajectory `json:"mouseTrajectory,omitempty"`
+	KeystrokeDwellMean  float64          `json:"keystrokeDwellMean,omitempty"`
+	KeystrokeDwellCV    float64          `json:"keystrokeDwellCV,omitempty"`
+	KeystrokeFlightMean float64          `json:"keystrokeFlightMean,omitempty"`
+	KeystrokeFlightCV   float64          `json:"keystrokeFlightCV,omitempty"`
+
 	// IP 在收到 HTTP 请求时由 server 自动填（X-Forwarded-For 取一跳）
 	IPAddress string `json:"ipAddress,omitempty"`
+}
+
+// SignalCoverage SDK 端采集质量：多少信号成功 / 总数。
+// 端到端透传到 TxnContext.SignalCoverageRatio 便于规则 "<0.5 = 客户端环境异常"。
+type SignalCoverage struct {
+	OK    int     `json:"ok"`
+	Total int     `json:"total"`
+	Ratio float64 `json:"ratio"`
+}
+
+// MouseTrajectory 鼠标轨迹派生指标（newMouseBuffer.analyze 输出）。
+// 不持久化原始 (x,y,t) 点（privacy + 体积）；只存聚合统计。
+type MouseTrajectory struct {
+	Count                int     `json:"count"`
+	AvgSpeedPxPerMs      float64 `json:"avgSpeedPxPerMs"`
+	SpeedVariance        float64 `json:"speedVariance"`
+	AccelerationKurtosis float64 `json:"accelerationKurtosis"`
+	TrajectoryEntropy    float64 `json:"trajectoryEntropy"`
+	StraightnessRatio    float64 `json:"straightnessRatio"`
+	PauseCount           int     `json:"pauseCount"`
+	DurationMs           int64   `json:"durationMs"`
 }
 
 // Store session 持久化接口。
@@ -85,13 +137,20 @@ type Store interface {
 // BehaviorPatch finalize 时上报的字段子集。fingerprint 字段保持原样不动。
 type BehaviorPatch struct {
 	TimeToCheckoutMs     int64
-	MouseMovementEntropy float64
+	MouseMovementEntropy float64 // 老字段；下面 MouseTrajectory.TrajectoryEntropy 是同源
 	ClickIntervalMs      int
 	ScrollSpeedPxPerSec  float64
-	TypingRhythmCV       float64
+	TypingRhythmCV       float64 // 老字段；下面 KeystrokeFlightCV 是同源
 	KeystrokeCount       int
 	MouseMoves           int
 	PastedFields         []string
+
+	// v0.2.0 新增
+	MouseTrajectory     *MouseTrajectory
+	KeystrokeDwellMean  float64
+	KeystrokeDwellCV    float64
+	KeystrokeFlightMean float64
+	KeystrokeFlightCV   float64
 }
 
 // ErrNotFound finalize / get 时 id 不存在。
@@ -159,6 +218,11 @@ func (m *MemStore) Finalize(id string, b BehaviorPatch) error {
 	s.KeystrokeCount = b.KeystrokeCount
 	s.MouseMoves = b.MouseMoves
 	s.PastedFields = b.PastedFields
+	s.MouseTrajectory = b.MouseTrajectory
+	s.KeystrokeDwellMean = b.KeystrokeDwellMean
+	s.KeystrokeDwellCV = b.KeystrokeDwellCV
+	s.KeystrokeFlightMean = b.KeystrokeFlightMean
+	s.KeystrokeFlightCV = b.KeystrokeFlightCV
 	s.UpdatedAt = time.Now().UTC()
 	return nil
 }

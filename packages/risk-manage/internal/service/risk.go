@@ -1045,8 +1045,15 @@ func nonEmpty(prefix, value string) string {
 
 // fillSessionFields 把 SessionStore 拿到的 snapshot 填到 txn。已经填的非零值
 // 不覆盖（caller 显式传 > sdk 上报）。
+//
+// v0.2 SDK 扩展信号也在这里透传：plugins / deviceMemory / pixelRatio /
+// colorDepth / touchSupport / codecs / connectionType / cookieEnabled /
+// doNotTrack / webdriver / cdcGlobals / chromeRuntime / permissionsMismatch /
+// batteryPresent / webRTCLocalIPs / fontHash / signalCoverage / signalStatus +
+// mouseTrajectory 派生指标 + keystroke biometrics。这些字段在 engine.TxnContext
+// 上已经定义（部分原来是 "死字段"，等 SDK 上报后才落到规则可用）。
 func fillSessionFields(txn *engine.TxnContext, s *session.Snapshot) {
-	// fingerprint
+	// fingerprint（基础 8 信号）
 	if txn.FingerprintHash == "" {
 		txn.FingerprintHash = s.FingerprintHash
 	}
@@ -1080,7 +1087,60 @@ func fillSessionFields(txn *engine.TxnContext, s *session.Snapshot) {
 	if txn.IPAddress == "" {
 		txn.IPAddress = s.IPAddress
 	}
-	// behavior
+
+	// v0.2 扩展硬件 / 软件环境信号
+	if txn.FontHash == "" {
+		txn.FontHash = s.FontHash
+	}
+	if txn.PluginsHash == "" {
+		txn.PluginsHash = s.PluginsHash
+	}
+	if txn.DeviceMemory == 0 {
+		txn.DeviceMemory = s.DeviceMemory
+	}
+	if txn.PixelRatio == 0 {
+		txn.PixelRatio = s.PixelRatio
+	}
+	if txn.ColorDepth == 0 {
+		txn.ColorDepth = s.ColorDepth
+	}
+	if txn.TouchSupport == 0 {
+		txn.TouchSupport = s.TouchSupport
+	}
+	if txn.CodecHash == "" {
+		txn.CodecHash = s.CodecHash
+	}
+	if txn.ConnectionType == "" {
+		txn.ConnectionType = s.ConnectionType
+	}
+	if !txn.CookieEnabled {
+		txn.CookieEnabled = s.CookieEnabled
+	}
+	if txn.DoNotTrack == "" {
+		txn.DoNotTrack = s.DoNotTrack
+	}
+
+	// 反自动化信号
+	if !txn.Webdriver {
+		txn.Webdriver = s.Webdriver
+	}
+	if len(txn.CDCGlobals) == 0 {
+		txn.CDCGlobals = s.CDCGlobals
+	}
+	if !txn.ChromeRuntime {
+		txn.ChromeRuntime = s.ChromeRuntime
+	}
+	if !txn.PermissionsMismatch {
+		txn.PermissionsMismatch = s.PermissionsMismatch
+	}
+	if !txn.BatteryPresent {
+		txn.BatteryPresent = s.BatteryPresent
+	}
+	if len(txn.WebRTCLocalIPs) == 0 {
+		txn.WebRTCLocalIPs = s.WebRTCLocalIPs
+	}
+
+	// behavior（老字段）
 	if txn.TimeToCheckoutMs == 0 {
 		txn.TimeToCheckoutMs = s.TimeToCheckoutMs
 	}
@@ -1101,6 +1161,52 @@ func fillSessionFields(txn *engine.TxnContext, s *session.Snapshot) {
 	}
 	if len(txn.PastedFields) == 0 {
 		txn.PastedFields = s.PastedFields
+	}
+
+	// v0.2 mouseTrajectory 派生 → 拍平到 txn 顶层（规则 DSL 不嵌套读子对象）
+	if s.MouseTrajectory != nil {
+		mt := s.MouseTrajectory
+		if txn.MouseAvgSpeedPxPerMs == 0 {
+			txn.MouseAvgSpeedPxPerMs = mt.AvgSpeedPxPerMs
+		}
+		if txn.MouseSpeedVariance == 0 {
+			txn.MouseSpeedVariance = mt.SpeedVariance
+		}
+		if txn.MouseAccelerationKurtosis == 0 {
+			txn.MouseAccelerationKurtosis = mt.AccelerationKurtosis
+		}
+		if txn.MouseStraightnessRatio == 0 {
+			txn.MouseStraightnessRatio = mt.StraightnessRatio
+		}
+		if txn.MousePauseCount == 0 {
+			txn.MousePauseCount = mt.PauseCount
+		}
+		// 老 MouseMovementEntropy 字段没填时，用 trajectory entropy 兜底
+		if txn.MouseMovementEntropy == 0 {
+			txn.MouseMovementEntropy = mt.TrajectoryEntropy
+		}
+	}
+
+	// keystroke biometrics
+	if txn.KeystrokeDwellMean == 0 {
+		txn.KeystrokeDwellMean = s.KeystrokeDwellMean
+	}
+	if txn.KeystrokeDwellCV == 0 {
+		txn.KeystrokeDwellCV = s.KeystrokeDwellCV
+	}
+	if txn.KeystrokeFlightMean == 0 {
+		txn.KeystrokeFlightMean = s.KeystrokeFlightMean
+	}
+	if txn.KeystrokeFlightCV == 0 {
+		txn.KeystrokeFlightCV = s.KeystrokeFlightCV
+	}
+
+	// signal coverage / status —— 给 features extractor 算 SignalCoverage 用
+	if s.SignalCoverage != nil && txn.SignalCoverageRatio == 0 {
+		txn.SignalCoverageRatio = s.SignalCoverage.Ratio
+	}
+	if len(txn.SignalStatus) == 0 && len(s.SignalStatus) > 0 {
+		txn.SignalStatus = s.SignalStatus
 	}
 }
 

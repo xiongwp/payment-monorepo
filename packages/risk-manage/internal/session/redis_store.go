@@ -98,7 +98,18 @@ func (r *RedisStore) Finalize(id string, b BehaviorPatch) error {
 		"keystrokeCount":       b.KeystrokeCount,
 		"mouseMoves":           b.MouseMoves,
 		"pastedFields":         string(pasted),
+		"keystrokeDwellMean":   b.KeystrokeDwellMean,
+		"keystrokeDwellCV":     b.KeystrokeDwellCV,
+		"keystrokeFlightMean":  b.KeystrokeFlightMean,
+		"keystrokeFlightCV":    b.KeystrokeFlightCV,
 		"updated_at":           time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if b.MouseTrajectory != nil {
+		mt, err := json.Marshal(b.MouseTrajectory)
+		if err != nil {
+			return err
+		}
+		fields["mouseTrajectory"] = string(mt)
 	}
 	return r.rdb.HSet(ctx, sessKey(id), fields).Err()
 }

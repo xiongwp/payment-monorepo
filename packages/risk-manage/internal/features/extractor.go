@@ -15,6 +15,20 @@
 //   - 新模型训练复用同一套 extractor，避免训练 / 在线 skew
 //
 // 每个 extractor < 1ms（多数纯计算 + 内存 lookup）；并发跑成本小。
+//
+// 当前注册的 extractor（按典型 Chain 顺序）：
+//   TimeExtractor          时间特征（HourOfDay / IsBusinessHours 等）
+//   CurrencyConvertExtractor   币种归一（AmountUSD）
+//   CardFeatureExtractor   卡 BIN → CardBrand / CardFunding / CardCountry
+//   CustomerHistoryExtractor   客户聚合（LinkStore + Counter）
+//   SignalCoverageExtractor    web-sdk v0.2 信号覆盖率 + DirectAPICall 推断
+//
+// SDK v0.2.0 引入 25+ 信号 + SignalCoverage，TxnContext 上对应字段（FontHash /
+// WebRTCLocalIPs / BatteryPresent / DeviceMemory / PixelRatio / ColorDepth /
+// TouchSupport / Webdriver / CDCGlobals / ChromeRuntime / PermissionsMismatch /
+// MouseTrajectory 派生 / Keystroke biometrics）由 service.fillSessionFields
+// 在 Screen 入口透传，extractor 这一层只补 SignalCoverageRatio 重算 +
+// DirectAPICall 推断；不重复 SDK 已经算好的字段。
 package features
 
 import (

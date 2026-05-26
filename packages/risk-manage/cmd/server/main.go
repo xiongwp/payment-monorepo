@@ -361,13 +361,15 @@ func newABTracker(v *viper.Viper) *mlscore.ABTracker {
 }
 
 // newExtractors 特征提取链。按顺序执行，每个 extractor fail-open。
-// 顺序敏感：time → currency → card → customer_history（依赖前面字段的不能先跑）。
+// 顺序敏感：time → currency → card → customer_history → signal_coverage
+// （signal_coverage extractor 挂在末尾，前面字段都填完后再算 ratio + DirectAPICall）。
 func newExtractors(links store.LinkStore, counter store.Counter) features.Chain {
 	return features.Chain{
 		features.NewTimeExtractor(),
 		features.NewCurrencyExtractor(nil), // 用内置 default rates
 		features.NewCardExtractor(nil),     // 用内置 default BIN map
 		features.NewCustomerHistoryExtractor(links, counter),
+		features.NewSignalCoverageExtractor(),
 	}
 }
 

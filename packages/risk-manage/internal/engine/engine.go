@@ -276,6 +276,58 @@ type TxnContext struct {
 	// UAHash sha256(UserAgent) — 用于 ua_batch_register link_fanout pivot
 	UAHash string
 
+	// ── 端 SDK v0.2+ 扩展信号（fillSessionFields 从 Snapshot 透传）────
+	// PluginsHash navigator.plugins 列表 hash（headless 通常为空）
+	PluginsHash string
+	// DeviceMemory navigator.deviceMemory（GB）；0 = 未上报
+	DeviceMemory float64
+	// PixelRatio devicePixelRatio；headless 经常恰好 = 1（真机移动 2/3）
+	PixelRatio float64
+	// ColorDepth screen.colorDepth；headless 经常 24，真机也 24，主要用于聚合
+	ColorDepth int
+	// TouchSupport navigator.maxTouchPoints；> 0 = 触屏设备
+	TouchSupport int
+	// CodecHash MediaSource.isTypeSupported 探测集 hash
+	CodecHash string
+	// ConnectionType navigator.connection.effectiveType（4g / wifi / ...）
+	ConnectionType string
+	// CookieEnabled 浏览器报告允许 cookie；false = 隐身模式 / 拦截
+	CookieEnabled bool
+	// DoNotTrack '1' / '0' / 'unspecified'
+	DoNotTrack string
+
+	// 反自动化（强信号）
+	// Webdriver navigator.webdriver === true（Selenium / Puppeteer 默认 true）
+	Webdriver bool
+	// CDCGlobals chromedriver / selenium 注入的全局变量名列表（非空 = 强 bot 信号）
+	CDCGlobals []string
+	// ChromeRuntime typeof chrome !== 'undefined' && chrome.runtime（扩展环境）
+	ChromeRuntime bool
+	// PermissionsMismatch headless Chrome 经典裂痕：Permissions API 报 prompt
+	// 但 Notification.permission 报 denied
+	PermissionsMismatch bool
+
+	// 行为：鼠标轨迹派生指标
+	MouseAvgSpeedPxPerMs      float64
+	MouseSpeedVariance        float64
+	MouseAccelerationKurtosis float64
+	MouseStraightnessRatio    float64
+	MousePauseCount           int
+
+	// 行为：keystroke biometrics
+	KeystrokeDwellMean  float64
+	KeystrokeDwellCV    float64
+	KeystrokeFlightMean float64
+	KeystrokeFlightCV   float64
+
+	// SDK 自身采集质量
+	// SignalCoverageRatio = 成功信号数 / 总信号数，∈ [0, 1]。低 → 客户端
+	// 环境受限（adblock / headless / iframe sandbox），可作为弱信号叠加。
+	SignalCoverageRatio float64
+	// SignalStatus 每信号采集状态（'ok' / 'fail' / 'timeout' / 'unsupported'），
+	// 给规则做单点判断（如 canvas=fail → 真实浏览器极少；audio=timeout → 异常）
+	SignalStatus map[string]string
+
 	// ── 业务自定义 ─────────────────────────────────
 	Metadata map[string]string
 }
