@@ -635,6 +635,14 @@ func printOnnxPipelineGuide(modelVer string) {
 #      "ip_country_mismatch", "no_fingerprint", "headless_renderer",
 #      "low_concurrency", "rapid_checkout", "no_mouse_entropy",
 #      "bot_typing_rhythm", "no_keystrokes", "high_risk_country",
+#      # ML team: 下次训练请把行为生物识别 8 项数值特征 +
+#      # 2 项 indicator 一并喂模型；当前 LogisticService 已有先验权重。
+#      "mouse_avg_speed_px_per_ms", "mouse_speed_variance",
+#      "mouse_acceleration_kurtosis", "mouse_straightness_ratio",
+#      "mouse_pause_count",
+#      "keystroke_dwell_mean", "keystroke_dwell_cv",
+#      "keystroke_flight_mean", "keystroke_flight_cv",
+#      "bot_behavior_combo", "bot_straight_line",
 #    ]
 #    X = df[FEATURE_ORDER].values.astype("float32")
 #    y = df["outcome_label"].values

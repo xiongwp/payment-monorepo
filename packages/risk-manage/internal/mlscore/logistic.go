@@ -63,6 +63,14 @@ type FeatureWeights struct {
 	BotTypingRhythm   float64 // typing_rhythm_cv < 0.05 → 1（接近恒定）
 	NoKeystrokes      float64 // keystroke_count == 0 → 1
 	HighRiskCountry   float64 // country in {top fraud-rate iso} → 1
+
+	// ── 行为生物识别先验权重 ─────────────────────────────────
+	// 触发条件为 indicator 二值化（详见 Score() 中条件）；
+	// 数值上"中等偏强信号"0.5-0.7，跟 NoMouseEntropy / BotTypingRhythm 同档。
+	BotBehaviorCombo   float64 // pause_count=0 + keystroke_count>0
+	BotStraightLine    float64 // straightness_ratio > 0.95 + 有鼠标移动
+	LowMouseVariance   float64 // speed_variance < 0.001 + 有鼠标移动（恒速 bot）
+	BotKeystrokeRhythm float64 // dwell_cv < 0.05 + flight_cv < 0.05（机械式打字）
 }
 
 // 默认权重：先验校准。逻辑：
@@ -89,6 +97,14 @@ var defaultWeights = LogisticConfig{
 		BotTypingRhythm:   1.0,
 		NoKeystrokes:      0.4,
 		HighRiskCountry:   0.6,
+		// 行为生物识别先验：rapid_checkout / bot_typing_rhythm 已经覆盖
+		// 部分信号；这几条作为"轨迹 / dwell"维度补充，权重 0.5-0.7。
+		// BotBehaviorCombo 是任务里提的"PauseCount<1 + KeystrokeCount>0
+		// → +0.6"prior。其余三条同档级。
+		BotBehaviorCombo:   0.6,
+		BotStraightLine:    0.7,
+		LowMouseVariance:   0.5,
+		BotKeystrokeRhythm: 0.6,
 	},
 }
 
@@ -163,6 +179,22 @@ func (s *LogisticService) Score(_ context.Context, f Features) (Result, error) {
 	}
 	if highRiskCountries[strings.ToUpper(f.Country)] {
 		z += w.HighRiskCountry
+	}
+
+	// ── 行为生物识别先验条件 ──────────────────────────────────
+	// 仅在 SDK 上报了有意义数据时启动（防全 0 case 把每个无 SDK 用户当 bot）。
+	if f.MousePauseCount == 0 && f.KeystrokeCount > 0 {
+		z += w.BotBehaviorCombo
+	}
+	if f.MouseStraightnessRatio > 0.95 && f.MouseAvgSpeedPxPerMs > 0 {
+		z += w.BotStraightLine
+	}
+	if f.MouseSpeedVariance > 0 && f.MouseSpeedVariance < 0.001 && f.MouseAvgSpeedPxPerMs > 0 {
+		z += w.LowMouseVariance
+	}
+	if f.KeystrokeDwellCV > 0 && f.KeystrokeDwellCV < 0.05 &&
+		f.KeystrokeFlightCV > 0 && f.KeystrokeFlightCV < 0.05 {
+		z += w.BotKeystrokeRhythm
 	}
 
 	// Platt scaling：训练阶段拟合的 (A, B) 把 raw decision 映射回真实概率。

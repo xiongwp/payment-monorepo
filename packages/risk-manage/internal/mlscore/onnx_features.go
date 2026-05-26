@@ -115,6 +115,34 @@ func extractFeature(name string, f Features) (float32, bool) {
 		return boolToFloat32(f.KeystrokeCount == 0), true
 	case "high_risk_country":
 		return boolToFloat32(highRiskCountries[strings.ToUpper(f.Country)]), true
+
+	// ── 行为生物识别扩展（web-sdk v0.2+） ───────────────────────────
+	// 数值型直接喂；离线训练时 ML 团队可加分桶 / 标准化。
+	case "mouse_avg_speed_px_per_ms":
+		return float32(f.MouseAvgSpeedPxPerMs), true
+	case "mouse_speed_variance":
+		return float32(f.MouseSpeedVariance), true
+	case "mouse_acceleration_kurtosis":
+		return float32(f.MouseAccelerationKurtosis), true
+	case "mouse_straightness_ratio":
+		return float32(f.MouseStraightnessRatio), true
+	case "mouse_pause_count":
+		return float32(f.MousePauseCount), true
+	case "keystroke_dwell_mean":
+		return float32(f.KeystrokeDwellMean), true
+	case "keystroke_dwell_cv":
+		return float32(f.KeystrokeDwellCV), true
+	case "keystroke_flight_mean":
+		return float32(f.KeystrokeFlightMean), true
+	case "keystroke_flight_cv":
+		return float32(f.KeystrokeFlightCV), true
+	// 派生 indicator：行为信号"看着像 bot"的复合条件
+	case "bot_behavior_combo":
+		// PauseCount=0 + KeystrokeCount>0（"打了字但鼠标没停顿"）→ bot 强信号
+		return boolToFloat32(f.MousePauseCount == 0 && f.KeystrokeCount > 0), true
+	case "bot_straight_line":
+		// 直线度 > 0.95（异常直）+ 有鼠标移动 → bot 高度可疑
+		return boolToFloat32(f.MouseStraightnessRatio > 0.95 && f.MouseAvgSpeedPxPerMs > 0), true
 	}
 	// Extra 透传：feature name 形如 "extra.card_bin"
 	if strings.HasPrefix(name, "extra.") {

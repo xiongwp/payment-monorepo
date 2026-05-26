@@ -122,6 +122,11 @@ type MemLinkStore struct {
 	links    map[string]map[string]time.Time
 	linkMeta map[string]map[string]*edgeMeta
 	tags     map[string]map[string]time.Time
+	// simIndex SimHash 模糊指纹索引：simhash → 关联的 peer keys（含 last-seen）
+	// 跟 links 并行存（精确 sha256 / device key 走 links；fuzzy SimHash 走这里）。
+	// PeersBySimHash 线性扫这个 map（key 数即设备数；1M 内 < 20ms）。
+	// 超过规模换 LSH bucket（4-band × 16-bit prefix → 桶内再扫）。
+	simIndex map[uint64]map[string]time.Time
 }
 
 func NewMemLinkStore() *MemLinkStore {
@@ -129,6 +134,7 @@ func NewMemLinkStore() *MemLinkStore {
 		links:    make(map[string]map[string]time.Time),
 		linkMeta: make(map[string]map[string]*edgeMeta),
 		tags:     make(map[string]map[string]time.Time),
+		simIndex: make(map[uint64]map[string]time.Time),
 	}
 }
 
@@ -599,6 +605,109 @@ func (s *MemLinkStore) WeightedTagsWithin(ctx context.Context, a string, maxHops
 		}
 	}
 	return out
+}
+
+// ─── SimHash 模糊指纹索引 ──────────────────────────────────────────
+//
+// LinkStore 现有 device→customer 边走精确 device key（sha256 派生）。SimHash
+// 路径平行存：把 device 的 64-bit SimHash 当 key，dst peer 当 value 累加。
+// 命中查询 PeersBySimHash 线性扫所有 SimHash 桶，hamming 距离 <= threshold
+// 的桶全部 union。
+//
+// 设计权衡：
+//   - 不动 LinkStore interface（避免侵入 Neo4j / Nebula 实现）→ 仅在 MemLinkStore
+//     上加方法；调用方拿到具体类型或 type assertion。
+//   - 线性扫不分片：1M device 内 < 20ms 单查可接受；超规模换 LSH（TODO）。
+//   - 不走 linkMeta：SimHash 索引是 unweighted 路径（不需要 hopDecay / 多跳）。
+
+// LinkBySimHash 把 (simhash, dst) 入模糊索引。simhash == 0 (未计算 / 无信号)
+// 直接 no-op，避免 0-bucket 撞所有未识别设备。
+func (s *MemLinkStore) LinkBySimHash(_ context.Context, simhash uint64, dst string) {
+	if simhash == 0 || dst == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	bucket, ok := s.simIndex[simhash]
+	if !ok {
+		bucket = make(map[string]time.Time, 2)
+		s.simIndex[simhash] = bucket
+	}
+	if _, exists := bucket[dst]; !exists && len(bucket) >= linkMaxPeersPerKey {
+		evictExpired(bucket, now)
+		if len(bucket) >= linkMaxPeersPerKey {
+			return
+		}
+	}
+	bucket[dst] = now
+}
+
+// PeersBySimHash 线性扫 simIndex，hamming(query, bucket_key) <= threshold 的
+// 桶里全部 peer union 后返回。
+//
+// **性能注意**：当前是 O(N) 线性扫（N = simIndex 桶数）；
+//   - 1k device  < 1ms      生产 hot path 完全可接受
+//   - 100k device ~2ms      可接受
+//   - 1M device  ~15-20ms   接近 hot path 上限，仍 OK
+//   - >5M device           必须上 LSH（分 4 band × 16-bit prefix，每 band 内
+//                          完全相等才进一步比对，期望命中桶数 ~N/2^16）
+// 这里 TODO LSH；目前 risk-manage 单租户量级单查可控。
+//
+// 同 Peers，懒 GC 过期边（linkTTL）。
+//
+// threshold < 0 视为 0（仅精确匹配）；threshold > 64 cap 到 64。
+func (s *MemLinkStore) PeersBySimHash(_ context.Context, simhash uint64, threshold int, peerPrefix string) []string {
+	if simhash == 0 {
+		return nil
+	}
+	if threshold < 0 {
+		threshold = 0
+	}
+	if threshold > 64 {
+		threshold = 64
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-linkTTL)
+	seen := make(map[string]struct{})
+	// TODO(LSH): 当前 O(N) 扫所有 SimHash bucket；>1M 桶时换分段 LSH。
+	for bucketKey, bucket := range s.simIndex {
+		if hammingDist64(bucketKey, simhash) > threshold {
+			continue
+		}
+		for peer, t := range bucket {
+			if t.Before(cutoff) {
+				delete(bucket, peer)
+				continue
+			}
+			if peerPrefix != "" && !strings.HasPrefix(peer, peerPrefix) {
+				continue
+			}
+			seen[peer] = struct{}{}
+		}
+		// 空桶清理：避免长期持有空 map
+		if len(bucket) == 0 {
+			delete(s.simIndex, bucketKey)
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	return out
+}
+
+// hammingDist64 跟 fphash.HammingDistance 同；这里复制实现避免 store →
+// fphash 反向依赖（fphash 是叶子包，不能拉 store）。
+func hammingDist64(a, b uint64) int {
+	x := a ^ b
+	// 64-bit popcount（Brian Kernighan / table-free）
+	x = x - ((x >> 1) & 0x5555555555555555)
+	x = (x & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333)
+	x = (x + (x >> 4)) & 0x0f0f0f0f0f0f0f0f
+	return int((x * 0x0101010101010101) >> 56)
 }
 
 // GCDecayed 主动清除 weight < decayPruneThreshold 的边（admin endpoint /

@@ -44,12 +44,12 @@ func SimHash(pieces []string) uint64 {
 		return 0
 	}
 	var acc [64]int
-	any := false
+	seen := false
 	for _, p := range pieces {
 		if p == "" {
 			continue
 		}
-		any = true
+		seen = true
 		h := fnvHash64(p)
 		for i := 0; i < 64; i++ {
 			if h&(uint64(1)<<i) != 0 {
@@ -59,7 +59,7 @@ func SimHash(pieces []string) uint64 {
 			}
 		}
 	}
-	if !any {
+	if !seen {
 		return 0
 	}
 	var out uint64

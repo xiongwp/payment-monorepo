@@ -40,6 +40,18 @@ type Features struct {
 	TypingRhythmCV       float64
 	KeystrokeCount       int
 
+	// ── 行为生物识别扩展（web-sdk v0.2+ MouseTrajectory / Keystroke 派生）─
+	// 由 service.mlFeaturesFrom 从 TxnContext 拷入。SDK 没上报时全 0。
+	MouseAvgSpeedPxPerMs      float64 // 平均鼠标速度（px/ms）
+	MouseSpeedVariance        float64 // 鼠标速度方差；bot 通常很低（恒速）
+	MouseAccelerationKurtosis float64 // 加速度峭度；真实用户 > 3（pointy）
+	MouseStraightnessRatio    float64 // 轨迹直线度 ∈ [0,1]；bot 接近 1
+	MousePauseCount           int     // 鼠标停顿次数；真实 > 0，bot 常 = 0
+	KeystrokeDwellMean        float64 // 按键持续时间均值（ms）
+	KeystrokeDwellCV          float64 // 持续时间变异系数
+	KeystrokeFlightMean       float64 // 按键间隔均值（ms）
+	KeystrokeFlightCV         float64 // 按键间隔 CV
+
 	// Extra 业务侧自定义信号；推理服务按 key 取（如 "card_bin"、"card_country"）。
 	Extra map[string]string
 }

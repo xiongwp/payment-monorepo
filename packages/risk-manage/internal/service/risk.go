@@ -1275,7 +1275,19 @@ func mlFeaturesFrom(txn *engine.TxnContext) mlscore.Features {
 		ClickIntervalMs:      txn.ClickIntervalMs,
 		TypingRhythmCV:       txn.TypingRhythmCV,
 		KeystrokeCount:       txn.KeystrokeCount,
-		Extra:                txn.Metadata,
+
+		// 行为生物识别扩展（web-sdk v0.2+ 派生指标）
+		MouseAvgSpeedPxPerMs:      txn.MouseAvgSpeedPxPerMs,
+		MouseSpeedVariance:        txn.MouseSpeedVariance,
+		MouseAccelerationKurtosis: txn.MouseAccelerationKurtosis,
+		MouseStraightnessRatio:    txn.MouseStraightnessRatio,
+		MousePauseCount:           txn.MousePauseCount,
+		KeystrokeDwellMean:        txn.KeystrokeDwellMean,
+		KeystrokeDwellCV:          txn.KeystrokeDwellCV,
+		KeystrokeFlightMean:       txn.KeystrokeFlightMean,
+		KeystrokeFlightCV:         txn.KeystrokeFlightCV,
+
+		Extra: txn.Metadata,
 	}
 }
 
@@ -1300,6 +1312,16 @@ func driftFeaturesFrom(f mlscore.Features) map[string]float64 {
 		"click_interval_ms":      float64(f.ClickIntervalMs),
 		"typing_rhythm_cv":       f.TypingRhythmCV,
 		"keystroke_count":        float64(f.KeystrokeCount),
+		// 行为生物识别扩展（数值型；indicator 类不入 drift，drift 只看连续）
+		"mouse_avg_speed_px_per_ms":   f.MouseAvgSpeedPxPerMs,
+		"mouse_speed_variance":        f.MouseSpeedVariance,
+		"mouse_acceleration_kurtosis": f.MouseAccelerationKurtosis,
+		"mouse_straightness_ratio":    f.MouseStraightnessRatio,
+		"mouse_pause_count":           float64(f.MousePauseCount),
+		"keystroke_dwell_mean":        f.KeystrokeDwellMean,
+		"keystroke_dwell_cv":          f.KeystrokeDwellCV,
+		"keystroke_flight_mean":       f.KeystrokeFlightMean,
+		"keystroke_flight_cv":         f.KeystrokeFlightCV,
 	}
 }
 
