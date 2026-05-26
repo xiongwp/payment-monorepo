@@ -247,11 +247,40 @@ func fillActivation(m map[string]any, t *engine.TxnContext) {
 		"canvas": t.CanvasFingerprint, "webgl": t.WebGLRenderer,
 		"audio_hash": t.AudioContextHash, "rooted": t.DeviceRooted,
 		"battery_present": t.BatteryPresent, "font_hash": t.FontHash,
-		"screen": t.ScreenWxH, "ua_hash": t.UAHash}
+		"screen": t.ScreenWxH, "ua_hash": t.UAHash,
+		// web-sdk v0.2 扩展信号
+		"plugins_hash":         t.PluginsHash,
+		"device_memory":        t.DeviceMemory,
+		"pixel_ratio":          t.PixelRatio,
+		"color_depth":          t.ColorDepth,
+		"touch_support":        t.TouchSupport,
+		"codec_hash":           t.CodecHash,
+		"connection_type":      t.ConnectionType,
+		"cookie_enabled":       t.CookieEnabled,
+		"do_not_track":         t.DoNotTrack,
+		"webdriver":            t.Webdriver,
+		"cdc_globals":          stringSlice(t.CDCGlobals),
+		"chrome_runtime":       t.ChromeRuntime,
+		"permissions_mismatch": t.PermissionsMismatch,
+		"webrtc_local_ips":     stringSlice(t.WebRTCLocalIPs),
+		"signal_coverage":      t.SignalCoverageRatio,
+	}
 	m["behavior"] = map[string]any{"time_to_checkout_ms": t.TimeToCheckoutMs,
 		"mouse_entropy": t.MouseMovementEntropy, "click_interval_ms": t.ClickIntervalMs,
 		"scroll_speed": t.ScrollSpeedPxPerSec, "typing_cv": t.TypingRhythmCV,
-		"keystroke_count": t.KeystrokeCount, "pasted_fields": stringSlice(t.PastedFields)}
+		"keystroke_count": t.KeystrokeCount, "pasted_fields": stringSlice(t.PastedFields),
+		// v0.2 mouse trajectory 派生
+		"mouse_avg_speed":            t.MouseAvgSpeedPxPerMs,
+		"mouse_speed_variance":       t.MouseSpeedVariance,
+		"mouse_acceleration_kurt":    t.MouseAccelerationKurtosis,
+		"mouse_straightness":         t.MouseStraightnessRatio,
+		"mouse_pause_count":          t.MousePauseCount,
+		// v0.2 keystroke biometrics
+		"keystroke_dwell_mean":   t.KeystrokeDwellMean,
+		"keystroke_dwell_cv":     t.KeystrokeDwellCV,
+		"keystroke_flight_mean":  t.KeystrokeFlightMean,
+		"keystroke_flight_cv":    t.KeystrokeFlightCV,
+	}
 	m["card"] = map[string]any{"brand": t.CardBrand, "funding": t.CardFunding,
 		"country": t.CardCountry, "commercial": t.CardCommercial}
 	m["threeds"] = map[string]any{"authenticated": t.ThreeDSAuthenticated, "result": t.ThreeDSResult}
