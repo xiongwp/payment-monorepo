@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS risk.risk_decision_audit (
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMM(occurred_at)
 ORDER BY (merchant_id, occurred_at)
-TTL occurred_at + INTERVAL 730 DAY;
+-- TTL 表达式必须返回 Date / DateTime；DateTime64 在 CH 24.3+ 严格校验下不再隐式收敛。
+-- toDate() 把纳秒精度降到天级；TTL 本来就是按天淘汰，精度足够。
+TTL toDate(occurred_at) + INTERVAL 730 DAY;
 
 -- ── Kafka engine 表 (从 risk.decision.v1 topic 拉 + materialize 进主表) ─
 -- 高峰期写入解耦；生产可只走这条路径不让 risk-manage 直连 CH。
