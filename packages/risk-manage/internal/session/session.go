@@ -74,6 +74,20 @@ type Snapshot struct {
 	BatteryPresent      bool     `json:"batteryPresent,omitempty"`
 	WebRTCLocalIPs      []string `json:"webRTCLocalIPs,omitempty"`
 
+	// Mobile attestation + 反 hook（iOS/Android SDK 上报；v0.3）
+	IsJailbroken        bool   `json:"isJailbroken,omitempty"`
+	IsEmulator          bool   `json:"isEmulator,omitempty"`
+	FridaDetected       bool   `json:"fridaDetected,omitempty"`
+	XposedDetected      bool   `json:"xposedDetected,omitempty"`
+	DebuggerAttached    bool   `json:"debuggerAttached,omitempty"`
+	AppAttestToken      string `json:"appAttestToken,omitempty"`     // base64 attestation object
+	AppAttestKeyID      string `json:"appAttestKeyId,omitempty"`     // base64
+	AppAttestAssertion  string `json:"appAttestAssertion,omitempty"` // 后续启动用 assertion
+	DeviceCheckToken    string `json:"deviceCheckToken,omitempty"`   // base64
+	PlayIntegrityToken  string `json:"playIntegrityToken,omitempty"` // JWE
+	AttestationVerified bool   `json:"attestationVerified,omitempty"`
+	AttestationKind     string `json:"attestationKind,omitempty"`
+
 	// SDK 自身采集质量
 	SignalStatus   map[string]string `json:"signalStatus,omitempty"`
 	SignalCoverage *SignalCoverage   `json:"signalCoverage,omitempty"`
@@ -151,6 +165,13 @@ type BehaviorPatch struct {
 	KeystrokeDwellCV    float64
 	KeystrokeFlightMean float64
 	KeystrokeFlightCV   float64
+
+	// v0.3 mobile attestation：finalize 时 SDK 可补传 token / assertion
+	// （初次 Create 时 token 还没到位的情况）。空值不覆盖 Create 时已存的字段。
+	PlayIntegrityToken string
+	AppAttestAssertion string
+	AppAttestKeyID     string
+	DeviceCheckToken   string
 }
 
 // ErrNotFound finalize / get 时 id 不存在。
@@ -223,6 +244,20 @@ func (m *MemStore) Finalize(id string, b BehaviorPatch) error {
 	s.KeystrokeDwellCV = b.KeystrokeDwellCV
 	s.KeystrokeFlightMean = b.KeystrokeFlightMean
 	s.KeystrokeFlightCV = b.KeystrokeFlightCV
+	// attestation：finalize 时 SDK 可能补传（Create 那次 token 还在拉）；
+	// 非空才覆盖避免清掉 Create 时已写入的值。
+	if b.PlayIntegrityToken != "" {
+		s.PlayIntegrityToken = b.PlayIntegrityToken
+	}
+	if b.AppAttestAssertion != "" {
+		s.AppAttestAssertion = b.AppAttestAssertion
+	}
+	if b.AppAttestKeyID != "" {
+		s.AppAttestKeyID = b.AppAttestKeyID
+	}
+	if b.DeviceCheckToken != "" {
+		s.DeviceCheckToken = b.DeviceCheckToken
+	}
 	s.UpdatedAt = time.Now().UTC()
 	return nil
 }

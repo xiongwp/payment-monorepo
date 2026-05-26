@@ -259,6 +259,42 @@ type TxnContext struct {
 	BatteryPresent bool
 	// DeviceRooted iOS 越狱 / Android root 标记（SDK 检测）
 	DeviceRooted bool
+	// IsJailbroken iOS 越狱信号；语义上是 DeviceRooted 的 iOS 别名，但客户端
+	// SDK 也单独上报便于规则按平台分别 weight（iOS 越狱率 < Android root）。
+	// 端侧字段直传，DeviceRooted = IsJailbroken || IsAndroidRooted。
+	IsJailbroken bool
+	// IsEmulator 模拟器 / virtual device 标记（iOS Simulator / Android Genymotion
+	// / Bluestacks / Nox / LDPlayer 等）。规则常配：emulator + 大额支付 = REVIEW。
+	IsEmulator bool
+	// FridaDetected 端 SDK 检测到 Frida / FridaGadget 注入（dyld / proc/self/maps
+	// 扫到 frida-agent / re.frida.server）。strong bot / 自动化 / 篡改信号。
+	FridaDetected bool
+	// XposedDetected Android Xposed / LSPosed 注入。同 FridaDetected 强信号。
+	XposedDetected bool
+	// DebuggerAttached SDK 启动时检测到调试器附加（iOS sysctl P_TRACED；
+	// Android /proc/self/status TracerPid != 0）。生产 app 不该被调试。
+	DebuggerAttached bool
+	// AppAttestToken iOS App Attest attestation object（base64）。由后端
+	// internal/attestation/apple_appattest.go 验 X.509 cert chain + CBOR。
+	// 仅在 iOS 14+ 且首次启动时上报，后续启动用 AppAttestAssertion。
+	AppAttestToken string
+	// AppAttestKeyID App Attest 生成的 keyId（base64）。后端验签需要。
+	AppAttestKeyID string
+	// DeviceCheckToken iOS DeviceCheck token（base64）。后端调 Apple Server-to-Server
+	// API（POST /v1/validate_device_token）验签；轻量级 attestation，iOS 11+。
+	DeviceCheckToken string
+	// PlayIntegrityToken Android Play Integrity API integrityToken（JWE）。
+	// 后端用 service account 调 Google Play Developer API decode，得到
+	// deviceIntegrity / appIntegrity / accountDetails 三项判定。
+	PlayIntegrityToken string
+	// AttestationVerified 后端验签通过 = true；空 token / 验签失败 = false。
+	// fail-soft 模式下不直接拒，规则可加 weight；RISK_ATTESTATION_REQUIRED=true
+	// 时 false → 直接 DENY（service.Screen 入口短路）。
+	AttestationVerified bool
+	// AttestationKind 实际生效的 attestation 类型：
+	//   "device_check" / "app_attest" / "play_integrity" / "" (未上报)
+	// 用于 audit + 规则按 kind 区分权重。
+	AttestationKind string
 	// FontHash 字体列表 sha256（指纹维度之一；批量设备字体一致）
 	FontHash string
 	// WebRTCLocalIPs WebRTC 暴露的真实 LAN IP 列表；跟 IPAddress 不一致 → VPN/代理

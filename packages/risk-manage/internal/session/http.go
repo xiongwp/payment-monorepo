@@ -17,6 +17,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/xiongwp/risk-manage/internal/attestation"
 	"github.com/xiongwp/risk-manage/internal/auth"
 )
 
@@ -60,9 +61,24 @@ func RegisterHandlersFull(
 	roleWrap func(http.Handler) http.Handler,
 	logger *zap.Logger,
 ) {
+	RegisterHandlersWithAttest(mux, store, secrets, nil, roleWrap, logger)
+}
+
+// RegisterHandlersWithAttest RegisterHandlersFull + attestation Verifier。
+// attest=nil → 不做 mobile attestation 验签（兼容旧 main.go wire）。
+// attest 非 nil → Create / Finalize 接到 attestation_* 字段后路由到 verifier，
+// 验签结果写到 Snapshot.AttestationVerified + AttestationKind。
+func RegisterHandlersWithAttest(
+	mux *http.ServeMux,
+	store Store,
+	secrets auth.SecretLookup,
+	attest *attestation.Verifier,
+	roleWrap func(http.Handler) http.Handler,
+	logger *zap.Logger,
+) {
 	verifier := newSigVerifier(secrets, logger)
-	mux.HandleFunc("/v1/risk/session", verifier.wrap(makeCreateHandler(store, logger)))
-	mux.HandleFunc("/v1/risk/session/finalize", verifier.wrap(makeFinalizeHandler(store, logger)))
+	mux.HandleFunc("/v1/risk/session", verifier.wrap(makeCreateHandler(store, attest, logger)))
+	mux.HandleFunc("/v1/risk/session/finalize", verifier.wrap(makeFinalizeHandler(store, attest, logger)))
 	var erase http.Handler = makeEraseHandler(store, logger)
 	if roleWrap != nil {
 		erase = roleWrap(erase)
@@ -301,7 +317,7 @@ func merchantIDFrom(ctx context.Context) string {
 
 // ─── handlers ──────────────────────────────────────────────────────────
 
-func makeCreateHandler(store Store, logger *zap.Logger) http.HandlerFunc {
+func makeCreateHandler(store Store, attest *attestation.Verifier, logger *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -317,6 +333,27 @@ func makeCreateHandler(store Store, logger *zap.Logger) http.HandlerFunc {
 		if mid := merchantIDFrom(r.Context()); mid != "" {
 			body.MerchantID = mid
 		}
+		// mobile attestation 验签（fail-soft：失败不阻塞 session 创建，记 metric/log）。
+		// 真接入 Apple/Google 走 //go:build attest；默认 stub 信任 client。
+		if attest != nil {
+			req := buildAttestRequest(&body)
+			if req.Kind != attestation.KindNone {
+				res := attest.Verify(r.Context(), req)
+				body.AttestationVerified = res.Verified
+				body.AttestationKind = string(res.Kind)
+				if !res.Verified {
+					logger.Warn("attestation verify failed",
+						zap.String("kind", string(res.Kind)),
+						zap.String("reason", res.Reason),
+						zap.String("merchant_id", body.MerchantID),
+					)
+					if attest.IsAttestationRequired() {
+						http.Error(w, `{"error":"attestation required"}`, http.StatusForbidden)
+						return
+					}
+				}
+			}
+		}
 		id, err := store.Create(body)
 		if err != nil {
 			logger.Warn("session create failed", zap.Error(err))
@@ -324,6 +361,32 @@ func makeCreateHandler(store Store, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"session_id": id})
+	}
+}
+
+// buildAttestRequest 从 SDK 上报 Snapshot 拼出 attestation.Request。
+// AttestationKind 决定走哪条验签路径；若 SDK 没填 kind 但有 token，按 token
+// 类型推断（App Attest > DeviceCheck > PlayIntegrity）。
+func buildAttestRequest(s *Snapshot) attestation.Request {
+	kind := attestation.Kind(s.AttestationKind)
+	if kind == attestation.KindNone {
+		switch {
+		case s.AppAttestToken != "" || s.AppAttestKeyID != "":
+			kind = attestation.KindAppAttest
+		case s.DeviceCheckToken != "":
+			kind = attestation.KindDeviceCheck
+		case s.PlayIntegrityToken != "":
+			kind = attestation.KindPlayIntegrity
+		}
+	}
+	return attestation.Request{
+		Platform:           s.Platform,
+		Kind:               kind,
+		DeviceCheckToken:   s.DeviceCheckToken,
+		AppAttestToken:     s.AppAttestToken,
+		AppAttestKeyID:     s.AppAttestKeyID,
+		AppAttestAssertion: s.AppAttestAssertion,
+		PlayIntegrityToken: s.PlayIntegrityToken,
 	}
 }
 
