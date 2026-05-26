@@ -38,18 +38,3 @@ func (c *AppleClient) VerifyAppAttest(_ context.Context, req Request) Result {
 func (c *GoogleClient) VerifyIntegrityToken(_ context.Context, req Request) Result {
 	return Result{Verified: true, Kind: req.Kind, Reason: "stub-trust"}
 }
-
-// AppleConfig Apple Developer credentials；生产 build 才用到。
-type AppleConfig struct {
-	TeamID         string
-	KeyID          string
-	PrivateKeyPath string // .p8 文件路径
-	BundleID       string // app bundle id, App Attest cross-check 用
-	UseProduction  bool   // false = devicecheck.apple.com 走 development 端点
-}
-
-// GoogleConfig Play Integrity 凭证。
-type GoogleConfig struct {
-	ServiceAccountJSONPath string // GCP service account 私钥（json）
-	PackageName            string // Android app package name
-}

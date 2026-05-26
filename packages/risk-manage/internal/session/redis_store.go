@@ -111,6 +111,20 @@ func (r *RedisStore) Finalize(id string, b BehaviorPatch) error {
 		}
 		fields["mouseTrajectory"] = string(mt)
 	}
+	// v0.3 attestation：finalize 时 SDK 补传 token / assertion；空值不写
+	// 保留 Create 时落库的字段。
+	if b.PlayIntegrityToken != "" {
+		fields["playIntegrityToken"] = b.PlayIntegrityToken
+	}
+	if b.AppAttestAssertion != "" {
+		fields["appAttestAssertion"] = b.AppAttestAssertion
+	}
+	if b.AppAttestKeyID != "" {
+		fields["appAttestKeyId"] = b.AppAttestKeyID
+	}
+	if b.DeviceCheckToken != "" {
+		fields["deviceCheckToken"] = b.DeviceCheckToken
+	}
 	return r.rdb.HSet(ctx, sessKey(id), fields).Err()
 }
 

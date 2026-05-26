@@ -1208,6 +1208,45 @@ func fillSessionFields(txn *engine.TxnContext, s *session.Snapshot) {
 	if len(txn.SignalStatus) == 0 && len(s.SignalStatus) > 0 {
 		txn.SignalStatus = s.SignalStatus
 	}
+
+	// v0.3 mobile attestation + 反 hook（iOS/Android SDK 上报）
+	if !txn.IsJailbroken {
+		txn.IsJailbroken = s.IsJailbroken
+	}
+	if !txn.IsEmulator {
+		txn.IsEmulator = s.IsEmulator
+	}
+	if !txn.FridaDetected {
+		txn.FridaDetected = s.FridaDetected
+	}
+	if !txn.XposedDetected {
+		txn.XposedDetected = s.XposedDetected
+	}
+	if !txn.DebuggerAttached {
+		txn.DebuggerAttached = s.DebuggerAttached
+	}
+	if txn.AppAttestToken == "" {
+		txn.AppAttestToken = s.AppAttestToken
+	}
+	if txn.AppAttestKeyID == "" {
+		txn.AppAttestKeyID = s.AppAttestKeyID
+	}
+	if txn.DeviceCheckToken == "" {
+		txn.DeviceCheckToken = s.DeviceCheckToken
+	}
+	if txn.PlayIntegrityToken == "" {
+		txn.PlayIntegrityToken = s.PlayIntegrityToken
+	}
+	if !txn.AttestationVerified {
+		txn.AttestationVerified = s.AttestationVerified
+	}
+	if txn.AttestationKind == "" {
+		txn.AttestationKind = s.AttestationKind
+	}
+	// DeviceRooted 统一兜底：iOS 越狱 OR Android root
+	if !txn.DeviceRooted {
+		txn.DeviceRooted = s.IsJailbroken
+	}
 }
 
 // mlFeaturesFrom 把 TxnContext 的关键字段拷到 ML Features。Extra 透传 metadata。

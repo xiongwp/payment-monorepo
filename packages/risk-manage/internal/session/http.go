@@ -390,7 +390,7 @@ func buildAttestRequest(s *Snapshot) attestation.Request {
 	}
 }
 
-func makeFinalizeHandler(store Store, logger *zap.Logger) http.HandlerFunc {
+func makeFinalizeHandler(store Store, attest *attestation.Verifier, logger *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -411,6 +411,12 @@ func makeFinalizeHandler(store Store, logger *zap.Logger) http.HandlerFunc {
 			KeystrokeDwellCV     float64          `json:"keystrokeDwellCV"`
 			KeystrokeFlightMean  float64          `json:"keystrokeFlightMean"`
 			KeystrokeFlightCV    float64          `json:"keystrokeFlightCV"`
+			// v0.3 attestation：finalize 时 SDK 补传（Create 时 token 可能还没拉到）
+			PlayIntegrityToken string `json:"playIntegrityToken"`
+			AppAttestAssertion string `json:"appAttestAssertion"`
+			AppAttestKeyID     string `json:"appAttestKeyId"`
+			DeviceCheckToken   string `json:"deviceCheckToken"`
+			AttestationKind    string `json:"attestationKind"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&body); err != nil {
 			http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
@@ -436,6 +442,35 @@ func makeFinalizeHandler(store Store, logger *zap.Logger) http.HandlerFunc {
 			KeystrokeDwellCV:     body.KeystrokeDwellCV,
 			KeystrokeFlightMean:  body.KeystrokeFlightMean,
 			KeystrokeFlightCV:    body.KeystrokeFlightCV,
+			PlayIntegrityToken:   body.PlayIntegrityToken,
+			AppAttestAssertion:   body.AppAttestAssertion,
+			AppAttestKeyID:       body.AppAttestKeyID,
+			DeviceCheckToken:     body.DeviceCheckToken,
+		}
+		// finalize 阶段若 SDK 补传新 attestation token，再跑一次验签
+		// （Create 阶段验过的不会重复算，因为补传字段空就不路由）。
+		if attest != nil && (body.PlayIntegrityToken != "" || body.AppAttestAssertion != "" || body.DeviceCheckToken != "") {
+			snapForReq := &Snapshot{
+				PlayIntegrityToken: body.PlayIntegrityToken,
+				AppAttestAssertion: body.AppAttestAssertion,
+				AppAttestKeyID:     body.AppAttestKeyID,
+				DeviceCheckToken:   body.DeviceCheckToken,
+				AttestationKind:    body.AttestationKind,
+			}
+			req := buildAttestRequest(snapForReq)
+			if req.Kind != attestation.KindNone {
+				res := attest.Verify(r.Context(), req)
+				if !res.Verified {
+					logger.Warn("attestation finalize verify failed",
+						zap.String("session_id", body.SessionID),
+						zap.String("kind", string(res.Kind)),
+						zap.String("reason", res.Reason))
+					if attest.IsAttestationRequired() {
+						http.Error(w, `{"error":"attestation required"}`, http.StatusForbidden)
+						return
+					}
+				}
+			}
 		}
 		err := store.Finalize(body.SessionID, patch)
 		if err != nil {

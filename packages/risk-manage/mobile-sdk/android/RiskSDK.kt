@@ -224,14 +224,15 @@ object RiskSDK {
     private fun readTracerPid(): Int {
         return try {
             BufferedReader(FileReader("/proc/self/status")).use { br ->
-                var line: String?
-                while (br.readLine().also { line = it } != null) {
-                    val l = line ?: continue
+                var result = 0
+                while (true) {
+                    val l = br.readLine() ?: break
                     if (l.startsWith("TracerPid:")) {
-                        return l.substringAfter(":").trim().toIntOrNull() ?: 0
+                        result = l.substringAfter(":").trim().toIntOrNull() ?: 0
+                        break
                     }
                 }
-                0
+                result
             }
         } catch (_: Exception) { 0 }
     }
@@ -280,9 +281,9 @@ object RiskSDK {
         // 扫 /proc/self/maps（仅本进程内存映射；无需 root 权限）
         try {
             BufferedReader(FileReader("/proc/self/maps")).use { br ->
-                var line: String?
-                while (br.readLine().also { line = it } != null) {
-                    val l = (line ?: continue).lowercase()
+                while (true) {
+                    val raw = br.readLine() ?: break
+                    val l = raw.lowercase()
                     if (l.contains("frida") || l.contains("gum-js-loop") ||
                         l.contains("gmain") || l.contains("linjector")) {
                         return true

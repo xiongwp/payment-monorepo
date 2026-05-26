@@ -198,6 +198,15 @@ type TxnContext struct {
 	CustomerDistinctDevices90d int
 	// CustomerDistinctIPs90d 过去 90 天用过的不同 IP 数（>10 可疑）
 	CustomerDistinctIPs90d int
+	// DeviceDistinctCustomers90d 反向：该设备在过去 90 天关联的去重 customer 数。
+	// device 共用（家庭 / 公共终端）一般 1-3；fraud ring 一台机器跑很多账号 >5 强信号。
+	// 由 DeviceGraphExtractor 通过 LinkStore.Peers(device:X, "customer:") 算出。
+	DeviceDistinctCustomers90d int
+	// DeviceFingerprintSimHash 端 SDK 指纹各信号字符串拼接后的 64-bit SimHash。
+	// 浏览器小版本升级 / 字体加减 / 插件变化会让精确 sha256 全 mismatch；SimHash
+	// 距离 <= 8 视为同设备。FingerprintHash（sha256）做精确匹配；SimHash 做模糊匹配。
+	// 0 = 未计算 / 信号全空。
+	DeviceFingerprintSimHash uint64
 
 	// ── 3DS / SCA 认证上下文 ─────────────────────────
 	// ThreeDSAuthenticated 本笔已通过 3DS（liability shift 已发生 → 商户责任移交银行）

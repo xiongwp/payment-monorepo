@@ -264,6 +264,14 @@ func fillActivation(m map[string]any, t *engine.TxnContext) {
 		"permissions_mismatch": t.PermissionsMismatch,
 		"webrtc_local_ips":     stringSlice(t.WebRTCLocalIPs),
 		"signal_coverage":      t.SignalCoverageRatio,
+		// mobile v0.3 attestation + 反 hook（iOS/Android SDK 上报）
+		"jailbroken":           t.IsJailbroken,
+		"emulator":             t.IsEmulator,
+		"frida_detected":       t.FridaDetected,
+		"xposed_detected":      t.XposedDetected,
+		"debugger_attached":    t.DebuggerAttached,
+		"attestation_verified": t.AttestationVerified,
+		"attestation_kind":     t.AttestationKind,
 	}
 	m["behavior"] = map[string]any{"time_to_checkout_ms": t.TimeToCheckoutMs,
 		"mouse_entropy": t.MouseMovementEntropy, "click_interval_ms": t.ClickIntervalMs,

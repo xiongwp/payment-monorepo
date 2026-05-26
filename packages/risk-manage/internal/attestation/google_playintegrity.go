@@ -42,17 +42,12 @@ import (
 )
 
 // GoogleClient Play Integrity decode 客户端。
+// GoogleConfig 在 config.go（无 build tag）共享。
 type GoogleClient struct {
 	cfg        GoogleConfig
 	logger     *zap.Logger
 	tokenSrc   oauth2.TokenSource
 	httpClient *http.Client
-}
-
-// GoogleConfig 凭证 + 目标 package。
-type GoogleConfig struct {
-	ServiceAccountJSONPath string
-	PackageName            string
 }
 
 // NewGoogleClient 读 service account JSON → 取 oauth2 token source。

@@ -39,12 +39,15 @@ package attestation
 
 import (
 	"context"
+	cryptoRand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"fmt"
 
 	"go.uber.org/zap"
 )
+
+// cryptoRandImpl wraps crypto/rand.Read so randomRead() can mock in tests.
+var cryptoRandImpl = cryptoRand.Read
 
 // VerifyAppAttest 验首次 attestation 或后续 assertion。
 //
@@ -125,24 +128,8 @@ func (c *AppleClient) verifyAssertion(req Request) (bool, string) {
 	return true, "assertion-stub-pass"
 }
 
-// randomRead 桥接到 crypto/rand.Read，避免循环依赖。
+// randomRead 桥接 crypto/rand.Read（仅 attest tag 下编译）。
+// apple_devicecheck.go 用它做 transaction_id 防 Apple 端去重误判。
 func randomRead(b []byte) (int, error) {
-	// 用 crypto/rand 而非 math/rand
-	return _cryptoRandRead(b)
-}
-
-// 内部封装：把 crypto/rand 包成 var 便于测试 monkeypatch；生产路径直接调。
-var _cryptoRandRead = func(b []byte) (int, error) {
-	return base64ZeroFill(b), nil
-}
-
-// base64ZeroFill 默认填随机；真接入 build 时应换成 crypto/rand.Read。
-// 此处给 stub build 不会用到（apple_devicecheck.go 仅在 attest tag 下）；
-// 但保留以编译通过。
-func base64ZeroFill(b []byte) int {
-	for i := range b {
-		b[i] = byte(i * 31)
-	}
-	_ = fmt.Sprintf // 防 import 被精简
-	return len(b)
+	return cryptoRandImpl(b)
 }

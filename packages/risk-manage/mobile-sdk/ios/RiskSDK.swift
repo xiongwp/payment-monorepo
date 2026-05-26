@@ -38,6 +38,9 @@ import DeviceCheck
 #if canImport(MachO)
 import MachO
 #endif
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
 import Darwin
 
 public final class RiskSDK {
@@ -362,9 +365,15 @@ public final class RiskSDK {
     #endif
 
     private func sha256(_ data: Data) -> Data {
+        #if canImport(CryptoKit)
+        if #available(iOS 13.0, *) {
+            return Data(SHA256.hash(data: data))
+        }
+        #endif
+        // 老 iOS 12 兜底：CommonCrypto 直接绑 symbol，避免 module map 依赖。
         var digest = [UInt8](repeating: 0, count: 32)
         data.withUnsafeBytes { buf in
-            CC_SHA256_RiskSDK(buf.baseAddress, CC_LONG(data.count), &digest)
+            _ = CC_SHA256_RiskSDK(buf.baseAddress, CC_LONG(data.count), &digest)
         }
         return Data(digest)
     }

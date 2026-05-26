@@ -46,21 +46,14 @@ import (
 )
 
 // AppleClient Apple DeviceCheck / App Attest 客户端。
+// AppleConfig / GoogleConfig 类型定义在 clients_stub.go（无 build tag 时也存在），
+// 这里只重新声明字段化的 struct（attest tag 下 stub 的 struct 被替换为本 struct）。
 type AppleClient struct {
 	cfg        AppleConfig
 	logger     *zap.Logger
 	privateKey *ecdsa.PrivateKey // 启动期从 .p8 解析；后续签 JWT 重用
 	endpoint   string
 	httpClient *http.Client
-}
-
-// AppleConfig Apple Developer 凭证。
-type AppleConfig struct {
-	TeamID         string
-	KeyID          string
-	PrivateKeyPath string // .p8 路径；为空 → NewAppleClient 失败
-	BundleID       string
-	UseProduction  bool
 }
 
 // NewAppleClient 启动期解析 .p8 + 选定端点。失败 → 返 error，service 层应记 warn
