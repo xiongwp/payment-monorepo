@@ -287,7 +287,23 @@ func newEventBus(v *viper.Viper) eventbus.Bus {
 	return eventbus.NewMemBus(buf)
 }
 func newBlacklist() store.Blacklist  { return store.NewMemBlacklist() }
-func newLinkStore() store.LinkStore  { return store.NewMemLinkStore() }
+// newLinkStore 按配置选 LinkStore 实现：
+//
+//  1. -tags nebula 编译 + linkstore.nebula.addrs 非空 → NebulaLinkStore（分布式图，
+//     生产规模 1 亿+ 边）
+//  2. 否则 → MemLinkStore（process-local，单机 < 1M 边）
+//
+// Neo4j 用 -tags neo4j 编译，目前还在 schema 迁移中，暂不接入这里（手工
+// 在 cmd 里挂）。
+//
+// tryNebulaLinkStore 在 default build 是个 stub（返 nil, false），所以
+// 这里的 if 分支编译期对默认 build 不可达 —— go compiler 会 dead-code 消掉。
+func newLinkStore(v *viper.Viper, logger *zap.Logger) store.LinkStore {
+	if ls, ok := tryNebulaLinkStore(v, logger); ok {
+		return ls
+	}
+	return store.NewMemLinkStore()
+}
 // newIPIntel 默认 stub（空 mem service）。生产应注入 MaxMind / IPQS 客户端。
 func newIPIntel() ipintel.Service { return ipintel.NewMemService() }
 
