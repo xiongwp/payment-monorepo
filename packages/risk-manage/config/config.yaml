@@ -4,6 +4,28 @@ server:
 metrics:
   addr: ":9590"
 
+# ─── Screen per-stage timeout budget ────────────────────────────────
+# 每个 stage 用独立 sub-ctx 强制 deadline；超时 fail-open（用空结果继续）
+# 并打 metric。global_ceiling 给整个 Screen 一个总上限。
+# 当前从 env 读（详见 cmd/server/main.go: readScreenTimeouts）；以下值为
+# 文档参考，实际 prod 由 env 覆盖：
+#   RISK_SCREEN_TO_FEATURE_EXTRACT_MS  20
+#   RISK_SCREEN_TO_IPINTEL_MS          15
+#   RISK_SCREEN_TO_MLSCORE_MS          30
+#   RISK_SCREEN_TO_ENGINE_EVAL_MS      10
+#   RISK_SCREEN_TO_AUDIT_WRITE_MS      0   # 0 = async fire-and-forget
+#   RISK_SCREEN_TO_GLOBAL_CEILING_MS   100
+#   RISK_SCREEN_TIMEOUTS_DISABLED      0   # 紧急回退；1 = 关闭所有 stage timeout
+screen:
+  timeouts:
+    feature_extract_ms: 20
+    ipintel_ms:         15
+    ml_score_ms:        30
+    engine_eval_ms:     10
+    audit_write_ms:     0    # 0 = async
+    global_ceiling_ms:  100
+    fail_policy:        "open"  # 当前固定 open；字段保留未来扩展
+
 # ─── 风控规则配置 ────────────────────────────────────────────────────
 # 每条规则：
 #   id:       唯一标识

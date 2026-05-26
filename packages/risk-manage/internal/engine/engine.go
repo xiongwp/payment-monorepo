@@ -359,13 +359,14 @@ type RuleFactory func(id, name string, enabled bool, configJSON json.RawMessage)
 
 // Engine 规则引擎
 type Engine struct {
-	mu         sync.RWMutex
-	rules      []Rule
-	defs       []RuleDef // 缓存最近 LoadRules 的 defs，给 admin /admin/rules/list 用
-	factories  map[string]RuleFactory
-	thresholds ScoreThresholds
-	policy     PolicyStore // nil-safe：无 override → 用 baseline thresholds
-	logger     *zap.Logger
+	mu           sync.RWMutex
+	rules        []Rule
+	defs         []RuleDef // 缓存最近 LoadRules 的 defs，给 admin /admin/rules/list 用
+	factories    map[string]RuleFactory
+	thresholds   ScoreThresholds
+	policy       PolicyStore      // nil-safe：无 override → 用 baseline thresholds
+	versionStore RuleVersionStore // nil-safe：无 store → UpdateRule 不写版本（详见 rule_versions.go）
+	logger       *zap.Logger
 }
 
 func New(logger *zap.Logger) *Engine {
@@ -707,6 +708,9 @@ func (e *Engine) RuleDefs() []RuleDef {
 // 如果 id 不存在 → 视作新增。Schema 校验由 caller 跑（factory build 成功即合法）。
 //
 // 返回 true=更新；false=新增。
+//
+// **不**走版本化路径。带审计 / 版本记录的 admin 端口请用 UpdateRuleVersioned，
+// 它会先 Record + Activate 到 VersionStore 再调本方法。
 func (e *Engine) UpdateRule(d RuleDef, r Rule) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()

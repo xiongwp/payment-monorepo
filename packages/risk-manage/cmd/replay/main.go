@@ -251,6 +251,7 @@ func buildEngine(cfgPath string, logger *zap.Logger, candidates multiFlag, thres
 	eng.RegisterFactory("card_testing", rules.CardTestingFactory(links))
 	eng.RegisterFactory("sanction_screening", rules.SanctionScreeningFactory(sanction.NewMemService()))
 	eng.RegisterFactory("dsl", rules.DSLFactory())
+	eng.RegisterFactory("cel", rules.CELFactory())
 	eng.RegisterFactory("impossible_travel", rules.ImpossibleTravelFactory())
 	eng.RegisterFactory("returning_customer", rules.ReturningCustomerFactory())
 	eng.RegisterFactory("avs_check", rules.AVSCheckFactory())

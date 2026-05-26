@@ -43,6 +43,42 @@ var ScreenSlowTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Help: "Number of Screen calls exceeding slow threshold, by slowest stage",
 }, []string{"slowest_stage"})
 
+// StageTimeout 按 stage 计数 per-stage timeout budget 触发次数。
+// stage 取值同 ScreenStageDuration：feature_extract / ip_intel / ml_score /
+// engine_eval / audit_write。alert：rate(...[5m]) > 0 持续 = 该下游有抖动 /
+// 配的 timeout 太严，需要 SRE 看。
+var StageTimeout = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "risk_stage_timeout_total",
+	Help: "Per-stage Screen timeout count (deadline exceeded, fail-open triggered)",
+}, []string{"stage"})
+
+// StageFailOpen Screen 在该 stage fail-open 总计数。reason ∈
+// "timeout"（per-stage deadline 触发） / "error"（下游返 err 但非 timeout） /
+// "breaker"（熔断器开启短路）。和 StageTimeout 有重叠（timeout 同时算
+// fail-open），但 StageFailOpen 多了 reason 维度供更细的根因分析。
+var StageFailOpen = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "risk_stage_fail_open_total",
+	Help: "Per-stage fail-open count by reason (timeout/error/breaker)",
+}, []string{"stage", "reason"})
+
+// ScreenTotalDuration Screen 端到端耗时（含所有 stage + bookkeeping）。
+// 和 ScreenDuration 不同：ScreenDuration 是 server interceptor 在 grpc handler
+// 外层加的（含 gRPC 序列化等），ScreenTotalDuration 是 service 层 Screen 函数
+// 入口出口；用来直接验证 global_ceiling 是否真的有效。
+var ScreenTotalDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+	Name:    "risk_screen_total_duration_seconds",
+	Help:    "End-to-end Screen() service-layer latency (entry to return)",
+	Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.25, 0.5, 1},
+}, []string{})
+
+// ScreenCeilingTotal global_ceiling 命中次数（parent ctx deadline exceeded）。
+// 这是最严重的信号：表示 per-stage budget 之和 + 中间 overhead 已经超过
+// ceiling，需要重新校准 budget 或者扩容下游。
+var ScreenCeilingTotal = prometheus.NewCounter(prometheus.CounterOpts{
+	Name: "risk_screen_ceiling_total",
+	Help: "Number of Screen calls where the global ceiling deadline expired",
+})
+
 // AuditAsyncDropped 给 audit.AsyncBatchSink dropped 计数暴露 Prometheus gauge。
 // > 0 持续 = inner sink (CH/Kafka/File) 跟不上 → 调 queueSize / batchSize。
 var AuditAsyncDropped = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -131,6 +167,10 @@ func Register() {
 			ScreenDuration,
 			ScreenStageDuration,
 			ScreenSlowTotal,
+			StageTimeout,
+			StageFailOpen,
+			ScreenTotalDuration,
+			ScreenCeilingTotal,
 			GRPCRequestTotal,
 			GRPCRequestDuration,
 			RuleEvalTotal,

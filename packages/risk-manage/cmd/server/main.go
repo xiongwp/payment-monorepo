@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"runtime"
@@ -639,6 +640,7 @@ func newEngine(v *viper.Viper, counter store.Counter, bl store.Blacklist, links 
 	eng.RegisterFactory("card_testing", rules.CardTestingFactory(links))
 	eng.RegisterFactory("sanction_screening", rules.SanctionScreeningFactory(san))
 	eng.RegisterFactory("dsl", rules.DSLFactory())
+	eng.RegisterFactory("cel", rules.CELFactory())
 	eng.RegisterFactory("impossible_travel", rules.ImpossibleTravelFactory())
 	eng.RegisterFactory("returning_customer", rules.ReturningCustomerFactory())
 	eng.RegisterFactory("avs_check", rules.AVSCheckFactory())
@@ -691,6 +693,18 @@ func newEngine(v *viper.Viper, counter store.Counter, bl store.Blacklist, links 
 	if err := eng.LoadRules(engineDefs); err != nil {
 		return nil, err
 	}
+	// 默认挂上内存版规则版本 store。生产配 PG 时在 main wiring 处覆盖
+	// （cfg.postgres.dsn != "" → store.NewPGRuleVersionStore + SetRuleVersionStore）。
+	// 同时把初始 LoadRules 的每条 rule 都 Record + Activate 一遍，让审计/
+	// rollback 端点马上能用（不必等下一次 update）。
+	vs := engine.NewMemRuleVersionStore()
+	for _, d := range engineDefs {
+		spec, _ := json.Marshal(d)
+		if ver, _, err := vs.Record(context.Background(), d.ID, spec, "initial load", "system"); err == nil {
+			_ = vs.Activate(context.Background(), d.ID, ver, "system")
+		}
+	}
+	eng.SetRuleVersionStore(vs)
 	return eng, nil
 }
 
@@ -853,7 +867,58 @@ func newRiskSvc(
 	if v, has := readSlowThresholdSec(svc); has {
 		svc.SetSlowThreshold(v)
 	}
+	// per-stage timeout budget：从 env 读，强制覆盖默认宽松值。env 没配 →
+	// 用 prod-recommended 严格值（feature_extract 20ms / ip_intel 15ms /
+	// ml_score 30ms / engine_eval 10ms / audit_write async / ceiling 100ms）。
+	svc.SetScreenTimeouts(readScreenTimeouts())
 	return svc
+}
+
+// readScreenTimeouts 从 env 读 per-stage timeout 配置。每个 env 名是 ms。
+// 任一 key 缺失 → 用 prod-recommended 默认。RISK_SCREEN_TIMEOUTS_DISABLED=1
+// 在 service 层直接走 bypass，不进 setter。
+func readScreenTimeouts() service.ScreenTimeouts {
+	t := service.ScreenTimeouts{
+		FeatureExtract: 20 * time.Millisecond,
+		IPIntel:        15 * time.Millisecond,
+		MLScore:        30 * time.Millisecond,
+		EngineEval:     10 * time.Millisecond,
+		AuditWrite:     0, // async
+		GlobalCeiling:  100 * time.Millisecond,
+		FailPolicy:     "open",
+	}
+	if v := envMs("RISK_SCREEN_TO_FEATURE_EXTRACT_MS"); v > 0 {
+		t.FeatureExtract = v
+	}
+	if v := envMs("RISK_SCREEN_TO_IPINTEL_MS"); v > 0 {
+		t.IPIntel = v
+	}
+	if v := envMs("RISK_SCREEN_TO_MLSCORE_MS"); v > 0 {
+		t.MLScore = v
+	}
+	if v := envMs("RISK_SCREEN_TO_ENGINE_EVAL_MS"); v > 0 {
+		t.EngineEval = v
+	}
+	if v := envMs("RISK_SCREEN_TO_AUDIT_WRITE_MS"); v > 0 {
+		t.AuditWrite = v
+	}
+	if v := envMs("RISK_SCREEN_TO_GLOBAL_CEILING_MS"); v > 0 {
+		t.GlobalCeiling = v
+	}
+	return t
+}
+
+// envMs 读 env 字符串到 ms 数。"" / parse 失败 / ≤0 → 0。
+func envMs(name string) time.Duration {
+	v := os.Getenv(name)
+	if v == "" {
+		return 0
+	}
+	n, err := strconvAtoi(v)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Millisecond
 }
 
 // readSlowThresholdSec 从 viper key risk.slow_threshold_ms 取阈值，转秒返。
@@ -1082,6 +1147,8 @@ func startMetricsHTTP(
 			}
 			// 规则 + 阈值热重载（POST /admin/rules/reload）
 			registerRulesReload(mux, eng, v, ruleAudit, logger)
+			// 规则版本化 endpoint（list / get / rollback / diff）
+			registerRuleVersionsHandlers(mux, eng, ruleAudit, logger)
 			registerExplainHandler(mux, eng, sink, logger)
 			registerAuditSearchHandler(mux, sink, logger)
 			registerAuditChainVerifyHandler(mux, sink, logger)
@@ -1242,6 +1309,25 @@ func startMetricsHTTP(
 						for _, r := range reports {
 							if r.Metric == "mean" {
 								metrics.MLScoreDriftMeanPct.Set(r.DeltaPct)
+							}
+						}
+						// Per-feature PSI / KS 导出。每个特征只在当前 severity
+						// 标签上写 PSI，其它 severity 清零（保证 max() 聚合干净）。
+						status := mlDrift.StatusAll()
+						severities := []string{"ok", "warning", "critical", "no_baseline", "insufficient"}
+						for _, fd := range status.Features {
+							for _, sev := range severities {
+								if sev == fd.Verdict && !math.IsNaN(fd.PSI) {
+									metrics.RiskDriftPSI.WithLabelValues(fd.Feature, sev).Set(fd.PSI)
+								} else {
+									metrics.RiskDriftPSI.WithLabelValues(fd.Feature, sev).Set(0)
+								}
+							}
+							if !math.IsNaN(fd.KSStatistic) {
+								metrics.RiskDriftKS.WithLabelValues(fd.Feature).Set(fd.KSStatistic)
+							}
+							if !math.IsNaN(fd.KSPValue) {
+								metrics.RiskDriftKSPValue.WithLabelValues(fd.Feature).Set(fd.KSPValue)
 							}
 						}
 					}
@@ -1454,14 +1540,24 @@ func registerRulesReload(mux *http.ServeMux, eng *engine.Engine, v *viper.Viper,
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
-		updated := eng.UpdateRule(d, built)
-		action := "create"
-		if updated {
-			action = "update"
-		}
 		actor := "unknown"
 		if p, ok := auth.PrincipalFrom(r.Context()); ok && p != nil {
 			actor = p.KeyID
+		}
+		// 走版本化路径：Record + Activate 成功后才替换内存（原子性）。
+		// versionStore=nil 时退化等价于老的 UpdateRule。
+		updated, version, _, vErr := eng.UpdateRuleVersioned(r.Context(), d, built, "", actor)
+		if vErr != nil {
+			logger.Warn("rules update: version record failed",
+				zap.String("rule_id", d.ID), zap.Error(vErr))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": vErr.Error()})
+			return
+		}
+		action := "create"
+		if updated {
+			action = "update"
 		}
 		afterJSON, _ := json.Marshal(d)
 		_ = ruleAuditWrite(ruleAudit, audit.RuleAuditEntry{
@@ -1470,15 +1566,20 @@ func registerRulesReload(mux *http.ServeMux, eng *engine.Engine, v *viper.Viper,
 			RuleID: d.ID,
 			Before: beforeJSON,
 			After:  afterJSON,
+			Metadata: map[string]string{
+				"version": fmt.Sprintf("%d", version),
+			},
 		})
 		logger.Info("rule "+action,
 			zap.String("rule_id", d.ID),
 			zap.String("type", d.Type),
-			zap.String("actor", actor))
+			zap.String("actor", actor),
+			zap.Int64("version", version))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id":     d.ID,
-			"action": action,
+			"id":      d.ID,
+			"action":  action,
+			"version": version,
 		})
 	})
 	// POST /admin/rules/delete  Body: {"id":"<rule>","reason":"..."}
@@ -1541,6 +1642,205 @@ func ruleAuditWrite(s audit.RuleAuditStore, e audit.RuleAuditEntry) error {
 		return nil
 	}
 	return s.Write(context.Background(), e)
+}
+
+// registerRuleVersionsHandlers 规则版本化（git-like history）端点：
+//
+//	GET  /admin/rules/versions?rule_id=X&limit=N   → 历史版本列表（version 降序）
+//	GET  /admin/rules/version?rule_id=X&version=N  → 某版本 spec 快照
+//	POST /admin/rules/rollback  Body: {"rule_id":"X","to":N,"reason":"..."}
+//	GET  /admin/rules/diff?rule_id=X&from=A&to=B   → 行级 unified diff
+//
+// rollback 同时切 versionStore 的 active pointer **和** engine 内存里的 Rule
+// 实例（用旧 spec 反序列化 + BuildRule 重新长出来）。失败时不动内存。
+//
+// 路径用 query param 而非 RESTful path——跟现有 /admin/rules/* 风格一致
+// （Go 1.22+ ServeMux 支持 path param，但本服务的 mux 走 HandleFunc 没用上）。
+func registerRuleVersionsHandlers(mux *http.ServeMux, eng *engine.Engine, ruleAudit audit.RuleAuditStore, logger *zap.Logger) {
+	// GET /admin/rules/versions?rule_id=X&limit=N
+	mux.HandleFunc("/admin/rules/versions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		store := eng.VersionStore()
+		if store == nil {
+			http.Error(w, `{"error":"rule version store not configured"}`, http.StatusNotImplemented)
+			return
+		}
+		ruleID := r.URL.Query().Get("rule_id")
+		if ruleID == "" {
+			http.Error(w, `{"error":"rule_id required"}`, http.StatusBadRequest)
+			return
+		}
+		limit := 100
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if n, err := strconvAtoi(l); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		vs, err := store.ListVersions(r.Context(), ruleID, limit)
+		if err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		// active 版本一并带上，前端不必再发一次请求。
+		activeVer, _, _ := store.GetActive(r.Context(), ruleID)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"rule_id":        ruleID,
+			"active_version": activeVer,
+			"versions":       vs,
+		})
+	})
+	// GET /admin/rules/version?rule_id=X&version=N
+	mux.HandleFunc("/admin/rules/version", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		store := eng.VersionStore()
+		if store == nil {
+			http.Error(w, `{"error":"rule version store not configured"}`, http.StatusNotImplemented)
+			return
+		}
+		ruleID := r.URL.Query().Get("rule_id")
+		verStr := r.URL.Query().Get("version")
+		if ruleID == "" || verStr == "" {
+			http.Error(w, `{"error":"rule_id and version required"}`, http.StatusBadRequest)
+			return
+		}
+		ver, err := strconvAtoi(verStr)
+		if err != nil || ver <= 0 {
+			http.Error(w, `{"error":"invalid version"}`, http.StatusBadRequest)
+			return
+		}
+		rv, err := store.GetVersion(r.Context(), ruleID, int64(ver))
+		if err != nil {
+			if errors.Is(err, engine.ErrVersionNotFound) {
+				http.Error(w, `{"error":"version not found"}`, http.StatusNotFound)
+				return
+			}
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(rv)
+	})
+	// POST /admin/rules/rollback  Body: {"rule_id":"X","to":N,"reason":"..."}
+	mux.HandleFunc("/admin/rules/rollback", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		store := eng.VersionStore()
+		if store == nil {
+			http.Error(w, `{"error":"rule version store not configured"}`, http.StatusNotImplemented)
+			return
+		}
+		var body struct {
+			RuleID string `json:"rule_id"`
+			To     int64  `json:"to"`
+			Reason string `json:"reason"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if body.RuleID == "" || body.To <= 0 {
+			http.Error(w, `{"error":"rule_id and to required"}`, http.StatusBadRequest)
+			return
+		}
+		// 拿目标版本 spec，反序列化成 RuleDef，BuildRule + UpdateRule。
+		rv, err := store.GetVersion(r.Context(), body.RuleID, body.To)
+		if err != nil {
+			if errors.Is(err, engine.ErrVersionNotFound) {
+				http.Error(w, `{"error":"target version not found"}`, http.StatusNotFound)
+				return
+			}
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		var d engine.RuleDef
+		if err := json.Unmarshal(rv.SpecJSON, &d); err != nil {
+			http.Error(w, `{"error":"unmarshal spec: `+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		built, err := eng.BuildRule(d)
+		if err != nil {
+			http.Error(w, `{"error":"build target version: `+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		actor := "unknown"
+		if p, ok := auth.PrincipalFrom(r.Context()); ok && p != nil {
+			actor = p.KeyID
+		}
+		// 切 active pointer + 内存替换。Activate 失败 → 不动内存。
+		if err := store.Activate(r.Context(), body.RuleID, body.To, actor); err != nil {
+			http.Error(w, `{"error":"activate: `+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		_ = eng.UpdateRule(d, built)
+		// 写规则变更审计：跟 rule_update 一样的 stream，action=rollback。
+		afterJSON, _ := json.Marshal(d)
+		_ = ruleAuditWrite(ruleAudit, audit.RuleAuditEntry{
+			Action: "rollback",
+			Actor:  actor,
+			RuleID: body.RuleID,
+			After:  afterJSON,
+			Reason: body.Reason,
+			Metadata: map[string]string{
+				"version": fmt.Sprintf("%d", body.To),
+			},
+		})
+		logger.Info("rule rollback",
+			zap.String("rule_id", body.RuleID),
+			zap.Int64("version", body.To),
+			zap.String("actor", actor),
+			zap.String("reason", body.Reason))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"rule_id":        body.RuleID,
+			"active_version": body.To,
+		})
+	})
+	// GET /admin/rules/diff?rule_id=X&from=A&to=B
+	mux.HandleFunc("/admin/rules/diff", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		store := eng.VersionStore()
+		if store == nil {
+			http.Error(w, `{"error":"rule version store not configured"}`, http.StatusNotImplemented)
+			return
+		}
+		ruleID := r.URL.Query().Get("rule_id")
+		fromStr := r.URL.Query().Get("from")
+		toStr := r.URL.Query().Get("to")
+		if ruleID == "" || fromStr == "" || toStr == "" {
+			http.Error(w, `{"error":"rule_id, from, to required"}`, http.StatusBadRequest)
+			return
+		}
+		fromN, err1 := strconvAtoi(fromStr)
+		toN, err2 := strconvAtoi(toStr)
+		if err1 != nil || err2 != nil || fromN <= 0 || toN <= 0 {
+			http.Error(w, `{"error":"invalid from/to"}`, http.StatusBadRequest)
+			return
+		}
+		diff, err := store.Diff(r.Context(), ruleID, int64(fromN), int64(toN))
+		if err != nil {
+			if errors.Is(err, engine.ErrVersionNotFound) {
+				http.Error(w, `{"error":"version not found"}`, http.StatusNotFound)
+				return
+			}
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(diff))
+	})
+	logger.Info("rule versions handlers registered at /admin/rules/{versions,version,rollback,diff}")
 }
 
 // strconvAtoi 给小整数手动 parse 避免 strconv import 在 build tag 下不必要。
@@ -1638,8 +1938,11 @@ func registerExplainHandler(mux *http.ServeMux, eng *engine.Engine, sink audit.S
 
 // registerDriftHandlers admin 端点：
 //
-//	GET  /admin/mlscore/drift            当前快照 + 是否漂移 + 报告
-//	POST /admin/mlscore/drift/baseline   把当前快照设为新基线（新模型上线后调）
+//	GET  /admin/mlscore/drift            当前 score 快照 + mean-shift 是否漂移（兼容旧）
+//	POST /admin/mlscore/drift/baseline   把当前快照设为 score baseline（兼容旧）
+//	GET  /admin/ml/drift/status          所有特征 PSI / KS / verdict（V2）
+//	POST /admin/ml/drift/baseline        snapshot 所有特征 reservoir 为新 baseline
+//	POST /admin/ml/drift/thresholds      {warning, critical} 调 PSI 阈值
 func registerDriftHandlers(mux *http.ServeMux, m *mlscore.DriftMonitor, logger *zap.Logger) {
 	mux.HandleFunc("/admin/mlscore/drift", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -1648,11 +1951,11 @@ func registerDriftHandlers(mux *http.ServeMux, m *mlscore.DriftMonitor, logger *
 		}
 		drifted, reports := m.IsDrifted()
 		body := map[string]any{
-			"current":         m.Snapshot(),
-			"baseline":        m.Baseline(),
-			"total_observed":  m.TotalObserved(),
-			"drifted":         drifted,
-			"reports":         reports,
+			"current":        m.Snapshot(),
+			"baseline":       m.Baseline(),
+			"total_observed": m.TotalObserved(),
+			"drifted":        drifted,
+			"reports":        reports,
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(body)
@@ -1667,6 +1970,93 @@ func registerDriftHandlers(mux *http.ServeMux, m *mlscore.DriftMonitor, logger *
 		logger.Info("ml drift baseline updated", zap.Any("snapshot", s))
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(map[string]any{"baseline": s})
+	})
+
+	// V2：所有特征 PSI / KS 状态。NaN 在 JSON 编码后会变成 "null"（json.Marshal
+	// 拒绝 NaN），所以前置改成 nil-friendly serializer。
+	mux.HandleFunc("/admin/ml/drift/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		status := m.StatusAll()
+		// 把 NaN -> nil 给 JSON marshal
+		type fdOut struct {
+			Feature     string   `json:"feature"`
+			CurrentN    int      `json:"current_n"`
+			BaselineN   int      `json:"baseline_n"`
+			PSI         *float64 `json:"psi"`
+			KSStatistic *float64 `json:"ks_stat"`
+			KSPValue    *float64 `json:"ks_pvalue"`
+			Verdict     string   `json:"verdict"`
+			LastObsAt   string   `json:"last_obs_at,omitempty"`
+		}
+		nz := func(x float64) *float64 {
+			if math.IsNaN(x) || math.IsInf(x, 0) {
+				return nil
+			}
+			return &x
+		}
+		feats := make([]fdOut, 0, len(status.Features))
+		for _, f := range status.Features {
+			feats = append(feats, fdOut{
+				Feature: f.Feature, CurrentN: f.CurrentN, BaselineN: f.BaselineN,
+				PSI: nz(f.PSI), KSStatistic: nz(f.KSStatistic), KSPValue: nz(f.KSPValue),
+				Verdict: f.Verdict, LastObsAt: f.LastObsAt,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"features":       feats,
+			"psi_warning":    status.PSIWarning,
+			"psi_critical":   status.PSICritical,
+			"captured_at":    status.CapturedAt,
+			"total_observed": status.TotalObserved,
+		})
+	})
+
+	mux.HandleFunc("/admin/ml/drift/baseline", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		m.SetBaselineAll()
+		// 旧 score-only baseline 也跟着更新一份，让 /admin/mlscore/drift 一致
+		m.SetBaseline(m.Snapshot())
+		status := m.StatusAll()
+		logger.Info("ml drift baseline (all features) updated",
+			zap.Int("feature_count", len(status.Features)))
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"baselined_features": len(status.Features),
+			"captured_at":        status.CapturedAt,
+		})
+	})
+
+	mux.HandleFunc("/admin/ml/drift/thresholds", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost && r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		warning, critical := m.Thresholds()
+		if r.Method == http.MethodPost {
+			var body struct {
+				Warning  float64 `json:"warning"`
+				Critical float64 `json:"critical"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
+				return
+			}
+			warning, critical = m.SetThresholds(body.Warning, body.Critical)
+			logger.Info("ml drift thresholds updated",
+				zap.Float64("warning", warning), zap.Float64("critical", critical))
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"warning":  warning,
+			"critical": critical,
+		})
 	})
 }
 

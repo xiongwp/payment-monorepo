@@ -23,9 +23,18 @@ import (
 
 // DecisionAudit 一次 Screen 决策的完整快照。JSON 兼容，便于落库 / Kafka。
 type DecisionAudit struct {
-	DecisionID  string    `json:"decision_id"` // 全局唯一
-	OccurredAt  time.Time `json:"occurred_at"`
-	RuleVersion int       `json:"rule_version"` // engine 当前规则集版本
+	DecisionID string    `json:"decision_id"` // 全局唯一
+	OccurredAt time.Time `json:"occurred_at"`
+	// RuleVersion 当前规则集稳定 hash 的低 32 位（fnv32a over 排序后的
+	// (rule_id, active_version) 元组集合）。
+	// 历史上是 engine.RuleCount() — 即"规则总数当版本号"，不能反查 / 不能
+	// 回滚；切到 RuleSetHash 后同一规则集任意切换都能由该字段精确定位到
+	// engine 的状态快照。clickhouse_sink 还在用 int32(RuleVersion)，所以
+	// 保持 int 类型，只截断到 32 位。
+	RuleVersion int `json:"rule_version"`
+	// RuleSetHash 同上的 64-bit-friendly hex 表示（"a3f2"…）；新字段方便
+	// 在 admin UI / kafka 消费者直接 string 比对，不必担心负数 / 截断。
+	RuleSetHash string `json:"rule_set_hash,omitempty"`
 	// 输入快照（不含敏感字段；卡号 / token 由 service 层提前脱敏）
 	Input AuditInput `json:"input"`
 	// 输出

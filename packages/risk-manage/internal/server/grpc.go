@@ -68,23 +68,32 @@ func (s *Server) ListenAndServe(ctx context.Context, port int) error {
 	if err != nil {
 		return err
 	}
-	// Kitex server — middleware 链走 kitexutil (跟老 grpc interceptor 等价).
-	// TODO: shadow MW (从 metainfo 取 x-shadow 翻 ctx) — 等 kitexutil.ShadowMW port 完成
-	// TODO: putil.KitexMW (trace) — 等 payment-util/trace 提 KitexMW
-	// TODO: authInterceptor port → kitexutil.MultiAuthMW(tokens, apiKeys)
+	// Kitex server — middleware 链.
+	//
+	// 装载顺序 (Kitex server.WithMiddleware 按调用顺序串, 第一个最外层):
+	//   1. recoverMW       — 最外层. panic 转 error, 不挂进程.
+	//   2. TracingServerMW — 从 metainfo extract W3C traceparent + 起 SERVER span;
+	//                        engine.Evaluate / mlscore / ipintel 那些 otel.Tracer.Start
+	//                        的子 span 自动挂上 → 跨服务链路图完整.
+	//   3. LogMW           — 最内层, 拿到 trace_id 后打 access log.
+	//   4. MetricsMW       — 入站 RPC 计数 + p50/p95.
+	//
+	// TODO 待 port:
+	//   - shadow MW (从 metainfo 取 x-shadow 翻 ctx) — 等 kitexutil.ShadowMW port 完成
+	//   - authInterceptor port → kitexutil.MultiAuthMW(tokens, apiKeys)
 	advHost := os.Getenv("ADVERTISE_HOST")
 	if advHost == "" {
 		advHost = "risk-manage"
 	}
 	srvOpts := []kitexserver.Option{kitexserver.WithServiceAddr(addr)}
 	srvOpts = append(srvOpts, kitexutil.DefaultServerOptions("risk-manage", fmt.Sprintf("%s:%d", advHost, port))...)
-	// TODO 接 kitexutil MW 三件套 + shadow / trace / auth port 完成后取消注释:
-	// srvOpts = append(srvOpts, kitexserver.WithMiddleware(kitexutil.RecoverMW(s.logger)))
-	// srvOpts = append(srvOpts, kitexserver.WithMiddleware(kitexutil.LogMW(s.logger)))
-	// srvOpts = append(srvOpts, kitexserver.WithMiddleware(kitexutil.MetricsMW()))
+	srvOpts = append(srvOpts,
+		kitexserver.WithMiddleware(recoverMW(s.logger)),
+		kitexserver.WithMiddleware(TracingServerMW()),
+		kitexserver.WithMiddleware(kitexutil.LogMW(s.logger)),
+		kitexserver.WithMiddleware(kitexutil.MetricsMW()),
+	)
 	srv := riskservice.NewServer(s, srvOpts...)
-	// gRPC 占位 _ = ... 已删 (Kitex 不再需要 grpc.ServerOption / keepalive / metadata).
-	_ = kitexutil.LogMW // 留 (Kitex MW 接通后用)
 	s.logger.Info("risk-manage Kitex listening", zap.Int("port", port))
 	go func() {
 		<-ctx.Done()

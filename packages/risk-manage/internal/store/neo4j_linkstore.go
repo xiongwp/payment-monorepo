@@ -105,3 +105,29 @@ func (s *Neo4jLinkStore) Peers(ctx context.Context, a, prefix string) []string {
 	}
 	return res.([]string)
 }
+
+// WeightedFanout TODO：用 Cypher
+//
+//	MATCH (x:Identity {key:$a})-[r:LINKS]->(y) WHERE r.expires >= $now
+//	WITH r, duration.between(datetime({epochSeconds:r.at}), datetime()).days AS days_ago
+//	RETURN sum(exp(-days_ago * 1.0 / $halflife_days)) AS w, count(r) AS c
+//
+// 当前 Neo4j 模型还没存 r.at（只有 r.expires），需先 ALTER 加字段 + service.Report
+// 写 r.at。实现复杂留 panic 直到 Phase 14e 落地。
+func (s *Neo4jLinkStore) WeightedFanout(ctx context.Context, node, peerPrefix string,
+	decayHalfLife time.Duration,
+) (float64, int) {
+	panic("TODO: Neo4j WeightedFanout — pending r.at schema migration (Phase 14e)")
+}
+
+func (s *Neo4jLinkStore) WeightedPeersWithin(ctx context.Context, a string, maxHops int, peerPrefix string,
+	decayHalfLife time.Duration, hopDecay float64,
+) (float64, int) {
+	panic("TODO: Neo4j WeightedPeersWithin — same schema dep as WeightedFanout")
+}
+
+func (s *Neo4jLinkStore) WeightedTagsWithin(ctx context.Context, a string, maxHops int,
+	decayHalfLife time.Duration, hopDecay float64,
+) map[string]float64 {
+	panic("TODO: Neo4j WeightedTagsWithin — same schema dep as WeightedFanout")
+}

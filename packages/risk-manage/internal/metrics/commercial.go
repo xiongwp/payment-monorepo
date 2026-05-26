@@ -180,6 +180,26 @@ var MLScoreDriftMeanPct = prometheus.NewGauge(prometheus.GaugeOpts{
 	Help: "Percentage delta of current mean vs baseline mean (signed)",
 })
 
+// RiskDriftPSI per-feature PSI gauge。severity label：ok / warning / critical /
+// no_baseline / insufficient。同一特征只会有一条 severity 上是非零值（其它清零），
+// 用 max() 在 PromQL 侧聚合即可。
+var RiskDriftPSI = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "risk_drift_psi",
+	Help: "Per-feature Population Stability Index (current vs baseline)",
+}, []string{"feature", "severity"})
+
+// RiskDriftKS per-feature KS 统计量（D）。pvalue 单独一条 gauge 方便 alert
+// 直接 alert on (p < 0.01 AND D > 0.1)。
+var RiskDriftKS = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "risk_drift_ks_statistic",
+	Help: "Per-feature KS two-sample statistic D (max CDF distance)",
+}, []string{"feature"})
+
+var RiskDriftKSPValue = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "risk_drift_ks_pvalue",
+	Help: "Per-feature KS p-value (Kolmogorov asymptotic). Low p = different distribution.",
+}, []string{"feature"})
+
 // RegisterCommercial 在 Register() 之外注册商业化指标。Register() 是 sync.Once，
 // 这里独立 init 让没接入商业 sink 的部署也能跑（虽然指标只是 Collector 注册）。
 func init() {
@@ -189,7 +209,8 @@ func init() {
 		RuleLastHitAge, RulePrecision, RuleROI,
 		CounterCacheHit, CounterCacheMiss, CounterCacheSize,
 		WebhookDLQDepth,
-		MLScoreMean, MLScoreP95, MLScoreDrifted, MLScoreDriftMeanPct)
+		MLScoreMean, MLScoreP95, MLScoreDrifted, MLScoreDriftMeanPct,
+		RiskDriftPSI, RiskDriftKS, RiskDriftKSPValue)
 }
 
 // AdminAuth bearer-token 中间件。tokens 为空 → 完全放行（dev 模式）。

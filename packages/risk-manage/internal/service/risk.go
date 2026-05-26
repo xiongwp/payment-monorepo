@@ -63,6 +63,9 @@ type RiskService struct {
 	slowThreshold float64 // Screen 总耗时（秒）超此值打 slow log；0=关
 	// FeatureExtractor chain：在 Evaluate 前富化 TxnContext（time / card / customer history / ...）
 	extractors features.Chain
+	// timeouts per-stage timeout budget。SetScreenTimeouts 注入；零值 → activeTimeouts()
+	// 退到 defaults（宽松，1s per stage，ceiling=off）。详见 screen_timeouts.go。
+	timeouts   ScreenTimeouts
 	logger     *zap.Logger
 }
 
@@ -219,11 +222,39 @@ func (s *RiskService) Screen(ctx context.Context, txn *engine.TxnContext) *engin
 	// 修复需要 Report 按 IdempotencyKey 跳过已预扣 key —— 单独 PR 跟进。
 	tracker := store.NewReservationTracker()
 	ctx = store.WithReservationTracker(ctx, tracker)
+
+	// ── per-stage timeout budget ───────────────────────────────────────
+	// Screen 整体上限 global_ceiling；下面每个 stage 再单独 WithTimeout 子 ctx。
+	// 任一 stage 超时 → fail-open（用空结果继续），保证不会拖死主路径。
+	// ScreenTimeoutsDisabled env 紧急回退到旧行为（不包 timeout）。
+	timeoutsCfg := s.activeTimeouts()
+	disableTO := screenTimeoutsDisabled()
+	screenStart := time.Now()
+	defer func() {
+		metrics.ScreenTotalDuration.WithLabelValues().Observe(time.Since(screenStart).Seconds())
+	}()
+	parentCtx := ctx
+	if !disableTO && timeoutsCfg.GlobalCeiling > 0 {
+		var cancel context.CancelFunc
+		parentCtx, cancel = context.WithTimeout(ctx, timeoutsCfg.GlobalCeiling)
+		defer cancel()
+	}
+
 	// FeatureExtractor 链：在 IP/ML 富化和 evaluate 之前再补充时间 / 卡 /
 	// 客户历史 / 货币 等 typed 特征。每个 extractor fail-open。
 	stageFE := time.Now()
 	if len(s.extractors) > 0 {
-		s.extractors.Enrich(ctx, txn)
+		if disableTO {
+			s.extractors.Enrich(parentCtx, txn)
+		} else if to := stageWithTimeout(parentCtx, timeoutsCfg.FeatureExtract, func(c context.Context) {
+			s.extractors.Enrich(c, txn)
+		}); to {
+			metrics.StageTimeout.WithLabelValues("feature_extract").Inc()
+			metrics.StageFailOpen.WithLabelValues("feature_extract", "timeout").Inc()
+			s.logger.Warn("feature_extract stage timeout (fail-open)",
+				zap.Duration("budget", timeoutsCfg.FeatureExtract))
+			// fail-open：保持 txn 当前富化状态，下游用现有字段继续
+		}
 	}
 	feMs := time.Since(stageFE).Seconds()
 	metrics.ScreenStageDuration.WithLabelValues("feature_extract").Observe(feMs)
@@ -233,12 +264,42 @@ func (s *RiskService) Screen(ctx context.Context, txn *engine.TxnContext) *engin
 		// → 不重复查询。熔断器 Open 时直接跳过 Lookup，让 ip_risk 规则
 		// 看到空值（fail-open 等价 ALLOW，不阻塞 Screen 主路径）。
 		if s.ipBreaker == nil || s.ipBreaker.Allow() {
-			r := s.ipIntel.Lookup(ctx, txn.IPAddress)
-			// Lookup 在 Mem 实现里不会 error；生产 ipintel 客户端可能超时。
-			// 当前 Result 是空表示"未命中或失败"，Lookup 内部应自己 fail-open；
-			// 这里把"完全空"当成失败信号反馈给熔断器。
+			// per-stage budget：把 Lookup 包到 stageWithTimeout；超时 → 空 Result
+			// + fail-open metric。Lookup 本身签名不返 err（实现内部已 fail-open），
+			// 这里的 timeout 兜底是"实现卡住"的极端情况。
+			// 用 buffered chan 传结果避免 timeout 后 goroutine 写 stack var 的 race。
+			var r ipintel.Result
+			ipTimedOut := false
+			if disableTO {
+				r = s.ipIntel.Lookup(parentCtx, txn.IPAddress)
+			} else {
+				ipCh := make(chan ipintel.Result, 1)
+				if to := stageWithTimeout(parentCtx, timeoutsCfg.IPIntel, func(c context.Context) {
+					rr := s.ipIntel.Lookup(c, txn.IPAddress)
+					select {
+					case ipCh <- rr:
+					default:
+					}
+				}); to {
+					ipTimedOut = true
+					metrics.StageTimeout.WithLabelValues("ip_intel").Inc()
+					metrics.StageFailOpen.WithLabelValues("ip_intel", "timeout").Inc()
+					s.logger.Warn("ip_intel stage timeout (fail-open)",
+						zap.String("ip", safety.MaskIPv4(txn.IPAddress)),
+						zap.Duration("budget", timeoutsCfg.IPIntel))
+					r = ipintel.Result{} // 显式空：保留旧的 fail-open 语义
+				} else {
+					select {
+					case r = <-ipCh:
+					default:
+					}
+				}
+			}
+			// 熔断器反馈：timeout 算一次失败；正常返但 Result 完全空也算失败
+			// （ipintel 内部已 fail-open 的信号）；其余算成功。
+			// 注意：timeout 和 "空结果" 互斥（timeout 一定是空），不会重复计数。
 			if s.ipBreaker != nil {
-				if r.Country == "" && !r.Proxy && !r.VPN && !r.DataCenter {
+				if ipTimedOut || (r.Country == "" && !r.Proxy && !r.VPN && !r.DataCenter) {
 					s.ipBreaker.OnFailure()
 				} else {
 					s.ipBreaker.OnSuccess()
@@ -252,6 +313,7 @@ func (s *RiskService) Screen(ctx context.Context, txn *engine.TxnContext) *engin
 		} else {
 			s.logger.Warn("ipintel breaker open; skipping lookup",
 				zap.String("ip", safety.MaskIPv4(txn.IPAddress)))
+			metrics.StageFailOpen.WithLabelValues("ip_intel", "breaker").Inc()
 		}
 	}
 	ipMs := time.Since(stageIP).Seconds()
@@ -275,19 +337,58 @@ func (s *RiskService) Screen(ctx context.Context, txn *engine.TxnContext) *engin
 		feats := mlFeaturesFrom(txn)
 		var mlRes mlscore.Result
 		var err error
+		// 用 buffered chan 传 (mlRes, err) 避免 timeout 后 goroutine 继续写
+		// stack var 的 race。
+		type mlOut struct {
+			r mlscore.Result
+			e error
+		}
+		mlCh := make(chan mlOut, 1)
 		// ChampionChallengerService 走 decision_id 透传路径；其它实现退到
 		// 普通 Score（不影响主路径）。
-		if cc, ok := s.mlSvc.(decisionScorer); ok {
-			mlRes, err = cc.ScoreWithDecisionID(ctx, decisionID, feats)
-		} else {
-			mlRes, err = s.mlSvc.Score(ctx, feats)
+		scoreFn := func(c context.Context) {
+			var out mlOut
+			if cc, ok := s.mlSvc.(decisionScorer); ok {
+				out.r, out.e = cc.ScoreWithDecisionID(c, decisionID, feats)
+			} else {
+				out.r, out.e = s.mlSvc.Score(c, feats)
+			}
+			select {
+			case mlCh <- out:
+			default:
+			}
 		}
-		if err != nil {
+		timedOut := false
+		if disableTO {
+			scoreFn(parentCtx)
+		} else {
+			timedOut = stageWithTimeout(parentCtx, timeoutsCfg.MLScore, scoreFn)
+		}
+		if !timedOut {
+			select {
+			case out := <-mlCh:
+				mlRes, err = out.r, out.e
+			default:
+				// fn 正常返回但没写 chan：理论不可能
+			}
+		}
+		switch {
+		case timedOut:
+			metrics.StageTimeout.WithLabelValues("ml_score").Inc()
+			metrics.StageFailOpen.WithLabelValues("ml_score", "timeout").Inc()
+			if s.mlBreaker != nil {
+				s.mlBreaker.OnFailure()
+			}
+			s.logger.Warn("ml_score stage timeout (fail-open)",
+				zap.Duration("budget", timeoutsCfg.MLScore))
+			// fail-open：MLScore 保留 0，ml_threshold 规则按 fail_open 配置自定
+		case err != nil:
+			metrics.StageFailOpen.WithLabelValues("ml_score", "error").Inc()
 			if s.mlBreaker != nil {
 				s.mlBreaker.OnFailure()
 			}
 			s.logger.Warn("ml score failed (fail-open)", zap.Error(err))
-		} else {
+		default:
 			if s.mlBreaker != nil {
 				s.mlBreaker.OnSuccess()
 			}
@@ -295,8 +396,15 @@ func (s *RiskService) Screen(ctx context.Context, txn *engine.TxnContext) *engin
 			txn.MLModelVer = mlRes.ModelVer
 			if s.mlDrift != nil {
 				s.mlDrift.Observe(mlRes.Score)
+				// 把入参数值型特征也喂进 drift monitor，做 per-feature PSI / KS。
+				// 字符串 / bool 特征 hash 化无意义于 PSI，跳过；amount / 行为时序
+				// 类数值特征是漂移最早暴露的地方。
+				s.mlDrift.ObserveFeatures(driftFeaturesFrom(feats))
 			}
 		}
+	} else if s.mlSvc != nil && s.mlBreaker != nil && !mlOverride.Disabled && !s.mlBreaker.Allow() {
+		// 显式记录熔断器短路的 fail-open（与 ml 服务 nil / override.Disabled 区分）
+		metrics.StageFailOpen.WithLabelValues("ml_score", "breaker").Inc()
 	}
 	// override.ForceScore 优先级最高：在 ML 路径之后强制覆盖（debug /
 	// 故障演练用）。ModelVer 加 "+override" 让 audit 一眼看出来。
@@ -315,10 +423,55 @@ func (s *RiskService) Screen(ctx context.Context, txn *engine.TxnContext) *engin
 	metrics.ScreenStageDuration.WithLabelValues("ml_score").Observe(mlMs)
 
 	start := time.Now()
-	res := s.engine.Evaluate(ctx, txn)
+	// 用 channel 安全传 result 而非共享变量赋值 — engine.Evaluate 不检查 ctx，
+	// timeout 后 goroutine 仍可能写入；用 channel 让 main path 跳出后 goroutine
+	// 安全地把结果丢弃（写到 buffered chan 不阻塞）。
+	resCh := make(chan *engine.Result, 1)
+	evalFn := func(c context.Context) {
+		r := s.engine.Evaluate(c, txn)
+		select {
+		case resCh <- r:
+		default:
+			// 已超时返回了；丢弃
+		}
+	}
+	var res *engine.Result
+	if disableTO {
+		evalFn(parentCtx)
+		res = <-resCh
+	} else if to := stageWithTimeout(parentCtx, timeoutsCfg.EngineEval, evalFn); to {
+		metrics.StageTimeout.WithLabelValues("engine_eval").Inc()
+		metrics.StageFailOpen.WithLabelValues("engine_eval", "timeout").Inc()
+		s.logger.Warn("engine_eval stage timeout (fail-open)",
+			zap.Duration("budget", timeoutsCfg.EngineEval))
+		// engine 超时是最严重的 — 规则没跑就 Allow 等于裸奔。但 fail-policy
+		// 仍然是 fail-open（与文档一致）：返一个最小 Allow Result，让后续
+		// audit / event 仍正常落，便于 SRE 定位"engine 卡了多少笔"。
+		res = &engine.Result{
+			Decision:  engine.Allow,
+			RiskScore: 0,
+			RiskLevel: "unknown",
+		}
+	} else {
+		// 正常路径：stageWithTimeout 已等 goroutine 跑完
+		select {
+		case res = <-resCh:
+		default:
+			// 极不可能：fn 正常返回但没往 chan 写。兜底。
+			res = &engine.Result{Decision: engine.Allow, RiskScore: 0, RiskLevel: "unknown"}
+		}
+	}
 	evalSec := time.Since(start).Seconds()
 	evalMs := evalSec * 1000
 	metrics.ScreenStageDuration.WithLabelValues("engine_eval").Observe(evalSec)
+
+	// global_ceiling 检查：parentCtx 已 Done 表示整个 Screen 已超总上限。
+	// 仍然 fail-open（不阻断当前 caller），但打 ceiling metric 让 SRE 知道。
+	if parentCtx.Err() == context.DeadlineExceeded && timeoutsCfg.GlobalCeiling > 0 {
+		metrics.ScreenCeilingTotal.Inc()
+		s.logger.Warn("screen global ceiling exceeded (fail-open)",
+			zap.Duration("ceiling", timeoutsCfg.GlobalCeiling))
+	}
 
 	s.logger.Info("risk screen",
 		zap.String("decision_id", decisionID),
@@ -338,7 +491,42 @@ func (s *RiskService) Screen(ctx context.Context, txn *engine.TxnContext) *engin
 	res.DecisionID = decisionID
 	res.RecommendedAction = recommendedActionFor(res.Decision)
 	stageAudit := time.Now()
-	s.recordAuditWith(ctx, decisionID, txn, res, evalMs)
+	// audit_write 路径：生产已通过 AsyncBatchSink 异步化（main.go 包了一层
+	// queue+worker，Sink.Write 是非阻塞 channel send）。但为了防御一些
+	// 自定义 Sink 实现（直接 ClickHouse / S3 写）阻塞主路径，这里再加一层
+	// 保险：AuditWrite ≤ 0 → fire-and-forget goroutine；> 0 → 同步 + timeout。
+	// 注：异步路径下 auditMs 只是"调度 goroutine 的耗时"，几乎为 0 — 这就是
+	// 设计意图，让 audit_write 不再算入 Screen SLA。
+	if disableTO || timeoutsCfg.AuditWrite > 0 {
+		if !disableTO && timeoutsCfg.AuditWrite > 0 {
+			if to := stageWithTimeout(parentCtx, timeoutsCfg.AuditWrite, func(c context.Context) {
+				s.recordAuditWith(c, decisionID, txn, res, evalMs)
+			}); to {
+				metrics.StageTimeout.WithLabelValues("audit_write").Inc()
+				metrics.StageFailOpen.WithLabelValues("audit_write", "timeout").Inc()
+				s.logger.Warn("audit_write stage timeout (dropped)",
+					zap.Duration("budget", timeoutsCfg.AuditWrite))
+			}
+		} else {
+			s.recordAuditWith(parentCtx, decisionID, txn, res, evalMs)
+		}
+	} else {
+		// async：detach 到 background ctx（parentCtx 已要 cancel；如果 sink
+		// 是同步实现且较慢，不阻塞 caller）。
+		// 假设：现有 AsyncBatchSink 已经做了 backpressure / drop 统计；这里
+		// goroutine 只是再加一层保险（不重新造 sink）。
+		// TODO(SLA): 当所有 audit Sink 都迁移到 AsyncBatchSink 后可去掉
+		// 这层 goroutine，直接调 recordAuditWith。
+		go func() {
+			defer func() {
+				// 防御 audit sink panic 不冒泡到 main goroutine
+				_ = recover()
+			}()
+			bgCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			s.recordAuditWith(bgCtx, decisionID, txn, res, evalMs)
+		}()
+	}
 	auditMs := time.Since(stageAudit).Seconds()
 	metrics.ScreenStageDuration.WithLabelValues("audit_write").Observe(auditMs)
 
@@ -480,7 +668,11 @@ func (s *RiskService) recordAuditWith(ctx context.Context, decisionID string, tx
 	s.auditSink.Write(ctx, &audit.DecisionAudit{
 		DecisionID:  decisionID,
 		OccurredAt:  time.Now().UTC(),
-		RuleVersion: s.engine.RuleCount(), // 简化版：当前规则总数当版本号；接入 reload 计数后改成真正的 version
+		// RuleVersion / RuleSetHash 现在用 engine.RuleSetHash() — 排序后的
+		// (rule_id, active_version) 集合的 fnv32a；同规则集任何变动都能
+		// 在 audit 里精确反查到当时的 engine 状态。
+		RuleVersion: int(s.engine.RuleSetHash()),
+		RuleSetHash: s.engine.RuleSetHashHex(),
 		Input: audit.AuditInput{
 			PaymentIntentID: txn.PaymentIntentID,
 			MerchantID:      txn.MerchantID,
@@ -893,6 +1085,30 @@ func mlFeaturesFrom(txn *engine.TxnContext) mlscore.Features {
 		TypingRhythmCV:       txn.TypingRhythmCV,
 		KeystrokeCount:       txn.KeystrokeCount,
 		Extra:                txn.Metadata,
+	}
+}
+
+// driftFeaturesFrom 抽出 mlscore.Features 里所有数值型字段（int / float / bool）
+// 做 per-feature PSI / KS。key 名稳定（map key 字符串），改名会丢历史 baseline。
+// bool → 0/1。字符串 / hash 类特征 PSI 没意义，故不收。
+func driftFeaturesFrom(f mlscore.Features) map[string]float64 {
+	b := func(v bool) float64 {
+		if v {
+			return 1
+		}
+		return 0
+	}
+	return map[string]float64{
+		"amount":                 float64(f.Amount),
+		"ip_proxy":               b(f.IPProxy),
+		"ip_vpn":                 b(f.IPVPN),
+		"ip_datacenter":          b(f.IPDataCenter),
+		"hardware_concurrency":   float64(f.HardwareConcurrency),
+		"time_to_checkout_ms":    float64(f.TimeToCheckoutMs),
+		"mouse_movement_entropy": f.MouseMovementEntropy,
+		"click_interval_ms":      float64(f.ClickIntervalMs),
+		"typing_rhythm_cv":       f.TypingRhythmCV,
+		"keystroke_count":        float64(f.KeystrokeCount),
 	}
 }
 

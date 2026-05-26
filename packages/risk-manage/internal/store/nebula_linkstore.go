@@ -315,6 +315,30 @@ func (s *NebulaLinkStore) Purge(ctx context.Context, key string) int {
 	return 1 // nebula DELETE 不返删除数；返 1 表示 best-effort 完成
 }
 
+// WeightedFanout TODO：nGQL 不支持 server-side exp() 直接算衰减，
+// 走 client-side：拉 (peer, links.at) 列表 → Go 端算 e^(-Δt/halflife) → 累加。
+//
+//	GO 1 STEP FROM "<vid>" OVER links YIELD links.at AS at, properties($$).key AS key
+//
+// 当前留 panic；Phase 14e 落 Nebula 集成时一并实现。
+func (s *NebulaLinkStore) WeightedFanout(ctx context.Context, node, peerPrefix string,
+	decayHalfLife time.Duration,
+) (float64, int) {
+	panic("TODO: Nebula WeightedFanout — implement client-side decay aggregation (Phase 14e)")
+}
+
+func (s *NebulaLinkStore) WeightedPeersWithin(ctx context.Context, a string, maxHops int, peerPrefix string,
+	decayHalfLife time.Duration, hopDecay float64,
+) (float64, int) {
+	panic("TODO: Nebula WeightedPeersWithin — same as WeightedFanout")
+}
+
+func (s *NebulaLinkStore) WeightedTagsWithin(ctx context.Context, a string, maxHops int,
+	decayHalfLife time.Duration, hopDecay float64,
+) map[string]float64 {
+	panic("TODO: Nebula WeightedTagsWithin — same as WeightedFanout")
+}
+
 // escape 逃逸 nGQL 字符串中的双引号 + 反斜杠。完整 nGQL injection 防护
 // 应该用 prepared statement 但 nebula-go 当前接口不支持；本实现先 escape
 // 兜底，规则系统的所有 key/tag 输入应该是 server-trusted 的。

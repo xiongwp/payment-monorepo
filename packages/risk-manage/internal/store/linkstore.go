@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -13,9 +14,12 @@ import (
 // API 设计：
 //   - Link(a, b) 记录一次共现，对称双向
 //   - Peers(a, prefix) 返回 a 在窗口内关联的所有 peer，可按前缀过滤维度
+//   - WeightedFanout(a, edgeType, halflife) 返回 a 沿 edgeType 邻居的"时间衰减
+//     强度"总和（旧边 = 弱信号，新边 = 强信号）。Stripe Radar 多年前注册的设备
+//     和今天注册的设备权重不一样，这里同理。
 //
-// 实现：内存版（TTL sliding window）。生产规模换 Redis（HSET + EXPIRE 或
-// Sorted Set）只需替换实现。
+// 实现：内存版（TTL sliding window + 指数衰减）。生产规模换 Redis（HSET +
+// EXPIRE 或 Sorted Set）只需替换实现。
 type LinkStore interface {
 	Link(ctx context.Context, a, b string)
 	Peers(ctx context.Context, a, peerPrefix string) []string
@@ -32,9 +36,57 @@ type LinkStore interface {
 	// 用于 graph_reputation 规则：邻居含 fraud tag → 当前节点风险升高。
 	TagsWithin(ctx context.Context, a string, maxHops int) map[string]int
 
+	// WeightedFanout 1-跳带时间衰减权重和（**新接口**，老 Peers/Fanout 保留）。
+	//
+	// 每条边按 last_observed_at 单独算 weight = e^(-days_ago / halflife_days)，
+	// 累加得 totalWeight。count 是命中的边数（peerPrefix 过滤后；不带衰减）。
+	//
+	// peerPrefix 用法同 Peers（"customer:" / "merchant:" / ""）。
+	// decayHalfLife <= 0 时退化为"全部计 1"（等同 unweighted）。
+	WeightedFanout(ctx context.Context, node, peerPrefix string, decayHalfLife time.Duration) (totalWeight float64, count int)
+	// WeightedPeersWithin maxHops 跳的"加权 fanout"：把 1..maxHops 跳每条边的
+	// (节点深度 hop 数) × 时间衰减 后累加。hopDecay <= 0 / >= 1 时退化为不带跳数衰减。
+	//
+	// 用于 weighted_link_fanout 多跳版本 + graph_reputation decay 增强。
+	WeightedPeersWithin(ctx context.Context, a string, maxHops int, peerPrefix string,
+		decayHalfLife time.Duration, hopDecay float64) (totalWeight float64, count int)
+	// WeightedTagsWithin 类似 TagsWithin，但每个 tag 的累加值为
+	// sum(time_decay × hop_decay)。返回 float64 而不是 int，因为
+	// 衰减后已经不是 count 而是"加权信号强度"。decayHalfLife <= 0 → 仅 hop 衰减。
+	WeightedTagsWithin(ctx context.Context, a string, maxHops int,
+		decayHalfLife time.Duration, hopDecay float64) map[string]float64
+
 	// Purge 清掉给定 key 的所有边 + 标签（GDPR right-to-erasure）。返回清掉的
 	// 边数（含双向；若 key 不存在 → 0）。重复调幂等。
 	Purge(ctx context.Context, key string) int
+}
+
+// DefaultDecayHalfLife 时间衰减默认半衰期（30 天 → 30 天前的边权重 = 50%；
+// ~7×halflife 后权重 < 1e-3，被 GC 清掉）。
+const DefaultDecayHalfLife = 30 * 24 * time.Hour
+
+// decayPruneThreshold weight 低于此值即视为"基本失效"，GC 阶段清除。
+// 7×halflife 时 e^(-7) ≈ 9e-4，所以阈值取 1e-3。
+const decayPruneThreshold = 1e-3
+
+// edgeMeta 每条 (src, dst) 单向边的累积观察元数据（unweighted 路径不用，
+// 仅 Weighted* 接口读）。Link 调用时累加 ObserveCount + 滚动 LastObserved。
+// 注意 LastObserved 字段是为衰减计算用，与原 links[k][p] 的 last-seen 时间
+// 一致冗余存储，方便 Edge() 一次取全（避免 hot loop 里两次 map lookup）。
+type edgeMeta struct {
+	FirstObserved time.Time
+	LastObserved  time.Time
+	ObserveCount  uint32
+}
+
+// Edge LinkStore 对外暴露的边视图（debug / admin endpoint 用，热路径不取）。
+type Edge struct {
+	Src            string
+	Dst            string
+	Weight         float64 // 调用方需自己传 halflife 让 store 算
+	FirstObserved  time.Time
+	LastObservedAt time.Time
+	ObserveCount   uint32
 }
 
 // linkTTL 共现记录的保留时长。1 小时窗口足以捕获 fraud ring 的短突发，
@@ -56,20 +108,27 @@ const BFSMaxHops = 3
 // MemLinkStore 内存版 link store。所有数据 process-local，重启清空。
 //
 // 数据结构：
-//   - links: map[key] -> map[peer] -> last-seen-time
-//   - tags:  map[node] -> map[tag] -> last-seen-time
+//   - links:    map[key] -> map[peer] -> last-seen-time    （unweighted 路径）
+//   - linkMeta: map[key] -> map[peer] -> *edgeMeta         （Weighted* 路径用）
+//   - tags:     map[node] -> map[tag] -> last-seen-time
 //   last-seen 用最近一次而非首次：让活跃 peer / tag 不被 TTL 错误清掉
 //   （把 TTL 当作"最近共现窗口"而非"首次共现窗口"）。
+//
+// 为什么 links 和 linkMeta 并行存而不合并：兼容老的 snapshot / 序列化路径
+// （links 是 map[string]time.Time，外部测试代码直接 s.mu.Lock() + 改 map）。
+// linkMeta 是单调加字段，老路径不读它就无影响；删 key 时两个 map 同步删。
 type MemLinkStore struct {
-	mu    sync.Mutex
-	links map[string]map[string]time.Time
-	tags  map[string]map[string]time.Time
+	mu       sync.Mutex
+	links    map[string]map[string]time.Time
+	linkMeta map[string]map[string]*edgeMeta
+	tags     map[string]map[string]time.Time
 }
 
 func NewMemLinkStore() *MemLinkStore {
 	return &MemLinkStore{
-		links: make(map[string]map[string]time.Time),
-		tags:  make(map[string]map[string]time.Time),
+		links:    make(map[string]map[string]time.Time),
+		linkMeta: make(map[string]map[string]*edgeMeta),
+		tags:     make(map[string]map[string]time.Time),
 	}
 }
 
@@ -99,6 +158,19 @@ func (s *MemLinkStore) addOne(key, peer string, now time.Time) {
 		}
 	}
 	bucket[peer] = now
+
+	// 同步累加 edgeMeta（Weighted* 路径用）
+	mbucket, ok := s.linkMeta[key]
+	if !ok {
+		mbucket = make(map[string]*edgeMeta, 4)
+		s.linkMeta[key] = mbucket
+	}
+	if m, exists := mbucket[peer]; exists {
+		m.LastObserved = now
+		m.ObserveCount++
+	} else {
+		mbucket[peer] = &edgeMeta{FirstObserved: now, LastObserved: now, ObserveCount: 1}
+	}
 }
 
 func evictExpired(bucket map[string]time.Time, now time.Time) {
@@ -274,12 +346,281 @@ func (s *MemLinkStore) Purge(_ context.Context, key string) int {
 					purged++
 				}
 			}
+			if pmb, ok := s.linkMeta[peer]; ok {
+				delete(pmb, key)
+			}
 			purged++
 		}
 		delete(s.links, key)
 	}
+	delete(s.linkMeta, key)
 	if _, ok := s.tags[key]; ok {
 		delete(s.tags, key)
 	}
 	return purged
+}
+
+// ─── Weighted* 接口实现 ─────────────────────────────────────────────
+
+// edgeWeight = e^(-days_ago / halflife_days)。half_life <= 0 时返回 1.0
+// （等同于 unweighted —— 调用方可统一走 Weighted* 路径）。
+func edgeWeight(lastObserved, now time.Time, halflife time.Duration) float64 {
+	if halflife <= 0 {
+		return 1.0
+	}
+	dt := now.Sub(lastObserved)
+	if dt <= 0 {
+		return 1.0
+	}
+	// 用 hours 而不是 days 数避免短半衰期被 round 到 0
+	return math.Exp(-dt.Hours() / halflife.Hours())
+}
+
+// WeightedFanout 1-跳带衰减权重和。peerPrefix 同 Peers。
+// 顺带做"懒 GC"：遇到 weight < decayPruneThreshold 的边立即删（不另开
+// 后台线程；GC 摊到读路径上 amortize）。
+func (s *MemLinkStore) WeightedFanout(_ context.Context, node, peerPrefix string, decayHalfLife time.Duration) (float64, int) {
+	if node == "" {
+		return 0, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mbucket, ok := s.linkMeta[node]
+	if !ok {
+		return 0, 0
+	}
+	now := time.Now()
+	cutoff := now.Add(-linkTTL)
+	totalW := 0.0
+	count := 0
+	for peer, m := range mbucket {
+		// 同步沿用 linkTTL 硬过期（兜底；衰减阈值是软过期）
+		if m.LastObserved.Before(cutoff) {
+			delete(mbucket, peer)
+			if b, ok := s.links[node]; ok {
+				delete(b, peer)
+			}
+			continue
+		}
+		w := edgeWeight(m.LastObserved, now, decayHalfLife)
+		if w < decayPruneThreshold {
+			delete(mbucket, peer)
+			if b, ok := s.links[node]; ok {
+				delete(b, peer)
+			}
+			continue
+		}
+		if peerPrefix != "" && !strings.HasPrefix(peer, peerPrefix) {
+			continue
+		}
+		totalW += w
+		count++
+	}
+	return totalW, count
+}
+
+// WeightedPeersWithin BFS maxHops 跳，每层套 hopDecay^(hop-1) × time_decay。
+// 输出 (totalWeight, count) ：count 为满足 peerPrefix 的去重节点数。
+// hopDecay 推荐 0.5（每多一跳减半）；<=0 / >=1 时禁用跳数衰减。
+func (s *MemLinkStore) WeightedPeersWithin(ctx context.Context, a string, maxHops int, peerPrefix string,
+	decayHalfLife time.Duration, hopDecay float64,
+) (float64, int) {
+	if a == "" || maxHops <= 0 {
+		return 0, 0
+	}
+	if maxHops > BFSMaxHops {
+		maxHops = BFSMaxHops
+	}
+	useHopDecay := hopDecay > 0 && hopDecay < 1
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-linkTTL)
+
+	// nodeWeight: 该节点累积到的"最强路径"weight（多条路径取 max，避免重复计数）
+	nodeWeight := map[string]float64{a: 1.0}
+	frontier := []string{a}
+	visitedTotal := 1
+	capped := false
+	for hop := 1; hop <= maxHops && !capped; hop++ {
+		next := make([]string, 0, len(frontier))
+		for _, node := range frontier {
+			if capped {
+				break
+			}
+			mbucket, ok := s.linkMeta[node]
+			if !ok {
+				continue
+			}
+			parentW := nodeWeight[node]
+			for peer, m := range mbucket {
+				if m.LastObserved.Before(cutoff) {
+					delete(mbucket, peer)
+					if b, ok := s.links[node]; ok {
+						delete(b, peer)
+					}
+					continue
+				}
+				tw := edgeWeight(m.LastObserved, now, decayHalfLife)
+				if tw < decayPruneThreshold {
+					delete(mbucket, peer)
+					if b, ok := s.links[node]; ok {
+						delete(b, peer)
+					}
+					continue
+				}
+				w := parentW * tw
+				if useHopDecay {
+					w *= hopDecay
+				}
+				if prev, ok := nodeWeight[peer]; ok {
+					if w > prev {
+						nodeWeight[peer] = w
+					}
+					continue
+				}
+				nodeWeight[peer] = w
+				next = append(next, peer)
+				visitedTotal++
+				if visitedTotal >= BFSMaxNodes {
+					capped = true
+					break
+				}
+			}
+		}
+		frontier = next
+		if len(frontier) == 0 {
+			break
+		}
+	}
+	total := 0.0
+	count := 0
+	for n, w := range nodeWeight {
+		if n == a {
+			continue
+		}
+		if peerPrefix != "" && !strings.HasPrefix(n, peerPrefix) {
+			continue
+		}
+		total += w
+		count++
+	}
+	return total, count
+}
+
+// WeightedTagsWithin maxHops 跳 BFS 收集所有节点的 tag → 加权信号。
+// 每个 tag 的累加 = sum(节点的边时间衰减 × hopDecay^hop)，
+// 节点本身（hop=0）权重 = 1.0。
+func (s *MemLinkStore) WeightedTagsWithin(ctx context.Context, a string, maxHops int,
+	decayHalfLife time.Duration, hopDecay float64,
+) map[string]float64 {
+	if a == "" {
+		return nil
+	}
+	if maxHops < 0 {
+		maxHops = 0
+	}
+	if maxHops > BFSMaxHops {
+		maxHops = BFSMaxHops
+	}
+	useHopDecay := hopDecay > 0 && hopDecay < 1
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-linkTTL)
+
+	nodeWeight := map[string]float64{a: 1.0}
+	frontier := []string{a}
+	visitedTotal := 1
+	for hop := 1; hop <= maxHops; hop++ {
+		next := make([]string, 0, len(frontier))
+		for _, node := range frontier {
+			mbucket, ok := s.linkMeta[node]
+			if !ok {
+				continue
+			}
+			parentW := nodeWeight[node]
+			for peer, m := range mbucket {
+				if m.LastObserved.Before(cutoff) {
+					delete(mbucket, peer)
+					if b, ok := s.links[node]; ok {
+						delete(b, peer)
+					}
+					continue
+				}
+				tw := edgeWeight(m.LastObserved, now, decayHalfLife)
+				if tw < decayPruneThreshold {
+					delete(mbucket, peer)
+					if b, ok := s.links[node]; ok {
+						delete(b, peer)
+					}
+					continue
+				}
+				w := parentW * tw
+				if useHopDecay {
+					w *= hopDecay
+				}
+				if prev, ok := nodeWeight[peer]; ok {
+					if w > prev {
+						nodeWeight[peer] = w
+					}
+					continue
+				}
+				nodeWeight[peer] = w
+				next = append(next, peer)
+				visitedTotal++
+				if visitedTotal >= BFSMaxNodes {
+					goto done
+				}
+			}
+		}
+		frontier = next
+		if len(frontier) == 0 {
+			break
+		}
+	}
+done:
+	out := map[string]float64{}
+	for node, w := range nodeWeight {
+		bucket, ok := s.tags[node]
+		if !ok {
+			continue
+		}
+		for tag, t := range bucket {
+			if t.Before(cutoff) {
+				delete(bucket, tag)
+				continue
+			}
+			out[tag] += w
+		}
+	}
+	return out
+}
+
+// GCDecayed 主动清除 weight < decayPruneThreshold 的边（admin endpoint /
+// 周期任务调）。返回清掉边数。Weighted* 读路径已经懒清；这里给
+// "只写不读" 的冷数据兜底。
+func (s *MemLinkStore) GCDecayed(decayHalfLife time.Duration) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-linkTTL)
+	removed := 0
+	for src, mbucket := range s.linkMeta {
+		for peer, m := range mbucket {
+			if m.LastObserved.Before(cutoff) ||
+				edgeWeight(m.LastObserved, now, decayHalfLife) < decayPruneThreshold {
+				delete(mbucket, peer)
+				if b, ok := s.links[src]; ok {
+					delete(b, peer)
+				}
+				removed++
+			}
+		}
+		if len(mbucket) == 0 {
+			delete(s.linkMeta, src)
+			delete(s.links, src)
+		}
+	}
+	return removed
 }
