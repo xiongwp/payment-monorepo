@@ -341,35 +341,9 @@ ensure_shared_init_sql() {
     || fatal "generate-shared-init.sh 漏拼 user-merchant-core 段"
 }
 
-ensure_risk_clickhouse_init_sql() {
-  # risk-stack 的 ClickHouse init SQL 散在两个地方：
-  #   源:   packages/risk-manage/deploy/clickhouse/init/*.sql       (业务侧维护)
-  #   目标: packages/payment-admin-web/deploy/overrides/risk-clickhouse-init/  (compose mount)
-  # 这两份历史上靠手 cp，schema 改 risk-manage 那份忘 cp → CH 启动 BAD_TTL_EXPRESSION。
-  # 现在每次 up 都自动同步，保证一致。
-  local src="$ROOT/risk-manage/deploy/clickhouse/init"
-  local dst="$HERE/deploy/overrides/risk-clickhouse-init"
-  if [[ ! -d "$src" ]]; then
-    warn "risk-manage CH init 源目录不存在: $src（跳过同步）"
-    return
-  fi
-  mkdir -p "$dst"
-  # 用 cp -u 仅当源新于目标时覆盖；首次或修改后会触发。
-  local changed=false
-  for f in "$src"/*.sql; do
-    [[ -e "$f" ]] || continue
-    local base="$(basename "$f")"
-    if ! cmp -s "$f" "$dst/$base"; then
-      cp "$f" "$dst/$base"
-      changed=true
-    fi
-  done
-  if [[ "$changed" == "true" ]]; then
-    info "已同步 risk-manage CH init SQL → $dst"
-    # 提示：schema 变了，需要重启 risk-clickhouse-migrate 才生效
-    # （不强制 down/up；用户可手动 docker compose restart risk-clickhouse-migrate）
-  fi
-}
+# （已删除 ensure_risk_clickhouse_init_sql：risk-stack.yml 现在直接 mount
+#  ../../../risk-manage/deploy/clickhouse/init，无需 cp 同步。schema 改了
+#  做 `./deploy.sh down -v risk-stack && ./deploy.sh up risk-stack` 即可。）
 
 # ensure_card_dbs 幂等补灌 card_center / card_payment 数据库 ——
 # shared-meta + shared-shard-0..9 容器首次启动时会跑 init SQL，但已经在跑的容器
@@ -405,7 +379,6 @@ cmd_up() {
   ensure_kms_keys
   ensure_order_init_sql
   ensure_shared_init_sql
-  ensure_risk_clickhouse_init_sql
 
   local targets=("$@")
   [[ ${#targets[@]} -eq 0 ]] && targets=("${ALL_SERVICES[@]}")
