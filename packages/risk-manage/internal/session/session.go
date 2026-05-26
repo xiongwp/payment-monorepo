@@ -15,8 +15,11 @@
 package session
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,18 +31,28 @@ type Snapshot struct {
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	SDKVersion string    `json:"sdk_version,omitempty"`
+	// MerchantID 来自请求 X-Risk-Merchant-Id（已签名校验过）；DSR Erase 用 customer_id
+	// 检索 + merchant 隔离；非常关键，不要让前端在 body 里直接传以防越权。
+	MerchantID string `json:"merchant_id,omitempty"`
+	// CustomerID 可选；商户已知用户身份时可在签名请求里带，用于 GDPR Erase 索引。
+	// 不带 = 这条 session 不会被按 customer 删（兼容游客 checkout）。
+	CustomerID string `json:"customer_id,omitempty"`
 
 	// Fingerprint
+	// DSR / PII minimization：以下三个字段在 SDK 上报后由 NormalizeForStorage 强制
+	// 哈希化（hex sha256）。原值是高基数浏览器/设备识别符（GPU 名 / UA 字符串），
+	// 长期持久会被监管视为 PII（GDPR Art. 4 个人数据 — 间接识别）。哈希后既能保
+	// 留指纹比对能力，又能在 DSR Erase 时一并清除。
 	FingerprintHash     string `json:"fingerprintHash,omitempty"`
-	CanvasFingerprint   string `json:"canvasFingerprint,omitempty"`
-	WebGLRenderer       string `json:"webglRenderer,omitempty"`
-	AudioContextHash    string `json:"audioContextHash,omitempty"`
+	CanvasFingerprint   string `json:"canvasFingerprint,omitempty"`   // 端 SDK 已 hash
+	WebGLRenderer       string `json:"webglRenderer,omitempty"`       // hex hash（NormalizeForStorage）
+	AudioContextHash    string `json:"audioContextHash,omitempty"`    // 端 SDK 已 hash
 	ScreenWxH           string `json:"screenWxH,omitempty"`
 	Timezone            string `json:"timezone,omitempty"`
 	Language            string `json:"language,omitempty"`
 	HardwareConcurrency int    `json:"hardwareConcurrency,omitempty"`
 	Platform            string `json:"platform,omitempty"`
-	UserAgent           string `json:"userAgent,omitempty"`
+	UserAgent           string `json:"userAgent,omitempty"` // hex hash（NormalizeForStorage）
 
 	// Behavior
 	TimeToCheckoutMs     int64    `json:"timeToCheckoutMs,omitempty"`
@@ -63,6 +76,10 @@ type Store interface {
 	Finalize(id string, behavior BehaviorPatch) error
 	// Get 取完整 session；找不到返回 nil。
 	Get(id string) *Snapshot
+	// Erase 删除 customer_id 关联的所有 session（GDPR / CCPA 删除请求）。
+	// customer_id 不存在 / 没有任何关联 session 都视作成功（幂等）。
+	// 返回 nil = 成功；返回 error = 后端不可达（调用方应重试 / 排查）。
+	Erase(ctx context.Context, customerID string) error
 }
 
 // BehaviorPatch finalize 时上报的字段子集。fingerprint 字段保持原样不动。
@@ -91,10 +108,16 @@ const sessionTTL = 30 * time.Minute
 type MemStore struct {
 	mu    sync.RWMutex
 	items map[string]*Snapshot
+	// byCustomer secondary index：customer_id → session_id set，
+	// 让 DSR Erase 不用全表扫。Redis 版用 SET 同义实现。
+	byCustomer map[string]map[string]struct{}
 }
 
 func NewMemStore() *MemStore {
-	return &MemStore{items: make(map[string]*Snapshot)}
+	return &MemStore{
+		items:      make(map[string]*Snapshot),
+		byCustomer: make(map[string]map[string]struct{}),
+	}
 }
 
 func (m *MemStore) Create(s Snapshot) (string, error) {
@@ -106,8 +129,17 @@ func (m *MemStore) Create(s Snapshot) (string, error) {
 	s.SessionID = id
 	s.CreatedAt = now
 	s.UpdatedAt = now
+	NormalizeForStorage(&s)
 	m.mu.Lock()
 	m.items[id] = &s
+	if s.CustomerID != "" {
+		set, ok := m.byCustomer[s.CustomerID]
+		if !ok {
+			set = make(map[string]struct{})
+			m.byCustomer[s.CustomerID] = set
+		}
+		set[id] = struct{}{}
+	}
 	m.mu.Unlock()
 	return id, nil
 }
@@ -141,11 +173,82 @@ func (m *MemStore) Get(id string) *Snapshot {
 	if time.Since(s.CreatedAt) > sessionTTL {
 		m.mu.Lock()
 		delete(m.items, id)
+		if s.CustomerID != "" {
+			if set, ok := m.byCustomer[s.CustomerID]; ok {
+				delete(set, id)
+				if len(set) == 0 {
+					delete(m.byCustomer, s.CustomerID)
+				}
+			}
+		}
 		m.mu.Unlock()
 		return nil
 	}
 	cp := *s
 	return &cp
+}
+
+// Erase 删除 customer_id 关联的所有 session（GDPR / CCPA right-to-erasure）。
+// 空 customer_id 视作 no-op；找不到也返 nil（幂等保证调用方安全重试）。
+func (m *MemStore) Erase(_ context.Context, customerID string) error {
+	if customerID == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	set, ok := m.byCustomer[customerID]
+	if !ok {
+		return nil
+	}
+	for id := range set {
+		delete(m.items, id)
+	}
+	delete(m.byCustomer, customerID)
+	return nil
+}
+
+// NormalizeForStorage 把 Snapshot 里仍为原值的高基数 PII 字段哈希化。
+//
+// 规则：identifies-like-hex 直接保留；否则 sha256(value) 转 hex。这样运维既不需要
+// 强制升级 SDK，又确保 store 里不再有"裸 UA / 裸 GPU 名"。
+//
+// 影响范围（DSR / PII minimization）：
+//   - WebGLRenderer "ANGLE (Intel UHD Graphics 630)" → 哈希
+//   - UserAgent "Mozilla/5.0 ..."                   → 哈希
+//
+// CanvasFingerprint / AudioContextHash 端 SDK 上报时已经是 hash；FingerprintHash 同。
+// IP / ScreenWxH / Timezone / Language / Platform / HwConcurrency 在风控信号意义上
+// 比 raw UA 价值更高且基数低，未列入强制哈希范围（合规层视风控基本最小集）。
+func NormalizeForStorage(s *Snapshot) {
+	if s == nil {
+		return
+	}
+	s.WebGLRenderer = ensureHexHash(s.WebGLRenderer)
+	s.UserAgent = ensureHexHash(s.UserAgent)
+}
+
+// ensureHexHash：已经是 64 hex chars（sha256）直接返；否则 sha256 hex 化。
+// 空串保留空串以维持 omitempty 语义。
+func ensureHexHash(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if len(v) == 64 && isHex(v) {
+		return strings.ToLower(v)
+	}
+	sum := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(sum[:])
+}
+
+func isHex(v string) bool {
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // newID 16-byte crypto/rand → 32 hex 字符。和 audit decision_id 同款。

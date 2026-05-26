@@ -164,6 +164,54 @@ func (s *MemAPIKeyStore) Lookup(_ context.Context, token string) (*Principal, er
 	return nil, ErrInvalidKey
 }
 
+// ── SDK 签名密钥（merchant-side HMAC） ─────────────────────────────────
+//
+// SDK 公网端点（/v1/risk/session*）要求商户在前端用 merchant_secret 做 HMAC-SHA256
+// 签名，否则攻击者可以伪造指纹刷量。secret 不复用 API key（API key 只在 server-side
+// 调用 Screen 用；前端不能塞），用独立的 SDK signing secret。
+//
+// 存储：每商户一条 (merchant_id → secret)；plaintext 不持久化进任何日志 / metrics
+// label。生产换 PG/KMS-backed store；轮换 = 加新 secret + 灰度切换 + 删老 secret。
+type SecretLookup interface {
+	// SDKSecret 根据 merchant_id 拿 SDK 签名 secret；找不到返回 ErrInvalidKey。
+	// 实现需保证 ctx-cancel 行为。
+	SDKSecret(ctx context.Context, merchantID string) (string, error)
+}
+
+// MemSecretLookup 内存版（dev / 单测）。生产换 PG-backed。
+type MemSecretLookup struct {
+	mu      sync.RWMutex
+	secrets map[string]string
+}
+
+func NewMemSecretLookup() *MemSecretLookup {
+	return &MemSecretLookup{secrets: make(map[string]string)}
+}
+
+// Set 注册一条 (merchant_id, secret)。
+func (s *MemSecretLookup) Set(merchantID, secret string) {
+	if merchantID == "" || secret == "" {
+		return
+	}
+	s.mu.Lock()
+	s.secrets[merchantID] = secret
+	s.mu.Unlock()
+}
+
+// SDKSecret 实现 SecretLookup。
+func (s *MemSecretLookup) SDKSecret(_ context.Context, merchantID string) (string, error) {
+	if merchantID == "" {
+		return "", ErrInvalidKey
+	}
+	s.mu.RLock()
+	sec, ok := s.secrets[merchantID]
+	s.mu.RUnlock()
+	if !ok {
+		return "", ErrInvalidKey
+	}
+	return sec, nil
+}
+
 // ParseKeyPrefix 从 plaintext token 解析格式信息：rsk_<env>_<scope_or_merchant>_...
 // 用于 logs / metrics labeling，不做 auth 决策（auth 全靠 store 查）。
 func ParseKeyPrefix(token string) (env, prefix string) {

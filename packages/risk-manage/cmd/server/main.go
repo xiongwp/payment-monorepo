@@ -94,6 +94,7 @@ func main() {
 			newReviewStore,
 			newFeedbackRecorder,
 			newAPIKeyStore,
+			newSDKSecrets,
 			newMerchantList,
 			newIntervalTracker,
 			newWebhookStore,
@@ -385,8 +386,69 @@ func newMLDrift(v *viper.Viper) *mlscore.DriftMonitor {
 	return mlscore.NewDriftMonitor(size, thr)
 }
 
-// newSessionStore 端 SDK fingerprint + behavior 的临时存储。生产 Redis 替换。
-func newSessionStore() risksession.Store { return risksession.NewMemStore() }
+// newSessionStore 端 SDK fingerprint + behavior 的临时存储。
+//
+//	session:
+//	  redis:
+//	    addr: ""                 # 非空 + -tags redis 编译 → RedisStore；否则 MemStore
+//	    db: 0
+//	    password: ""
+//
+// 注意：未带 redis tag 时即便配 addr 也回退 MemStore（store stub 行为），运维需
+// 检查启动日志确认实际后端。
+func newSessionStore(v *viper.Viper, logger *zap.Logger) risksession.Store {
+	addr := v.GetString("session.redis.addr")
+	if addr == "" {
+		logger.Info("session store: mem (set session.redis.addr + build -tags redis for prod)")
+		return risksession.NewMemStore()
+	}
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     addr,
+		Password: v.GetString("session.redis.password"),
+		DB:       v.GetInt("session.redis.db"),
+	})
+	rs := risksession.NewRedisStore(rdb)
+	// 探活：Erase("") 在 mem / redis 都是 no-op；redis stub 会返 ErrRedisNotEnabled
+	if err := rs.Erase(context.Background(), ""); err != nil {
+		logger.Warn("session redis store unavailable, falling back to mem",
+			zap.String("addr", addr), zap.Error(err))
+		return risksession.NewMemStore()
+	}
+	logger.Info("session store: redis", zap.String("addr", addr))
+	return rs
+}
+
+// newSDKSecrets 加载商户的 SDK signing secret（HMAC 用），用于 /v1/risk/session*
+// 端点签名校验。配置：
+//
+//	auth:
+//	  sdk_secrets:
+//	    - merchant_id: m1
+//	      secret: <hmac-secret>
+//
+// 空列表 → 返回 nil，签名校验回退到 RISK_SDK_SIGNATURE_REQUIRED 灰度模式。
+// 生产换 PG-backed loader（KMS 解密）。
+func newSDKSecrets(v *viper.Viper, logger *zap.Logger) auth.SecretLookup {
+	var defs []struct {
+		MerchantID string `mapstructure:"merchant_id"`
+		Secret     string `mapstructure:"secret"`
+	}
+	if err := v.UnmarshalKey("auth.sdk_secrets", &defs); err != nil || len(defs) == 0 {
+		return nil
+	}
+	store := auth.NewMemSecretLookup()
+	loaded := 0
+	for _, d := range defs {
+		if d.MerchantID == "" || d.Secret == "" {
+			continue
+		}
+		store.Set(d.MerchantID, d.Secret)
+		loaded++
+	}
+	// 不打 secret 内容；只打 merchant 数量
+	logger.Info("sdk signing secrets loaded", zap.Int("merchants", loaded))
+	return store
+}
 
 // newReviewStore 人工 review 队列。生产换 PG / MySQL append-only 表。
 func newReviewStore() review.Store { return review.NewMemStore() }
@@ -1161,6 +1223,7 @@ func startMetricsHTTP(
 	eng *engine.Engine,
 	sink audit.Sink,
 	sessions risksession.Store,
+	sdkSecrets auth.SecretLookup,
 	reviewQ review.Store,
 	fbRec feedback.Recorder,
 	mlList merchantlist.Service,
@@ -1222,7 +1285,9 @@ func startMetricsHTTP(
 	if sessions != nil || reviewQ != nil || fbRec != nil || mlList != nil || mlDrift != nil || adaptive != nil {
 		sessionReg = func(mux *http.ServeMux) {
 			if sessions != nil {
-				risksession.RegisterHandlers(mux, sessions, logger)
+				// 公网端点带 HMAC 校验；admin DSR erase 在外套 RequireRole("danger")，
+				// 路径鉴权由 StartServerWithAuth 的 pathScopedAuth (/admin/) 兜底。
+				risksession.RegisterHandlersFull(mux, sessions, sdkSecrets, metrics.RequireRole("danger"), logger)
 			}
 			if mlList != nil {
 				// merchant_list filter：只信赖入站 query.merchant_id（pathScopedAuth 已经
