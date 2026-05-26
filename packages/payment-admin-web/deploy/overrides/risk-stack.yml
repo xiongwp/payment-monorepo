@@ -103,10 +103,9 @@ services:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     volumes:
       - risk_clickhouse_data:/var/lib/clickhouse
-      # init SQL 路径：deploy.sh 启动前会从 risk-manage repo cp 过来
-      # 注意：/docker-entrypoint-initdb.d 仅在 volume 首次创建时执行；
-      # 旧 volume + 新 schema 不会自动跑 → 用下面 risk-clickhouse-init 兜底。
-      - ./risk-clickhouse-init:/docker-entrypoint-initdb.d:ro
+      # init SQL 直接挂 risk-manage 包源；改 schema 后 down -v + up 一把 schema 即生效。
+      # (未上线系统，down -v 没成本；上线后再加 migrate 容器也不迟)
+      - ../../../risk-manage/deploy/clickhouse/init:/docker-entrypoint-initdb.d:ro
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
     healthcheck:
@@ -114,40 +113,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-
-  # ── ClickHouse schema 一次性 migration ─────────────────────────
-  # 解决：旧 volume 启动时不再跑 /docker-entrypoint-initdb.d 的脚本，导致
-  # 添加 / 修改表结构（如新增列、新表）后必须手 exec 进 CH 才能生效。
-  # 此 job 每次 up 都跑（幂等：CREATE TABLE IF NOT EXISTS），确保 schema 最新。
-  risk-clickhouse-migrate:
-    image: clickhouse/clickhouse-server:24.3
-    restart: "no"
-    networks: [payment-stack]
-    depends_on:
-      risk-clickhouse:
-        condition: service_healthy
-    volumes:
-      - ./risk-clickhouse-init:/init:ro
-    entrypoint: ["bash", "-c"]
-    # 用 stdin 重定向喂 SQL，避免 24.3 client --queries-file 在某些场景 exit 194。
-    # docker compose v2 里 $$ 仍然需要（YAML 字符串先解一遍 $variable，bash 再解一遍 $f），
-    # 但 here-doc 内的 shell 变量用 $f 就够 — for-loop 在脚本内是 bash 层而非 compose 层。
-    command:
-      - |
-        set -e
-        echo "[ch-migrate] applying schema from /init/*.sql ..."
-        for f in /init/*.sql; do
-          echo "[ch-migrate] >>> $$f"
-          clickhouse-client \
-            --host=risk-clickhouse --port=9000 \
-            --user=risk_writer --password=change_me \
-            --multiquery < "$$f" || { echo "[ch-migrate] FAILED on $$f"; exit 2; }
-        done
-        echo "[ch-migrate] done; tables in db=risk:"
-        clickhouse-client \
-          --host=risk-clickhouse --port=9000 \
-          --user=risk_writer --password=change_me \
-          --query="SHOW TABLES FROM risk"
 
   # ── NebulaGraph 3 节点 ─────────────────────────────────────────
   risk-nebula-metad:
