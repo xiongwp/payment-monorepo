@@ -179,11 +179,12 @@ func DefaultProbes() []Probe {
 					// Platform=ios 让 client_tampering 规则跳过 direct_api_call 信号
 					// （移动端 API 调用本来就没 RiskSessionID，不算"绕过 SDK"）
 					Platform: "ios",
-					// RiskSessionID + DeviceFingerprintHash 模拟 SDK 上送过信号，
+					// RiskSessionID + FingerprintHash 模拟 SDK 上送过信号，
 					// 避免 client_tampering 的 direct_api_call(+2 score) 触发。
-					RiskSessionID:         "synth_sess_clean",
-					DeviceFingerprintHash: "fp_synth_clean_abc123",
-					SignalCoverageRatio:   0.9,
+					// TxnContext 字段叫 FingerprintHash（不是 DeviceFingerprintHash）。
+					RiskSessionID:       "synth_sess_clean",
+					FingerprintHash:     "fp_synth_clean_abc123",
+					SignalCoverageRatio: 0.9,
 					Metadata: map[string]string{
 						"email_domain":     "gmail.com",
 						"account_age_days": "30",

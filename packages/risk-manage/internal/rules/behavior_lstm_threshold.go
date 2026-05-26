@@ -28,6 +28,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/xiongwp/risk-manage/internal/engine"
 )
@@ -38,7 +40,7 @@ type behaviorLSTMRule struct {
 	enabled   bool
 	threshold float64
 	minQual   float64
-	decision  string // "REVIEW" / "DENY"
+	decision  engine.Decision // 解析自 spec.Decision 字符串
 }
 
 type behaviorLSTMSpec struct {
@@ -61,10 +63,17 @@ func NewBehaviorLSTMRule(id string, enabled bool, specJSON []byte) (engine.Rule,
 	if spec.Threshold < 0 || spec.Threshold > 1 {
 		return nil, errors.New("behavior_lstm_threshold: threshold must be in [0,1]")
 	}
-	if spec.Decision == "" {
-		spec.Decision = "REVIEW" // 默认走人工，不直接 deny
+	decisionStr := strings.ToUpper(strings.TrimSpace(spec.Decision))
+	if decisionStr == "" {
+		decisionStr = "REVIEW" // 默认走人工，不直接 deny
 	}
-	if spec.Decision != "REVIEW" && spec.Decision != "DENY" {
+	var decision engine.Decision
+	switch decisionStr {
+	case "REVIEW":
+		decision = engine.Review
+	case "DENY":
+		decision = engine.Deny
+	default:
 		return nil, errors.New("behavior_lstm_threshold: decision must be REVIEW or DENY")
 	}
 	if spec.MinSignalQuality <= 0 {
@@ -75,16 +84,16 @@ func NewBehaviorLSTMRule(id string, enabled bool, specJSON []byte) (engine.Rule,
 		enabled:   enabled,
 		threshold: spec.Threshold,
 		minQual:   spec.MinSignalQuality,
-		decision:  spec.Decision,
+		decision:  decision,
 	}, nil
 }
 
-func (r *behaviorLSTMRule) ID() string      { return r.id }
-func (r *behaviorLSTMRule) Name() string    { return "behavior_lstm_threshold" }
-func (r *behaviorLSTMRule) Type() string    { return "behavior_lstm_threshold" }
-func (r *behaviorLSTMRule) Enabled() bool   { return r.enabled }
-func (r *behaviorLSTMRule) Weight() int     { return 25 } // 高权重：是 ML 直接判断
-func (r *behaviorLSTMRule) Tags() []string  { return []string{"ml", "behavior", "anti-bot"} }
+func (r *behaviorLSTMRule) ID() string     { return r.id }
+func (r *behaviorLSTMRule) Name() string   { return "behavior_lstm_threshold" }
+func (r *behaviorLSTMRule) Type() string   { return "behavior_lstm_threshold" }
+func (r *behaviorLSTMRule) Enabled() bool  { return r.enabled }
+func (r *behaviorLSTMRule) Weight() int    { return 25 } // 高权重：是 ML 直接判断
+func (r *behaviorLSTMRule) Tags() []string { return []string{"ml", "behavior", "anti-bot"} }
 
 func (r *behaviorLSTMRule) Evaluate(ctx context.Context, txn *engine.TxnContext) *engine.Hit {
 	if !r.enabled || txn == nil {
@@ -97,14 +106,15 @@ func (r *behaviorLSTMRule) Evaluate(ctx context.Context, txn *engine.TxnContext)
 	if txn.BehaviorAnomalyScore < r.threshold {
 		return nil
 	}
+	// Hit.Detail 是 string；用单行紧凑形式表达，便于 audit 检索
+	detail := fmt.Sprintf(
+		"behavior_lstm score=%.3f threshold=%.2f signal_coverage=%.2f",
+		txn.BehaviorAnomalyScore, r.threshold, txn.SignalCoverageRatio,
+	)
 	return &engine.Hit{
 		RuleID:   r.id,
 		RuleName: r.Name(),
 		Decision: r.decision,
-		Detail: map[string]interface{}{
-			"behavior_anomaly_score": txn.BehaviorAnomalyScore,
-			"threshold":              r.threshold,
-			"signal_coverage_ratio":  txn.SignalCoverageRatio,
-		},
+		Detail:   detail,
 	}
 }
