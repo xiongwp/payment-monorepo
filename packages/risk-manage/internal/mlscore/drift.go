@@ -681,12 +681,4 @@ func kolmogorovQ(lambda float64) float64 {
 	return 1.0
 }
 
-func clamp01(x float64) float64 {
-	if x < 0 {
-		return 0
-	}
-	if x > 1 {
-		return 1
-	}
-	return x
-}
+// clamp01 在 ensemble.go 里已定义；本文件之前重复声明，已合并到 ensemble.go 版本。
