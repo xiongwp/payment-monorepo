@@ -1,4 +1,4 @@
-// risk-sdk.js — 浏览器端风控数据采集 SDK（v0.2.0）
+// risk-sdk.js — 浏览器端风控数据采集 SDK（v0.3.0）
 //
 // 用法：
 //   const s = await window.RiskSDK.init({
@@ -26,11 +26,26 @@
 (function (global) {
   'use strict';
 
-  const VERSION = '0.2.0';
+  const VERSION = '0.3.0';
   const SIGNAL_TIMEOUT_MS = 200;
   const MOUSE_BUF_MAX = 200;
   const MOUSE_WINDOW_MS = 60_000;
   const PAUSE_THRESHOLD_MS = 100;
+  const DEVTOOLS_CHECK_INTERVAL_MS = 1000;
+  const DEVTOOLS_DETECT_THRESHOLD_MS = 100;
+
+  // 可选模块（headless 深度探针 + consent gate）；node test 环境用 require 拿，
+  // 浏览器下 build pipeline 会用 esbuild 把它们 inline 进来 → 此时全局已有。
+  let HeadlessProbes = null, Consent = null;
+  try {
+    if (typeof module !== 'undefined' && module.exports) {
+      HeadlessProbes = require('./probes/headless.js');
+      Consent = require('./consent.js');
+    } else {
+      HeadlessProbes = global.RiskSDKHeadlessProbes || null;
+      Consent = global.RiskSDKConsent || null;
+    }
+  } catch (_) { /* 可选；缺失只是降级，不阻塞 */ }
 
   // ─── 工具 ──────────────────────────────────────────────────────────
 
@@ -377,6 +392,22 @@
       fields.deviceMemory, fields.pixelRatio, fields.colorDepth, fields.touchSupport,
     ].join('|'));
 
+    // 深度 headless 探针（可选模块；缺失则降级，不影响其他信号）
+    if (HeadlessProbes && typeof HeadlessProbes.runHeadlessProbes === 'function') {
+      try {
+        const hp = await withTimeout(
+          HeadlessProbes.runHeadlessProbes(global, { canvasHash: fields.canvasFingerprint }),
+          T * 5);
+        fields.headlessScore = hp.headlessScore;
+        fields.headlessSignals = hp.signals;
+        status.headlessProbes = 'ok';
+      } catch (e) {
+        fields.headlessScore = 0;
+        fields.headlessSignals = {};
+        status.headlessProbes = (e && e.message === 'timeout') ? 'timeout' : 'fail';
+      }
+    }
+
     // signalCoverage：ok 数 / 总数
     const total = Object.keys(status).length;
     let ok = 0;
@@ -501,6 +532,9 @@
     const pastedFields = new Set();
     const mouse = newMouseBuffer();
     const keys = newKeystrokeBuffer();
+    // 可选 mouseDown→mouseUp 间隔探针（Puppeteer click 默认 0ms）
+    const clickTiming = (HeadlessProbes && HeadlessProbes.newClickTimingProbe)
+      ? HeadlessProbes.newClickTimingProbe() : null;
     let scrollDistance = 0;
     let scrollStartTs = 0;
     let scrollLastY = 0;
@@ -508,6 +542,8 @@
 
     return {
       onClick(e) { clickTimes.push(Date.now()); },
+      onMouseDown(e) { if (clickTiming) clickTiming.onMouseDown(e); },
+      onMouseUp(e) { if (clickTiming) clickTiming.onMouseUp(e); },
       onKeyDown(e) { keys.onDown(e); },
       onKeyUp(e) { keys.onUp(e); },
       onPaste(e) {
@@ -551,6 +587,9 @@
           mouseMovementEntropy: traj.trajectoryEntropy,
           typingRhythmCV: ks.keystrokeFlightCV,
           pastedFields: Array.from(pastedFields),
+          // headless click-timing 行为信号 — 默认 false（无样本）
+          instantClickDetected: clickTiming ? clickTiming.hit() : false,
+          clickTimingStats: clickTiming ? clickTiming.stats() : { instantCount: 0, totalPairs: 0 },
         };
       },
     };
@@ -619,9 +658,11 @@
 
   let _session = null;
 
-  // init({endpoint, merchantId, signRequest, debug}) → {id, fingerprint, signalCoverage}
-  //   signRequest 可选：async (body) => ({timestamp,nonce,signature})
-  //   不传 → 后端要求强签名时 401（fail-open + 控台提示）
+  // init({endpoint, merchantId, signRequest, debug, requireConsent, region, antiDebug})
+  //   → {id, fingerprint, signalCoverage, deferred?, consentRequired?}
+  // 兼容：requireConsent / region / antiDebug 都是可选；不传走老行为。
+  // requireConsent=true 时若无 consent → 不采集敏感数据，返 {deferred: true}；
+  // 商户调 RiskSDK.requestConsent(cb) → grant() 后调 RiskSDK.resume() 继续。
   async function init(opts) {
     if (!opts || !opts.endpoint) throw new Error('RiskSDK.init: endpoint required');
     const sdkOpts = {
@@ -629,17 +670,82 @@
       merchantId: opts.merchantId || '',
       signRequest: typeof opts.signRequest === 'function' ? opts.signRequest : null,
       debug: !!opts.debug,
+      requireConsent: !!opts.requireConsent,
+      region: opts.region || '',
+      antiDebug: opts.antiDebug !== false, // 默认开
     };
+
+    // Consent gate：requireConsent + 未授权 → 只采必要字段（NECESSARY_FIELDS）或干脆不采
+    const consentOk = !sdkOpts.requireConsent || !Consent ||
+      Consent.hasConsent(sdkOpts.region);
+    if (sdkOpts.requireConsent && Consent && !consentOk) {
+      _session = { collector: newCollector(), opts: sdkOpts, id: '', pending: true };
+      bindGlobalListeners(_session.collector);
+      if (sdkOpts.debug) console.debug('[risk-sdk] consent required for region=' + sdkOpts.region);
+      return { id: '', fingerprint: {}, signalCoverage: { ok: 0, total: 0, ratio: 0 },
+        deferred: true, consentRequired: true,
+        regulation: Consent.regulationFor(sdkOpts.region) };
+    }
+
     const fp = await buildFingerprint();
+    // 二次过滤：consent 缺失（兼容老 region）时也按白名单脱敏
+    if (sdkOpts.requireConsent && Consent) {
+      fp.fields = Consent.filterFieldsByConsent(fp.fields, sdkOpts.region);
+    }
     if (sdkOpts.debug) console.debug('[risk-sdk] fingerprint', fp);
     const collector = newCollector();
     _session = { fp, collector, opts: sdkOpts };
     bindGlobalListeners(collector);
+    if (sdkOpts.antiDebug) startDevtoolsProbe();
     const initial = { sdk_version: VERSION, ...fp.fields,
       signalStatus: fp.signalStatus, signalCoverage: fp.signalCoverage };
     const id = await postSession(sdkOpts.endpoint, initial, sdkOpts);
     _session.id = id;
     return { id, fingerprint: fp.fields, signalCoverage: fp.signalCoverage };
+  }
+
+  // requestConsent(callback) — 商户挂 banner UI，callback({grant, deny, regulation, region})
+  // grant() 后调 resume() 真正采集。
+  function requestConsent(callback) {
+    if (!Consent) { if (callback) try { callback({ grant: function () {}, deny: function () {},
+      regulation: 'NONE', region: '' }); } catch (_) {} return; }
+    const region = (_session && _session.opts && _session.opts.region) || '';
+    Consent.requestConsent(callback, region);
+  }
+
+  // resume() — 商户授权 grant 后，二次跑 buildFingerprint
+  async function resume() {
+    if (!_session || !_session.opts) throw new Error('RiskSDK.resume: not initialized');
+    const sdkOpts = _session.opts;
+    if (sdkOpts.requireConsent && Consent && !Consent.hasConsent(sdkOpts.region)) {
+      return { id: '', deferred: true, consentRequired: true };
+    }
+    const fp = await buildFingerprint();
+    _session.fp = fp;
+    _session.pending = false;
+    if (sdkOpts.antiDebug) startDevtoolsProbe();
+    const initial = { sdk_version: VERSION, ...fp.fields,
+      signalStatus: fp.signalStatus, signalCoverage: fp.signalCoverage };
+    const id = await postSession(sdkOpts.endpoint, initial, sdkOpts);
+    _session.id = id;
+    return { id, fingerprint: fp.fields, signalCoverage: fp.signalCoverage };
+  }
+
+  // withdrawConsent({customerId}) — 清本地 + 调后端 erase + 停采集
+  async function withdrawConsent(opts) {
+    opts = opts || {};
+    stopDevtoolsProbe();
+    const sdkOpts = (_session && _session.opts) || {};
+    if (!Consent) return { local: 'no_module', remote: 'skipped' };
+    const result = await Consent.withdrawConsent({
+      endpoint: opts.endpoint || sdkOpts.endpoint,
+      customerId: opts.customerId,
+      merchantId: opts.merchantId || sdkOpts.merchantId,
+      signRequest: opts.signRequest || sdkOpts.signRequest,
+      region: opts.region || sdkOpts.region,
+    });
+    _session = null; // 停掉所有后续采集
+    return result;
   }
 
   // attach(formEl) — submit 时把行为快照 POST 到 endpoint+'/finalize'
@@ -663,11 +769,34 @@
 
   function bindGlobalListeners(c) {
     document.addEventListener('click', c.onClick, { passive: true });
+    document.addEventListener('mousedown', c.onMouseDown, { passive: true });
+    document.addEventListener('mouseup', c.onMouseUp, { passive: true });
     document.addEventListener('keydown', c.onKeyDown, { passive: true });
     document.addEventListener('keyup', c.onKeyUp, { passive: true });
     document.addEventListener('paste', c.onPaste, { passive: true });
     document.addEventListener('mousemove', c.onMouseMove, { passive: true });
     document.addEventListener('scroll', c.onScroll, { passive: true });
+  }
+
+  // 弱化反调试：开 devtools 不阻塞，只在 _session 上打 metric。
+  // 原理：debugger 语句 devtools 关闭时 0ms 跳过，打开时被 trap，主线程阻塞
+  // → Date.now() 差值 > 100ms 即可判定。Node / 无 setInterval 环境跳过。
+  let _devtoolsTimer = null;
+  function startDevtoolsProbe() {
+    if (_devtoolsTimer || typeof setInterval !== 'function') return;
+    _devtoolsTimer = setInterval(function () {
+      try {
+        const start = Date.now();
+        // eslint-disable-next-line no-debugger
+        debugger;
+        if (Date.now() - start > DEVTOOLS_DETECT_THRESHOLD_MS) {
+          if (_session) _session.devtoolsOpen = true;
+        }
+      } catch (_) { /* noop */ }
+    }, DEVTOOLS_CHECK_INTERVAL_MS);
+  }
+  function stopDevtoolsProbe() {
+    if (_devtoolsTimer) { clearInterval(_devtoolsTimer); _devtoolsTimer = null; }
   }
 
   function sessionId() { return _session ? _session.id : ''; }
@@ -676,9 +805,12 @@
   const _internals = { hashStr, round, avg, stddev, cv,
     newMouseBuffer, newKeystrokeBuffer,
     PROBE_FONTS, CDC_PROBES, CODEC_TYPES,
-    SIGNAL_TIMEOUT_MS, MOUSE_BUF_MAX, MOUSE_WINDOW_MS, PAUSE_THRESHOLD_MS };
+    SIGNAL_TIMEOUT_MS, MOUSE_BUF_MAX, MOUSE_WINDOW_MS, PAUSE_THRESHOLD_MS,
+    DEVTOOLS_CHECK_INTERVAL_MS, DEVTOOLS_DETECT_THRESHOLD_MS,
+    HeadlessProbes, Consent, startDevtoolsProbe, stopDevtoolsProbe };
 
-  const api = { init, attach, sessionId, version: VERSION, _internals };
+  const api = { init, attach, sessionId, version: VERSION,
+    requestConsent, withdrawConsent, resume, _internals };
   global.RiskSDK = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));

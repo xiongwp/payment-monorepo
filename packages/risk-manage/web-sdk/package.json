@@ -1,0 +1,28 @@
+{
+  "name": "@payment-monorepo/risk-sdk-web",
+  "version": "0.3.0",
+  "description": "Browser-side risk fingerprint + behavior collection SDK (headless probes, GDPR consent, obfuscated build).",
+  "private": true,
+  "main": "risk-sdk.js",
+  "files": [
+    "risk-sdk.js",
+    "consent.js",
+    "probes/",
+    "dist/"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test risk-sdk.test.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.0",
+    "javascript-obfuscator": "^4.1.1"
+  },
+  "browserslist": [
+    "last 3 chrome versions",
+    "last 3 firefox versions",
+    "last 3 safari versions",
+    "last 3 edge versions",
+    "not ie <= 11"
+  ]
+}
