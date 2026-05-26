@@ -355,3 +355,53 @@ func makeAuditHandler(q AuditQuery, logger *zap.Logger) http.HandlerFunc {
 		}
 	}
 }
+
+// ─── Adaptive concurrency limiter（reliability.AdaptiveLimiter）─────────────
+//
+// AdaptiveLimiter 按 per-merchant 维度 inflight cap，Gradient2 算法自适应。
+// 这里暴露 4 个指标供运营 / SRE 看 dashboard：
+//   - AdaptiveLimitCurrent：当前 limit（每次调整后 set）
+//   - AdaptiveInflight：当前 inflight（gauge；Acquire/Release 时 +/-1）
+//   - AdaptiveRejected：累计拒绝次数 by reason(limit/global)
+//   - AdaptiveRTT：短/长窗 EMA RTT（gauge，每次 observe 后 set）
+//
+// 注意 cardinality：merchant 维度走 LRU（cap 1000）。指标按当前 LRU 中的活跃
+// merchant 上报；Reset 时不 DeleteLabelValues —— 历史 label 序列由 Prom 自然过期。
+
+var AdaptiveLimitCurrent = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "risk_adaptive_limit_current",
+	Help: "Adaptive concurrency limit per merchant (current cap)",
+}, []string{"merchant"})
+
+var AdaptiveInflight = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "risk_adaptive_inflight",
+	Help: "Adaptive limiter in-flight requests per merchant",
+}, []string{"merchant"})
+
+var AdaptiveRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "risk_adaptive_rejected_total",
+	Help: "Adaptive limiter rejections by merchant + reason (limit/global)",
+}, []string{"merchant", "reason"})
+
+var AdaptiveRTT = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "risk_adaptive_rtt_seconds",
+	Help: "Adaptive limiter EMA RTT per merchant + window(short/long)",
+}, []string{"merchant", "window"})
+
+// init Adaptive* metrics —— 单独 once block 避免 Register 多次注册 panic。
+// (Register 用 sync.Once 已防多次，这里直接接到原 Register 即可。)
+var adaptiveOnce sync.Once
+
+// RegisterAdaptive 注册 adaptive 4 个指标。main.go 在构造 AdaptiveLimiter 之后调一次。
+// 与 Register() 分开是因为 AdaptiveLimiter 是可选的（默认 disabled），不想让
+// 不用 adaptive 的部署也暴露空 gauge 系列。
+func RegisterAdaptive() {
+	adaptiveOnce.Do(func() {
+		prometheus.MustRegister(
+			AdaptiveLimitCurrent,
+			AdaptiveInflight,
+			AdaptiveRejected,
+			AdaptiveRTT,
+		)
+	})
+}

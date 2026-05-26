@@ -58,6 +58,9 @@ type RiskService struct {
 	// 下游依赖熔断器：连续失败 → 短路，避免拖死 Screen 主路径 SLA
 	ipBreaker *reliability.Breaker
 	mlBreaker *reliability.Breaker
+	// adaptive 自适应并发限流（Gradient2）：当下游 RTT 拉长时按 inflight cap 拒
+	// 部分请求避免雪崩。nil-safe，默认 disabled（admin 显式打开）。
+	adaptive *reliability.AdaptiveLimiter
 	mlDrift   *mlscore.DriftMonitor // nil-safe：ML 分数分布漂移监控
 	mlOverride *mloverride.Store    // nil-safe：运营手动 ML 降级开关
 	slowThreshold float64 // Screen 总耗时（秒）超此值打 slow log；0=关
@@ -86,6 +89,14 @@ func (s *RiskService) SetBreakers(ip, ml *reliability.Breaker) {
 	s.ipBreaker = ip
 	s.mlBreaker = ml
 }
+
+// SetAdaptiveLimiter 注入自适应并发限流器。nil 等同于不开启（保留旧行为）。
+// AdaptiveLimiter 默认 disabled（构造期），即使注入了也只采样 RTT 不拒绝；
+// 需要 admin endpoint /admin/reliability/limits/enable 才会真正拒。
+func (s *RiskService) SetAdaptiveLimiter(a *reliability.AdaptiveLimiter) { s.adaptive = a }
+
+// AdaptiveLimiter 暴露给 admin handler 用。
+func (s *RiskService) AdaptiveLimiter() *reliability.AdaptiveLimiter { return s.adaptive }
 
 // SetWebhookPublisher 注入异步 webhook 推送（main.go 在初始化后调一次）。
 func (s *RiskService) SetWebhookPublisher(p *webhook.Publisher) { s.wh = p }
@@ -206,6 +217,41 @@ func (s *RiskService) Screen(ctx context.Context, txn *engine.TxnContext) *engin
 		if snap := s.sessions.Get(txn.RiskSessionID); snap != nil {
 			fillSessionFields(txn, snap)
 		}
+	}
+	// ── adaptive concurrency limit ────────────────────────────────────
+	// AdaptiveLimiter（Gradient2）：当下游 RTT 拉长时按 inflight cap 拒一部分
+	// 请求避免雪崩。默认 disabled —— 即使注入了也只采样 RTT 不拒。
+	// 拒绝时返回一个"503-equivalent"的 Deny Result（不 hang，让调用方走 retry）。
+	// Acquire 必返非 nil release，即便 err 也返 noop release，defer 永远安全。
+	if s.adaptive != nil {
+		mid := txn.MerchantID
+		release, alErr := s.adaptive.Acquire(mid)
+		if alErr != nil {
+			decisionID := newDecisionID(ctx)
+			s.logger.Warn("risk screen REJECTED (adaptive limit)",
+				zap.String("decision_id", decisionID),
+				zap.String("merchant", mid),
+				zap.Error(alErr))
+			// 返一个 fail-fast deny；caller（gRPC 层）可识别 RiskLevel=overload
+			// 并把它翻成 503 / ResourceExhausted。recommended_action=retry_later
+			// 提示 order-core 排队稍后再来。
+			return &engine.Result{
+				Decision:          engine.Deny,
+				RiskScore:         0,
+				RiskLevel:         "overload",
+				DecisionID:        decisionID,
+				RecommendedAction: "retry_later",
+				Hits: []engine.Hit{{
+					RuleID:   "adaptive_limit",
+					RuleName: "adaptive concurrency limit",
+					Decision: engine.Deny,
+					Detail:   "service overloaded; reject to protect downstream",
+					Force:    true,
+				}},
+			}
+		}
+		// release 落在 Screen 函数退出时；release 内部记 RTT 喂 EMA。
+		defer release()
 	}
 	// 资损修复：把 ReservationTracker 注入 ctx，让 amount_limit / velocity /
 	// velocity_amount 规则走原子预扣路径（IncrIfBelow*）—— 之前 PR #34 添加的

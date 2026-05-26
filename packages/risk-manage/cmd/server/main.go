@@ -100,6 +100,7 @@ func main() {
 			newWebhookPublisher,
 			newBreakers,
 			newRateLimiter,
+			newAdaptiveLimiter,
 			newSanctionService,
 			newEngine,
 			newAuditSink,
@@ -550,6 +551,73 @@ func newRateLimiter(v *viper.Viper) *reliability.MerchantLimiter {
 	return reliability.NewMerchantLimiter(def, custom)
 }
 
+// newAdaptiveLimiter Netflix Gradient2 自适应并发限流（per-merchant inflight cap）。
+//
+// 与 newRateLimiter 互补：RateLimiter 静态 RPS（按套餐计费），AdaptiveLimiter
+// 动态 inflight（保护服务不雪崩）。配置：
+//
+//	adaptive_limit:
+//	  enabled:           false   # 默认 false；admin 显式开 /admin/reliability/limits/enable
+//	  initial:           20
+//	  min:               5
+//	  max:               200
+//	  long_half_life_ms: 60000
+//	  short_half_life_ms: 5000
+//	  smoothing_alpha:   0.5
+//	  exploration_rate:  0.2
+//	  merchant_cap:      1000     # LRU 上限（防 cardinality 爆）
+//	  global_cap:        0        # 0=off；>0 兜底全局 inflight 上限
+//
+// metric 回调一并注入：limit / inflight / rejected / rtt 4 个指标按 merchant
+// 维度上报。RegisterAdaptive 调用确保指标只注册一次。
+func newAdaptiveLimiter(v *viper.Viper, logger *zap.Logger) *reliability.AdaptiveLimiter {
+	cfg := reliability.AdaptiveConfig{
+		Initial:         v.GetInt("adaptive_limit.initial"),
+		Min:             v.GetInt("adaptive_limit.min"),
+		Max:             v.GetInt("adaptive_limit.max"),
+		LongHalfLife:    time.Duration(v.GetInt("adaptive_limit.long_half_life_ms")) * time.Millisecond,
+		ShortHalfLife:   time.Duration(v.GetInt("adaptive_limit.short_half_life_ms")) * time.Millisecond,
+		SmoothingAlpha:  v.GetFloat64("adaptive_limit.smoothing_alpha"),
+		ExplorationRate: v.GetFloat64("adaptive_limit.exploration_rate"),
+		MerchantCap:     v.GetInt("adaptive_limit.merchant_cap"),
+		GlobalCap:       v.GetInt("adaptive_limit.global_cap"),
+		Enabled:         v.GetBool("adaptive_limit.enabled"),
+	}
+	lim := reliability.NewAdaptive(cfg)
+	metrics.RegisterAdaptive()
+	lim.SetCallbacks(
+		func(merchantID string, _, newLimit int) {
+			metrics.AdaptiveLimitCurrent.WithLabelValues(merchantID).Set(float64(newLimit))
+		},
+		func(merchantID, reason string) {
+			metrics.AdaptiveRejected.WithLabelValues(merchantID, reason).Inc()
+		},
+		func(merchantID string, rs, rl float64) {
+			metrics.AdaptiveRTT.WithLabelValues(merchantID, "short").Set(rs)
+			metrics.AdaptiveRTT.WithLabelValues(merchantID, "long").Set(rl)
+		},
+	)
+	logger.Info("adaptive limiter constructed",
+		zap.Bool("enabled", lim.Enabled()),
+		zap.Int("initial", lim.Config().Initial),
+		zap.Int("min", lim.Config().Min),
+		zap.Int("max", lim.Config().Max),
+	)
+	// inflight gauge：用一个轻量 goroutine 每秒采样推 Prometheus
+	// （Acquire/Release 不每次都走 metric，避免高频路径开销）。
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for range t.C {
+			for _, sn := range lim.Snapshot() {
+				metrics.AdaptiveInflight.WithLabelValues(sn.MerchantID).Set(float64(sn.Inflight))
+				metrics.AdaptiveLimitCurrent.WithLabelValues(sn.MerchantID).Set(float64(sn.Limit))
+			}
+		}
+	}()
+	return lim
+}
+
 // newWebhookPublisher 异步推送 worker pool。配置：
 //
 //	webhook:
@@ -635,6 +703,7 @@ func newEngine(v *viper.Viper, counter store.Counter, bl store.Blacklist, links 
 	eng.RegisterFactory("country_block", rules.CountryBlockFactory())
 	eng.RegisterFactory("link_fanout", rules.LinkFanoutFactory(links))
 	eng.RegisterFactory("link_fanout_multihop", rules.LinkFanoutMultihopFactory(links))
+	eng.RegisterFactory("weighted_link_fanout", rules.WeightedLinkFanoutFactory(links))
 	eng.RegisterFactory("graph_reputation", rules.GraphReputationFactory(links))
 	eng.RegisterFactory("cross_merchant_link", rules.CrossMerchantLinkFactory(links))
 	eng.RegisterFactory("card_testing", rules.CardTestingFactory(links))
@@ -850,6 +919,7 @@ func newRiskSvc(
 	fbRec feedback.Recorder,
 	wh *webhook.Publisher,
 	bp breakerPair,
+	adaptive *reliability.AdaptiveLimiter,
 	sink audit.Sink,
 	bus eventbus.Bus,
 	fs featurestore.Store,
@@ -859,6 +929,7 @@ func newRiskSvc(
 	svc.SetMLOverride(mlOverride)
 	svc.SetWebhookPublisher(wh)
 	svc.SetBreakers(bp.ip, bp.ml)
+	svc.SetAdaptiveLimiter(adaptive)
 	svc.SetMLDrift(mlDrift)
 	svc.SetExtractors(extractors)
 	svc.SetEventBus(bus)
@@ -1085,6 +1156,7 @@ func startMetricsHTTP(
 	extSignal *extsignal.ScoreCache,
 	fs featurestore.Store,
 	ruleAudit audit.RuleAuditStore,
+	adaptive *reliability.AdaptiveLimiter,
 	logger *zap.Logger,
 ) {
 	addr := v.GetString("metrics.addr")
@@ -1131,7 +1203,7 @@ func startMetricsHTTP(
 	// reject 自动落一条 SourceReviewHuman 的 Outcome 到 feedback.Recorder，
 	// 让 ML pipeline 能直接 pull 到"风控判 review，运营人工最终判定"的 label。
 	var sessionReg metrics.SessionRegisterer
-	if sessions != nil || reviewQ != nil || fbRec != nil || mlList != nil || mlDrift != nil {
+	if sessions != nil || reviewQ != nil || fbRec != nil || mlList != nil || mlDrift != nil || adaptive != nil {
 		sessionReg = func(mux *http.ServeMux) {
 			if sessions != nil {
 				risksession.RegisterHandlers(mux, sessions, logger)
@@ -1152,6 +1224,8 @@ func startMetricsHTTP(
 			registerExplainHandler(mux, eng, sink, logger)
 			registerAuditSearchHandler(mux, sink, logger)
 			registerAuditChainVerifyHandler(mux, sink, logger)
+			// 自适应并发限流 admin endpoints（GET / POST /admin/reliability/limits/*）
+			reliability.RegisterAdaptiveAdmin(mux, adaptive, logger)
 			if reviewQ != nil {
 				onDecided := func(it *review.Item) {
 					if fbRec != nil {
@@ -1198,6 +1272,7 @@ func startMetricsHTTP(
 			registerWhoamiHandler(mux, logger)
 			registerRuleIOHandler(mux, eng, ruleAudit, logger)
 			registerChallengerAdminHandler(mux, mlSvc, logger)
+			registerMLRolloutHandler(mux, mlSvc, logger)
 			registerRuleOverlapHandler(mux, sink, logger)
 			// 聚合 dashboard：把 rule_count / queue depth / model 名 / 决策分布
 			// 一次性返给 admin-web Dashboard 页面（避免页面里跑 5 个并行 RPC）。
@@ -2938,6 +3013,219 @@ func registerChallengerAdminHandler(mux *http.ServeMux, mlSvc mlscore.Service, l
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 	logger.Info("challenger admin handlers registered at /admin/mlscore/challengers/{,register,promote,drop}")
+}
+
+// registerMLRolloutHandler  ML challenger traffic-split 灰度发布控制。
+//
+// 标准 5% → 25% → 50% → 100% 灰度梯度；流量按 sha256(customer_id + rollout_id)
+// 稳定分桶（同一 customer 多次评估永远落同一模型）。每个 stage 监控
+// challenger AUC，跌穿 champion 自动回退。
+//
+// 端点：
+//
+//	GET  /admin/ml/rollout/status              当前 stage / 流量比例 / 各 model
+//	                                            命中数 / auto-rollback 配置
+//	POST /admin/ml/rollout/start
+//	     Body: {challenger, auto_promote?, auto_rollback?, stages?}
+//	     启动一个新 rollout；challenger 必须已经 RegisterChallenger
+//	POST /admin/ml/rollout/advance             推进到下一 stage（推到 100% =
+//	                                            finalize，等价于 promote）
+//	POST /admin/ml/rollout/rollback
+//	     Body: {reason}                         回退一个 stage
+//	POST /admin/ml/rollout/pause               冻结当前 stage（pct 实际视作 0）
+//	POST /admin/ml/rollout/resume              取消 pause
+//	POST /admin/ml/rollout/replace_challenger
+//	     Body: {name, model_ver, intercept, weights, platt_a, platt_b}
+//	     换 challenger（保留 champion，rollout 从 stage 0 重启）
+//
+// mlSvc 不是 *ChampionChallengerService 时所有写路径返 503。
+//
+// TODO: rollout 状态目前 in-memory，重启丢失。生产应落 PG `ml_rollout_state`
+// 表：(id, champion, challenger, current_stage, paused, started_at, last_rollback)。
+func registerMLRolloutHandler(mux *http.ServeMux, mlSvc mlscore.Service, logger *zap.Logger) {
+	cc, isCC := mlSvc.(*mlscore.ChampionChallengerService)
+
+	mux.HandleFunc("/admin/ml/rollout/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		resp := map[string]any{"available": isCC}
+		if isCC {
+			resp["state"] = cc.RolloutStatus()
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	mux.HandleFunc("/admin/ml/rollout/start", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if !isCC {
+			http.Error(w, `{"error":"mlSvc not a champion-challenger"}`, http.StatusServiceUnavailable)
+			return
+		}
+		var body struct {
+			Challenger   string          `json:"challenger"`
+			AutoPromote  bool            `json:"auto_promote"`
+			AutoRollback *bool           `json:"auto_rollback,omitempty"`
+			Stages       []mlscore.Stage `json:"stages,omitempty"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if body.Challenger == "" {
+			http.Error(w, `{"error":"challenger required"}`, http.StatusBadRequest)
+			return
+		}
+		autoRb := true // 默认开
+		if body.AutoRollback != nil {
+			autoRb = *body.AutoRollback
+		}
+		if err := cc.StartRollout(body.Challenger, body.Stages, body.AutoPromote, autoRb); err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		logger.Info("ml rollout started",
+			zap.String("challenger", body.Challenger),
+			zap.Bool("auto_promote", body.AutoPromote),
+			zap.Bool("auto_rollback", autoRb))
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "state": cc.RolloutStatus()})
+	})
+
+	mux.HandleFunc("/admin/ml/rollout/advance", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if !isCC {
+			http.Error(w, `{"error":"mlSvc not a champion-challenger"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if err := cc.AdvanceRollout(); err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		logger.Info("ml rollout advanced", zap.Any("state", cc.RolloutStatus()))
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "state": cc.RolloutStatus()})
+	})
+
+	mux.HandleFunc("/admin/ml/rollout/rollback", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if !isCC {
+			http.Error(w, `{"error":"mlSvc not a champion-challenger"}`, http.StatusServiceUnavailable)
+			return
+		}
+		var body struct {
+			Reason string `json:"reason"`
+		}
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<13)).Decode(&body)
+		if body.Reason == "" {
+			body.Reason = "manual"
+		}
+		if err := cc.RollbackRollout(body.Reason); err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		logger.Warn("ml rollout rolled back",
+			zap.String("reason", body.Reason),
+			zap.Any("state", cc.RolloutStatus()))
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "state": cc.RolloutStatus()})
+	})
+
+	mux.HandleFunc("/admin/ml/rollout/pause", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if !isCC {
+			http.Error(w, `{"error":"mlSvc not a champion-challenger"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if err := cc.PauseRollout(); err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		logger.Warn("ml rollout paused")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "state": cc.RolloutStatus()})
+	})
+
+	mux.HandleFunc("/admin/ml/rollout/resume", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if !isCC {
+			http.Error(w, `{"error":"mlSvc not a champion-challenger"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if err := cc.ResumeRollout(); err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		logger.Info("ml rollout resumed")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "state": cc.RolloutStatus()})
+	})
+
+	mux.HandleFunc("/admin/ml/rollout/replace_challenger", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if !isCC {
+			http.Error(w, `{"error":"mlSvc not a champion-challenger"}`, http.StatusServiceUnavailable)
+			return
+		}
+		var body struct {
+			Name      string                 `json:"name"`
+			ModelVer  string                 `json:"model_ver"`
+			Intercept float64                `json:"intercept"`
+			Weights   mlscore.FeatureWeights `json:"weights"`
+			PlattA    float64                `json:"platt_a"`
+			PlattB    float64                `json:"platt_b"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if body.Name == "" {
+			http.Error(w, `{"error":"name required"}`, http.StatusBadRequest)
+			return
+		}
+		if body.Name == cc.ChampionName() {
+			http.Error(w, `{"error":"name conflicts with champion"}`, http.StatusBadRequest)
+			return
+		}
+		challenger := mlscore.NewLogisticServiceWith(mlscore.LogisticConfig{
+			ModelVer:  body.ModelVer,
+			Intercept: body.Intercept,
+			Weights:   body.Weights,
+			PlattA:    body.PlattA,
+			PlattB:    body.PlattB,
+		})
+		if err := cc.ReplaceChallenger(body.Name, challenger); err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		logger.Info("ml rollout challenger replaced",
+			zap.String("new_challenger", body.Name),
+			zap.String("model_ver", body.ModelVer))
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "state": cc.RolloutStatus()})
+	})
+
+	logger.Info("ml rollout admin handlers registered at /admin/ml/rollout/{status,start,advance,rollback,pause,resume,replace_challenger}")
 }
 
 // registerRuleOverlapHandler  GET /admin/rules/overlap?min_both=N

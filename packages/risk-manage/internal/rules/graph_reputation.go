@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/xiongwp/risk-manage/internal/engine"
 	"github.com/xiongwp/risk-manage/internal/store"
@@ -49,18 +50,20 @@ import (
 //     set2 - set1 = 严格 2 跳邻居（最优实现等图库返回带距离）
 
 type GraphReputationConfig struct {
-	Hops        int                `json:"hops"`         // 默认 2
-	HopDecay    float64            `json:"hop_decay"`    // 默认 0.5
-	Pivots      []string           `json:"pivots"`       // 默认 ["customer","device","ip"]
-	TagWeights  map[string]float64 `json:"tag_weights"`  // 必填
-	ReviewMin   float64            `json:"review_min"`   // 默认 20
-	DenyMin     float64            `json:"deny_min"`     // 默认 50
+	Hops         int                `json:"hops"`          // 默认 2
+	HopDecay     float64            `json:"hop_decay"`     // 默认 0.5
+	Pivots       []string           `json:"pivots"`        // 默认 ["customer","device","ip"]
+	TagWeights   map[string]float64 `json:"tag_weights"`   // 必填
+	ReviewMin    float64            `json:"review_min"`    // 默认 20
+	DenyMin      float64            `json:"deny_min"`      // 默认 50
+	HalflifeDays float64            `json:"halflife_days"` // > 0 启用时间衰减；默认 0 = 关闭，走老 unweighted 路径
 }
 
 type graphReputationRule struct {
 	id, name string
 	enabled  bool
 	cfg      GraphReputationConfig
+	halflife time.Duration // 0 = decay off, 走老路径
 	links    store.LinkStore
 }
 
@@ -97,8 +100,14 @@ func GraphReputationFactory(linkStore store.LinkStore) engine.RuleFactory {
 		if cfg.DenyMin <= 0 {
 			cfg.DenyMin = 50
 		}
+		var halflife time.Duration
+		if cfg.HalflifeDays > 0 {
+			halflife = time.Duration(cfg.HalflifeDays * 24 * float64(time.Hour))
+		}
 		return &graphReputationRule{
-			id: id, name: name, enabled: enabled, cfg: cfg, links: linkStore,
+			id: id, name: name, enabled: enabled, cfg: cfg,
+			halflife: halflife,
+			links:    linkStore,
 		}, nil
 	}
 }
@@ -111,6 +120,9 @@ func (r *graphReputationRule) Enabled() bool { return r.enabled }
 func (r *graphReputationRule) Evaluate(ctx context.Context, txn *engine.TxnContext) *engine.Hit {
 	if r.links == nil || txn == nil {
 		return nil
+	}
+	if r.halflife > 0 {
+		return r.evaluateWeighted(ctx, txn)
 	}
 
 	totalScore := 0.0
@@ -188,5 +200,65 @@ func (r *graphReputationRule) Evaluate(ctx context.Context, txn *engine.TxnConte
 		RuleName: r.name,
 		Decision: verdict,
 		Detail:   fmt.Sprintf("graph reputation score=%.1f (%s)", totalScore, strings.Join(parts, ", ")),
+	}
+}
+
+// evaluateWeighted halflife_days > 0 时启用的带时间衰减 + 跳数衰减聚合路径。
+//
+// 跟 unweighted 路径差异：
+//   - 用 WeightedTagsWithin 一次拿"所有 tag 加权信号"，跳数衰减已经在 store 层算好
+//   - 单 tag 信号已经是 float，直接 × TagWeights[tag] 累加；不再分 hop 拆分
+//   - 含义：每个邻居 tag 贡献 = TagWeight × (路径上各边的时间衰减乘积) × hopDecay^hop
+//
+// 注意：旧路径的 contribution detail（"fraud@hop1×3=customer"）信息更丰富但
+// 需要按 hop 分别查 store；weighted 路径牺牲一些可观测性换性能与"持续观察"语义。
+func (r *graphReputationRule) evaluateWeighted(ctx context.Context, txn *engine.TxnContext) *engine.Hit {
+	totalScore := 0.0
+	type contribution struct {
+		pivot  string
+		tag    string
+		signal float64
+	}
+	var contribs []contribution
+
+	for _, p := range r.cfg.Pivots {
+		key := pivotValue(p, txn)
+		if key == "" {
+			continue
+		}
+		tagSignals := r.links.WeightedTagsWithin(ctx, key, r.cfg.Hops, r.halflife, r.cfg.HopDecay)
+		for tag, signal := range tagSignals {
+			w, ok := r.cfg.TagWeights[tag]
+			if !ok || signal <= 0 {
+				continue
+			}
+			contribScore := signal * w
+			totalScore += contribScore
+			contribs = append(contribs, contribution{pivot: p, tag: tag, signal: signal})
+		}
+	}
+	if totalScore < r.cfg.ReviewMin {
+		return nil
+	}
+	verdict := engine.Review
+	if totalScore >= r.cfg.DenyMin {
+		verdict = engine.Deny
+	}
+	sort.Slice(contribs, func(i, j int) bool {
+		if contribs[i].pivot != contribs[j].pivot {
+			return contribs[i].pivot < contribs[j].pivot
+		}
+		return contribs[i].tag < contribs[j].tag
+	})
+	parts := make([]string, 0, len(contribs))
+	for _, c := range contribs {
+		parts = append(parts, fmt.Sprintf("%s@%s×%.2f", c.tag, c.pivot, c.signal))
+	}
+	return &engine.Hit{
+		RuleID:   r.id,
+		RuleName: r.name,
+		Decision: verdict,
+		Detail: fmt.Sprintf("graph reputation (decay hl=%.0fd) score=%.2f (%s)",
+			r.cfg.HalflifeDays, totalScore, strings.Join(parts, ", ")),
 	}
 }

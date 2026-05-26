@@ -246,6 +246,7 @@ func buildEngine(cfgPath string, logger *zap.Logger, candidates multiFlag, thres
 	eng.RegisterFactory("country_block", rules.CountryBlockFactory())
 	eng.RegisterFactory("link_fanout", rules.LinkFanoutFactory(links))
 	eng.RegisterFactory("link_fanout_multihop", rules.LinkFanoutMultihopFactory(links))
+	eng.RegisterFactory("weighted_link_fanout", rules.WeightedLinkFanoutFactory(links))
 	eng.RegisterFactory("graph_reputation", rules.GraphReputationFactory(links))
 	eng.RegisterFactory("cross_merchant_link", rules.CrossMerchantLinkFactory(links))
 	eng.RegisterFactory("card_testing", rules.CardTestingFactory(links))

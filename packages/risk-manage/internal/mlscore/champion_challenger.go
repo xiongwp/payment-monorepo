@@ -22,12 +22,18 @@ package mlscore
 
 import (
 	"context"
+	"math/rand"
 	"sync"
 	"time"
 )
 
 // ChampionChallengerService 多模型并行打分。Score 返回的是 champion 的 Result；
 // challengers 输出通过 SideEffectFn 钩子吐出去（main.go 接 audit / featurestore）。
+//
+// 灰度发布（rollout）：StartRollout 启动后，主决策路径按 sha256(customer_id +
+// rollout_id) % 100 决定走 champion 还是 challenger。流量比例按 Stage（5/25/
+// 50/100）逐步推进——见 rollout.go。没启动 rollout 时退化成原 atomic-promote
+// 行为，主路径永远走 champion。
 type ChampionChallengerService struct {
 	mu          sync.RWMutex
 	champion    namedSvc
@@ -39,6 +45,22 @@ type ChampionChallengerService struct {
 	// SideEffect 异步收 challenger 结果；nil = 静默丢。
 	// 触发在 Score 返回之后；非阻塞。
 	SideEffect func(decisionID string, championResult Result, challengerResults []NamedResult)
+
+	// rollout 当前激活的灰度发布；nil 表示无 rollout（主路径一律走 champion）。
+	// 受 mu 保护。
+	rollout *rollout
+
+	// OnRolloutEvent 灰度发布的关键节点回调（advance / rollback / auto-rollback
+	// / finalize）。caller 在 main.go 接 audit / event bus / metrics。
+	// 在持 mu 时同步调用——避免长时间阻塞操作（写慢 sink 应自己内部 goroutine）。
+	OnRolloutEvent func(evt RolloutEvent)
+
+	// matchlessRng 给没有 customer_id 的请求抛硬币用；线性同余够了，安全性
+	// 不重要（不是 password / token）。复用避免每次 NewSource 浪费。
+	// 注意 *rand.Rand 不是并发安全的——当前 routeToChallenger 用默认
+	// matchlessFallback=false 时根本不调它；如果将来打开 fallback，得换成
+	// 加 mu 保护或用 rand.Reader / sync.Pool。
+	matchlessRng *rand.Rand
 }
 
 type namedSvc struct {
@@ -60,6 +82,7 @@ func NewChampionChallenger(championName string, champion Service) *ChampionChall
 	return &ChampionChallengerService{
 		champion:          namedSvc{Name: championName, Service: champion},
 		challengerTimeout: 50 * time.Millisecond,
+		matchlessRng:      rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -99,6 +122,10 @@ func (cc *ChampionChallengerService) RemoveChallenger(name string) bool {
 
 // PromoteChallenger 把指定 challenger 提升为新 champion；老 champion 自动降级
 // 为 challenger 留观（除非同名）。线上模型 promotion 后保留对照样本至关重要。
+//
+// 兼容性：等价于一次完整 rollout 推到 100%；如果当前正在跑 rollout 且
+// promote 的就是 rollout challenger，直接清空 rollout（rollout 已完成）。
+// 其它 case 不动 rollout（admin 应该先 rollback 或 finalize）。
 func (cc *ChampionChallengerService) PromoteChallenger(name string) bool {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
@@ -111,6 +138,10 @@ func (cc *ChampionChallengerService) PromoteChallenger(name string) bool {
 		cc.challengers = append(cc.challengers[:i], cc.challengers[i+1:]...)
 		if oldCh.Name != "" && oldCh.Name != name {
 			cc.challengers = append(cc.challengers, oldCh)
+		}
+		// rollout 指向了这个 challenger → 等价于"灰度直接完成"。
+		if cc.rollout != nil && cc.rollout.challenger.Name == name {
+			cc.rollout = nil
 		}
 		return true
 	}
@@ -135,31 +166,14 @@ func (cc *ChampionChallengerService) ChallengerNames() []string {
 	return out
 }
 
-// Score 同步走 champion；challengers 并行打分；side effect 钩子异步触发。
+// Score 同步走 routed model（rollout 决定 champion or challenger）；其它
+// challengers 并行打分；side effect 钩子异步触发。
 //
-// 决策路径只读 champion → 老模型 latency / 错误不被新模型影响。
-// challenger 单个失败 / 超时不影响主路径，只在 SideEffect 结果里有 Error。
+// 决策路径只读 routed model → 老模型 latency / 错误不被未参与 rollout 的
+// challenger 影响。challenger 单个失败 / 超时不影响主路径，只在 SideEffect
+// 结果里有 Error。
 func (cc *ChampionChallengerService) Score(ctx context.Context, f Features) (Result, error) {
-	cc.mu.RLock()
-	champion := cc.champion
-	challengers := append([]namedSvc(nil), cc.challengers...)
-	timeout := cc.challengerTimeout
-	se := cc.SideEffect
-	cc.mu.RUnlock()
-
-	chRes, err := champion.Service.Score(ctx, f)
-
-	// challenger 在 Score 返回后再触发 SideEffect；同步等"50ms 内"全部跑完。
-	// 即使 SideEffect=nil 也跑 challenger（让健康监控的 metric 继续）。
-	if len(challengers) > 0 {
-		go func() {
-			results := runChallengers(challengers, f, timeout)
-			if se != nil {
-				se("", chRes, results)
-			}
-		}()
-	}
-	return chRes, err
+	return cc.scoreInternal(ctx, "", f)
 }
 
 // ScoreWithDecisionID 给已经分配 decision_id 的调用方用：SideEffect 收到的
@@ -167,20 +181,98 @@ func (cc *ChampionChallengerService) Score(ctx context.Context, f Features) (Res
 func (cc *ChampionChallengerService) ScoreWithDecisionID(
 	ctx context.Context, decisionID string, f Features,
 ) (Result, error) {
+	return cc.scoreInternal(ctx, decisionID, f)
+}
+
+func (cc *ChampionChallengerService) scoreInternal(
+	ctx context.Context, decisionID string, f Features,
+) (Result, error) {
+	// 大多数请求（无 rollout）走 read lock fast path；rollout active 时再升级
+	// 到 write lock 更新 hits 计数。
 	cc.mu.RLock()
 	champion := cc.champion
 	challengers := append([]namedSvc(nil), cc.challengers...)
 	timeout := cc.challengerTimeout
 	se := cc.SideEffect
+	hasRollout := cc.rollout != nil
+	primary := champion
+	routedToChallenger := false
+	if hasRollout && cc.rollout.routeToChallenger(f.CustomerID, false /* matchlessFallback */, cc.matchlessRng) {
+		primary = cc.rollout.challenger
+		routedToChallenger = true
+	}
 	cc.mu.RUnlock()
+	if hasRollout {
+		cc.mu.Lock()
+		if cc.rollout != nil { // 状态没在 Unlock 间隙被外部 finalize 掉
+			if routedToChallenger {
+				cc.rollout.challengerHits++
+			} else {
+				cc.rollout.championHits++
+			}
+		}
+		cc.mu.Unlock()
+	}
 
-	chRes, err := champion.Service.Score(ctx, f)
+	chRes, err := primary.Service.Score(ctx, f)
 
-	if len(challengers) > 0 {
+	// SideEffect 总是按 (championResult, challengerResults) 接口约定来：即使
+	// 主路径走了 challenger，也要给 ABTracker 喂 "champion 视角下这笔评分应是
+	// 什么" → 必须额外跑 champion 一遍才能算 AUC 差。代价是 rollout 期间
+	// champion + challenger 都跑（routing 只决定主决策用哪个 score），但
+	// challenger 跑在 goroutine 里 + 有超时；champion 在 rollout 期间被路由
+	// 走时同样异步跑。
+	if se != nil || len(challengers) > 0 {
 		go func() {
-			results := runChallengers(challengers, f, timeout)
+			// runChallengers 跑 challenger 并行；若主路径已经走了 challenger，
+			// 从 toRun 剔除避免重复跑同一模型。
+			toRun := challengers
+			if routedToChallenger {
+				filtered := make([]namedSvc, 0, len(challengers))
+				for _, c := range challengers {
+					if c.Name != primary.Name {
+						filtered = append(filtered, c)
+					}
+				}
+				toRun = filtered
+			}
+			// 补跑 champion 让 ABTracker 始终拿到 champion_score（routing 决定
+			// 主决策用哪个，但 A/B 评估始终需要两边的分）。
+			var supplementalChampion *NamedResult
+			if routedToChallenger {
+				cctx, cancel := context.WithTimeout(context.Background(), timeout)
+				start := time.Now()
+				r, e := champion.Service.Score(cctx, f)
+				cancel()
+				if e == nil {
+					nr := NamedResult{
+						Name:     champion.Name,
+						Score:    r.Score,
+						ModelVer: r.ModelVer,
+						LatMs:    time.Since(start).Seconds() * 1000,
+					}
+					supplementalChampion = &nr
+				}
+			}
+			results := runChallengers(toRun, f, timeout)
 			if se != nil {
-				se(decisionID, chRes, results)
+				championResult := chRes
+				if routedToChallenger {
+					if supplementalChampion == nil {
+						// champion 补跑失败 → 不能给 ABTracker 假 baseline，跳过此次
+						return
+					}
+					championResult = Result{
+						Score:    supplementalChampion.Score,
+						ModelVer: supplementalChampion.ModelVer,
+					}
+					results = append(results, NamedResult{
+						Name:     primary.Name,
+						Score:    chRes.Score,
+						ModelVer: chRes.ModelVer,
+					})
+				}
+				se(decisionID, championResult, results)
 			}
 		}()
 	}

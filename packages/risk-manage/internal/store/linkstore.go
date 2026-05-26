@@ -532,9 +532,13 @@ func (s *MemLinkStore) WeightedTagsWithin(ctx context.Context, a string, maxHops
 	nodeWeight := map[string]float64{a: 1.0}
 	frontier := []string{a}
 	visitedTotal := 1
-	for hop := 1; hop <= maxHops; hop++ {
+	capped := false
+	for hop := 1; hop <= maxHops && !capped; hop++ {
 		next := make([]string, 0, len(frontier))
 		for _, node := range frontier {
+			if capped {
+				break
+			}
 			mbucket, ok := s.linkMeta[node]
 			if !ok {
 				continue
@@ -570,7 +574,8 @@ func (s *MemLinkStore) WeightedTagsWithin(ctx context.Context, a string, maxHops
 				next = append(next, peer)
 				visitedTotal++
 				if visitedTotal >= BFSMaxNodes {
-					goto done
+					capped = true
+					break
 				}
 			}
 		}
@@ -579,7 +584,6 @@ func (s *MemLinkStore) WeightedTagsWithin(ctx context.Context, a string, maxHops
 			break
 		}
 	}
-done:
 	out := map[string]float64{}
 	for node, w := range nodeWeight {
 		bucket, ok := s.tags[node]
