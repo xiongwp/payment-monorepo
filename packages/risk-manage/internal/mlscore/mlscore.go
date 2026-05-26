@@ -51,6 +51,14 @@ type Result struct {
 }
 
 // Service 推理服务接口。Score 在 ms 级返回；超时由调用方控制 ctx。
+//
+// TODO(Phase 3 / ML team): 接入 Feast online feature store 后，Score 实现侧
+// 应该用 featurestore.FeastClient.GetOnlineFeatures(ctx, customerID, refs)
+// 替换/补齐当前 service/risk.go 里 mlFeaturesFrom(txn) 拼出来的特征——尤其
+// 是 velocity / aggregation 类（paid_count_90d、chargeback_count_90d 等
+// point-in-time 特征）。这样 train（offline parquet）/ serve（online redis）
+// 走同一份 feature view 定义，杜绝 train-serve skew。
+// 详见 docs/FEAST_INTEGRATION.md。
 type Service interface {
 	Score(ctx context.Context, f Features) (Result, error)
 }

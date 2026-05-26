@@ -1,0 +1,210 @@
+# Chaos-Mesh CRDs — risk-manage 故障演练
+#
+# 替换 cmd/chaos/chaos.sh 的手工脚本，让故障演练上 CI。
+#
+# 部署：
+#   kubectl apply -f deploy/chaos/chaos-experiments.yaml
+#
+# CI 集成（每 PR 触发，或定时跑）：
+#   kubectl apply -f deploy/chaos/chaos-experiments.yaml --namespace risk-staging
+#   sleep 600 # 让实验跑 10 分钟
+#   kubectl exec -n risk-staging risk-loadtest -- /verify-slo.sh  # 验 SLO 未跌穿
+#
+# 前置条件：
+#   1. K8s 集群已装 chaos-mesh: helm install chaos-mesh chaos-mesh/chaos-mesh
+#   2. risk-manage + 依赖 (redis/pg/ml-service) 都部署在 namespace risk-staging
+#   3. 持续灌入合成流量（用 internal/synthetic 或 k6）
+#
+# 安全：
+#   - 全部限定 namespace: risk-staging（不动 prod）
+#   - 加 schedulerName: 只 OFF-PEAK 跑（非业务高峰）
+#   - 每个实验有 duration + 自动回退
+
+---
+# ─── 实验 1: Redis 闪断（10s 内重启）────────────────────────────
+# 验证：
+#   - 计数器 Counter 在 Redis 不可用时降级到 mem fallback
+#   - SLO burn 不触发 page（应该只触发 ticket 级）
+#   - 故障恢复后 5 分钟内 Counter 准确性回归
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: redis-restart-experiment
+  namespace: risk-staging
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+      - risk-staging
+    labelSelectors:
+      app: redis
+      role: master
+  # gracePeriod: 0 强 kill 模拟雪崩
+  gracePeriod: 0
+  # 实验时间窗：30s 内会再杀一次（看自动恢复速度）
+  duration: 30s
+  scheduler:
+    cron: "0 3 * * 2"  # 每周二凌晨 3 点
+
+---
+# ─── 实验 2: Postgres primary failover ─────────────────────────
+# 验证：
+#   - rule_versions 写入失败时不阻塞读取
+#   - review queue 写不可用时降级到本地 buffer + warn metric
+#   - 切完 standby 后 30s 内恢复
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: pg-primary-isolate
+  namespace: risk-staging
+spec:
+  action: partition
+  mode: one
+  selector:
+    labelSelectors:
+      app: postgres
+      role: primary
+  direction: both
+  duration: 60s   # 1 分钟网络隔离，触发 patroni failover
+  scheduler:
+    cron: "0 4 * * 3"  # 周三凌晨 4 点
+
+---
+# ─── 实验 3: ML 服务慢响应 (200ms 延迟注入)─────────────────────
+# 验证：
+#   - per-stage timeout (ML 30ms budget) 真的在 30ms 内放弃
+#   - AdaptiveLimiter 检测到 RTT 拉长后降 limit
+#   - Screen 成功率不掉
+#   - 触发 fail-open metric risk_stage_fail_open_total{stage=ml_score, reason=timeout}
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: ml-service-slow
+  namespace: risk-staging
+spec:
+  action: delay
+  mode: all  # 所有 ml-service pod 都注入
+  selector:
+    labelSelectors:
+      app: ml-service
+  delay:
+    latency: 200ms
+    correlation: "0"
+    jitter: 50ms
+  duration: 5m
+  scheduler:
+    cron: "0 5 * * 4"  # 周四凌晨
+
+---
+# ─── 实验 4: 流量突刺（5× baseline，15 分钟）──────────────────
+# 用 chaos-mesh + k6 / vegeta 模拟流量翻 5 倍
+# 验证：
+#   - AdaptiveLimiter 把 inflight 限住，不让下游被打挂
+#   - 拒绝的请求都是 503，不是 hang
+#   - 流量回归后 limit 自动升回
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: cpu-saturation
+  namespace: risk-staging
+spec:
+  mode: all
+  selector:
+    labelSelectors:
+      app: risk-manage
+  stressors:
+    cpu:
+      workers: 4
+      load: 80  # 占 80% CPU
+  duration: 10m
+  scheduler:
+    cron: "0 6 * * 5"
+
+---
+# ─── 实验 5: ClickHouse 写入失败（audit sink 异常）─────────────
+# 验证：
+#   - audit AsyncBatchSink queue 满后 drop_oldest，不阻塞主路径
+#   - SLO 不受影响
+#   - 恢复后 backfill（暂不实现，先 metric 告警）
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: clickhouse-unreachable
+  namespace: risk-staging
+spec:
+  action: partition
+  mode: all
+  selector:
+    labelSelectors:
+      app: clickhouse
+  direction: from
+  externalTargets:
+    - risk-manage.risk-staging.svc.cluster.local
+  duration: 3m
+  scheduler:
+    cron: "0 7 * * 6"
+
+---
+# ─── 实验 6: Kafka broker 滚动重启 ────────────────────────────
+# 验证：
+#   - audit / outbox / outcome 三类 producer 自动重连
+#   - 没消息丢失（至少 at-least-once）
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kafka-rolling-restart
+  namespace: risk-staging
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    labelSelectors:
+      app: kafka
+      role: broker
+  duration: 10s
+  scheduler:
+    cron: "30 7 * * 6"
+
+---
+# ─── Workflow：组合实验（先 Redis 闪 + ML 慢同时发生）──────────
+# 验证最坏情况下系统不崩
+apiVersion: chaos-mesh.org/v1alpha1
+kind: Workflow
+metadata:
+  name: weekly-chaos-drill
+  namespace: risk-staging
+spec:
+  entry: combined-failure
+  templates:
+    - name: combined-failure
+      templateType: Parallel
+      deadline: 10m
+      children:
+        - redis-step
+        - ml-slow-step
+    - name: redis-step
+      templateType: PodChaos
+      deadline: 30s
+      podChaos:
+        action: pod-kill
+        mode: one
+        selector:
+          labelSelectors:
+            app: redis
+    - name: ml-slow-step
+      templateType: NetworkChaos
+      deadline: 5m
+      networkChaos:
+        action: delay
+        mode: all
+        selector:
+          labelSelectors:
+            app: ml-service
+        delay:
+          latency: 100ms
+
+# ─── 后续做 ───────────────────────────────────────────────────
+# 1. CI workflow .github/workflows/chaos.yml：每个 PR build 后跑这些实验
+# 2. SLO 验证 Job：实验跑完检查 risk_screen_success_rate > 0.9999（lower bound）
+# 3. 实验结果 Slack 通知 + 失败自动 rollback
