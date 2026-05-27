@@ -545,23 +545,30 @@ func (e *Engine) LoadRules(defs []RuleDef) error {
 	return nil
 }
 
-// RuleDef 规则定义（从 YAML config 反序列化）
+// RuleDef 规则定义（从 YAML config 反序列化）。
+//
+// JSON 双向 tag：
+//   - mapstructure: viper 从 YAML 反序列化时用（YAML key → 字段）
+//   - json: HTTP admin API 序列化 / 反序列化时用（小写约定，跟前端 TypeScript 接口一致）
+//
+// 历史 bug：早期只有 mapstructure 没有 json，导致 /admin/rules/list 返回的 JSON
+// 用 Go 字段名（"ID" / "Name" 大写开头），前端解析全空 → 表格显示 `—`。
 type RuleDef struct {
-	ID         string          `mapstructure:"id"`
-	Name     string `mapstructure:"name"`
-	Type     string `mapstructure:"type"`
-	Decision string `mapstructure:"decision"` // DENY / REVIEW
-	Enabled  bool   `mapstructure:"enabled"`
+	ID       string `mapstructure:"id"       json:"id"`
+	Name     string `mapstructure:"name"     json:"name"`
+	Type     string `mapstructure:"type"     json:"type"`
+	Decision string `mapstructure:"decision" json:"decision"` // DENY / REVIEW
+	Enabled  bool   `mapstructure:"enabled"  json:"enabled"`
 	// Mode "enforce"（默认）/ "shadow"。shadow 命中只观察不阻断流量，
 	// 上线新规则前用于影子验证；切到 enforce 之前看 risk_rule_evaluation_total
 	// {result="shadow_hit"} 的命中率 + overlap 指标决定是否切换。
-	Mode string `mapstructure:"mode"`
+	Mode string `mapstructure:"mode" json:"mode"`
 	// Weight 命中时累加的风险分数（Radar-style score matrix）。
 	//   - 0 时按 Decision 兜底：DENY → 50, REVIEW → 20, 其它 → 0
 	//   - 不直接决定 verdict；总分通过 ScoreThresholds 映射成 ALLOW / REVIEW / DENY
 	//   - 老规则配 Decision: deny + Weight 不填 → 行为完全等价于上一版本
-	Weight     int             `mapstructure:"weight"`
-	ConfigJSON json.RawMessage `mapstructure:"config"`
+	Weight     int             `mapstructure:"weight" json:"weight"`
+	ConfigJSON json.RawMessage `mapstructure:"config" json:"config"`
 	// Rollout 灰度配置：bucket_field + enable_pct。
 	// EnablePct=0 等价 disabled；100 / 缺省 = 全量启用。
 	Rollout RolloutConfig `mapstructure:"rollout" json:"rollout,omitempty"`
