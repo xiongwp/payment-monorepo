@@ -419,14 +419,29 @@ rules:
   - id:      sanction_check
     name:    "OFAC / EU 制裁名单"
     type:    sanction_screening
-    enabled: true
-    config:  '{"required":true,"decision":"deny"}'
+    # 当前 sanction.csv_path 未配置 → 名单库为空，跑了也永远不会命中真名单；
+    # 而 required=true 会因为注册/登录路径没 full_name 而对所有请求误判 REVIEW，
+    # 把整个注册流卡住。
+    # 暂时关掉本规则；等运营把 OFAC SDN XML / EU XML 接入 sanction.csv_path
+    # 之后，把 enabled 改回 true 并把 required 改成 false（缺 full_name 时 skip，
+    # 不再用"缺数据"当 REVIEW 信号）。
+    enabled: false
+    config:  '{"required":false,"decision":"deny"}'
 
-  - id:      ml_high_risk
-    name:    "ML 模型高风险"
+  # ml_threshold 是单阈值规则；要"双档（0.5 review / 0.85 deny）"得拆两条。
+  # 修正：旧 yaml 写了不存在的 review_min/deny_min 字段，启动报
+  # "threshold must be in (0, 1], got 0" 加载失败。
+  - id:      ml_high_risk_deny
+    name:    "ML 模型高风险（拒）"
     type:    ml_threshold
     enabled: true
-    config:  '{"review_min":0.5,"deny_min":0.85}'
+    config:  '{"threshold":0.85,"decision":"deny"}'
+
+  - id:      ml_high_risk_review
+    name:    "ML 模型中风险（人工）"
+    type:    ml_threshold
+    enabled: true
+    config:  '{"threshold":0.5,"decision":"review"}'
 
   - id:      merchant_blocklist
     name:    "商户拒绝名单"
@@ -549,11 +564,13 @@ rules:
     config:  '{"apply_events":["login"],"decision":"review"}'
 
   # 同手机号关联多账号（薅毛常见手段：1 手机注 N 账号撸 N 份福利）
+  # 修正：link_fanout 字段是 pivot/peer（不带 _prefix）。旧 yaml 报
+  # "pivot and peer are required" 加载失败。
   - id:      phone_multi_account
     name:    "同手机号关联 ≥ 3 个账户"
     type:    link_fanout
     enabled: true
-    config:  '{"pivot_prefix":"phone:","peer_prefix":"customer:","threshold":3,"decision":"review"}'
+    config:  '{"pivot":"phone","peer":"customer","threshold":3,"decision":"review"}'
 
   # 邮箱 alias 通用 trick（gmail "+suffix" / dot 变形）→ caller 在
   # metadata.email_normalized 里塞归一化结果，本规则比对：normalize 后已存在

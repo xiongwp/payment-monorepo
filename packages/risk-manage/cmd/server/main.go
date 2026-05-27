@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -1655,13 +1656,46 @@ func registerRulesReload(mux *http.ServeMux, eng *engine.Engine, v *viper.Viper,
 	})
 	// GET /admin/rules/list  → 当前在跑的规则集（id+name+type+config_json+
 	// mode+weight+rollout+enabled），给 admin-web 规则编辑 UI 渲染表格用。
+	//
+	// Bug 修复（曾经返 200 + Content-Length: 0）：
+	//   根因 — RuleDef.ConfigJSON 是 json.RawMessage，但从 YAML 解出来时被 viper
+	//   存成"反引号原文"（如 `'{"required":true}'` 带外层单引号），不是合法 JSON
+	//   字节流。json.Encode 整个 struct 时遇到 RawMessage.MarshalJSON 验证失败
+	//   → 整个 Encode 调用返 err；handler 用 `_ = Encode(...)` 把 err 吞了，
+	//   而响应头已经写了 Content-Type，body 一字节没出 → 客户端看到 200 + 空 body。
+	//
+	// 修复策略：先 json.Marshal 拿到 bytes，失败就 500 + 错误细节进日志；
+	// 不再 swallow error。即使有规则配置错也能给前端可见的错误，而不是静默空。
 	mux.HandleFunc("/admin/rules/list", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
+		defs := eng.RuleDefs()
+		// 预处理：把每条 def 的 ConfigJSON 做合法性兜底 — 非法 / 空 → 改成 "{}"
+		// 这样单条规则配置异常不会让整个 list 接口炸。
+		for i := range defs {
+			cj := defs[i].ConfigJSON
+			if len(cj) == 0 {
+				defs[i].ConfigJSON = json.RawMessage(`{}`)
+				continue
+			}
+			if !json.Valid(cj) {
+				logger.Warn("rule config_json invalid; replaced with {} in /admin/rules/list",
+					zap.String("rule_id", defs[i].ID),
+					zap.ByteString("raw", cj))
+				defs[i].ConfigJSON = json.RawMessage(`{}`)
+			}
+		}
+		body, err := json.Marshal(defs)
+		if err != nil {
+			logger.Error("admin/rules/list marshal failed", zap.Error(err))
+			http.Error(w, `{"error":"marshal failed: `+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(eng.RuleDefs())
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = w.Write(body)
 	})
 	// POST /admin/rules/update  Body: RuleDef{...}
 	// 单条规则原子热更新：先 BuildRule 跑 schema 校验（factory + json.Unmarshal），
