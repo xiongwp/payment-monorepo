@@ -92,6 +92,7 @@ func main() {
 			newMLDrift,
 			newExtractors,
 			newSessionStore,
+			newStreamChains,
 			newReviewStore,
 			newFeedbackRecorder,
 			newAPIKeyStore,
@@ -454,11 +455,54 @@ func newSDKSecrets(v *viper.Viper, logger *zap.Logger) auth.SecretLookup {
 }
 
 // newReviewStore 人工 review 队列。生产换 PG / MySQL append-only 表。
-func newReviewStore() review.Store { return review.NewMemStore() }
+// audit.chain_signing=true 时套一层 chain wrapper，所有 state-changing op
+// 上 tamper-evident chain (stream="review"，独立链)。
+func newReviewStore(chains streamChains) review.Store {
+	return review.WrapWithChain(review.NewMemStore(), chains.Review)
+}
 
 // newFeedbackRecorder Outcome 反馈记录器。生产换 PG append-only `risk_outcome` 表。
-// maxAll=0 → 默认 100k 条上限。
-func newFeedbackRecorder() feedback.Recorder { return feedback.NewMemRecorder(0) }
+// maxAll=0 → 默认 100k 条上限。audit.chain_signing=true 时套 chain wrapper
+// (stream="outcomes"，独立链)。
+func newFeedbackRecorder(chains streamChains) feedback.Recorder {
+	return feedback.WrapWithChain(feedback.NewMemRecorder(0), chains.Outcomes)
+}
+
+// streamChains 三个 chain-stream wrapper：review / rule_audit / outcomes。
+// **每个 stream 独立链**（独立 prev_hash 状态），互不影响 verify。
+// DecisionAudit 自己一条链走 ChainSink（chain_sink.go），合计 4 条链。
+//
+// cfg audit.chain_signing=false → 3 个字段全 nil，所有 Wrap*WithChain 走 noop。
+type streamChains struct {
+	Review     *audit.ChainWriter
+	RuleAudit  *audit.ChainWriter
+	Outcomes   *audit.ChainWriter
+	ReviewMem  *audit.MemStreamSink // /admin/audit/chain/verify?stream=review 拉数据用
+	RuleAuditMem *audit.MemStreamSink
+	OutcomesMem *audit.MemStreamSink
+}
+
+// newStreamChains 构造 3 个 stream chain（review / rule_audit / outcomes）。
+// 仅当 audit.chain_signing=true 时返回 non-nil writers；否则全字段 nil。
+//
+// 各 stream 用各自的 MemStreamSink 持久化（4096 ring）；生产可改成 file/
+// kafka/CH sink。
+func newStreamChains(v *viper.Viper, logger *zap.Logger) streamChains {
+	if !v.GetBool("audit.chain_signing") {
+		return streamChains{}
+	}
+	mkSink := func() *audit.MemStreamSink { return audit.NewMemStreamSink(4096) }
+	rMem, raMem, oMem := mkSink(), mkSink(), mkSink()
+	logger.Info("audit chain streams ENABLED for review / rule_audit / outcomes (4 独立链)")
+	return streamChains{
+		Review:       audit.NewChainWriter("review", rMem),
+		RuleAudit:    audit.NewChainWriter("rule_audit", raMem),
+		Outcomes:     audit.NewChainWriter("outcomes", oMem),
+		ReviewMem:    rMem,
+		RuleAuditMem: raMem,
+		OutcomesMem:  oMem,
+	}
+}
 
 // newMerchantList 商户级 allow / block 名单。生产换 PG-backed Mem-cache + admin write。
 func newMerchantList() merchantlist.Service { return merchantlist.NewMemService() }
@@ -868,12 +912,14 @@ func newEngine(v *viper.Viper, counter store.Counter, bl store.Blacklist, links 
 // newRuleAuditStore 规则变更审计日志（谁改了哪条规则）。Mem 实现进程内，
 // 重启清；生产应该换 PG-backed 实现（schema 见 audit/rule_audit.go 注释）。
 // rule_audit.disabled=true → nil，所有写都 no-op。
-func newRuleAuditStore(v *viper.Viper) audit.RuleAuditStore {
+func newRuleAuditStore(v *viper.Viper, chains streamChains) audit.RuleAuditStore {
 	if v.GetBool("rule_audit.disabled") {
 		return nil
 	}
 	cap := v.GetInt("rule_audit.mem_capacity")
-	return audit.NewMemRuleAuditStore(cap)
+	base := audit.NewMemRuleAuditStore(cap)
+	// chains.RuleAudit==nil（cfg audit.chain_signing=false）→ noop。
+	return audit.WrapRuleAuditWithChain(base, chains.RuleAudit)
 }
 
 func newAuditSink(lc fx.Lifecycle, v *viper.Viper, logger *zap.Logger) audit.Sink {
@@ -1239,6 +1285,7 @@ func startMetricsHTTP(
 	fs featurestore.Store,
 	ruleAudit audit.RuleAuditStore,
 	adaptive *reliability.AdaptiveLimiter,
+	chains streamChains,
 	logger *zap.Logger,
 ) {
 	addr := v.GetString("metrics.addr")
@@ -1307,7 +1354,7 @@ func startMetricsHTTP(
 			registerRuleVersionsHandlers(mux, eng, ruleAudit, logger)
 			registerExplainHandler(mux, eng, sink, logger)
 			registerAuditSearchHandler(mux, sink, logger)
-			registerAuditChainVerifyHandler(mux, sink, logger)
+			registerAuditChainVerifyHandler(mux, sink, chains, logger)
 			// 自适应并发限流 admin endpoints（GET / POST /admin/reliability/limits/*）
 			reliability.RegisterAdaptiveAdmin(mux, adaptive, logger)
 			if reviewQ != nil {
@@ -3529,29 +3576,27 @@ func parseTimeFlexible(s string) (time.Time, error) {
 	return time.Time{}, errors.New("unrecognized time format")
 }
 
-// registerAuditChainVerifyHandler  POST /admin/audit/chain/verify
+// registerAuditChainVerifyHandler  POST /admin/audit/chain/verify[?stream=X]
 //
-// 给合规 / 取证 / 内审用：从 audit MemSink 拉最近 N 条 (按 OccurredAt 升序)
-// 跑 audit.VerifyChain，验证 chain_prev_hash / chain_row_hash 没被篡改。
+// 给合规 / 取证 / 内审用：跑 chain verify 验证 prev_hash / row_hash 没被篡改。
 //
-// query/body 参数：
-//   limit   验证条数 (默认 1000)
+// query 参数：
+//   stream=decisions|review|rule_audit|outcomes   默认 decisions（兼容旧调用）
+//
+// body / query 参数（任一）：
+//   limit       验证条数 (默认 1000，上限 5000)
 //   start_prev  起点 prev_hash (空 = genesis 全零；从某条之后续验时填)
 //
-// 返回 {ok, verified, failed_at_index, error_field, want, got}。
+// 返回 {stream, ok, verified, failed_at_index, error_field, want, got}。
 //
-// 注意：本端点用 in-process MemSink 数据。生产 ClickHouse / PG 落库后应该
-// 写一个独立 cmd/audit-verify 离线 CLI 走 SQL 流式扫，而不是从服务进程
-// 拉 — ring 上限 ~4096 条是 in-mem 验证上限。
-func registerAuditChainVerifyHandler(mux *http.ServeMux, sink audit.Sink, logger *zap.Logger) {
+// 注意：四条链各自独立 verify；本端点用 in-process Mem*Sink 数据
+// （ring ~4096）。生产 ClickHouse / PG 落库后应该写一个独立 cmd/audit-verify
+// 离线 CLI 走 SQL 流式扫，而不是从服务进程拉。
+func registerAuditChainVerifyHandler(mux *http.ServeMux, sink audit.Sink, chains streamChains, logger *zap.Logger) {
 	mem := findMemSink(sink)
 	mux.HandleFunc("/admin/audit/chain/verify", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-			return
-		}
-		if mem == nil {
-			http.Error(w, `{"error":"audit MemSink not configured"}`, http.StatusServiceUnavailable)
 			return
 		}
 		var body struct {
@@ -3562,33 +3607,79 @@ func registerAuditChainVerifyHandler(mux *http.ServeMux, sink audit.Sink, logger
 		if body.Limit <= 0 || body.Limit > 5000 {
 			body.Limit = 1000
 		}
-		// MemSink Recent 是 newest-first；VerifyChain 需要 oldest-first → 反转
+		stream := r.URL.Query().Get("stream")
+		if stream == "" {
+			stream = "decisions"
+		}
+
+		// stream != decisions → 走 StreamRecord 链验证。
+		if stream != "decisions" {
+			var memStream *audit.MemStreamSink
+			switch stream {
+			case "review":
+				memStream = chains.ReviewMem
+			case "rule_audit":
+				memStream = chains.RuleAuditMem
+			case "outcomes":
+				memStream = chains.OutcomesMem
+			default:
+				http.Error(w, `{"error":"unknown stream; want decisions|review|rule_audit|outcomes"}`, http.StatusBadRequest)
+				return
+			}
+			if memStream == nil {
+				http.Error(w, `{"error":"chain stream not enabled; set audit.chain_signing=true"}`, http.StatusServiceUnavailable)
+				return
+			}
+			recent := memStream.Recent(body.Limit)
+			recs := make([]*audit.StreamRecord, len(recent))
+			for i, r := range recent {
+				recs[len(recent)-1-i] = r
+			}
+			idx, err := audit.VerifyStreamChain(recs, body.StartPrev)
+			writeChainVerifyResp(w, stream, len(recs), idx, err)
+			logger.Info("audit chain verify", zap.String("stream", stream), zap.Int("verified", len(recs)), zap.Bool("ok", err == nil))
+			return
+		}
+
+		// decisions: 原 DecisionAudit 链路径，保持兼容。
+		if mem == nil {
+			http.Error(w, `{"error":"audit MemSink not configured"}`, http.StatusServiceUnavailable)
+			return
+		}
 		recent := mem.Recent(body.Limit)
 		records := make([]*audit.DecisionAudit, len(recent))
 		for i, a := range recent {
 			records[len(recent)-1-i] = a
 		}
 		idx, err := audit.VerifyChain(records, body.StartPrev)
-		resp := map[string]any{
-			"verified": len(records),
-			"ok":       err == nil,
-		}
-		if err != nil {
-			resp["failed_at_index"] = idx
-			resp["error"] = err.Error()
-			if ve, ok := err.(*audit.VerifyError); ok {
-				resp["error_field"] = ve.Field
-				resp["want"] = ve.Want
-				resp["got"] = ve.Got
-			}
-		}
+		writeChainVerifyResp(w, stream, len(records), idx, err)
 		logger.Info("audit chain verify",
+			zap.String("stream", stream),
 			zap.Int("verified", len(records)),
 			zap.Bool("ok", err == nil))
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
 	})
-	logger.Info("audit chain verify handler registered at /admin/audit/chain/verify")
+	logger.Info("audit chain verify handler registered at /admin/audit/chain/verify (streams: decisions|review|rule_audit|outcomes)")
+}
+
+// writeChainVerifyResp 把 chain verify 结果序列化成统一 JSON 输出。
+// stream 字段方便前端区分多 stream 结果（一次调用一个 stream）。
+func writeChainVerifyResp(w http.ResponseWriter, stream string, verified, idx int, err error) {
+	resp := map[string]any{
+		"stream":   stream,
+		"verified": verified,
+		"ok":       err == nil,
+	}
+	if err != nil {
+		resp["failed_at_index"] = idx
+		resp["error"] = err.Error()
+		if ve, ok := err.(*audit.VerifyError); ok {
+			resp["error_field"] = ve.Field
+			resp["want"] = ve.Want
+			resp["got"] = ve.Got
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // registerWebhookDLQHandler  webhook DLQ admin 端点：

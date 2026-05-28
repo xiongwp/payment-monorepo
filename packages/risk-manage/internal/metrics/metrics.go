@@ -158,6 +158,14 @@ var RuleEvalDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 	Buckets: []float64{0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5},
 }, []string{"rule_id", "rule_type"})
 
+// AuditChainWriteTotal 4 类 tamper-evident chain (decisions / review / rule_audit
+// / outcomes) 的写入计数。result=ok 表示写入 + chain hash 计算成功；
+// result=err 表示 inner sink 写失败（chain 仍推进 prev_hash，不阻塞主流程）。
+var AuditChainWriteTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "risk_audit_chain_write_total",
+	Help: "Chain-signed audit writes by stream + result",
+}, []string{"stream", "result"})
+
 var once sync.Once
 
 func Register() {
@@ -179,6 +187,7 @@ func Register() {
 			AuditAsyncDropped,
 			AuditAsyncQueueLen,
 			AuditFileSinkSize,
+			AuditChainWriteTotal,
 			GoroutineCount,
 			HeapAllocBytes,
 			HeapInuseBytes,
