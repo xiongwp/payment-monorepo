@@ -20,7 +20,21 @@
 //
 // **TODO(chain audit)**: EscalateTo 走的是 store.EscalateTo 而非 store.Escalate；
 // chain.go 没 wrap 新方法，所以 SLA 自动升级当前不写 tamper-evident chain。
-// 跟监管承诺要补；v2 拆分时同步加 chainStore.EscalateTo wrapper。
+// 跟监管承诺要补；v2 拆分时同步加 chainStore.EscalateTo / Transfer / DecideWithCode wrapper。
+//
+// **TODO(postgres migration)**: postgres_review.go 还没实现新方法 + 新列。
+// 上 PG 时需要先 ALTER（安全幂等，老数据 level 默认 1）：
+//
+//	ALTER TABLE risk_review ADD COLUMN IF NOT EXISTS level INT NOT NULL DEFAULT 1;
+//	ALTER TABLE risk_review ADD COLUMN IF NOT EXISTS reason_code TEXT;
+//	ALTER TABLE risk_review ADD COLUMN IF NOT EXISTS sla_escalated BOOLEAN NOT NULL DEFAULT FALSE;
+//	ALTER TABLE risk_review ADD COLUMN IF NOT EXISTS transfer_hist JSONB NOT NULL DEFAULT '[]';
+//	ALTER TABLE risk_review ADD COLUMN IF NOT EXISTS escalate_hist JSONB NOT NULL DEFAULT '[]';
+//	CREATE INDEX IF NOT EXISTS risk_review_level_sla ON risk_review (level, sla_deadline)
+//	  WHERE status IN ('pending','in_review') AND sla_escalated = FALSE;
+//
+// 然后扩展 PGReviewStore 实现 Transfer / EscalateTo / DecideWithCode / AutoEscalateOverdue
+// （UPDATE WHERE id=? AND level=expected 保证原子）。
 package review
 
 import (

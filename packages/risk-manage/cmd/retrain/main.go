@@ -15,6 +15,14 @@
 // 不依赖外部 ML 库（sklearn / TF）；纯 Go + math，单文件可读，方便商业部署
 // 在没有 python 工具链的环境跑。生产规模数据建议导出到 sklearn 训练（更快
 // + 更优 solver），本工具是 baseline + 单测 + on-call quick-fix 用。
+//
+// 正式版训练 pipeline ──→ packages/risk-manage/ml-training/
+//   - LightGBM GBDT + PyTorch LSTM 行为序列模型
+//   - skl2onnx / torch.onnx → .onnx 给 internal/mlscore/OnnxService 拉
+//   - SHAP TreeExplainer 产 model.shap.json（解释性）
+//   - deploy/upload_artifact.py → S3 + POST /admin/ml/onnx/reload
+//   - 详见 ml-training/README.md（ML team SOP）
+// 本 Go CLI 仅作为 dev / fallback / 客户无 Python 环境时的应急训练工具。
 package main
 
 import (

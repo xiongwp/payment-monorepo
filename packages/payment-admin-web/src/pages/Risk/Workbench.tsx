@@ -16,8 +16,8 @@
 // 简化：actor 当前用 prompt 输入；生产应接 admin SSO，从 token 拉 user_id。
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Alert, Button, Card, Drawer, Form, Input, Modal, Radio, Space, Table,
-  Tabs, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Drawer, Form, Input, Modal, Radio, Select, Space, Table,
+  Tabs, Tag, Timeline, Tooltip, Typography, message,
 } from 'antd'
 import dayjs from 'dayjs'
 import { useTranslation } from 'react-i18next'
@@ -27,6 +27,60 @@ import {
 } from '../../api/risk'
 import type { ReviewItem, ReviewStatus, ReviewAction } from '../../api/risk'
 import { display } from '../../utils/money'
+import { request } from '../../api/client'
+
+// ── 结构化 ReasonCode（后端 enum，前端通过 GET /risk/reviews/reason-codes 拉）─
+//
+// 字典初次加载时缓存到 module-level；用户切语言不需要重拉（zh / en 都在 payload）。
+// 后端新增 code → 前端无需改代码，下拉自动出现。
+type ReasonCodeLabel = {
+  code: string
+  zh_CN: string
+  en_US: string
+  hint_free_text?: boolean
+}
+let reasonCodeCache: ReasonCodeLabel[] | null = null
+async function fetchReasonCodes(): Promise<ReasonCodeLabel[]> {
+  if (reasonCodeCache) return reasonCodeCache
+  const r = await request<ReasonCodeLabel[]>({
+    url: '/risk/reviews/reason-codes', method: 'GET',
+  })
+  reasonCodeCache = Array.isArray(r) ? r : []
+  return reasonCodeCache
+}
+
+// ── case Level 渲染 ────────────────────────────────────────────────────────
+// 后端 Item 加了 level 字段（1=L1, 2=L2）+ escalate_hist 时间轴 + sla_escalated 标记。
+// TS 类型这里临时 extend；正式应去 api/risk.ts 加（TODO）。
+type CaseLevel = 1 | 2
+type ExtendedReviewItem = ReviewItem & {
+  level?: CaseLevel
+  reason_code?: string
+  sla_escalated?: boolean
+  escalate_hist?: Array<{
+    from_level: number
+    to_level: number
+    trigger: 'manual' | 'sla_timeout'
+    actor?: string
+    reason?: string
+    created_at: string
+  }>
+  transfer_hist?: Array<{
+    from: string
+    to: string
+    reason?: string
+    created_at: string
+  }>
+}
+function LevelTag({ level, slaEscalated }: { level?: number; slaEscalated?: boolean }) {
+  const lv = level && level >= 2 ? 2 : 1
+  return (
+    <Tag color={lv === 2 ? 'magenta' : 'blue'}>
+      L{lv}
+      {slaEscalated ? ' (auto)' : ''}
+    </Tag>
+  )
+}
 
 const STATUS_COLOR: Record<ReviewStatus, string> = {
   pending: 'processing',
@@ -47,15 +101,30 @@ function useActor(): [string, (a: string) => void] {
 }
 
 export default function Workbench() {
-  const { t } = useTranslation('risk')
+  const { t, i18n } = useTranslation('risk')
   const [actor, setActor] = useActor()
   const [tab, setTab] = useState<'mine' | 'queue' | 'overdue'>('mine')
 
   const [rows, setRows] = useState<ReviewItem[]>([])
   const [loading, setLoading] = useState(false)
-  const [detail, setDetail] = useState<ReviewItem | null>(null)
+  const [detail, setDetail] = useState<ExtendedReviewItem | null>(null)
   const [decideOpen, setDecideOpen] = useState(false)
-  const [decideForm] = Form.useForm<{ action: ReviewAction; reason: string }>()
+  const [decideForm] = Form.useForm<{ action: ReviewAction; reason_code: string; reason: string }>()
+  const [reasonCodes, setReasonCodes] = useState<ReasonCodeLabel[]>([])
+  const [reasonCodeWatched, setReasonCodeWatched] = useState<string>('')
+
+  // 初次挂载拉 reason code 字典；失败不阻塞页面（degrade 成无下拉，user 改回 free-text）
+  useEffect(() => {
+    fetchReasonCodes()
+      .then((list) => setReasonCodes(list))
+      .catch((e) => {
+        console.warn('reason codes fetch failed:', e)
+        setReasonCodes([])
+      })
+  }, [])
+
+  // 当前语言（zh / en）。
+  const lang = (i18n.language || 'zh').toLowerCase().startsWith('en') ? 'en_US' : 'zh_CN'
 
   const load = useCallback(async () => {
     if (!actor && tab === 'mine') return
@@ -164,16 +233,69 @@ export default function Workbench() {
     })
   }
 
-  const onDecideSubmit = async (v: { action: ReviewAction; reason: string }) => {
+  const onDecideSubmit = async (v: { action: ReviewAction; reason_code: string; reason: string }) => {
     if (!detail || !requireActor()) return
+    if (!v.reason_code) {
+      message.warning(t('workbench.decideModal.reasonCodeRequired', 'Reason code required'))
+      return
+    }
     try {
-      await decideReview({ id: detail.id, action: v.action, actor, reason: v.reason })
+      // 透传 reason_code 给后端。decideReview 当前签名不含 reason_code；
+      // TODO(api/risk.ts): 把 reasonCode 加入 decideReview 入参类型。临时 cast 走。
+      await decideReview({
+        id: detail.id,
+        action: v.action,
+        actor,
+        reason: v.reason,
+        // @ts-expect-error reason_code 未在 type 里；后端 v2 必须；待 api/risk.ts 升级
+        reason_code: v.reason_code,
+      })
       message.success(v.action === 'approve' ? t('workbench.approved') : t('workbench.rejected'))
       setDecideOpen(false)
       decideForm.resetFields()
+      setReasonCodeWatched('')
       await refreshDetail(detail.id)
       load()
     } catch (e) { message.error(String(e)) }
+  }
+
+  // ── Transfer 弹窗（v1 极简：目标 analyst id + reason） ────────────────
+  const onTransfer = async (id: string) => {
+    if (!requireActor()) return
+    // TODO(ui): 用 Modal + Form 控件而非 prompt；v1 先打通端到端流程。
+    const target = window.prompt(t('workbench.transferPrompt', 'Transfer to which analyst? (id)') || '')
+    if (!target) return
+    const reason = window.prompt(t('workbench.transferReasonPrompt', 'Reason?') || '') || ''
+    try {
+      await request({
+        url: '/risk/reviews/transfer', method: 'POST',
+        data: { case_id: id, to_actor: target, reason, from_actor: actor },
+      })
+      message.success(t('workbench.transferred', 'Transferred'))
+      await refreshDetail(id)
+      load()
+    } catch (e) { message.error(String(e)) }
+  }
+
+  // ── 显式 EscalateTo(L2) ──────────────────────────────────────────────
+  // 区别于旧 onEscalate（只 bump 计数）：这里走 /escalate-level，真升 L2。
+  const onEscalateLevel = async (id: string) => {
+    if (!requireActor()) return
+    Modal.confirm({
+      title: t('workbench.escalateLevelModal.title', 'Escalate to L2?'),
+      content: t('workbench.escalateLevelModal.content', 'Case will be routed to senior analyst queue.'),
+      onOk: async () => {
+        try {
+          await request({
+            url: '/risk/reviews/escalate-level', method: 'POST',
+            data: { case_id: id, target_level: 2, reason: 'manual', actor },
+          })
+          message.success(t('workbench.escalatedL2', 'Escalated to L2'))
+          await refreshDetail(id)
+          load()
+        } catch (e) { message.error(String(e)) }
+      },
+    })
   }
 
   const columns = useMemo(
@@ -200,6 +322,13 @@ export default function Workbench() {
       {
         title: t('workbench.columns.status'), dataIndex: 'status', width: 100,
         render: (s: ReviewStatus) => <Tag color={STATUS_COLOR[s] || 'default'}>{s}</Tag>,
+      },
+      {
+        title: t('workbench.columns.level', 'Level'), width: 90,
+        render: (_: unknown, r: ReviewItem) => {
+          const e = r as ExtendedReviewItem
+          return <LevelTag level={e.level} slaEscalated={e.sla_escalated} />
+        },
       },
       {
         title: t('workbench.columns.assignee'), dataIndex: 'assigned_to', width: 120,
@@ -289,6 +418,12 @@ export default function Workbench() {
               {detail.status === 'in_review' && detail.assigned_to === actor && (
                 <>
                   <Button onClick={() => onRelease(detail.id)}>{t('workbench.drawer.release')}</Button>
+                  <Button onClick={() => onTransfer(detail.id)}>{t('workbench.drawer.transfer', 'Transfer')}</Button>
+                  {(detail.level || 1) < 2 && (
+                    <Button onClick={() => onEscalateLevel(detail.id)}>
+                      {t('workbench.drawer.escalateL2', 'Escalate L2')}
+                    </Button>
+                  )}
                   <Button onClick={() => onEscalate(detail.id)}>{t('workbench.drawer.escalate')}</Button>
                   <Button type="primary" onClick={() => setDecideOpen(true)}>{t('workbench.drawer.decide')}</Button>
                 </>
@@ -305,6 +440,16 @@ export default function Workbench() {
             <Card size="small" title={t('workbench.drawer.basicInfo')} style={{ marginBottom: 12 }}>
               <p><b>{t('workbench.drawer.id')}：</b><Typography.Text code copyable>{detail.id}</Typography.Text></p>
               <p><b>{t('workbench.drawer.status')}：</b><Tag color={STATUS_COLOR[detail.status] || 'default'}>{detail.status}</Tag></p>
+              <p>
+                <b>{t('workbench.drawer.level', 'Level')}：</b>
+                <LevelTag level={detail.level} slaEscalated={detail.sla_escalated} />
+              </p>
+              {detail.reason_code && (
+                <p>
+                  <b>{t('workbench.drawer.reasonCode', 'Reason code')}：</b>
+                  <Tag>{detail.reason_code}</Tag>
+                </p>
+              )}
               <p><b>{t('workbench.drawer.assignedTo')}：</b>{detail.assigned_to || '—'}</p>
               <p><b>{t('workbench.drawer.riskScore')}：</b>{detail.risk_score}</p>
               <p><b>{t('workbench.drawer.amount')}：</b>{detail.amount ? display(detail.amount, detail.currency) : '—'}</p>
@@ -326,6 +471,57 @@ export default function Workbench() {
                 ? <Typography.Text type="secondary">{t('common.none')}</Typography.Text>
                 : <ul>{detail.reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>}
             </Card>
+
+            {(detail.escalate_hist?.length || 0) > 0 && (
+              <Card
+                size="small"
+                title={t('workbench.drawer.escalateHist', 'Escalate history')}
+                style={{ marginBottom: 12 }}
+              >
+                <Timeline
+                  items={(detail.escalate_hist || []).map((h) => ({
+                    color: h.trigger === 'sla_timeout' ? 'red' : 'blue',
+                    children: (
+                      <div>
+                        <Space>
+                          <Tag color={h.trigger === 'sla_timeout' ? 'red' : 'blue'}>
+                            {h.trigger}
+                          </Tag>
+                          <span>L{h.from_level} → L{h.to_level}</span>
+                          <Typography.Text type="secondary">
+                            {dayjs(h.created_at).format('YYYY-MM-DD HH:mm:ss')}
+                          </Typography.Text>
+                        </Space>
+                        <div style={{ marginTop: 4 }}>
+                          <Typography.Text type="secondary">{h.actor || 'system'}</Typography.Text>
+                          {h.reason ? <span>：{h.reason}</span> : null}
+                        </div>
+                      </div>
+                    ),
+                  }))}
+                />
+              </Card>
+            )}
+
+            {(detail.transfer_hist?.length || 0) > 0 && (
+              <Card
+                size="small"
+                title={t('workbench.drawer.transferHist', 'Transfer history')}
+                style={{ marginBottom: 12 }}
+              >
+                {(detail.transfer_hist || []).map((tr, i) => (
+                  <div key={i} style={{ padding: '4px 0' }}>
+                    <Typography.Text>{tr.from}</Typography.Text>
+                    <span> → </span>
+                    <Typography.Text strong>{tr.to}</Typography.Text>
+                    <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
+                      {dayjs(tr.created_at).format('YYYY-MM-DD HH:mm:ss')}
+                    </Typography.Text>
+                    {tr.reason ? <span>：{tr.reason}</span> : null}
+                  </div>
+                ))}
+              </Card>
+            )}
 
             <Card size="small" title={t('workbench.drawer.noteCount', { count: detail.notes?.length || 0 })}>
               {(detail.notes?.length || 0) === 0 ? (
@@ -361,7 +557,35 @@ export default function Workbench() {
               <Radio.Button value="reject">{t('workbench.decideModal.reject')}</Radio.Button>
             </Radio.Group>
           </Form.Item>
-          <Form.Item label={t('workbench.decideModal.reasonLabel')} name="reason">
+          {/* 结构化 Reason Code 下拉。后端 v2 强制必传；空提交后端 400。
+              选 "other" 时强制要求 free-text 详述（前端只提示，后端不再二次校验）。*/}
+          <Form.Item
+            label={t('workbench.decideModal.reasonCodeLabel', 'Reason code')}
+            name="reason_code"
+            rules={[{ required: true, message: t('workbench.decideModal.reasonCodeRequired', 'Required') }]}
+          >
+            <Select
+              showSearch
+              placeholder={t('workbench.decideModal.reasonCodePlaceholder', 'Select a reason')}
+              onChange={(v: string) => setReasonCodeWatched(v)}
+              options={reasonCodes.map((rc) => ({
+                value: rc.code,
+                label: `${lang === 'en_US' ? rc.en_US : rc.zh_CN}${rc.hint_free_text ? ' *' : ''}`,
+              }))}
+              filterOption={(input, option) =>
+                String(option?.label || '').toLowerCase().includes(input.toLowerCase())
+              }
+            />
+          </Form.Item>
+          <Form.Item
+            label={t('workbench.decideModal.reasonLabel')}
+            name="reason"
+            rules={
+              reasonCodeWatched === 'other'
+                ? [{ required: true, message: t('workbench.decideModal.reasonRequiredForOther', 'Free text required when code=other') }]
+                : []
+            }
+          >
             <Input.TextArea rows={3} placeholder={t('workbench.decideModal.reasonPlaceholder')} />
           </Form.Item>
         </Form>

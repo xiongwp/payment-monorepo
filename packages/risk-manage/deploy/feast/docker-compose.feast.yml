@@ -1,0 +1,123 @@
+# docker-compose.feast.yml —— Feast feature store dev / staging 部署。
+#
+# 用法（独立启动；不影响主 compose）：
+#
+#   # 先起主 compose（含 risk-redis）：
+#   docker compose -f docker-compose.yml up -d risk-redis
+#   # 再起 Feast（独立 profile，按需启）：
+#   docker compose -f deploy/feast/docker-compose.feast.yml --profile feast up -d
+#
+# 启动顺序由 depends_on + healthcheck 控制：
+#   risk-redis (assumed up) ← feast-sample-data ← feast-apply ← feast-server
+#
+# 端口：
+#   - 6566 gRPC（risk-manage Go client 用）
+#   - 6567 HTTP（feast UI / curl 调试）
+#
+# 与主仓 docker-compose 共享 network `risk-net`。risk-manage 容器内
+# 用 hostname `feast-server` 拨号。
+
+version: "3.9"
+
+networks:
+  risk-net:
+    external: true   # 主 docker-compose 创建；这里只 attach
+
+volumes:
+  feast-data:        # registry.db + materialize 状态
+  feast-parquet:     # sample / 生产 parquet 文件
+
+services:
+  # ── 1. 准备 sample data ───────────────────────────────────────────────
+  # 一次性 init container：跑 gen_sample.py 灌 5 份 parquet 到 feast-parquet
+  # 卷。已经有 parquet 时跳过（脚本里 idempotent）。
+  feast-sample-data:
+    profiles: ["feast"]
+    image: python:3.11-slim
+    container_name: feast-sample-data
+    networks: [risk-net]
+    volumes:
+      - feast-parquet:/data/parquet
+      - ./sample_data:/sample_data:ro
+    command: >
+      bash -c "
+        pip install --quiet pandas pyarrow numpy &&
+        python /sample_data/gen_sample.py /data/parquet
+      "
+    restart: "no"
+
+  # ── 2. feast apply ───────────────────────────────────────────────────
+  # 把 feature_views.py 里的定义推到 registry.db + 创建 redis schema。
+  # 依赖 sample-data 完成（否则 FileSource 拿不到 parquet 报错）。
+  feast-apply:
+    profiles: ["feast"]
+    image: feastdev/feature-server:0.40.0
+    container_name: feast-apply
+    networks: [risk-net]
+    depends_on:
+      feast-sample-data:
+        condition: service_completed_successfully
+    volumes:
+      - ./feast_repo:/feast_repo:ro
+      - feast-data:/feast_repo/data
+      - feast-parquet:/data/parquet:ro
+    working_dir: /feast_repo
+    # apply 后顺手 materialize 最近 7d offline → online，保 dev 一启动就有数据可查
+    command: >
+      sh -c "
+        feast apply &&
+        feast materialize-incremental $$(date -u +%Y-%m-%dT%H:%M:%S)
+      "
+    environment:
+      - FEAST_USAGE=False    # 关 telemetry
+      - REDIS_HOST=risk-redis
+    restart: "no"
+
+  # ── 3. feast-server (online serving) ────────────────────────────────
+  # 持续运行；暴露 gRPC + HTTP。健康检查 60s 内必须 ready。
+  feast-server:
+    profiles: ["feast"]
+    image: feastdev/feature-server:0.40.0
+    container_name: feast-server
+    networks: [risk-net]
+    depends_on:
+      feast-apply:
+        condition: service_completed_successfully
+    ports:
+      - "6566:6566"   # gRPC（serving）
+      - "6567:6567"   # HTTP / feast UI
+    volumes:
+      - ./feast_repo:/feast_repo:ro
+      - feast-data:/feast_repo/data
+      - feast-parquet:/data/parquet:ro
+    working_dir: /feast_repo
+    command: ["feast", "serve", "--host", "0.0.0.0", "--port", "6566"]
+    environment:
+      - FEAST_USAGE=False
+      - REDIS_HOST=risk-redis
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6567/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped
+
+  # ── 4. feast UI（optional，dev 看 feature view / lineage） ──────────
+  feast-ui:
+    profiles: ["feast", "feast-ui"]
+    image: feastdev/feature-server:0.40.0
+    container_name: feast-ui
+    networks: [risk-net]
+    depends_on:
+      feast-server:
+        condition: service_healthy
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./feast_repo:/feast_repo:ro
+      - feast-data:/feast_repo/data:ro
+    working_dir: /feast_repo
+    command: ["feast", "ui", "--host", "0.0.0.0", "--port", "8888"]
+    environment:
+      - FEAST_USAGE=False
+    restart: unless-stopped

@@ -1,0 +1,48 @@
+# ml-training/requirements.txt
+#
+# 风控 ML 训练 pipeline 依赖。
+# 目标：CPU-only 训练（LightGBM + 小 LSTM 完全够；GPU 当 >100K 标注样本再上）。
+#
+# 安装：
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# 版本钉死 minor，让 ML 团队跨机器复现训练结果。
+
+# ── 核心 GBDT ─────────────────────────────────────────────
+lightgbm>=4.1,<5.0          # 主用 GBDT；4.1 起 ONNX 转换 stable
+xgboost>=2.0,<3.0           # 备选 booster（同 schema 可热切）；默认不用
+
+# ── 深度学习（行为 LSTM）─────────────────────────────────
+torch>=2.0,<2.4             # CPU wheel 即可；2.4 起 ONNX export contract 略调
+                            # 装法：pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# ── ONNX 导出 + 推理验证 ──────────────────────────────────
+onnx>=1.15,<2.0
+onnxruntime>=1.16,<2.0      # 本地 sanity-check：onnx 模型出来后跑一遍对齐 Python pred
+skl2onnx>=1.16,<2.0         # sklearn / lightgbm → onnx 主路径
+onnxmltools>=1.12,<2.0      # lightgbm convert_lightgbm()
+
+# ── 可解释性 ──────────────────────────────────────────────
+shap>=0.44,<1.0             # TreeExplainer 产 base_value + 全局 importance
+
+# ── 数据 I/O ──────────────────────────────────────────────
+pandas>=2.0,<3.0
+numpy>=1.24,<2.0            # 钉死 <2.0：lightgbm 4.1 跟 numpy 2 还有兼容 bug
+pyarrow>=14.0,<16.0         # parquet 引擎
+scikit-learn>=1.3,<2.0      # StratifiedKFold, metrics, OneHotEncoder
+
+# ── 数据源 ────────────────────────────────────────────────
+clickhouse-driver>=0.2.6    # 拉训练数据
+psycopg2-binary>=2.9        # 备用：从 postgres 拉 outcome label
+boto3>=1.34                 # S3 上传
+
+# ── HTTP（admin reload）────────────────────────────────────
+requests>=2.31
+
+# ── 实用 ──────────────────────────────────────────────────
+tqdm>=4.66
+python-dotenv>=1.0          # 本地 .env 装 CH / S3 凭证
+
+# 显式不引：tensorflow, jax, keras, GPU torch（CUDA），cudf
+# 当 LSTM 训练时间 > 1h / 数据 > 100K 时再单独评估 GPU。

@@ -1,0 +1,45 @@
+# feature_store.yaml —— Feast project config for risk-manage 风控 feature views。
+#
+# 这是 Feast 仓库根 manifest。`feast apply` / `feast serve` 从这里读：
+#
+#   - project：feature 命名空间。线上多团队共享 Feast registry 时区分。
+#   - registry：feature view 元数据的持久化文件（apply 写入；serving 读）。
+#               dev 用 local file（/data/registry.db）；prod 切 gs:// / s3://。
+#   - provider：local（开发 / 单机）；prod 切 gcp / aws（自动用 cloud KV）。
+#   - online_store：低延迟 read 路径。我们复用 risk-redis 的 db=2（跟主
+#     业务 cache 隔离），<5ms p99 lookup。
+#   - offline_store：批量 join 训练样本。dev 用 file（本地 parquet 目录），
+#     prod 切 BigQuery / Snowflake / Redshift。
+#   - entity_key_serialization_version：2 是当前 Feast 0.30+ 默认（兼容
+#     int / string 混合 entity）。锁版本免得隐式升级炸序列化。
+#
+# 改动流程：DS 改 feature_views/*.py → 本地 feast apply →
+#   docker compose up 起 feast-server → risk-manage 通过 gRPC 拉特征。
+project: risk
+registry: /feast_repo/data/registry.db
+provider: local
+entity_key_serialization_version: 2
+
+online_store:
+  type: redis
+  # risk-redis 是 docker-compose 主 compose 起的 redis（db 0 给主业务用）。
+  # 这里独立用 db=2 隔离。prod 切 cluster URL：redis+cluster://host1,host2:6379
+  connection_string: "redis-host:6379,db=2"
+
+offline_store:
+  # FileOfflineStore：parquet 文件作 batch source。
+  # dev 默认从 /data/parquet/*.parquet 读（docker volume 挂载）。
+  # prod 切 BigQueryOfflineStore（type: bigquery）。
+  type: file
+
+# feature_server 监听 0.0.0.0:6566 (gRPC) + 6567 (REST)。
+# auth_config 未配 = 内网 mTLS（k8s NetworkPolicy 限制 risk-manage namespace 才能调）。
+feature_server:
+  enabled: true
+  port: 6566
+
+# flags 段是 Feast 实验功能开关。alpha_features 开启后能用 push_source
+# （流式更新 online store）、on_demand_feature_view（推理时 transform）。
+flags:
+  alpha_features: true
+  on_demand_transforms: true

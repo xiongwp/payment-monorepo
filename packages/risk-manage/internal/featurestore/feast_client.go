@@ -189,3 +189,109 @@ func (c *FeastClient) Close() error {
 	}
 	return c.conn.Close()
 }
+
+// ─── Convenience: per-entity lookup ──────────────────────────────────────
+//
+// 下面 4 个方法是给 mlscore.FeastFeatureProvider 用的"按 entity 拉一组
+// 默认特征"快捷方法。FeatureRefs 跟 deploy/feast/feast_repo/feature_views.py
+// 里的 view 名一致。
+//
+// 任何错误都返 (nil, err)，调用方应 fail-soft（用 0 兜底）。
+
+// CustomerFeatureRefs 是 customer entity 默认拉的特征集。
+// 跟 feature_views.py 里 customer_velocity_fv + behavior_signals_fv 对齐。
+var CustomerFeatureRefs = []string{
+	"customer_velocity:paid_count_90d",
+	"customer_velocity:chargeback_count_90d",
+	"customer_velocity:dispute_count_30d",
+	"behavior_signals:mouse_speed_var",
+	"behavior_signals:keystroke_dwell_cv",
+	"behavior_signals:pause_count",
+}
+
+// DeviceFeatureRefs device_history view 全部特征。
+var DeviceFeatureRefs = []string{
+	"device_history:first_seen_days",
+	"device_history:distinct_customers_90d",
+	"device_history:fp_simhash_neighbors",
+}
+
+// IPFeatureRefs ip_risk view 全部特征。
+var IPFeatureRefs = []string{
+	"ip_risk:ip_country",
+	"ip_risk:is_proxy",
+	"ip_risk:is_vpn",
+	"ip_risk:asn_score",
+}
+
+// MerchantFeatureRefs merchant_aggregates view 全部特征。
+var MerchantFeatureRefs = []string{
+	"merchant_aggregates:merchant_30d_fraud_rate",
+	"merchant_aggregates:merchant_avg_amount",
+	"merchant_aggregates:merchant_country_mix",
+}
+
+// GetCustomerFeatures 拉 customer entity 默认特征。entityKey "customer_id"。
+func (c *FeastClient) GetCustomerFeatures(ctx context.Context, customerID string) (map[string]float64, error) {
+	return c.getByEntity(ctx, "customer_id", customerID, CustomerFeatureRefs)
+}
+
+// GetDeviceFeatures 拉 device entity 默认特征。entityKey "device_id"。
+func (c *FeastClient) GetDeviceFeatures(ctx context.Context, deviceID string) (map[string]float64, error) {
+	return c.getByEntity(ctx, "device_id", deviceID, DeviceFeatureRefs)
+}
+
+// GetIPFeatures 拉 ip entity 默认特征。
+func (c *FeastClient) GetIPFeatures(ctx context.Context, ip string) (map[string]float64, error) {
+	return c.getByEntity(ctx, "ip", ip, IPFeatureRefs)
+}
+
+// GetMerchantFeatures 拉 merchant entity 默认特征。
+func (c *FeastClient) GetMerchantFeatures(ctx context.Context, merchantID string) (map[string]float64, error) {
+	return c.getByEntity(ctx, "merchant_id", merchantID, MerchantFeatureRefs)
+}
+
+// getByEntity 单 entity 拉 feature 的内部 helper；统一 timeout + entity key 注入。
+// 跟 GetOnlineFeatures 不同——后者硬编 customer_id 字段。
+func (c *FeastClient) getByEntity(ctx context.Context, entityKey, entityVal string, refs []string) (map[string]float64, error) {
+	if c == nil || c.client == nil {
+		return nil, ErrFeastNotEnabled
+	}
+	if entityVal == "" || len(refs) == 0 {
+		return map[string]float64{}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	req := &onlineRequest{
+		FeatureService: c.FeatureService,
+		Project:        c.project,
+		EntityRows:     []map[string]string{{entityKey: entityVal}},
+		FeatureRefs:    refs,
+	}
+	resp, err := c.client.GetOnlineFeatures(ctx, req)
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, ErrFeastTimeout
+		}
+		return nil, fmt.Errorf("feast get(%s=%s): %w", entityKey, entityVal, err)
+	}
+	if len(resp.Values) == 0 {
+		return map[string]float64{}, nil
+	}
+	out := make(map[string]float64, len(resp.FeatureNames))
+	for i, name := range resp.FeatureNames {
+		if i >= len(resp.Values[0]) {
+			continue
+		}
+		short := name
+		for j := 0; j < len(name); j++ {
+			if name[j] == ':' {
+				short = name[j+1:]
+				break
+			}
+		}
+		out[short] = resp.Values[0][i]
+	}
+	return out, nil
+}
