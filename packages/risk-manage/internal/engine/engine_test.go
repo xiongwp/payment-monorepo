@@ -380,3 +380,64 @@ var errBadThreshold = errStr("threshold must be > 0")
 type errStr string
 
 func (e errStr) Error() string { return string(e) }
+
+// ─── Force 短路语义 ─────────────────────────────────────────────────
+// 用途：商户 allowlist / blocklist、country whitelist/blacklist、sanction hit
+// 这类"强决策规则"命中即生效，必须绕过 Radar-style 加权聚合，不被其它 rule
+// 的 score 稀释。
+
+type forceDenyRule struct{}
+
+func (forceDenyRule) ID() string    { return "r_force_deny" }
+func (forceDenyRule) Name() string  { return "force deny" }
+func (forceDenyRule) Type() string  { return "test" }
+func (forceDenyRule) Enabled() bool { return true }
+func (forceDenyRule) Evaluate(_ context.Context, _ *TxnContext) *Hit {
+	return &Hit{RuleID: "r_force_deny", RuleName: "force deny", Decision: Deny, Force: true, Detail: "merchant blocklist"}
+}
+
+type forceAllowRule struct{}
+
+func (forceAllowRule) ID() string    { return "r_force_allow" }
+func (forceAllowRule) Name() string  { return "force allow" }
+func (forceAllowRule) Type() string  { return "test" }
+func (forceAllowRule) Enabled() bool { return true }
+func (forceAllowRule) Evaluate(_ context.Context, _ *TxnContext) *Hit {
+	return &Hit{RuleID: "r_force_allow", RuleName: "force allow", Decision: Allow, Force: true, Detail: "merchant allowlist"}
+}
+
+// TestEngine_ForceDenyShortCircuit: Force=Deny 命中后，verdict 立即 = Deny，
+// 哪怕后面还有 review 规则。后续规则不应被评估（res.Hits 只含 1 条）。
+func TestEngine_ForceDenyShortCircuit(t *testing.T) {
+	eng := New(zap.NewNop())
+	eng.mu.Lock()
+	eng.rules = []Rule{forceDenyRule{}, reviewRule{}}
+	eng.mu.Unlock()
+
+	res := eng.Evaluate(context.Background(), &TxnContext{Amount: 1000})
+	if res.Decision != Deny {
+		t.Fatalf("Force=Deny short-circuit: want Deny got %s", res.Decision)
+	}
+	if len(res.Hits) != 1 || res.Hits[0].RuleID != "r_force_deny" {
+		t.Fatalf("Force should halt evaluation after 1 hit, got %d hits: %+v", len(res.Hits), res.Hits)
+	}
+	if res.RiskScore != 100 {
+		t.Fatalf("Force=Deny should set score=100, got %d", res.RiskScore)
+	}
+}
+
+// TestEngine_ForceAllowOverridesReview: Force=Allow 命中即放行，即便有 review。
+func TestEngine_ForceAllowOverridesReview(t *testing.T) {
+	eng := New(zap.NewNop())
+	eng.mu.Lock()
+	eng.rules = []Rule{forceAllowRule{}, reviewRule{}, alwaysDenyRule{"would deny"}}
+	eng.mu.Unlock()
+
+	res := eng.Evaluate(context.Background(), &TxnContext{Amount: 1000})
+	if res.Decision != Allow {
+		t.Fatalf("Force=Allow short-circuit: want Allow got %s", res.Decision)
+	}
+	if len(res.Hits) != 1 {
+		t.Fatalf("Force=Allow should halt evaluation, got %d hits", len(res.Hits))
+	}
+}

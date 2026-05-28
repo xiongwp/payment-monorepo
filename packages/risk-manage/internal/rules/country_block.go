@@ -78,8 +78,11 @@ func (r *countryBlockRule) Evaluate(_ context.Context, txn *engine.TxnContext) *
 	}
 
 	if blocked {
+		// Force=true: 国家/币种白名单或黑名单属于强策略，命中即生效，
+		// 绕过加权聚合 — 不应被其它"投票型"规则的低 score 稀释成 REVIEW/ALLOW。
 		return &engine.Hit{
 			RuleID: r.id, RuleName: r.name, Decision: engine.Deny,
+			Force:  true,
 			Detail: reason,
 		}
 	}
