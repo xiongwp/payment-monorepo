@@ -57,7 +57,13 @@ services:
       test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      # start_period: 60s 内 healthcheck 失败不计数（Kafka 首次启动要做
+      # leader election + 加载 partition log，常 30-60s 才 ready）
+      start_period: 60s
+      # retries 30 = 5 分钟容忍 — 比老的 100s 宽松 3 倍，避免 cold start
+      # 时 healthcheck 没等到 Kafka ready 就标 unhealthy，导致 depends_on
+      # 链上的 kafka-init 中断启动。
+      retries: 30
 
   # ── Kafka topic 一次性创建 ─────────────────────────────────────
   # 即使 KAFKA_AUTO_CREATE_TOPICS_ENABLE=true，risk-manage 首条 batch 写入时
