@@ -50,6 +50,10 @@ type DecisionAudit struct {
 	MLModelVer string  `json:"ml_model_ver,omitempty"`
 	// EvalDurationMs 端到端引擎执行耗时
 	EvalDurationMs float64 `json:"eval_duration_ms"`
+	// Explain 决策可解释性块（SHAP-style feature contribution + per-rule
+	// contribution）。service.recordAuditWith 后同步填充，失败 → 留 nil，
+	// admin /admin/decisions/{id}/explain 会按需重新算一次。详见 explain.go。
+	Explain *ExplainBlock `json:"explain,omitempty"`
 }
 
 // AuditInput 入参快照子集。**不包含**卡号 / token / passwd 这类敏感字段。

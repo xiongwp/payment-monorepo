@@ -1,0 +1,108 @@
+# ──────────────────────────────────────────────────────────────────────────
+# OIDC + MFA admin SSO 配置示例
+#
+# 把对应 IdP 段贴到主 config.yaml 的 admin 节点下；启动时若
+# admin.oidc.enabled = true，main.go 会用 OIDCMiddleware 替换老的 bearer-token
+# AdminAuthRoles 中间件保护所有 /admin/* 路径。
+#
+# 切回老 bearer 模式只需把 enabled 改 false（authoken 列表仍生效），无需改代码。
+# ──────────────────────────────────────────────────────────────────────────
+
+admin:
+  # 老 bearer token 兜底（OIDC 未启用 / 接入故障期保留运维口）：
+  tokens:
+    - "rsk_admin_dev_only_replace_me"
+  tokens_file: ""        # 或挂载 KMS-decrypted secret 文件
+  tokens_reload: 30s
+
+  oidc:
+    enabled: false       # 主开关：true → /admin/* 走 OIDC + MFA；false → bearer
+
+    # 必填两项：issuer + client_id（risk-manage 是 OIDC RP）
+    # issuer_url 必须等于 IdP 在 ID Token iss claim 里写的值（区分末尾 / ）。
+    issuer_url: "https://idp.example.com"
+    client_id: "risk-admin"
+
+    # MFA 策略：
+    #   mfa.enabled: true   → 写操作（POST/PUT/DELETE）强制 X-Risk-MFA-Code header
+    #   mfa.strict_reads: true → GET 也要 MFA（高安全部署）
+    #   mfa.paths: 列表 → 只这些路径要 MFA，空 = 全部 admin 路径都要
+    mfa:
+      enabled: true
+      strict_reads: false
+      paths:
+        - "/admin/rules/"
+        - "/admin/review/decide"
+        - "/admin/review/decide-bulk"
+        - "/admin/ml/override"
+        - "/admin/chain/"
+
+# ──────────────────────────────────────────────────────────────────────────
+# 示例 A: Authelia (self-hosted, ForwardAuth-friendly)
+# ──────────────────────────────────────────────────────────────────────────
+# admin:
+#   oidc:
+#     enabled: true
+#     issuer_url: "https://auth.internal.corp"
+#     client_id: "risk-manage"
+# Authelia config:
+#   identity_providers.oidc.clients:
+#     - id: risk-manage
+#       secret: '$pbkdf2-sha512$...'         # 仅 ConfidentialClient 用
+#       authorization_policy: two_factor
+#       scopes: [openid, email, profile, groups]
+#       redirect_uris: [https://workbench.corp/oidc/callback]
+#       grant_types: [authorization_code, refresh_token]
+#   admin-web 拿到 id_token 后转发 risk-manage：Authorization: Bearer <id_token>
+
+# ──────────────────────────────────────────────────────────────────────────
+# 示例 B: Keycloak (realm-scoped)
+# ──────────────────────────────────────────────────────────────────────────
+# admin:
+#   oidc:
+#     enabled: true
+#     issuer_url: "https://keycloak.corp/realms/payments"
+#     client_id: "risk-manage"
+# Keycloak Client 设置：
+#   Access Type: confidential
+#   Standard Flow Enabled
+#   Mappers: Group Membership → claim "groups"（risk-manage 用 groups → role 映射）
+#   要让 OIDC group claim 出现，client scope 加 "groups" → built-in mapper。
+
+# ──────────────────────────────────────────────────────────────────────────
+# 示例 C: Google Workspace (Cloud Identity)
+# ──────────────────────────────────────────────────────────────────────────
+# admin:
+#   oidc:
+#     enabled: true
+#     issuer_url: "https://accounts.google.com"
+#     client_id: "1234567890-abc.apps.googleusercontent.com"
+# 限制：
+#   - Google ID Token 不直接带 group claim；需在 admin-web 用 Admin SDK 查用户
+#     group 后塞自定义 claim，或者在 risk-manage 侧维护 sub → role 映射表。
+#   - 域限制必须前置（admin-web hd=corp.com）；OIDC 本身不做 hd 校验。
+
+# ──────────────────────────────────────────────────────────────────────────
+# TOTP MFA 流程文档
+# ──────────────────────────────────────────────────────────────────────────
+#
+# 1) 用户首次访问需要 MFA 的端点：返 403 + WWW-Authenticate: Bearer
+#    error="mfa_required" 提示 admin-web 进入 enroll 流程。
+#
+# 2) admin-web 调 POST /admin/auth/totp/enable（仅 OIDC bearer，无 MFA 头）：
+#    返：{ "secret": "JBSWY3DPEHPK3PXP", "otpauth_uri":
+#         "otpauth://totp/RiskAdmin:alice@x.com?secret=...&issuer=RiskAdmin..." }
+#    前端用 otpauth_uri 渲二维码 → 用户扫码进 Authenticator。
+#
+# 3) 用户输入 6 位 code → admin-web 把 code 放 X-Risk-MFA-Code 头重发原请求：
+#       POST /admin/review/decide
+#       Authorization: Bearer <id_token>
+#       X-Risk-MFA-Code: 123456
+#       Body: {id, action, reason}     ← actor 不再由前端传，服务端从 OIDC sub 拿
+#
+# 4) 服务端用 TOTPVerifier.Verify(claims.sub, code)；±1 step 容忍 + 内存 replay
+#    防同 code 30s 内重放。secret 当前 mem store，生产换 PG (KMS-wrapped column)。
+#
+# 5) Verify 通过 → 注入 Principal{Scope=admin, KeyID=sub, AdminRole=fromGroups}
+#    + ActorInfo{UserID, Email, Name} 到 ctx；review handler 从 ctx 拿 actor 写
+#    audit，前端 r.FormValue("actor") / X-Actor 头被完全忽略。

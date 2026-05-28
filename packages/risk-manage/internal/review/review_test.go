@@ -1,9 +1,12 @@
 package review
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 func mkItem(id string, status Status) Item {
@@ -294,3 +297,230 @@ func TestMemStore_OldestPendingAge_NegativeClock(t *testing.T) {
 
 // 静态接口断言：MemStore 必须实现完整的 Store。改 interface 时编译期失败。
 var _ Store = (*MemStore)(nil)
+
+// ─── ReasonCode validation ────────────────────────────────────────────────
+
+func TestReasonCode_ValidAndList(t *testing.T) {
+	// 列表至少 12 个（fraud_confirmed ... other）
+	codes := ReasonCodes()
+	if len(codes) < 12 {
+		t.Fatalf("expected ≥12 reason codes, got %d", len(codes))
+	}
+	// 双语 label 都非空（i18n 完整性）
+	for _, c := range codes {
+		if c.ZhCN == "" || c.EnUS == "" {
+			t.Fatalf("reason code %s missing label: zh=%q en=%q", c.Code, c.ZhCN, c.EnUS)
+		}
+	}
+	// 校验函数
+	if !ValidReasonCode(string(ReasonFraudConfirmed)) {
+		t.Fatal("fraud_confirmed should be valid")
+	}
+	if ValidReasonCode("not_a_code") {
+		t.Fatal("not_a_code should be invalid")
+	}
+	if ValidReasonCode("") {
+		t.Fatal("empty code should be invalid")
+	}
+}
+
+// ─── DecideWithCode ───────────────────────────────────────────────────────
+
+func TestMemStore_DecideWithCode_Happy(t *testing.T) {
+	s := NewMemStore()
+	s.Push(mkItem("a", ""))
+	it, err := s.DecideWithCode("a", ActionApprove, "alice", string(ReasonFalsePositive), "误杀，应放行")
+	if err != nil {
+		t.Fatalf("expected ok, got %v", err)
+	}
+	if it.Status != StatusApproved {
+		t.Fatalf("expected approved, got %v", it.Status)
+	}
+	if it.ReasonCode != string(ReasonFalsePositive) {
+		t.Fatalf("expected reason_code=false_positive, got %q", it.ReasonCode)
+	}
+	if it.DecideReason != "误杀，应放行" {
+		t.Fatalf("free text not preserved: %q", it.DecideReason)
+	}
+}
+
+func TestMemStore_DecideWithCode_InvalidReason(t *testing.T) {
+	s := NewMemStore()
+	s.Push(mkItem("a", ""))
+	cases := []string{"", "bogus_code", "FRAUD_CONFIRMED" /* 大小写敏感 */}
+	for _, code := range cases {
+		_, err := s.DecideWithCode("a", ActionApprove, "alice", code, "")
+		if !errors.Is(err, ErrInvalidReason) {
+			t.Fatalf("code=%q: expected ErrInvalidReason, got %v", code, err)
+		}
+	}
+	// 没动 state（still pending）
+	if got := s.Get("a"); got.Status != StatusPending {
+		t.Fatalf("state mutated despite reason error: %v", got.Status)
+	}
+}
+
+// ─── Transfer ─────────────────────────────────────────────────────────────
+
+func TestMemStore_Transfer_Happy(t *testing.T) {
+	s := NewMemStore()
+	s.Push(mkItem("a", ""))
+	if _, err := s.Claim("a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.Transfer("a", "alice", "bob", "alice 请假")
+	if err != nil {
+		t.Fatalf("expected ok, got %v", err)
+	}
+	if it.AssignedTo != "bob" {
+		t.Fatalf("expected assigned_to=bob, got %q", it.AssignedTo)
+	}
+	if it.Status != StatusInReview {
+		t.Fatalf("status should stay in_review, got %v", it.Status)
+	}
+	if len(it.TransferHist) != 1 {
+		t.Fatalf("expected 1 transfer log, got %d", len(it.TransferHist))
+	}
+	if it.TransferHist[0].From != "alice" || it.TransferHist[0].To != "bob" {
+		t.Fatalf("transfer log wrong: %+v", it.TransferHist[0])
+	}
+}
+
+func TestMemStore_Transfer_NotAssignee(t *testing.T) {
+	s := NewMemStore()
+	s.Push(mkItem("a", ""))
+	s.Claim("a", "alice")
+	// bob 不是 assignee 尝试改派 → 失败
+	if _, err := s.Transfer("a", "bob", "carol", "x"); !errors.Is(err, ErrNotAssignee) {
+		t.Fatalf("expected ErrNotAssignee, got %v", err)
+	}
+}
+
+func TestMemStore_Transfer_PendingRejected(t *testing.T) {
+	s := NewMemStore()
+	s.Push(mkItem("a", "")) // 没人 claim
+	if _, err := s.Transfer("a", "alice", "bob", "x"); !errors.Is(err, ErrNotPending) {
+		t.Fatalf("expected ErrNotPending on pending case, got %v", err)
+	}
+}
+
+// ─── EscalateTo (L1 → L2) ─────────────────────────────────────────────────
+
+func TestMemStore_EscalateTo_L1ToL2(t *testing.T) {
+	s := NewMemStore()
+	s.Push(mkItem("a", ""))
+	s.Claim("a", "alice")
+	it, err := s.EscalateTo("a", 2, "alice", "需要 senior review", EscalateTriggerManual)
+	if err != nil {
+		t.Fatalf("expected ok, got %v", err)
+	}
+	if it.Level != 2 {
+		t.Fatalf("expected level=2, got %d", it.Level)
+	}
+	if it.Status != StatusEscalated {
+		t.Fatalf("expected escalated, got %v", it.Status)
+	}
+	if it.AssignedTo != "" {
+		t.Fatalf("assigned_to should clear, got %q", it.AssignedTo)
+	}
+	if len(it.EscalateHist) != 1 {
+		t.Fatalf("expected 1 escalate log, got %d", len(it.EscalateHist))
+	}
+	h := it.EscalateHist[0]
+	if h.FromLevel != 1 || h.ToLevel != 2 || h.Trigger != EscalateTriggerManual || h.Actor != "alice" {
+		t.Fatalf("escalate log wrong: %+v", h)
+	}
+}
+
+func TestMemStore_EscalateTo_InvalidLevel(t *testing.T) {
+	s := NewMemStore()
+	s.Push(mkItem("a", ""))
+	// 只支持 L2；L3 报错
+	if _, err := s.EscalateTo("a", 3, "alice", "x", EscalateTriggerManual); !errors.Is(err, ErrInvalidLevel) {
+		t.Fatalf("expected ErrInvalidLevel, got %v", err)
+	}
+}
+
+func TestMemStore_EscalateTo_AlreadyAtLevel(t *testing.T) {
+	s := NewMemStore()
+	s.Push(mkItem("a", ""))
+	s.EscalateTo("a", 2, "alice", "first", EscalateTriggerManual)
+	// 再升一次 → 已经 L2 → ErrAlreadyAtLevel
+	if _, err := s.EscalateTo("a", 2, "alice", "again", EscalateTriggerManual); !errors.Is(err, ErrAlreadyAtLevel) {
+		t.Fatalf("expected ErrAlreadyAtLevel, got %v", err)
+	}
+}
+
+// ─── AutoEscalateOverdue (SLA timeout) ────────────────────────────────────
+
+func TestMemStore_AutoEscalateOverdue(t *testing.T) {
+	s := NewMemStore()
+	s.SetDefaultSLA(20 * time.Millisecond)
+	// 三条 case：a/b 会过期，c push 完直接 decide 不参与
+	s.Push(mkItem("a", ""))
+	s.Push(mkItem("b", ""))
+	s.Push(mkItem("c", ""))
+	s.DecideWithCode("c", ActionApprove, "alice", string(ReasonFalsePositive), "")
+	// 等过期
+	time.Sleep(30 * time.Millisecond)
+
+	n, err := s.AutoEscalateOverdue(context.Background(), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 auto-escalated, got %d", n)
+	}
+	a := s.Get("a")
+	if a.Level != 2 || a.Status != StatusEscalated || !a.SLAEscalated {
+		t.Fatalf("case a not properly auto-escalated: %+v", a)
+	}
+	if len(a.EscalateHist) != 1 || a.EscalateHist[0].Trigger != EscalateTriggerSLATimeout {
+		t.Fatalf("expected sla_timeout trigger, got %+v", a.EscalateHist)
+	}
+	// c 已 decided，不受影响
+	c := s.Get("c")
+	if c.Level == 2 || c.SLAEscalated {
+		t.Fatalf("decided case c shouldn't auto-escalate: %+v", c)
+	}
+
+	// 再跑一次：所有 overdue 都 SLAEscalated=true → 跳过
+	n2, _ := s.AutoEscalateOverdue(context.Background(), time.Now().UTC())
+	if n2 != 0 {
+		t.Fatalf("second pass should escalate 0 (already escalated), got %d", n2)
+	}
+}
+
+func TestMemStore_AutoEscalateOverdue_RespectsCtx(t *testing.T) {
+	s := NewMemStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 立刻取消
+	// 即使 ctx 取消，没有候选 case 时返 0 不报错（候选扫描在 ctx 检查前）
+	n, err := s.AutoEscalateOverdue(ctx, time.Now())
+	if n != 0 {
+		t.Fatalf("expected 0 with cancelled ctx + empty store, got %d", n)
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("unexpected err: %v", err)
+	}
+}
+
+// ─── 集成：sla_escalator runOnce ───────────────────────────────────────────
+
+func TestSLAEscalator_RunOnce_EscalatesOverdueCase(t *testing.T) {
+	s := NewMemStore()
+	s.SetDefaultSLA(10 * time.Millisecond)
+	s.Push(mkItem("a", ""))
+	time.Sleep(15 * time.Millisecond)
+
+	// runOnce 是包内函数；直接调，不需要起 goroutine。
+	ensureMetricsRegistered()
+	runOnce(context.Background(), s, time.Now().UTC(), zap.NewNop())
+
+	got := s.Get("a")
+	if got.Level != 2 || !got.SLAEscalated {
+		t.Fatalf("expected runOnce to escalate a to L2, got level=%d sla_escalated=%v",
+			got.Level, got.SLAEscalated)
+	}
+}
+

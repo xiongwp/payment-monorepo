@@ -16,6 +16,7 @@
 package review
 
 import (
+	"context"
 	"errors"
 	"sort"
 	"sync"
@@ -67,7 +68,49 @@ type Item struct {
 	DecidedAt       *time.Time `json:"decided_at,omitempty"`
 	DecidedBy       string     `json:"decided_by,omitempty"`
 	DecideReason    string     `json:"decide_reason,omitempty"`
-	Notes           []Note     `json:"notes,omitempty"`
+	// ReasonCode 结构化决议 enum；见 reason_code.go。Decide 后写入。
+	// 旧 case 历史回填值可能为空 → 前端展示时 fallback 到 DecideReason free text。
+	ReasonCode string `json:"reason_code,omitempty"`
+	Notes      []Note `json:"notes,omitempty"`
+
+	// Level 当前 review 级别：1 = L1 一线，2 = L2 高级。默认 1。
+	// 升级走 EscalateTo（手动 or SLA 自动）。区别于旧 EscalateLevel：
+	//   EscalateLevel = 累计升级次数（兼容老代码 / chain audit）
+	//   Level         = 当前应该由谁审（路由依据；L2 队列 = level=2 且 status=pending|escalated）
+	Level int `json:"level,omitempty"`
+
+	// TransferHist 转接历史（A 分析师 → B 分析师，level 不变）。
+	TransferHist []TransferLog `json:"transfer_hist,omitempty"`
+	// EscalateHist 升级历史（L1 → L2），含触发原因（manual / sla_timeout）。
+	EscalateHist []EscalateLog `json:"escalate_hist,omitempty"`
+	// SLAEscalated 标记此 case 已被 SLA 自动升级，避免重复触发（即使 deadline 持续过）。
+	SLAEscalated bool `json:"sla_escalated,omitempty"`
+}
+
+// TransferLog 一条 case 转接记录（不改 level）。
+type TransferLog struct {
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	Reason    string    `json:"reason,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// EscalateTrigger 触发升级的来源。
+type EscalateTrigger string
+
+const (
+	EscalateTriggerManual     EscalateTrigger = "manual"      // 分析师主动升
+	EscalateTriggerSLATimeout EscalateTrigger = "sla_timeout" // SLA 自动升
+)
+
+// EscalateLog 一条 case 升级记录（L1 → L2）。
+type EscalateLog struct {
+	FromLevel int             `json:"from_level"`
+	ToLevel   int             `json:"to_level"`
+	Trigger   EscalateTrigger `json:"trigger"`
+	Actor     string          `json:"actor,omitempty"` // manual 时是 analyst id；sla_timeout 时为 "system"
+	Reason    string          `json:"reason,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 // Note case-level 备注。analyst 协作 / 调查留痕。
@@ -84,7 +127,13 @@ type Store interface {
 	Push(item Item) error
 	// Decide 把 pending / in_review / escalated 改成 approved / rejected。
 	// 已 decided / 不存在 → ErrNotPending。
+	//
+	// 注意：新代码请优先用 DecideWithCode（带结构化 reason_code）。
+	// Decide 仍保留是为了向后兼容（chain.go / 历史调用方）。
 	Decide(id string, action Action, actor, reason string) (*Item, error)
+	// DecideWithCode 同 Decide 但接受结构化 ReasonCode。code 非法 → ErrInvalidReason。
+	// 是 v2 推荐路径；HTTP handler 走这条。
+	DecideWithCode(id string, action Action, actor, reasonCode, reason string) (*Item, error)
 	// List 按 status 过滤；status == "" 返全量。limit / offset 给 admin 分页。
 	List(status Status, limit, offset int) []*Item
 	// Get 单条详情。
@@ -109,13 +158,32 @@ type Store interface {
 	ListByAssignee(actor string, statuses []Status, limit int) []*Item
 	// OverdueSLA 已过 SLADeadline 仍未决议的 case。给监控 alert 用。
 	OverdueSLA(now time.Time, limit int) []*Item
+	// Transfer 把 case 从 fromActor 转给 toActor（不改 level / status，等于
+	// 重新分派）。fromActor 必须当前持有该 case；状态机：in_review → in_review。
+	// 追加一条 TransferLog；旧 AssignedAt 重置为 now。
+	Transfer(caseID, fromActor, toActor, reason string) (*Item, error)
+	// EscalateTo 显式把 case 升到 targetLevel（必须 > 当前 Level）；
+	// trigger 区分 manual / sla_timeout；reason 留痕。L2 升级后 AssignedTo
+	// 清空，等待 L2 队列里的资深 analyst Claim。
+	//
+	// 业务约束（v1）：只支持 L1 → L2 (targetLevel == 2)。targetLevel > 2 报错。
+	EscalateTo(caseID string, targetLevel int, actor, reason string, trigger EscalateTrigger) (*Item, error)
+	// AutoEscalateOverdue 扫一遍所有 status ∈ {pending, in_review} 且 level==1
+	// 且 SLADeadline < now 的 case，把它们升到 L2（trigger=sla_timeout）。
+	// 返回被升级的 case 数。已被自动升过的（SLAEscalated=true）跳过避免重复。
+	//
+	// 由 sla_escalator goroutine 定时调用；调用方 ctx 取消即返。
+	AutoEscalateOverdue(ctx context.Context, now time.Time) (escalated int, err error)
 }
 
 // 状态机 / 抢占错误。
 var (
-	ErrNotPending     = errors.New("review: item not in modifiable state")
-	ErrAlreadyClaimed = errors.New("review: already claimed by another actor")
-	ErrNotAssignee    = errors.New("review: caller is not the current assignee")
+	ErrNotPending      = errors.New("review: item not in modifiable state")
+	ErrAlreadyClaimed  = errors.New("review: already claimed by another actor")
+	ErrNotAssignee     = errors.New("review: caller is not the current assignee")
+	ErrInvalidReason   = errors.New("review: invalid or missing reason_code")
+	ErrInvalidLevel    = errors.New("review: invalid target level (only L1→L2 supported)")
+	ErrAlreadyAtLevel  = errors.New("review: case already at or above target level")
 )
 
 // MemStore 内存版。线程安全；O(N) list（N 是历史项数；生产用 DB index）。
@@ -145,6 +213,9 @@ func (m *MemStore) Push(item Item) error {
 	}
 	if item.Status == "" {
 		item.Status = StatusPending
+	}
+	if item.Level <= 0 {
+		item.Level = 1 // 新 case 默认 L1
 	}
 	if item.CreatedAt.IsZero() {
 		item.CreatedAt = time.Now().UTC()
@@ -190,6 +261,42 @@ func (m *MemStore) Decide(id string, action Action, actor, reason string) (*Item
 	it.DecidedAt = &now
 	it.DecidedBy = actor
 	it.DecideReason = reason
+	cp := *it
+	return &cp, nil
+}
+
+// DecideWithCode 是 Decide 的 v2 入口：必须传合法的结构化 reasonCode；
+// reason 是可选的 free-text 详述。code 非法 → ErrInvalidReason。
+//
+// 实现复用 Decide 的状态机，校验通过后顺带写 it.ReasonCode。
+func (m *MemStore) DecideWithCode(id string, action Action, actor, reasonCode, reason string) (*Item, error) {
+	if !ValidReasonCode(reasonCode) {
+		return nil, ErrInvalidReason
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	it, ok := m.items[id]
+	if !ok {
+		return nil, ErrNotPending
+	}
+	switch it.Status {
+	case StatusPending, StatusInReview, StatusEscalated:
+	default:
+		return nil, ErrNotPending
+	}
+	switch action {
+	case ActionApprove:
+		it.Status = StatusApproved
+	case ActionReject:
+		it.Status = StatusRejected
+	default:
+		return nil, errors.New("review: invalid action")
+	}
+	now := time.Now().UTC()
+	it.DecidedAt = &now
+	it.DecidedBy = actor
+	it.DecideReason = reason
+	it.ReasonCode = reasonCode
 	cp := *it
 	return &cp, nil
 }
@@ -267,6 +374,167 @@ func (m *MemStore) Escalate(id, actor, reason string) (*Item, error) {
 	})
 	cp := *it
 	return &cp, nil
+}
+
+// Transfer 把 case 从 fromActor 重新分派给 toActor。
+// 约束：
+//   - case 必须存在
+//   - 当前 status == in_review 才允许 transfer（pending 没人持有；escalated 等待上级 claim）
+//   - fromActor == AssignedTo（防越权改派）
+//   - toActor 非空、!= fromActor
+//
+// 状态机：(in_review, A) → (in_review, B)。Level 不变。追加 TransferLog。
+// AssignedAt 重置为 now（让 toActor 的 SLA 计算从转接点起算 — 但 SLADeadline 不变）。
+func (m *MemStore) Transfer(caseID, fromActor, toActor, reason string) (*Item, error) {
+	if toActor == "" || fromActor == "" {
+		return nil, errors.New("review: from + to actor required")
+	}
+	if toActor == fromActor {
+		return nil, errors.New("review: cannot transfer to self")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	it, ok := m.items[caseID]
+	if !ok {
+		return nil, ErrNotPending
+	}
+	if it.Status != StatusInReview {
+		return nil, ErrNotPending
+	}
+	if it.AssignedTo != fromActor {
+		return nil, ErrNotAssignee
+	}
+	now := time.Now().UTC()
+	it.TransferHist = append(it.TransferHist, TransferLog{
+		From: fromActor, To: toActor, Reason: reason, CreatedAt: now,
+	})
+	it.AssignedTo = toActor
+	it.AssignedAt = &now
+	cp := *it
+	return &cp, nil
+}
+
+// EscalateTo L1 → L2 显式升级。区别于旧 Escalate(actor, reason)：
+//   - 旧 Escalate：状态 in_review → escalated；不变 Level（实际就是 free-form bump
+//     EscalateLevel 计数器）。等于"我审不了，丢回队列让别人抢"。
+//   - 新 EscalateTo：明确改 Level（路由依据），追加 EscalateHist 含 trigger。
+//
+// 业务约束（v1）：targetLevel 只支持 2。targetLevel > 2 → ErrInvalidLevel。
+//
+// 状态机：(level=1, status ∈ {pending, in_review}) → (level=2, status=escalated, assigned_to="")
+// trigger=sla_timeout 时同时设 SLAEscalated=true，防 sla_escalator 反复触发。
+func (m *MemStore) EscalateTo(caseID string, targetLevel int, actor, reason string, trigger EscalateTrigger) (*Item, error) {
+	if targetLevel != 2 {
+		return nil, ErrInvalidLevel
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	it, ok := m.items[caseID]
+	if !ok {
+		return nil, ErrNotPending
+	}
+	// 已决议的不能再升级
+	if it.Status == StatusApproved || it.Status == StatusRejected {
+		return nil, ErrNotPending
+	}
+	curLevel := it.Level
+	if curLevel <= 0 {
+		curLevel = 1 // 历史 case 兼容
+	}
+	if curLevel >= targetLevel {
+		return nil, ErrAlreadyAtLevel
+	}
+	now := time.Now().UTC()
+	it.EscalateHist = append(it.EscalateHist, EscalateLog{
+		FromLevel: curLevel, ToLevel: targetLevel,
+		Trigger: trigger, Actor: actor, Reason: reason, CreatedAt: now,
+	})
+	it.Level = targetLevel
+	it.Status = StatusEscalated
+	it.EscalateLevel++ // 兼容旧字段（chain audit / 老 dashboard）
+	it.AssignedTo = "" // 等待 L2 claim
+	it.AssignedAt = nil
+	if trigger == EscalateTriggerSLATimeout {
+		it.SLAEscalated = true
+	}
+	// 加一条 note 留协作可读痕迹（除了结构化 EscalateHist）
+	it.Notes = append(it.Notes, Note{
+		Actor:     actorOrSystem(actor),
+		Body:      "ESCALATED L" + itoaSimple(curLevel) + "→L" + itoaSimple(targetLevel) + " [" + string(trigger) + "]: " + reason,
+		CreatedAt: now,
+	})
+	cp := *it
+	return &cp, nil
+}
+
+// AutoEscalateOverdue 扫一遍所有 level=1 + status ∈ {pending, in_review} + SLA 已过期 +
+// SLAEscalated=false 的 case，自动升 L2。
+//
+// 复杂度 O(N)；MemStore 适用百级 N，PG 实现走索引可上千。
+// ctx 取消时尽量在两次升级之间停下；不强求精确（已升的不回滚）。
+func (m *MemStore) AutoEscalateOverdue(ctx context.Context, now time.Time) (int, error) {
+	// 第一步：snapshot 候选 id（持读锁），第二步：单个升级（持写锁）。
+	// 避免持写锁太久阻塞 claim / decide。
+	m.mu.RLock()
+	candidates := make([]string, 0, 16)
+	for id, it := range m.items {
+		if it.SLAEscalated {
+			continue
+		}
+		if it.Level > 1 { // 已经 L2 不动
+			continue
+		}
+		if it.Status != StatusPending && it.Status != StatusInReview {
+			continue
+		}
+		if it.SLADeadline.IsZero() || !now.After(it.SLADeadline) {
+			continue
+		}
+		candidates = append(candidates, id)
+	}
+	m.mu.RUnlock()
+
+	count := 0
+	for _, id := range candidates {
+		if err := ctx.Err(); err != nil {
+			return count, err
+		}
+		if _, err := m.EscalateTo(id, 2, "system", "sla_timeout", EscalateTriggerSLATimeout); err == nil {
+			count++
+		}
+		// 单条失败不影响其它（如已被人工 decide 掉了 → ErrNotPending，跳过）。
+	}
+	return count, nil
+}
+
+// itoaSimple 小整数 → 字符串，避免引入 strconv（review.go 已轻量）。
+func itoaSimple(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [10]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+func actorOrSystem(a string) string {
+	if a == "" {
+		return "system"
+	}
+	return a
 }
 
 func (m *MemStore) AddNote(id, actor, body string) (*Item, error) {

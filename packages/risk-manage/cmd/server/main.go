@@ -86,6 +86,7 @@ func main() {
 			newLinkStore,
 			newIPIntel,
 			newMLScore,
+			newMLExplainer,
 			newABTracker,
 			newMLOverride,
 			newExtSignalCache,
@@ -335,6 +336,29 @@ func newMLScore(v *viper.Viper) mlscore.Service {
 		champName = "logistic-v1"
 	}
 	return mlscore.NewChampionChallenger(champName, champion)
+}
+
+// newMLExplainer 决策可解释性 SHAP-style 解释器。
+//
+// 选择策略：
+//   - mlscore.onnx.model_path 配置非空 → 尝试 OnnxShapExplainer（同名 .shap.json）
+//   - 加载失败 / 默认 build → fallback LogisticExplainer（不依赖外部文件）
+//
+// 没引新 Go 依赖；纯文件 IO + map 算术。详见 internal/mlscore/EXPLAINABILITY.md。
+func newMLExplainer(v *viper.Viper, logger *zap.Logger) mlscore.Explainer {
+	modelPath := v.GetString("mlscore.onnx.model_path")
+	if modelPath != "" {
+		e, err := mlscore.NewOnnxShapExplainer(modelPath)
+		if err == nil {
+			logger.Info("ml explainer: OnnxShapExplainer loaded",
+				zap.String("model_path", modelPath))
+			return e
+		}
+		logger.Warn("ml explainer: OnnxShapExplainer load failed, falling back to LogisticExplainer",
+			zap.String("model_path", modelPath),
+			zap.Error(err))
+	}
+	return mlscore.NewLogisticExplainer()
 }
 
 // newMLOverride provider：运营手动 ML 降级开关。零值 = 正常运行；
@@ -1277,6 +1301,7 @@ func startMetricsHTTP(
 	fbRec feedback.Recorder,
 	mlList merchantlist.Service,
 	mlSvc mlscore.Service,
+	mlExplainer mlscore.Explainer,
 	wh *webhook.Publisher,
 	mlDrift *mlscore.DriftMonitor,
 	abTracker *mlscore.ABTracker,
@@ -1353,6 +1378,7 @@ func startMetricsHTTP(
 			// 规则版本化 endpoint（list / get / rollback / diff）
 			registerRuleVersionsHandlers(mux, eng, ruleAudit, logger)
 			registerExplainHandler(mux, eng, sink, logger)
+			registerDecisionExplainHandler(mux, sink, mlExplainer, logger)
 			registerAuditSearchHandler(mux, sink, logger)
 			registerAuditChainVerifyHandler(mux, sink, chains, logger)
 			// 自适应并发限流 admin endpoints（GET / POST /admin/reliability/limits/*）
@@ -1468,17 +1494,60 @@ func startMetricsHTTP(
 			}, logger)
 		}
 	}
-	// Admin auth：根据 config 选 token 源
-	//   admin.tokens_file 非空 → 文件 hot-reload（生产推荐：mount KMS-decrypted secret）
-	//   否则 admin.tokens 列表 → 静态启动期固定（dev / 单测）
-	//   两者都空 → middleware nil，admin 端点完全放行（dev 默认）
+	// Admin auth：选择 OIDC + MFA 或老 bearer token 模式。
+	//   admin.oidc.enabled = true → OIDCMiddleware（CC6.1 合规：SSO + TOTP MFA）
+	//   admin.tokens_file 非空      → 文件 hot-reload（生产推荐：mount KMS-decrypted secret）
+	//   否则 admin.tokens 列表      → 静态启动期固定（dev / 单测）
+	//   全空 → middleware nil，admin 端点完全放行（dev 默认）
+	//
+	// OIDC discovery 失败时退化回 bearer fallback 而非 panic（IdP 抖动不应影响
+	// 启动；oncall 通过 metrics 看到 oidc_init_failed = 1）。
 	var adminAuth func(http.Handler) http.Handler
-	if path := v.GetString("admin.tokens_file"); path != "" {
-		reload := v.GetDuration("admin.tokens_reload")
-		src := metrics.NewFileTokenSource(path, reload, logger)
-		adminAuth = metrics.AdminAuthFromSource(src)
-	} else if toks := v.GetStringSlice("admin.tokens"); len(toks) > 0 {
-		adminAuth = metrics.AdminAuthFromSource(metrics.NewStaticTokenSource(toks))
+	var totpVerifier *auth.TOTPVerifier
+	if v.GetBool("admin.oidc.enabled") {
+		issuer := v.GetString("admin.oidc.issuer_url")
+		clientID := v.GetString("admin.oidc.client_id")
+		provider, err := auth.NewOIDCProvider(context.Background(), issuer, clientID)
+		if err != nil {
+			logger.Error("oidc init failed; falling back to bearer tokens",
+				zap.String("issuer", issuer), zap.Error(err))
+		} else {
+			if v.GetBool("admin.oidc.mfa.enabled") {
+				totpVerifier = auth.NewTOTPVerifier()
+			}
+			opts := auth.MFAOptions{
+				PathPrefixes: v.GetStringSlice("admin.oidc.mfa.paths"),
+				StrictReads:  v.GetBool("admin.oidc.mfa.strict_reads"),
+			}
+			adminAuth = auth.OIDCMiddleware(provider, totpVerifier, opts)
+			logger.Info("oidc admin auth enabled",
+				zap.String("issuer", issuer),
+				zap.Bool("mfa", totpVerifier != nil))
+		}
+	}
+	if adminAuth == nil {
+		if path := v.GetString("admin.tokens_file"); path != "" {
+			reload := v.GetDuration("admin.tokens_reload")
+			src := metrics.NewFileTokenSource(path, reload, logger)
+			adminAuth = metrics.AdminAuthFromSource(src)
+		} else if toks := v.GetStringSlice("admin.tokens"); len(toks) > 0 {
+			adminAuth = metrics.AdminAuthFromSource(metrics.NewStaticTokenSource(toks))
+		}
+	}
+	// 把 POST /admin/auth/totp/enable 挂到 admin mux（仅 OIDC + MFA 启用时）。
+	// 包到 sessionReg 链：原 reg 先跑，本闭包再补 totp enable endpoint。
+	if totpVerifier != nil {
+		issuer := v.GetString("admin.oidc.totp_issuer")
+		if issuer == "" {
+			issuer = "RiskAdmin"
+		}
+		prevReg := sessionReg
+		sessionReg = func(mux *http.ServeMux) {
+			if prevReg != nil {
+				prevReg(mux)
+			}
+			auth.RegisterTOTPEnableHandler(mux, totpVerifier, issuer)
+		}
 	}
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
@@ -2173,6 +2242,115 @@ func registerExplainHandler(mux *http.ServeMux, eng *engine.Engine, sink audit.S
 			"input": found.Input,
 		})
 	})
+}
+
+// registerDecisionExplainHandler  GET /admin/decisions/{decision_id}/explain
+//
+// 返一笔决策的 ML feature contribution + rule contribution。
+//
+// 路径风格：RESTful path param 而非 query，因为这是"看一个具体 decision
+// 的细节"语义（跟 /admin/audit/decisions 列表对偶）。
+//
+// 处理流程：
+//  1. 从 audit MemSink 按 decision_id 找记录
+//  2. 如果 audit.Explain 已存（service 同步落了）→ 直接返
+//  3. 否则用 explainer 现算一次（按 audit 里的 Input 重建 Features）
+//
+// 给运营答疑用 — 商户投诉一笔被 DENY，运营拉这个端点看 top contributors。
+func registerDecisionExplainHandler(mux *http.ServeMux, sink audit.Sink, explainer mlscore.Explainer, logger *zap.Logger) {
+	mem := findMemSink(sink)
+	mux.HandleFunc("/admin/decisions/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		// 解析 /admin/decisions/{id}/explain
+		path := strings.TrimPrefix(r.URL.Path, "/admin/decisions/")
+		parts := strings.Split(path, "/")
+		if len(parts) != 2 || parts[1] != "explain" || parts[0] == "" {
+			http.Error(w, `{"error":"path must be /admin/decisions/{id}/explain"}`, http.StatusNotFound)
+			return
+		}
+		decisionID := parts[0]
+		if mem == nil {
+			http.Error(w, `{"error":"audit MemSink not configured"}`, http.StatusServiceUnavailable)
+			return
+		}
+		found := mem.LookupByDecisionID(decisionID)
+		if found == nil {
+			http.Error(w, `{"error":"decision not found in audit ring"}`, http.StatusNotFound)
+			return
+		}
+		// 已经存了就直接返；老 audit 行没存 → 现算（按 Input 重建 Features）
+		var result *mlscore.ExplainResult
+		if found.Explain != nil && found.Explain.Generated {
+			result = &mlscore.ExplainResult{
+				BaseValue:        found.Explain.MLBaseValue,
+				FinalScore:       found.Explain.MLFinalScore,
+				AllContributions: found.Explain.MLAllContributions,
+				ModelVersion:     found.Explain.MLModelVersion,
+			}
+			for _, c := range found.Explain.MLTopContributors {
+				result.TopContributors = append(result.TopContributors, mlscore.FeatureContribution{
+					Feature:      c.Feature,
+					Value:        c.Value,
+					Contribution: c.Contribution,
+					Direction:    c.Direction,
+				})
+			}
+		} else {
+			topK := 10
+			if v := r.URL.Query().Get("top_k"); v != "" {
+				if n, err := strconvAtoi(v); err == nil && n > 0 {
+					topK = n
+				}
+			}
+			// 按 audit Input 重建一个最小 Features — 旧 audit 行不一定有
+			// 完整 fingerprint / behavior 信号，重算结果可能跟原决策略有差异。
+			feats := mlscore.Features{
+				MerchantID:    found.Input.MerchantID,
+				CustomerID:    found.Input.CustomerID,
+				Amount:        found.Input.Amount,
+				Currency:      found.Input.Currency,
+				PaymentMethod: found.Input.PaymentMethod,
+				Country:       found.Input.Country,
+				Extra:         found.Input.Metadata,
+			}
+			er, err := explainer.Explain(r.Context(), feats, topK)
+			if err != nil {
+				logger.Warn("on-demand explain failed",
+					zap.String("decision_id", decisionID),
+					zap.Error(err))
+				http.Error(w, `{"error":"explain failed: `+err.Error()+`"}`, http.StatusInternalServerError)
+				return
+			}
+			result = er
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"decision_id":        decisionID,
+			"verdict":            found.Verdict,
+			"risk_score":         found.RiskScore,
+			"ml_model_ver":       found.MLModelVer,
+			"explain":            result,
+			"rule_contributions": ruleContributionsFromAudit(found),
+			"occurred_at":        found.OccurredAt,
+		})
+	})
+	logger.Info("decision explain handler registered at /admin/decisions/{id}/explain")
+}
+
+// ruleContributionsFromAudit 把 audit Hits / ShadowHits 拼成 RuleContribution 列表。
+// 优先用已落库的 audit.Explain.RuleContributions（service 同步填的，weight 准确），
+// 没存的话从 Hits / ShadowHits 推导，weight / score_delta 留空（best-effort）。
+func ruleContributionsFromAudit(a *audit.DecisionAudit) []audit.RuleContribution {
+	if a == nil {
+		return nil
+	}
+	if a.Explain != nil && len(a.Explain.RuleContributions) > 0 {
+		return a.Explain.RuleContributions
+	}
+	return audit.BuildRuleContributions(a.Hits, a.ShadowHits, nil, nil)
 }
 
 // registerDriftHandlers admin 端点：
