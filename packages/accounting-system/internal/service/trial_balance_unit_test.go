@@ -230,6 +230,58 @@ func TestRunTrialBalance_EquationWithRevenueAndExpense(t *testing.T) {
 	assert.Equal(t, int64(0), result.EquationDiff)
 }
 
+// ─── RunTrialBalance – business_type 维度 ─────────────────────────────────────
+// 验证同 (category, type) 但不同 business_type 的两条行不会被合并:
+// 分类明细表必须按业务类型摊开,跟 live 同维度。
+func TestRunTrialBalance_SplitByBusinessType(t *testing.T) {
+	repo := &mockTrialBalanceRepo{
+		rows: map[int][]repository.ShardTrialBalanceRow{
+			0: {
+				// 同样是 ASSET × USER,但 business_type 不同 — 应该出两行 summary。
+				{
+					AccountCategory: model.AccountCategoryAsset, AccountType: model.AccountTypeUser,
+					AccountBusinessType: 1, AccountCount: 3,
+					SumBeginning: 0, SumEnding: 30000, SumDebit: 30000, SumCredit: 0,
+				},
+				{
+					AccountCategory: model.AccountCategoryAsset, AccountType: model.AccountTypeUser,
+					AccountBusinessType: 5, AccountCount: 2,
+					SumBeginning: 0, SumEnding: 20000, SumDebit: 20000, SumCredit: 0,
+				},
+			},
+			1: {
+				// 同分片同 (category,type,biz) 跨分片应该 SUM 合并 — 验证 key 一致时聚合。
+				{
+					AccountCategory: model.AccountCategoryAsset, AccountType: model.AccountTypeUser,
+					AccountBusinessType: 1, AccountCount: 2,
+					SumBeginning: 0, SumEnding: 20000, SumDebit: 20000, SumCredit: 0,
+				},
+			},
+		},
+		errors: map[int]error{},
+	}
+
+	svc := newTrialBalanceSvc(repo)
+	result, err := svc.RunTrialBalanceByCurrency(context.Background(), "2024-01-01", "PHP", 0)
+	require.NoError(t, err)
+
+	// 两行 summary:biz_type=1 (跨分片合并) 与 biz_type=5。
+	require.Len(t, result.Summaries, 2)
+
+	// 按 (cat, type, biz) 升序:都是 ASSET/USER,所以按 biz 升 -> 1 在前,5 在后。
+	biz1 := result.Summaries[0]
+	assert.Equal(t, 1, biz1.BusinessType)
+	assert.Equal(t, "category_type_business", biz1.Level)
+	assert.Equal(t, int64(5), biz1.AccountCount)   // 3 + 2 跨分片合并
+	assert.Equal(t, int64(50000), biz1.SumEnding)  // 30000 + 20000
+	assert.Equal(t, int64(50000), biz1.SumDebit)
+
+	biz5 := result.Summaries[1]
+	assert.Equal(t, 5, biz5.BusinessType)
+	assert.Equal(t, int64(2), biz5.AccountCount)
+	assert.Equal(t, int64(20000), biz5.SumEnding)
+}
+
 // ─── RunTrialBalance – empty shards ───────────────────────────────────────────
 
 func TestRunTrialBalance_EmptyData(t *testing.T) {

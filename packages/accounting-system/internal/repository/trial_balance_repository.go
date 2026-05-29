@@ -137,11 +137,15 @@ func (r *trialBalanceRepository) QueryShardSummaryByCurrency(ctx context.Context
 		args = append(args, currency)
 	}
 
+	// 三层 GROUP BY (category, type, business_type)，跟 live 试算保持同维度 —— UI 上
+	// 「分类明细」需要按业务类型摊开。account.account_business_type 不影响 snapshot
+	// 的金额（仍是该账户的真实 ending/debit/credit），只是多分一层 group key。
 	//nolint:gosec // table names derived from controlled integer indices, not user input.
 	query := fmt.Sprintf(`
 			SELECT
 				a.account_category,
 				a.account_type,
+				a.account_business_type,
 				COUNT(*)                 AS account_count,
 				SUM(s.beginning_balance) AS sum_beginning,
 				SUM(s.ending_balance)    AS sum_ending,
@@ -150,7 +154,7 @@ func (r *trialBalanceRepository) QueryShardSummaryByCurrency(ctx context.Context
 			FROM %s s
 			INNER JOIN %s a ON s.account_no = a.account_no
 			WHERE %s
-			GROUP BY a.account_category, a.account_type
+			GROUP BY a.account_category, a.account_type, a.account_business_type
 		`, snapshotTable, accountTable, strings.Join(where, " AND "))
 
 	var rows []ShardTrialBalanceRow

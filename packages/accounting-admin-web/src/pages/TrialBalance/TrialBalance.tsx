@@ -19,7 +19,6 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   ReloadOutlined,
-  ThunderboltOutlined,
   DownloadOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
@@ -29,7 +28,6 @@ import dayjs from 'dayjs'
 import {
   runTrialBalance,
   listSnapshotDates,
-  runLiveTrialBalance,
   drilldownTrialBalance,
   exportTrialBalanceURL,
 } from '../../api/accounting'
@@ -61,9 +59,6 @@ export default function TrialBalance() {
   const [error, setError] = useState<string | null>(null)
   const [snapshotDates, setSnapshotDates] = useState<string[]>([])
   const [datesLoading, setDatesLoading] = useState(false)
-  // 区分当前展示的是「实时」还是「快照」试算结果。
-  const [isLive, setIsLive] = useState(false)
-  const [liveLoading, setLiveLoading] = useState(false)
   // 下钻抽屉状态
   const [drilldownOpen, setDrilldownOpen] = useState(false)
   const [drilldownLoading, setDrilldownLoading] = useState(false)
@@ -95,7 +90,6 @@ export default function TrialBalance() {
     setLoading(true)
     setError(null)
     setResult(null)
-    setIsLive(false)
     // sync picker to the date being run
     if (!selectedDate || selectedDate.format('YYYY-MM-DD') !== date) {
       setSelectedDate(dayjs(date))
@@ -124,42 +118,6 @@ export default function TrialBalance() {
     }
   }
 
-  // 实时试算：不选日期，直接对当前账本跨分片聚合。
-  const handleRunLive = async () => {
-    if (!selectedCurrency) {
-      message.warning(t('form.currencyRequired'))
-      return
-    }
-    setLiveLoading(true)
-    setError(null)
-    setResult(null)
-    try {
-      const res = await runLiveTrialBalance(selectedCurrency)
-      setResult(res.result)
-      setIsLive(true)
-      if (res.warning) {
-        message.warning(res.warning)
-      } else if (res.result.is_healthy) {
-        // 在途投影后平 → 健康。若有在途交易，裸读 equation_diff 可能非 0（正常，不误报）。
-        const inflight = Number(res.result.inflight_tcc_count ?? 0)
-        if (inflight > 0) {
-          message.success(t('live.healthyWithInflight', { count: inflight }))
-        } else {
-          message.success(t('form.balancedMessage'))
-        }
-      } else {
-        // 在途落定后仍不平 → 真不平。
-        message.error(t('live.trulyImbalanced'))
-      }
-    } catch (err: unknown) {
-      const msg = (err as { message?: string })?.message ?? t('live.failed')
-      setError(msg)
-      message.error(msg)
-    } finally {
-      setLiveLoading(false)
-    }
-  }
-
   // 下钻：点 summaries 某行 → 拉该 (category, type, business_type) 下的 account 级明细。
   const handleDrilldown = async (row: TrialBalanceCategorySummary) => {
     setDrilldownOpen(true)
@@ -176,8 +134,7 @@ export default function TrialBalance() {
         category: row.category,
         account_type: row.type,
         business_type: row.business_type || 0,
-        // live 结果不带 snapshot_date（"live"），快照结果用 result.snapshot_date。
-        snapshot_date: isLive ? '' : (result?.snapshot_date ?? ''),
+        snapshot_date: result?.snapshot_date ?? '',
       })
       setDrilldownRows(res.accounts ?? [])
       if (res.warning) message.warning(res.warning)
@@ -189,14 +146,13 @@ export default function TrialBalance() {
     }
   }
 
-  // CSV 导出：当前 currency + date（live 时为空）+ runID → 触发浏览器下载。
+  // CSV 导出:当前 currency + snapshot_date → 触发浏览器下载。
   const handleExport = () => {
     if (!selectedCurrency) {
       message.warning(t('form.currencyRequired'))
       return
     }
-    const snapshotDate = isLive ? '' : (result?.snapshot_date ?? '')
-    const url = exportTrialBalanceURL(displayCurrency, snapshotDate)
+    const url = exportTrialBalanceURL(displayCurrency, result?.snapshot_date ?? '')
     window.open(url, '_blank')
   }
 
@@ -396,38 +352,12 @@ export default function TrialBalance() {
                   <Descriptions.Item label={t('equation.equityEnding')}>{fmt(result.equity_ending_balance)}</Descriptions.Item>
                   <Descriptions.Item label={t('equation.revenueEnding')}>{fmt(result.revenue_ending_balance)}</Descriptions.Item>
                   <Descriptions.Item label={t('equation.expenseEnding')}>{fmt(result.expense_ending_balance)}</Descriptions.Item>
-                  {isLive && (
-                    <>
-                      <Descriptions.Item label={t('equation.inflightCount')}>
-                        {Number(result.inflight_tcc_count ?? 0)}
-                      </Descriptions.Item>
-                      <Descriptions.Item label={t('equation.inflightContribution')}>
-                        {fmt(result.inflight_equation_contribution ?? 0)}
-                      </Descriptions.Item>
-                      <Descriptions.Item label={t('equation.adjustedEquationDiff')}>
-                        <span style={{ fontWeight: 'bold' }}>{fmt(result.adjusted_equation_diff ?? 0)}</span>
-                      </Descriptions.Item>
-                    </>
-                  )}
                   <Descriptions.Item label={t('equation.accountingEquation')}>
-                    {(() => {
-                      const ok = isLive ? !!result.is_healthy : result.is_equation_valid
-                      return (
-                        <Tag color={ok ? 'green' : 'red'}>
-                          {ok ? t('equation.equationValid') : t('equation.equationInvalid')}
-                        </Tag>
-                      )
-                    })()}
+                    <Tag color={result.is_equation_valid ? 'green' : 'red'}>
+                      {result.is_equation_valid ? t('equation.equationValid') : t('equation.equationInvalid')}
+                    </Tag>
                   </Descriptions.Item>
                 </Descriptions>
-                {isLive && Number(result.inflight_tcc_count ?? 0) > 0 && (
-                  <Alert
-                    type="info"
-                    showIcon
-                    style={{ marginTop: 12 }}
-                    message={t('equation.inflightHint')}
-                  />
-                )}
               </Card>
 
               {/* 分类明细 */}

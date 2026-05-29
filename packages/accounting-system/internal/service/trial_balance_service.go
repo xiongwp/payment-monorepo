@@ -18,11 +18,11 @@ import (
 type CategorySummary struct {
 	Category model.AccountCategory `json:"category"`
 	Type     model.AccountType     `json:"type"`
-	// BusinessType 是第 3 层维度（account_business_type）。
-	// snapshot 试算（RunTrialBalanceByCurrency）不下钻到该层，恒为 0；
-	// live 试算（RunLiveTrialBalance）按该层分组，非 0。
+	// BusinessType 是第 3 层维度（account_business_type）。snapshot 与 live 试算
+	// 都按 (category, type, business_type) 三层聚合,「分类明细」表按业务类型摊开。
 	BusinessType int `json:"business_type"`
-	// Level 标记本行汇总到哪一层："category_type"（2 层）或 "category_type_business"（3 层）。
+	// Level 当前固定为 "category_type_business"（三层）。字段保留是为了将来可能再加
+	// 更细维度（如 currency 或 phase）时,前端能按 Level 分支渲染。
 	Level        string `json:"level"`
 	AccountCount int64  `json:"account_count"`
 	// Period beginning / ending balances (from day-cut snapshot)
@@ -156,10 +156,12 @@ func NewTrialBalanceService(
 	}
 }
 
-// categoryKey uniquely identifies an (account_category, account_type) pair.
+// categoryKey uniquely identifies an (account_category, account_type, account_business_type) triple.
+// snapshot 试算与 live 同维度,「分类明细」按业务类型摊开。
 type categoryKey struct {
 	category model.AccountCategory
 	typ      model.AccountType
+	bizType  int
 }
 
 // RunTrialBalance scans all shards, aggregates snapshot+account data, and validates
@@ -223,7 +225,7 @@ func (s *trialBalanceService) RunTrialBalanceByCurrency(ctx context.Context, sna
 			continue // collect partial results; caller sees error at the end
 		}
 		for _, row := range res.rows {
-			k := categoryKey{category: row.AccountCategory, typ: row.AccountType}
+			k := categoryKey{category: row.AccountCategory, typ: row.AccountType, bizType: row.AccountBusinessType}
 			if cur, ok := aggregated[k]; ok {
 				cur.AccountCount += row.AccountCount
 				cur.SumBeginning += row.SumBeginning
@@ -234,7 +236,8 @@ func (s *trialBalanceService) RunTrialBalanceByCurrency(ctx context.Context, sna
 				aggregated[k] = &CategorySummary{
 					Category:     row.AccountCategory,
 					Type:         row.AccountType,
-					Level:        "category_type",
+					BusinessType: row.AccountBusinessType,
+					Level:        "category_type_business",
 					AccountCount: row.AccountCount,
 					SumBeginning: row.SumBeginning,
 					SumEnding:    row.SumEnding,
@@ -245,7 +248,7 @@ func (s *trialBalanceService) RunTrialBalanceByCurrency(ctx context.Context, sna
 		}
 	}
 
-	// Build a deterministically ordered summary slice.
+	// Build a deterministically ordered summary slice.三层排序:类别 → 类型 → 业务类型。
 	summaries := make([]*CategorySummary, 0, len(aggregated))
 	for _, v := range aggregated {
 		summaries = append(summaries, v)
@@ -254,7 +257,10 @@ func (s *trialBalanceService) RunTrialBalanceByCurrency(ctx context.Context, sna
 		if summaries[i].Category != summaries[j].Category {
 			return string(summaries[i].Category) < string(summaries[j].Category)
 		}
-		return summaries[i].Type < summaries[j].Type
+		if summaries[i].Type != summaries[j].Type {
+			return summaries[i].Type < summaries[j].Type
+		}
+		return summaries[i].BusinessType < summaries[j].BusinessType
 	})
 
 	// Compute period totals and accounting equation components.
