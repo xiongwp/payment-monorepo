@@ -251,6 +251,10 @@ export interface TransactionResult {
 export interface TrialBalanceCategorySummary {
   category: string;      // ASSET / LIABILITY / EQUITY / REVENUE / EXPENSE
   type: number;          // AccountType 数字
+  /** 第 3 层维度（account_business_type）。snapshot 试算恒为 0；live 试算非 0。 */
+  business_type?: number;
+  /** "category_type"（2 层）或 "category_type_business"（3 层）。 */
+  level?: string;
   account_count: number;
   sum_beginning: string;
   sum_ending: string;

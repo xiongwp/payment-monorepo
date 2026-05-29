@@ -63,11 +63,36 @@
     "columns": {
       "category": "账户类别",
       "type": "账户类型",
+      "businessType": "业务类型",
       "accountCount": "账户数",
       "sumBeginning": "期初余额合计",
       "sumEnding": "期末余额合计",
       "sumDebit": "期间借方合计",
-      "sumCredit": "期间贷方合计"
+      "sumCredit": "期间贷方合计",
+      "action": "操作"
     }
+  },
+  "live": {
+    "button": "实时试算",
+    "failed": "实时试算失败",
+    "modeLive": "实时",
+    "modeSnapshot": "快照"
+  },
+  "drilldown": {
+    "button": "下钻",
+    "title": "账户级下钻明细",
+    "failed": "下钻查询失败",
+    "empty": "暂无明细",
+    "columns": {
+      "accountNo": "账户号",
+      "beginning": "期初余额",
+      "debit": "本期借方",
+      "credit": "本期贷方",
+      "ending": "期末余额",
+      "balance": "余额"
+    }
+  },
+  "export": {
+    "button": "导出 CSV"
   }
 }

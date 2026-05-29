@@ -168,6 +168,71 @@ export function listSnapshotDates(): Promise<SnapshotDatesResponse> {
   return request({ method: 'GET', url: '/v1/trial-balance/dates' });
 }
 
+// ─── 实时试算 / 下钻 / CSV 导出（走 accounting adminhttp，BFF proxy）──────────
+
+/** 实时试算返回结构：accounting adminhttp 把 TrialBalanceResult 包在 result 字段里，
+ *  部分分片失败时附带 warning。BFF proxy 原样透传。 */
+export interface LiveTrialBalanceResponse {
+  currency: string;
+  result: TrialBalanceResult;
+  warning?: string;
+}
+
+/** 实时试算：不依赖日切快照，直接对当前账本跨分片聚合。currency 必填。 */
+export function runLiveTrialBalance(currency: string): Promise<LiveTrialBalanceResponse> {
+  return request({ method: 'GET', url: '/v1/trial-balance/live', params: { currency } });
+}
+
+/** 下钻明细单行（account 级，第 4 层）。金额为 minor×100 整数。 */
+export interface AccountBalanceDetail {
+  account_no: string;
+  account_type: number;
+  account_business_type: number;
+  beginning: number;
+  ending: number;
+  debit: number;
+  credit: number;
+  balance: number;
+}
+
+export interface DrilldownParams {
+  currency: string;
+  category?: string;       // ASSET / LIABILITY / EQUITY / REVENUE / EXPENSE
+  account_type?: number;   // 0 或省略 = 不过滤
+  business_type?: number;  // 0 或省略 = 不过滤
+  snapshot_date?: string;  // 空 = live；非空 = 该日 snapshot
+  run_id?: number;
+}
+
+export interface DrilldownResponse {
+  currency: string;
+  category: string;
+  account_type: number;
+  business_type: number;
+  snapshot_date: string;
+  run_id: number;
+  count: number;
+  subtotal_balance: number;
+  subtotal_ending: number;
+  accounts: AccountBalanceDetail[];
+  warning?: string;
+}
+
+/** 下钻到 (category, account_type, business_type) 下的 account 级明细，按 |balance| 降序。 */
+export function drilldownTrialBalance(params: DrilldownParams): Promise<DrilldownResponse> {
+  return request({ method: 'GET', url: '/v1/trial-balance/drilldown', params });
+}
+
+/** 构造 CSV 导出下载 URL（前端直接 window.open / <a download> 触发下载，
+ *  不走 axios，因为是文件流而非 JSON）。snapshotDate 空 = 导出 live 试算。 */
+export function exportTrialBalanceURL(currency: string, snapshotDate?: string, runID?: number): string {
+  const qs = new URLSearchParams({ currency });
+  if (snapshotDate) qs.set('snapshot_date', snapshotDate);
+  if (runID !== undefined && runID !== null) qs.set('run_id', String(runID));
+  // client.ts baseURL='/api'，vite 把 /api 反代到 BFF :9090。
+  return `/api/v1/trial-balance/export?${qs.toString()}`;
+}
+
 // ─── 健康检查 ─────────────────────────────────────────────────────────────────
 
 export function healthCheck(): Promise<{ status: string }> {

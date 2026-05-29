@@ -63,11 +63,36 @@
     "columns": {
       "category": "Category",
       "type": "Account Type",
+      "businessType": "Business Type",
       "accountCount": "Account Count",
       "sumBeginning": "Total Beginning Balance",
       "sumEnding": "Total Ending Balance",
       "sumDebit": "Total Period Debit",
-      "sumCredit": "Total Period Credit"
+      "sumCredit": "Total Period Credit",
+      "action": "Action"
     }
+  },
+  "live": {
+    "button": "Live Trial Balance",
+    "failed": "Live trial balance failed",
+    "modeLive": "Live",
+    "modeSnapshot": "Snapshot"
+  },
+  "drilldown": {
+    "button": "Drill Down",
+    "title": "Account-Level Drilldown",
+    "failed": "Drilldown query failed",
+    "empty": "No details",
+    "columns": {
+      "accountNo": "Account No.",
+      "beginning": "Beginning Balance",
+      "debit": "Period Debit",
+      "credit": "Period Credit",
+      "ending": "Ending Balance",
+      "balance": "Balance"
+    }
+  },
+  "export": {
+    "button": "Export CSV"
   }
 }

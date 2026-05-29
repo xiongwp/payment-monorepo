@@ -21,6 +21,10 @@ func main() {
 	// Seed HTTP admin address: any one live accounting-system instance's admin port.
 	// Used to discover all instances via GET /admin/instances.
 	adminHTTPAddr := envOrDefault("ACCOUNTING_ADMIN_HTTP_ADDR", "http://localhost:8888")
+	// accounting-system adminhttp base URL，用于 trial-balance live/drilldown/export
+	// 等只走 HTTP（不走 gRPC）的只读端点。容器内默认指向 accounting-service:8888。
+	// 单实例聚合即可（试算平衡是跨全部 100 分片的汇总，任一活实例都返回相同结果）。
+	accountingAdminURL := envOrDefault("ACCOUNTING_ADMIN_URL", "http://accounting-service:8888")
 
 	// REGISTRY_ENDPOINTS 非空 → 走 etcd resolver（联栈多 pod 部署必走，因为
 	// 容器去掉 container_name 后 "accounting-service" 跨 compose 项目 DNS 不可解析）；
@@ -57,6 +61,7 @@ func main() {
 	txH := handler.NewTransactionHandler(client)
 	adjH := handler.NewAdjustmentHandler(client)
 	trialBalanceH := handler.NewTrialBalanceHandler(client)
+	trialBalanceLiveH := handler.NewTrialBalanceLiveHandler(accountingAdminURL)
 	adminH := handler.NewAdminHandler(adminClient)
 	instanceH := handler.NewInstanceHandler(adminHTTPAddr)
 	rebuildH := handler.NewRedisRebuildHandler(client)
@@ -109,6 +114,10 @@ func main() {
 	// Trial balance
 	r.HandleFunc("/v1/trial-balance", trialBalanceH.RunTrialBalance).Methods(http.MethodPost)
 	r.HandleFunc("/v1/trial-balance/dates", trialBalanceH.ListSnapshotDates).Methods(http.MethodGet)
+	// 实时试算 / 下钻 / CSV 导出 —— proxy 到 accounting-system adminhttp（HTTP，不走 gRPC）
+	r.HandleFunc("/v1/trial-balance/live", trialBalanceLiveH.Live).Methods(http.MethodGet)
+	r.HandleFunc("/v1/trial-balance/drilldown", trialBalanceLiveH.Drilldown).Methods(http.MethodGet)
+	r.HandleFunc("/v1/trial-balance/export", trialBalanceLiveH.Export).Methods(http.MethodGet)
 
 	// Service instances (multi-instance discovery via HTTP admin)
 	r.HandleFunc("/v1/service-instances", instanceH.ListInstances).Methods(http.MethodGet)

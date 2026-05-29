@@ -13,13 +13,31 @@ import {
   Col,
   message,
   List,
+  Drawer,
 } from 'antd'
-import { CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined } from '@ant-design/icons'
+import {
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  ReloadOutlined,
+  ThunderboltOutlined,
+  DownloadOutlined,
+  SearchOutlined,
+} from '@ant-design/icons'
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import dayjs from 'dayjs'
-import { runTrialBalance, listSnapshotDates } from '../../api/accounting'
-import type { TrialBalanceResult, TrialBalanceCategorySummary } from '../../types/accounting'
+import {
+  runTrialBalance,
+  listSnapshotDates,
+  runLiveTrialBalance,
+  drilldownTrialBalance,
+  exportTrialBalanceURL,
+} from '../../api/accounting'
+import type {
+  TrialBalanceResult,
+  TrialBalanceCategorySummary,
+  AccountBalanceDetail,
+} from '../../types/accounting'
 import { display as displayMoney } from '../../utils/money'
 
 // TrialBalanceResult has no currency field — every row on this page is an
@@ -42,6 +60,14 @@ export default function TrialBalance() {
   const [error, setError] = useState<string | null>(null)
   const [snapshotDates, setSnapshotDates] = useState<string[]>([])
   const [datesLoading, setDatesLoading] = useState(false)
+  // 区分当前展示的是「实时」还是「快照」试算结果。
+  const [isLive, setIsLive] = useState(false)
+  const [liveLoading, setLiveLoading] = useState(false)
+  // 下钻抽屉状态
+  const [drilldownOpen, setDrilldownOpen] = useState(false)
+  const [drilldownLoading, setDrilldownLoading] = useState(false)
+  const [drilldownRows, setDrilldownRows] = useState<AccountBalanceDetail[]>([])
+  const [drilldownTitle, setDrilldownTitle] = useState('')
 
   const loadSnapshotDates = useCallback(async () => {
     setDatesLoading(true)
@@ -68,6 +94,7 @@ export default function TrialBalance() {
     setLoading(true)
     setError(null)
     setResult(null)
+    setIsLive(false)
     // sync picker to the date being run
     if (!selectedDate || selectedDate.format('YYYY-MM-DD') !== date) {
       setSelectedDate(dayjs(date))
@@ -96,6 +123,75 @@ export default function TrialBalance() {
     }
   }
 
+  // 实时试算：不选日期，直接对当前账本跨分片聚合。
+  const handleRunLive = async () => {
+    if (!selectedCurrency) {
+      message.warning(t('form.currencyRequired'))
+      return
+    }
+    setLiveLoading(true)
+    setError(null)
+    setResult(null)
+    try {
+      const res = await runLiveTrialBalance(selectedCurrency)
+      setResult(res.result)
+      setIsLive(true)
+      if (res.warning) {
+        message.warning(res.warning)
+      } else if (res.result.is_balanced && res.result.is_equation_valid) {
+        message.success(t('form.balancedMessage'))
+      } else {
+        message.warning(t('form.imbalancedMessage'))
+      }
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? t('live.failed')
+      setError(msg)
+      message.error(msg)
+    } finally {
+      setLiveLoading(false)
+    }
+  }
+
+  // 下钻：点 summaries 某行 → 拉该 (category, type, business_type) 下的 account 级明细。
+  const handleDrilldown = async (row: TrialBalanceCategorySummary) => {
+    setDrilldownOpen(true)
+    setDrilldownLoading(true)
+    setDrilldownRows([])
+    const catLabel = t(`category.${row.category}`, { defaultValue: row.category })
+    const typeLabel = t(`accountType.${row.type}`, { defaultValue: String(row.type) })
+    setDrilldownTitle(
+      `${catLabel} / ${typeLabel}` + (row.business_type ? ` / ${t('summary.columns.businessType')} ${row.business_type}` : ''),
+    )
+    try {
+      const res = await drilldownTrialBalance({
+        currency: displayCurrency,
+        category: row.category,
+        account_type: row.type,
+        business_type: row.business_type || 0,
+        // live 结果不带 snapshot_date（"live"），快照结果用 result.snapshot_date。
+        snapshot_date: isLive ? '' : (result?.snapshot_date ?? ''),
+      })
+      setDrilldownRows(res.accounts ?? [])
+      if (res.warning) message.warning(res.warning)
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? t('drilldown.failed')
+      message.error(msg)
+    } finally {
+      setDrilldownLoading(false)
+    }
+  }
+
+  // CSV 导出：当前 currency + date（live 时为空）+ runID → 触发浏览器下载。
+  const handleExport = () => {
+    if (!selectedCurrency) {
+      message.warning(t('form.currencyRequired'))
+      return
+    }
+    const snapshotDate = isLive ? '' : (result?.snapshot_date ?? '')
+    const url = exportTrialBalanceURL(displayCurrency, snapshotDate)
+    window.open(url, '_blank')
+  }
+
   // 币种优先级：result 自带的 → 用户选的 → PHP 兜底。
   // 历史代码里硬编码过 FALLBACK_CURRENCY=PHP，导致 USD 试算结果也印 ₱ 符号。
   const displayCurrency = result?.currency || selectedCurrency || FALLBACK_CURRENCY
@@ -114,11 +210,47 @@ export default function TrialBalance() {
       key: 'type',
       render: (v: number) => t(`accountType.${v}`, { defaultValue: String(v) }),
     },
+    {
+      title: t('summary.columns.businessType'),
+      dataIndex: 'business_type',
+      key: 'business_type',
+      render: (v: number | undefined) => (v ? v : '-'),
+    },
     { title: t('summary.columns.accountCount'), dataIndex: 'account_count', key: 'account_count' },
     { title: t('summary.columns.sumBeginning'), dataIndex: 'sum_beginning', key: 'sum_beginning', render: (v: string) => fmt(v) },
     { title: t('summary.columns.sumEnding'), dataIndex: 'sum_ending', key: 'sum_ending', render: (v: string) => fmt(v) },
     { title: t('summary.columns.sumDebit'), dataIndex: 'sum_debit', key: 'sum_debit', render: (v: string) => fmt(v) },
     { title: t('summary.columns.sumCredit'), dataIndex: 'sum_credit', key: 'sum_credit', render: (v: string) => fmt(v) },
+    {
+      title: t('summary.columns.action'),
+      key: 'action',
+      render: (_: unknown, row: TrialBalanceCategorySummary) => (
+        <Button size="small" icon={<SearchOutlined />} onClick={() => handleDrilldown(row)}>
+          {t('drilldown.button')}
+        </Button>
+      ),
+    },
+  ]
+
+  const drilldownColumns = [
+    { title: t('drilldown.columns.accountNo'), dataIndex: 'account_no', key: 'account_no' },
+    {
+      title: t('summary.columns.type'),
+      dataIndex: 'account_type',
+      key: 'account_type',
+      render: (v: number) => t(`accountType.${v}`, { defaultValue: String(v) }),
+    },
+    { title: t('summary.columns.businessType'), dataIndex: 'account_business_type', key: 'account_business_type' },
+    { title: t('drilldown.columns.beginning'), dataIndex: 'beginning', key: 'beginning', render: (v: number) => fmt(v) },
+    { title: t('drilldown.columns.debit'), dataIndex: 'debit', key: 'debit', render: (v: number) => fmt(v) },
+    { title: t('drilldown.columns.credit'), dataIndex: 'credit', key: 'credit', render: (v: number) => fmt(v) },
+    { title: t('drilldown.columns.ending'), dataIndex: 'ending', key: 'ending', render: (v: number) => fmt(v) },
+    {
+      title: t('drilldown.columns.balance'),
+      dataIndex: 'balance',
+      key: 'balance',
+      render: (v: number) => <span style={{ fontWeight: 'bold' }}>{fmt(v)}</span>,
+    },
   ]
 
   return (
@@ -176,6 +308,20 @@ export default function TrialBalance() {
               <Button type="primary" loading={loading} onClick={() => handleRun()}>
                 {t('form.submit')}
               </Button>
+              <Button
+                icon={<ThunderboltOutlined />}
+                loading={liveLoading}
+                onClick={handleRunLive}
+              >
+                {t('live.button')}
+              </Button>
+              <Button
+                icon={<DownloadOutlined />}
+                disabled={!result}
+                onClick={handleExport}
+              >
+                {t('export.button')}
+              </Button>
             </Space>
             <div style={{ marginTop: 8, color: '#888', fontSize: 13 }}>
               {t('form.hint')}
@@ -186,6 +332,13 @@ export default function TrialBalance() {
 
           {result && (
             <>
+              {/* 实时 / 快照 模式标识 */}
+              <div style={{ marginBottom: 12 }}>
+                <Tag color={isLive ? 'orange' : 'blue'}>
+                  {isLive ? t('live.modeLive') : t('live.modeSnapshot')}
+                </Tag>
+              </div>
+
               {/* 汇总校验状态 */}
               <Row gutter={16} style={{ marginBottom: 16 }}>
                 <Col span={6}>
@@ -261,7 +414,7 @@ export default function TrialBalance() {
                 <Table
                   columns={summaryColumns}
                   dataSource={result.summaries}
-                  rowKey={(r: TrialBalanceCategorySummary) => `${r.category}-${r.type}`}
+                  rowKey={(r: TrialBalanceCategorySummary) => `${r.category}-${r.type}-${r.business_type ?? 0}`}
                   pagination={false}
                   size="small"
                 />
@@ -270,6 +423,24 @@ export default function TrialBalance() {
           )}
         </Col>
       </Row>
+
+      {/* 下钻明细抽屉：account 级，按 |balance| 降序 */}
+      <Drawer
+        title={`${t('drilldown.title')}${drilldownTitle ? ' — ' + drilldownTitle : ''}`}
+        open={drilldownOpen}
+        onClose={() => setDrilldownOpen(false)}
+        width={880}
+      >
+        <Table
+          columns={drilldownColumns}
+          dataSource={drilldownRows}
+          loading={drilldownLoading}
+          rowKey={(r: AccountBalanceDetail) => r.account_no}
+          pagination={{ pageSize: 20, showSizeChanger: true }}
+          size="small"
+          locale={{ emptyText: t('drilldown.empty') }}
+        />
+      </Drawer>
     </div>
   )
 }
