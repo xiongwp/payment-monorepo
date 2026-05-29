@@ -317,13 +317,6 @@ export default function TrialBalance() {
                 {t('form.submit')}
               </Button>
               <Button
-                icon={<ThunderboltOutlined />}
-                loading={liveLoading}
-                onClick={handleRunLive}
-              >
-                {t('live.button')}
-              </Button>
-              <Button
                 icon={<DownloadOutlined />}
                 disabled={!result}
                 onClick={handleExport}
@@ -340,12 +333,6 @@ export default function TrialBalance() {
 
           {result && (
             <>
-              {/* 实时 / 快照 模式标识 */}
-              <div style={{ marginBottom: 12 }}>
-                <Tag color={isLive ? 'orange' : 'blue'}>
-                  {isLive ? t('live.modeLive') : t('live.modeSnapshot')}
-                </Tag>
-              </div>
 
               {/* 汇总校验状态 */}
               <Row gutter={16} style={{ marginBottom: 16 }}>
@@ -367,19 +354,18 @@ export default function TrialBalance() {
                 </Col>
                 <Col span={6}>
                   <Card>
-                    {/* live 模式按"在途投影后是否平"（is_healthy）判定，带在途交易也不误报；
-                        snapshot 模式仍按裸 is_equation_valid 判定。 */}
-                    {(() => {
-                      const ok = isLive ? !!result.is_healthy : result.is_equation_valid
-                      return (
-                        <Statistic
-                          title={isLive ? t('stats.healthTitle') : t('stats.equationTitle')}
-                          value={ok ? t('stats.equationPass') : t('stats.equationFail')}
-                          prefix={ok ? <CheckCircleOutlined /> : <CloseCircleOutlined />}
-                          valueStyle={{ color: ok ? '#3f8600' : '#cf1322' }}
-                        />
-                      )
-                    })()}
+                    <Statistic
+                      title={t('stats.equationTitle')}
+                      value={result.is_equation_valid ? t('stats.equationPass') : t('stats.equationFail')}
+                      prefix={
+                        result.is_equation_valid ? (
+                          <CheckCircleOutlined />
+                        ) : (
+                          <CloseCircleOutlined />
+                        )
+                      }
+                      valueStyle={{ color: result.is_equation_valid ? '#3f8600' : '#cf1322' }}
+                    />
                   </Card>
                 </Col>
                 <Col span={6}>
