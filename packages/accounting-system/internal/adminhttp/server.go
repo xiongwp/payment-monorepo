@@ -182,10 +182,14 @@ func NewServer(
 	mux.HandleFunc("/admin/buffered-balance/flush", s.handleBufferedBalanceFlush) // POST
 	mux.HandleFunc("/admin/redis/rebuild", s.handleRedisRebuild)                  // POST {as_of?, account_nos?, dry_run?}
 
-	// 试算平衡：实时试算 / 4 层下钻 / CSV 导出（见 trial_balance.go）
-	mux.HandleFunc("/admin/trial-balance/live", s.handleTrialBalanceLive)         // GET ?currency=PHP
+	// 试算平衡:快照 / 实时 / 4 层下钻 / CSV 导出 / 日期列表(见 trial_balance.go)
+	// snapshot/dates 走 HTTP 而非 gRPC 是为了让 business_type / Level 这些
+	// proto 里没定义的字段也能直接 JSON 序列化回前端,无需 vendor pb.go 重生成。
+	mux.HandleFunc("/admin/trial-balance/snapshot", s.handleTrialBalanceSnapshot)   // GET ?currency=&snapshot_date=&run_id=
+	mux.HandleFunc("/admin/trial-balance/dates", s.handleTrialBalanceDates)         // GET — 全部 distinct snapshot_date
+	mux.HandleFunc("/admin/trial-balance/live", s.handleTrialBalanceLive)           // GET ?currency=PHP
 	mux.HandleFunc("/admin/trial-balance/drilldown", s.handleTrialBalanceDrilldown) // GET ?currency=&category=&account_type=&business_type=&snapshot_date=&run_id=
-	mux.HandleFunc("/admin/trial-balance/export", s.handleTrialBalanceExport)     // GET ?currency=&snapshot_date=&run_id= → CSV
+	mux.HandleFunc("/admin/trial-balance/export", s.handleTrialBalanceExport)       // GET ?currency=&snapshot_date=&run_id= → CSV
 
 	// 轮换账户管理（rotation feature）— 见 rotation.go
 	// 端点：list-current-active / instance-history / instance-detail / manual-switch / manual-provision

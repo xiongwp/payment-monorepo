@@ -18,6 +18,71 @@ import (
 //
 // 走 admin HTTP，不动 gRPC proto / kitex_gen。
 
+// handleTrialBalanceSnapshot GET /admin/trial-balance/snapshot?currency=PHP&snapshot_date=YYYY-MM-DD&run_id=N
+//
+// 走 admin HTTP 而非 gRPC 是为了让 CategorySummary.BusinessType / Level 这些 proto
+// 里没定义的字段直接 JSON 序列化回前端 —— 分类明细需要按业务类型摊开。
+func (s *Server) handleTrialBalanceSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.trialBalanceSvc == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "trial balance service not wired"})
+		return
+	}
+	q := r.URL.Query()
+	currency := q.Get("currency")
+	if currency == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "currency is required"})
+		return
+	}
+	snapshotDate := q.Get("snapshot_date")
+	if snapshotDate == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "snapshot_date is required"})
+		return
+	}
+	runID := atoiDefault(q.Get("run_id"), 0)
+
+	result, err := s.trialBalanceSvc.RunTrialBalanceByCurrency(r.Context(), snapshotDate, currency, runID)
+	if err != nil {
+		// 部分分片失败时 result 仍带部分数据;返回 200 + warning 字段更利于运维查看。
+		if result != nil {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"currency": currency,
+				"result":   result,
+				"warning":  err.Error(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"currency": currency,
+		"result":   result,
+	})
+}
+
+// handleTrialBalanceDates GET /admin/trial-balance/dates
+// 返回 {dates: ["2026-05-28", ...]}, 按 DESC 排。
+func (s *Server) handleTrialBalanceDates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.trialBalanceSvc == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "trial balance service not wired"})
+		return
+	}
+	dates, err := s.trialBalanceSvc.ListSnapshotDates(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"dates": dates})
+}
+
 // handleTrialBalanceLive GET /admin/trial-balance/live?currency=PHP
 func (s *Server) handleTrialBalanceLive(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

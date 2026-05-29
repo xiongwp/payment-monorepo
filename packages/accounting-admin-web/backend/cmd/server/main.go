@@ -112,12 +112,16 @@ func main() {
 	r.HandleFunc("/v1/adjustment", adjH.AdjustBalance).Methods(http.MethodPost)
 
 	// Trial balance
-	r.HandleFunc("/v1/trial-balance", trialBalanceH.RunTrialBalance).Methods(http.MethodPost)
-	r.HandleFunc("/v1/trial-balance/dates", trialBalanceH.ListSnapshotDates).Methods(http.MethodGet)
-	// 实时试算 / 下钻 / CSV 导出 —— proxy 到 accounting-system adminhttp（HTTP，不走 gRPC）
+	// 试算平衡 —— 全部 proxy 到 accounting-system adminhttp(HTTP),不走 gRPC,
+	// 因为 proto TrialBalanceCategorySummary 没有 business_type/Level 字段。
+	r.HandleFunc("/v1/trial-balance/snapshot", trialBalanceLiveH.Snapshot).Methods(http.MethodGet)
+	r.HandleFunc("/v1/trial-balance/dates", trialBalanceLiveH.Dates).Methods(http.MethodGet)
 	r.HandleFunc("/v1/trial-balance/live", trialBalanceLiveH.Live).Methods(http.MethodGet)
 	r.HandleFunc("/v1/trial-balance/drilldown", trialBalanceLiveH.Drilldown).Methods(http.MethodGet)
 	r.HandleFunc("/v1/trial-balance/export", trialBalanceLiveH.Export).Methods(http.MethodGet)
+	// 老的 POST /v1/trial-balance 与 /v1/trial-balance/dates(gRPC backed) 保留作兼容,
+	// 但前端已切到 /snapshot —— 业务可在确认后移除。
+	r.HandleFunc("/v1/trial-balance", trialBalanceH.RunTrialBalance).Methods(http.MethodPost)
 
 	// Service instances (multi-instance discovery via HTTP admin)
 	r.HandleFunc("/v1/service-instances", instanceH.ListInstances).Methods(http.MethodGet)

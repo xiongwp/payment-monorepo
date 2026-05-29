@@ -158,13 +158,21 @@ export function adjustBalance(data: AdjustBalanceRequest): Promise<AdjustBalance
 
 // ─── 试算平衡 API ─────────────────────────────────────────────────────────────
 
-/** 执行试算平衡。currency 必填——按币种独立执行。 */
-export function runTrialBalance(snapshotDate: string, currency: string): Promise<TrialBalanceResult> {
-  return request({ method: 'POST', url: '/v1/trial-balance', data: { snapshot_date: snapshotDate, currency } });
+/** 执行试算平衡 — 走 accounting adminhttp(GET /snapshot),不走 gRPC。
+ *  原因:proto TrialBalanceCategorySummary 没有 business_type / Level 字段,
+ *  走 gRPC 会丢这两个维度;走 admin HTTP 时 Go 结构体直接 JSON 序列化,字段都在。
+ *  返回结构跟 runLiveTrialBalance 一致: { currency, result: TrialBalanceResult, warning? }。 */
+export async function runTrialBalance(snapshotDate: string, currency: string): Promise<TrialBalanceResult> {
+  const resp = await request<LiveTrialBalanceResponse>({
+    method: 'GET',
+    url: '/v1/trial-balance/snapshot',
+    params: { currency, snapshot_date: snapshotDate },
+  });
+  return resp.result;
 }
 
-/** 查询所有有快照数据的日期列表 */
-export function listSnapshotDates(): Promise<SnapshotDatesResponse> {
+/** 查询所有有快照数据的日期列表 — 同样走 admin HTTP。 */
+export async function listSnapshotDates(): Promise<SnapshotDatesResponse> {
   return request({ method: 'GET', url: '/v1/trial-balance/dates' });
 }
 

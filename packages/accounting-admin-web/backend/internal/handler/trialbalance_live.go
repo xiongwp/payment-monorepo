@@ -44,6 +44,17 @@ func (h *TrialBalanceLiveHandler) Live(w http.ResponseWriter, r *http.Request) {
 	h.proxyJSON(w, r, "/admin/trial-balance/live")
 }
 
+// Snapshot GET /v1/trial-balance/snapshot?currency=&snapshot_date=&run_id=
+// 走 admin HTTP 而非 gRPC,让 business_type / Level 字段直接 JSON 透传(proto 没定义)。
+func (h *TrialBalanceLiveHandler) Snapshot(w http.ResponseWriter, r *http.Request) {
+	h.proxyJSON(w, r, "/admin/trial-balance/snapshot")
+}
+
+// Dates GET /v1/trial-balance/dates
+func (h *TrialBalanceLiveHandler) Dates(w http.ResponseWriter, r *http.Request) {
+	h.proxyJSON(w, r, "/admin/trial-balance/dates")
+}
+
 // Drilldown GET /v1/trial-balance/drilldown?currency=&category=&account_type=&business_type=&snapshot_date=&run_id=
 // 透传全部 query params。
 func (h *TrialBalanceLiveHandler) Drilldown(w http.ResponseWriter, r *http.Request) {
