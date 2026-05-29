@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS `account_20` (
     KEY `idx_account_type` (`account_type`),
     KEY `idx_type_status` (`account_type`, `status`),
     KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
-    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`),
+    KEY `idx_trial_balance` (`currency`, `account_category`, `account_type`, `account_business_type`) COMMENT '试算平衡 4 层下钻聚合：currency+category+type+business_type'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -508,7 +509,8 @@ CREATE TABLE IF NOT EXISTS `account_21` (
     KEY `idx_account_type` (`account_type`),
     KEY `idx_type_status` (`account_type`, `status`),
     KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
-    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`),
+    KEY `idx_trial_balance` (`currency`, `account_category`, `account_type`, `account_business_type`) COMMENT '试算平衡 4 层下钻聚合：currency+category+type+business_type'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -954,7 +956,8 @@ CREATE TABLE IF NOT EXISTS `account_22` (
     KEY `idx_account_type` (`account_type`),
     KEY `idx_type_status` (`account_type`, `status`),
     KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
-    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`),
+    KEY `idx_trial_balance` (`currency`, `account_category`, `account_type`, `account_business_type`) COMMENT '试算平衡 4 层下钻聚合：currency+category+type+business_type'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -1400,7 +1403,8 @@ CREATE TABLE IF NOT EXISTS `account_23` (
     KEY `idx_account_type` (`account_type`),
     KEY `idx_type_status` (`account_type`, `status`),
     KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
-    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`),
+    KEY `idx_trial_balance` (`currency`, `account_category`, `account_type`, `account_business_type`) COMMENT '试算平衡 4 层下钻聚合：currency+category+type+business_type'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -1846,7 +1850,8 @@ CREATE TABLE IF NOT EXISTS `account_24` (
     KEY `idx_account_type` (`account_type`),
     KEY `idx_type_status` (`account_type`, `status`),
     KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
-    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`),
+    KEY `idx_trial_balance` (`currency`, `account_category`, `account_type`, `account_business_type`) COMMENT '试算平衡 4 层下钻聚合：currency+category+type+business_type'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -2292,7 +2297,8 @@ CREATE TABLE IF NOT EXISTS `account_25` (
     KEY `idx_account_type` (`account_type`),
     KEY `idx_type_status` (`account_type`, `status`),
     KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
-    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`),
+    KEY `idx_trial_balance` (`currency`, `account_category`, `account_type`, `account_business_type`) COMMENT '试算平衡 4 层下钻聚合：currency+category+type+business_type'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -2738,7 +2744,8 @@ CREATE TABLE IF NOT EXISTS `account_26` (
     KEY `idx_account_type` (`account_type`),
     KEY `idx_type_status` (`account_type`, `status`),
     KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
-    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`),
+    KEY `idx_trial_balance` (`currency`, `account_category`, `account_type`, `account_business_type`) COMMENT '试算平衡 4 层下钻聚合：currency+category+type+business_type'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -3184,7 +3191,8 @@ CREATE TABLE IF NOT EXISTS `account_27` (
     KEY `idx_account_type` (`account_type`),
     KEY `idx_type_status` (`account_type`, `status`),
     KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
-    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`),
+    KEY `idx_trial_balance` (`currency`, `account_category`, `account_type`, `account_business_type`) COMMENT '试算平衡 4 层下钻聚合：currency+category+type+business_type'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -3630,7 +3638,8 @@ CREATE TABLE IF NOT EXISTS `account_28` (
     KEY `idx_account_type` (`account_type`),
     KEY `idx_type_status` (`account_type`, `status`),
     KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
-    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`),
+    KEY `idx_trial_balance` (`currency`, `account_category`, `account_type`, `account_business_type`) COMMENT '试算平衡 4 层下钻聚合：currency+category+type+business_type'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
@@ -4076,7 +4085,8 @@ CREATE TABLE IF NOT EXISTS `account_29` (
     KEY `idx_account_type` (`account_type`),
     KEY `idx_type_status` (`account_type`, `status`),
     KEY `idx_logical_phase` (`logical_account_id`, `lifecycle_phase`),
-    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`)
+    KEY `idx_phase_period_end` (`lifecycle_phase`, `period_end`),
+    KEY `idx_trial_balance` (`currency`, `account_category`, `account_type`, `account_business_type`) COMMENT '试算平衡 4 层下钻聚合：currency+category+type+business_type'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='账户主表';
 
 -- ============================================
