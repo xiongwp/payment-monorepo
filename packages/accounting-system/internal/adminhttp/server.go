@@ -56,6 +56,7 @@ type Server struct {
 	systemConfigSvc  service.SystemConfigService          // wrap config-center SDK；保留 Reload 入口给 ConfigSyncWorker
 	tccArchiveWorker *service.TccArchiveWorker            // 支持 admin-web 触发立即归档
 	bufferedBalWk    *service.BufferedBalanceWorker       // 支持 /admin/buffered-balance/flush 立即 flush
+	trialBalanceSvc  service.TrialBalanceService          // 实时试算 / 下钻 / CSV 导出（见 trial_balance.go）
 	pinger           HealthPinger                         // readiness DB ping，可选（nil = 仅检查 draining）
 	rotationAdminSvc *service.AdminService                // 轮换账户运维 service；nil = 端点返回 503（见 rotation.go）
 	logger           *zap.Logger
@@ -98,6 +99,7 @@ func NewServer(
 	systemConfigSvc service.SystemConfigService,
 	tccArchiveWorker *service.TccArchiveWorker,
 	bufferedBalWk *service.BufferedBalanceWorker,
+	trialBalanceSvc service.TrialBalanceService,
 	pinger HealthPinger,
 	logger *zap.Logger,
 ) *Server {
@@ -136,6 +138,7 @@ func NewServer(
 		systemConfigSvc:  systemConfigSvc,
 		tccArchiveWorker: tccArchiveWorker,
 		bufferedBalWk:    bufferedBalWk,
+		trialBalanceSvc:  trialBalanceSvc,
 		pinger:           pinger,
 		logger:           logger,
 	}
@@ -178,6 +181,11 @@ func NewServer(
 	// 立即触发 buffered balance flush（e2e 测试 / 运维，不等 30s+jitter 周期）
 	mux.HandleFunc("/admin/buffered-balance/flush", s.handleBufferedBalanceFlush) // POST
 	mux.HandleFunc("/admin/redis/rebuild", s.handleRedisRebuild)                  // POST {as_of?, account_nos?, dry_run?}
+
+	// 试算平衡：实时试算 / 4 层下钻 / CSV 导出（见 trial_balance.go）
+	mux.HandleFunc("/admin/trial-balance/live", s.handleTrialBalanceLive)         // GET ?currency=PHP
+	mux.HandleFunc("/admin/trial-balance/drilldown", s.handleTrialBalanceDrilldown) // GET ?currency=&category=&account_type=&business_type=&snapshot_date=&run_id=
+	mux.HandleFunc("/admin/trial-balance/export", s.handleTrialBalanceExport)     // GET ?currency=&snapshot_date=&run_id= → CSV
 
 	// 轮换账户管理（rotation feature）— 见 rotation.go
 	// 端点：list-current-active / instance-history / instance-detail / manual-switch / manual-provision

@@ -20,6 +20,34 @@ type mockTrialBalanceRepo struct {
 	rows map[int][]repository.ShardTrialBalanceRow
 	// error to return for specified shard indices (global table index)
 	errors map[int]error
+	// live rows per tableIndex (for QueryShardLiveSummary)
+	liveRows map[int][]repository.ShardTrialBalanceRow
+	// drilldown rows per tableIndex (for QueryShardDrilldown)
+	drilldownRows map[int][]repository.AccountBalanceRow
+}
+
+func (m *mockTrialBalanceRepo) QueryShardLiveSummary(
+	_ context.Context, _, tableIndex int, _ string,
+) ([]repository.ShardTrialBalanceRow, error) {
+	if e, ok := m.errors[tableIndex]; ok {
+		return nil, e
+	}
+	if rows, ok := m.liveRows[tableIndex]; ok {
+		return rows, nil
+	}
+	return nil, nil
+}
+
+func (m *mockTrialBalanceRepo) QueryShardDrilldown(
+	_ context.Context, _, tableIndex int, _, _ string, _, _ int, _ string, _ int,
+) ([]repository.AccountBalanceRow, error) {
+	if e, ok := m.errors[tableIndex]; ok {
+		return nil, e
+	}
+	if rows, ok := m.drilldownRows[tableIndex]; ok {
+		return rows, nil
+	}
+	return nil, nil
 }
 
 func (m *mockTrialBalanceRepo) QueryShardSummary(
@@ -295,4 +323,93 @@ func TestRunTrialBalance_CrossShardAggregation(t *testing.T) {
 	assert.Equal(t, int64(100000), s.SumDebit)       // 30000 + 70000
 	assert.Equal(t, int64(100000), s.SumEnding)      // 30000 + 70000
 	assert.Equal(t, int64(100000), result.AssetEndingBalance)
+}
+
+// ─── RunLiveTrialBalance – happy path (asset = liability + equity) ─────────────
+
+func TestRunLiveTrialBalance_EquationValid(t *testing.T) {
+	// Live: Asset balance 100000 = Liability 60000 + Equity 40000.
+	// 注意 live 三层分组（带 business_type）。
+	repo := &mockTrialBalanceRepo{
+		liveRows: map[int][]repository.ShardTrialBalanceRow{
+			0: {
+				{AccountCategory: model.AccountCategoryAsset, AccountType: model.AccountTypeTransitChannelReceivable,
+					AccountBusinessType: 201, AccountCount: 2, SumEnding: 100000},
+			},
+			1: {
+				{AccountCategory: model.AccountCategoryLiability, AccountType: model.AccountTypeUser,
+					AccountBusinessType: 1, AccountCount: 3, SumEnding: 60000},
+				{AccountCategory: model.AccountCategoryEquity, AccountType: model.AccountTypePlatform,
+					AccountBusinessType: 100, AccountCount: 1, SumEnding: 40000},
+			},
+		},
+		errors: map[int]error{},
+	}
+
+	svc := newTrialBalanceSvc(repo)
+	result, err := svc.RunLiveTrialBalance(context.Background(), "PHP")
+	require.NoError(t, err)
+
+	assert.Equal(t, "live", result.SnapshotDate)
+	// live 无借贷流水：借贷平衡恒成立。
+	assert.True(t, result.IsBalanced)
+	assert.Equal(t, int64(0), result.TotalDebit)
+	assert.Equal(t, int64(0), result.TotalCredit)
+
+	assert.Equal(t, int64(100000), result.AssetEndingBalance)
+	assert.Equal(t, int64(60000), result.LiabilityEndingBalance)
+	assert.Equal(t, int64(40000), result.EquityEndingBalance)
+	// 资产 100000 == 负债 60000 + 权益 40000 → equation valid
+	assert.True(t, result.IsEquationValid)
+	assert.Equal(t, int64(0), result.EquationDiff)
+
+	// 三层维度：business_type / level 已填充。
+	require.Len(t, result.Summaries, 3)
+	for _, s := range result.Summaries {
+		assert.Equal(t, "category_type_business", s.Level)
+		assert.NotZero(t, s.BusinessType)
+	}
+}
+
+func TestRunLiveTrialBalance_RequiresCurrency(t *testing.T) {
+	svc := newTrialBalanceSvc(&mockTrialBalanceRepo{})
+	_, err := svc.RunLiveTrialBalance(context.Background(), "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "currency is required")
+}
+
+// ─── Drilldown – sorted by |balance| desc ─────────────────────────────────────
+
+func TestDrilldown_SortedByAbsBalanceDesc(t *testing.T) {
+	repo := &mockTrialBalanceRepo{
+		drilldownRows: map[int][]repository.AccountBalanceRow{
+			0: {
+				{AccountNo: "A-small", AccountType: model.AccountTypeUser, AccountBusinessType: 1, Balance: 500, Ending: 500},
+				{AccountNo: "A-bignegative", AccountType: model.AccountTypeUser, AccountBusinessType: 1, Balance: -90000, Ending: -90000},
+			},
+			1: {
+				{AccountNo: "A-big", AccountType: model.AccountTypeUser, AccountBusinessType: 1, Balance: 100000, Ending: 100000},
+				{AccountNo: "A-mid", AccountType: model.AccountTypeUser, AccountBusinessType: 1, Balance: 20000, Ending: 20000},
+			},
+		},
+		errors: map[int]error{},
+	}
+
+	svc := newTrialBalanceSvc(repo)
+	details, err := svc.Drilldown(context.Background(), "PHP", "LIABILITY", 1, 1, "", 0)
+	require.NoError(t, err)
+	require.Len(t, details, 4)
+
+	// 按 |balance| 降序：100000 > 90000(abs) > 20000 > 500
+	assert.Equal(t, "A-big", details[0].AccountNo)
+	assert.Equal(t, "A-bignegative", details[1].AccountNo)
+	assert.Equal(t, "A-mid", details[2].AccountNo)
+	assert.Equal(t, "A-small", details[3].AccountNo)
+}
+
+func TestDrilldown_RequiresCurrency(t *testing.T) {
+	svc := newTrialBalanceSvc(&mockTrialBalanceRepo{})
+	_, err := svc.Drilldown(context.Background(), "", "", 0, 0, "", 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "currency is required")
 }

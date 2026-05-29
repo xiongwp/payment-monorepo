@@ -8,29 +8,30 @@
 go 1.26.1
 
 use (
-// ─── 新业务包 (8 个坏的已剔除) ─────────────
-./packages/payment-gateway
-./packages/dispute-service
-./packages/merchant-webhook
-./packages/payment-mw
-./packages/tax-reporting
-./packages/data-rights
+	./packages/accounting-grpc-api
+	./packages/accounting-system
+	./packages/api-gateway
+	./packages/card-center
+	./packages/card-payment
+	./packages/clearing-settlement
+	./packages/config-center
+	./packages/data-rights
+	./packages/dispute-service
+	./packages/id-generator
+	./packages/kms-manage
+	./packages/merchant-webhook
 
-// ─── 老业务包 ───────
-./packages/order-core
-./packages/payment-core
-./packages/payment-channel
-./packages/accounting-system
-./packages/accounting-grpc-api
-./packages/user-merchant-core
-./packages/card-center
-./packages/card-payment
-./packages/api-gateway
-./packages/config-center
-./packages/id-generator
-./packages/kms-manage
-./packages/payment-util
-./packages/reconplatform
-./packages/risk-manage
-./packages/clearing-settlement
+	// ─── 老业务包 ───────
+	./packages/order-core
+	./packages/payment-channel
+	./packages/payment-core
+	// ─── 新业务包 (8 个坏的已剔除) ─────────────
+	./packages/payment-gateway
+	./packages/payment-mw
+	./packages/payment-util
+	./packages/reconplatform
+	./packages/risk-manage
+	./packages/split-payment
+	./packages/tax-reporting
+	./packages/user-merchant-core
 )
