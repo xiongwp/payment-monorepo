@@ -31,6 +31,13 @@ type CategorySummary struct {
 	// Period debit / credit totals
 	SumDebit  int64 `json:"sum_debit"`
 	SumCredit int64 `json:"sum_credit"`
+
+	// ── live 在途修正（仅 RunLiveTrialBalance 填充；snapshot 试算恒为 0）────────────
+	// PendingNet：本组尚未落进 account.balance 的在途净额（TCC TRYING balance_delta +
+	// buffer pending_delta）。SumEnding + PendingNet = 在途落定后的投影余额。
+	// InflightTccCount：本组在途 TCC TRYING 分支数。
+	PendingNet       int64 `json:"pending_net"`
+	InflightTccCount int64 `json:"inflight_tcc_count"`
 }
 
 // TrialBalanceResult 试算平衡结果
@@ -64,6 +71,23 @@ type TrialBalanceResult struct {
 	// 会计恒等式校验：资产 = 负债 + 所有者权益 + 收入 - 费用
 	IsEquationValid bool  `json:"is_equation_valid"`
 	EquationDiff    int64 `json:"equation_diff"` // 资产 - (负债+权益+收入-费用)；成立时为 0
+
+	// ── live 在途修正字段（仅 RunLiveTrialBalance 填充）─────────────────────────
+	// 问题：带流量跑 live 试算时，跨分片读 + TCC 在途交易（balance 尚未落定）会让
+	// EquationDiff 瞬时非 0，这是测量工件而非真不平。把在途净额按 category 投影回去，
+	// 用 AdjustedEquationDiff / IsHealthy 判定，避免误报。
+	IsLive bool `json:"is_live"`
+	// InflightTccCount：在途 TCC TRYING 分支总数（诊断展示）。
+	InflightTccCount int64 `json:"inflight_tcc_count"`
+	// InflightEquationContribution：在途净额在恒等式空间的贡献，
+	// = pAsset - (pLiability + pEquity + pRevenue - pExpense)。
+	// 它正好等于 AdjustedEquationDiff - EquationDiff（在途解释掉的那部分不平）。
+	InflightEquationContribution int64 `json:"inflight_equation_contribution"`
+	// AdjustedEquationDiff：把在途净额投影到余额后的恒等式差额；账务正确时恒为 0。
+	AdjustedEquationDiff int64 `json:"adjusted_equation_diff"`
+	// IsHealthy：live 健康判定。用 AdjustedEquationDiff 而非 EquationDiff 判，
+	// 因此有在途交易时也不误报；只有"在途落定后仍不平"才报 false（真 bug）。
+	IsHealthy bool `json:"is_healthy"`
 }
 
 // TrialBalanceService 试算平衡服务接口
@@ -393,14 +417,18 @@ func (s *trialBalanceService) RunLiveTrialBalance(ctx context.Context, currency 
 			if cur, ok := aggregated[k]; ok {
 				cur.AccountCount += row.AccountCount
 				cur.SumEnding += row.SumEnding
+				cur.PendingNet += row.PendingNet
+				cur.InflightTccCount += row.InflightTccCount
 			} else {
 				aggregated[k] = &CategorySummary{
-					Category:     row.AccountCategory,
-					Type:         row.AccountType,
-					BusinessType: row.AccountBusinessType,
-					Level:        "category_type_business",
-					AccountCount: row.AccountCount,
-					SumEnding:    row.SumEnding,
+					Category:         row.AccountCategory,
+					Type:             row.AccountType,
+					BusinessType:     row.AccountBusinessType,
+					Level:            "category_type_business",
+					AccountCount:     row.AccountCount,
+					SumEnding:        row.SumEnding,
+					PendingNet:       row.PendingNet,
+					InflightTccCount: row.InflightTccCount,
 				}
 			}
 		}
@@ -425,18 +453,26 @@ func (s *trialBalanceService) RunLiveTrialBalance(ctx context.Context, currency 
 		Summaries:    summaries,
 	}
 
+	// 按 category 同时累计 期末余额 与 在途净额（pending），后者用于在途投影。
+	var pAsset, pLiability, pEquity, pRevenue, pExpense int64
 	for _, summary := range summaries {
+		result.InflightTccCount += summary.InflightTccCount
 		switch summary.Category {
 		case model.AccountCategoryAsset:
 			result.AssetEndingBalance += summary.SumEnding
+			pAsset += summary.PendingNet
 		case model.AccountCategoryLiability:
 			result.LiabilityEndingBalance += summary.SumEnding
+			pLiability += summary.PendingNet
 		case model.AccountCategoryEquity:
 			result.EquityEndingBalance += summary.SumEnding
+			pEquity += summary.PendingNet
 		case model.AccountCategoryRevenue:
 			result.RevenueEndingBalance += summary.SumEnding
+			pRevenue += summary.PendingNet
 		case model.AccountCategoryExpense:
 			result.ExpenseEndingBalance += summary.SumEnding
+			pExpense += summary.PendingNet
 		}
 	}
 
@@ -445,17 +481,34 @@ func (s *trialBalanceService) RunLiveTrialBalance(ctx context.Context, currency 
 	result.TotalCredit = 0
 	result.Imbalance = 0
 	result.IsBalanced = true
+	result.IsLive = true
 
-	// 会计恒等式：用绝对期末余额方向校验（live 无期初，净变动即余额本身）。
+	// 会计恒等式（裸读）：用绝对期末余额方向校验（live 无期初，净变动即余额本身）。
+	// 注意：带流量时这个值几乎一定非 0（跨分片非原子读 + 在途交易 balance 未落定），
+	// 是测量工件不是真不平，所以 IsEquationValid 仅作"裸读是否恰好平"的参考。
 	result.EquationDiff = result.AssetEndingBalance -
 		(result.LiabilityEndingBalance + result.EquityEndingBalance + result.RevenueEndingBalance - result.ExpenseEndingBalance)
 	result.IsEquationValid = result.EquationDiff == 0
 
+	// 在途投影：把各 category 的 pending 净额加回余额后再算恒等式差额。
+	// 推导：AdjustedDiff = (A+pA) - ((L+pL)+(E+pE)+(R+pR)-(X+pX))
+	//                    = EquationDiff + [pA - (pL+pE+pR-pX)]
+	// 中括号即 InflightEquationContribution。一笔双分录全部落定后恒等式守恒，
+	// 故无论交易处于 Try/部分 Confirm/全 Confirm，投影后 AdjustedDiff 理论上恒为 0。
+	result.InflightEquationContribution = pAsset - (pLiability + pEquity + pRevenue - pExpense)
+	result.AdjustedEquationDiff = result.EquationDiff + result.InflightEquationContribution
+	// 单条 SQL 一致性读消除了同分片"余额读"与"在途读"之间的 Confirm 窗口，因此
+	// 投影后应严格为 0；用它判健康，有在途也不误报，只有真不平才报 false。
+	result.IsHealthy = result.AdjustedEquationDiff == 0
+
 	s.logger.Info("live trial balance completed",
 		zap.String("currency", currency),
 		zap.Int("shardErrors", shardErrors),
+		zap.Bool("isHealthy", result.IsHealthy),
 		zap.Bool("isEquationValid", result.IsEquationValid),
 		zap.String("equationDiff", strconv.FormatInt(result.EquationDiff, 10)),
+		zap.String("adjustedEquationDiff", strconv.FormatInt(result.AdjustedEquationDiff, 10)),
+		zap.Int64("inflightTccCount", result.InflightTccCount),
 	)
 
 	if shardErrors > 0 {

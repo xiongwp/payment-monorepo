@@ -38,6 +38,7 @@
     "balancePass": "通过",
     "balanceFail": "不平衡",
     "equationTitle": "会计恒等式",
+    "healthTitle": "账实健康（在途修正）",
     "equationPass": "成立",
     "equationFail": "不成立",
     "totalDebit": "期间借方合计",
@@ -56,7 +57,11 @@
     "expenseEnding": "费用期末余额合计",
     "accountingEquation": "会计恒等式",
     "equationValid": "资产 = 负债+权益+收入-费用 ✓",
-    "equationInvalid": "不平衡 ✗"
+    "equationInvalid": "不平衡 ✗",
+    "inflightCount": "在途交易笔数（TCC TRYING）",
+    "inflightContribution": "在途净额（恒等式空间）",
+    "adjustedEquationDiff": "在途投影后差额",
+    "inflightHint": "当前有在途交易未落定。实时试算瞬时的「等式差额」非 0 属正常现象（跨分片读 + TCC 在途），系统已把在途净额投影回余额后再判平——以「在途投影后差额」和「账实健康」为准，不是真不平。"
   },
   "summary": {
     "title": "账户类别 × 类型 明细",
@@ -76,7 +81,9 @@
     "button": "实时试算",
     "failed": "实时试算失败",
     "modeLive": "实时",
-    "modeSnapshot": "快照"
+    "modeSnapshot": "快照",
+    "healthyWithInflight": "账实健康：在途投影后平衡（当前 {{count}} 笔在途交易未落定，瞬时等式差额非 0 属正常）",
+    "trulyImbalanced": "在途落定后仍不平衡，疑似真实账务差异，请下钻排查"
   },
   "drilldown": {
     "button": "下钻",

@@ -260,6 +260,10 @@ export interface TrialBalanceCategorySummary {
   sum_ending: string;
   sum_debit: string;
   sum_credit: string;
+  /** live 在途修正：本组尚未落进 balance 的在途净额（TCC TRYING + buffer）。snapshot 恒为 0。 */
+  pending_net?: number | string;
+  /** live 在途修正：本组在途 TCC TRYING 分支数。 */
+  inflight_tcc_count?: number;
 }
 
 export interface TrialBalanceResult {
@@ -278,6 +282,18 @@ export interface TrialBalanceResult {
   is_equation_valid: boolean;
   equation_diff: string;
   summaries: TrialBalanceCategorySummary[];
+
+  // ── live 在途修正字段（仅实时试算返回）──────────────────────────────────────
+  /** 是否为实时试算结果。 */
+  is_live?: boolean;
+  /** 在途 TCC TRYING 分支总数。 */
+  inflight_tcc_count?: number;
+  /** 在途净额在恒等式空间的贡献（= adjusted_equation_diff - equation_diff）。 */
+  inflight_equation_contribution?: number | string;
+  /** 在途投影后的恒等式差额；账务正确时恒为 0。带流量时用它判健康，避免误报。 */
+  adjusted_equation_diff?: number | string;
+  /** live 健康判定：在途落定后是否平。带在途交易时也不误报。 */
+  is_healthy?: boolean;
 }
 
 // ─── 交易流水分页响应 ─────────────────────────────────────────────────────────

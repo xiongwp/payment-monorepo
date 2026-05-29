@@ -23,6 +23,16 @@ type ShardTrialBalanceRow struct {
 	SumEnding           int64                 `gorm:"column:sum_ending"`
 	SumDebit            int64                 `gorm:"column:sum_debit"`
 	SumCredit           int64                 `gorm:"column:sum_credit"`
+
+	// ── live 在途修正字段（仅 QueryShardLiveSummary 填充；snapshot 查询恒为 0）──────
+	// PendingNet：尚未落到 account.balance 的净额，两个来源相加：
+	//   1. TCC TRYING (status=0) 分支的 balance_delta —— Confirm 时才落 balance；
+	//   2. balance_buffer 未 flush 的 pending_delta —— 缓冲记账异步刷 balance。
+	// 把它按 category 加回 SumEnding，即得"在途全部落定后"的投影余额，用于消除
+	// 跨分片非原子读 + 在途交易造成的假性不平（不误报）。
+	// InflightTccCount：在途 TCC TRYING 分支数（诊断展示用）。
+	PendingNet       int64 `gorm:"column:pending_net"`
+	InflightTccCount int64 `gorm:"column:inflight_tcc_count"`
 }
 
 // AccountBalanceRow holds one concrete account's balance for the drill-down view.
@@ -53,6 +63,8 @@ type TrialBalanceRepository interface {
 	// QueryShardLiveSummary 不 JOIN snapshot，直接对当前 account_XX 表的 balance 聚合，
 	// 按 (account_category, account_type, account_business_type) 分组。
 	// live 没有期初/借贷流水概念：sum_ending = SUM(balance)，beginning/debit/credit 恒为 0。
+	// 同一条 SQL 内附带 PendingNet / InflightTccCount（在途修正），保证与 balance 读
+	// 同一致性快照（避免两条独立查询之间的 Confirm 落库窗口造成重复计/漏计）。
 	QueryShardLiveSummary(ctx context.Context, dbIndex, tableIndex int, currency string) ([]ShardTrialBalanceRow, error)
 
 	// QueryShardDrilldown 下钻到具体账户级别，返回每个 account_no 的余额。
@@ -152,37 +164,104 @@ func (r *trialBalanceRepository) QueryShardSummaryByCurrency(ctx context.Context
 // 与 snapshot 试算的关键区别：live 只有"当前余额"快照，没有期初余额、本期借贷流水，
 // 因此 sum_beginning / sum_debit / sum_credit 一律为 0，sum_ending = SUM(balance)。
 // GROUP BY 比 snapshot 多 account_business_type 这一层（第 3 层）。
+//
+// 在途修正（不误报的关键）：同一条 SQL 用 UNION ALL 把三段聚合到同一致性读快照里——
+//   A) account 当前 balance     → sum_ending；
+//   B) tcc_transaction TRYING    → pending_net（Confirm 时才会落 balance 的 balance_delta）；
+//   C) account_balance_buffer    → pending_net（缓冲记账未 flush 的 pending_delta）。
+//
+// 为什么必须同一条 SQL：InnoDB 下单条 SELECT 是一个一致性快照。若 balance 与在途分两条
+// 查询读，中间夹一笔 Confirm 落库就会重复计/漏计。合并成一条后，每条腿在该分片的快照里
+// 要么已落 balance、要么在 TRYING/buffer 里（balance 未动），有且仅计一次。把 pending_net
+// 按 category 加回 sum_ending，即得"在途全部落定后"的投影余额——会计恒等式在此投影下恒成立，
+// 因此带流量跑也不会假性不平。
 func (r *trialBalanceRepository) QueryShardLiveSummary(ctx context.Context, dbIndex, tableIndex int, currency string) ([]ShardTrialBalanceRow, error) {
 	// shadow 路由：压测流量自动加 _shadow 后缀。
 	accountTable := shadow.TableName(ctx, fmt.Sprintf("account_%02d", tableIndex))
+	tccTable := shadow.TableName(ctx, fmt.Sprintf("tcc_transaction_%02d", tableIndex))
+	bufferTable := shadow.TableName(ctx, fmt.Sprintf("account_balance_buffer_%02d", tableIndex))
 
 	db, err := r.dbManager.GetDB(dbIndex)
 	if err != nil {
 		return nil, fmt.Errorf("trial_balance QueryShardLiveSummary: get db[%d]: %w", dbIndex, err)
 	}
 
-	where := []string{"status != ?"}
+	// 三段 WHERE 的可选 currency 过滤；占位符顺序与 args 严格对应。
+	accCur, tccCur, bufCur := "", "", ""
+	// A 段先放 status 占位符，再放可选 currency。
 	args := []interface{}{int8(model.AccountStatusDisabled)}
 	if currency != "" {
-		where = append(where, "currency = ?")
+		accCur = "AND currency = ?"
+		args = append(args, currency)
+	}
+	// B 段：status=TRYING 占位符，再放可选 currency。
+	args = append(args, int8(model.TccStatusTrying))
+	if currency != "" {
+		tccCur = "AND a.currency = ?"
+		args = append(args, currency)
+	}
+	// C 段：可选 currency。
+	if currency != "" {
+		bufCur = "AND a.currency = ?"
 		args = append(args, currency)
 	}
 
-	//nolint:gosec // table name derived from controlled integer index, not user input.
+	// COALESCE 防止空分片 SUM 返回 NULL 扫不进 int64。
+	//nolint:gosec // table names derived from controlled integer indices, not user input.
 	query := fmt.Sprintf(`
 			SELECT
 				account_category,
 				account_type,
 				account_business_type,
-				COUNT(*)       AS account_count,
-				0              AS sum_beginning,
-				SUM(balance)   AS sum_ending,
-				0              AS sum_debit,
-				0              AS sum_credit
-			FROM %s
-			WHERE %s
+				SUM(account_count)     AS account_count,
+				0                      AS sum_beginning,
+				SUM(sum_ending)        AS sum_ending,
+				0                      AS sum_debit,
+				0                      AS sum_credit,
+				SUM(pending_net)       AS pending_net,
+				SUM(inflight_tcc_count) AS inflight_tcc_count
+			FROM (
+				-- A) 当前余额
+				SELECT
+					account_category, account_type, account_business_type,
+					COUNT(*)             AS account_count,
+					COALESCE(SUM(balance), 0) AS sum_ending,
+					0                    AS pending_net,
+					0                    AS inflight_tcc_count
+				FROM %s
+				WHERE status != ? %s
+				GROUP BY account_category, account_type, account_business_type
+
+				UNION ALL
+
+				-- B) TCC TRYING 在途（Confirm 时才落 balance）
+				SELECT
+					a.account_category, a.account_type, a.account_business_type,
+					0                    AS account_count,
+					0                    AS sum_ending,
+					COALESCE(SUM(t.balance_delta), 0) AS pending_net,
+					COUNT(*)             AS inflight_tcc_count
+				FROM %s t
+				INNER JOIN %s a ON t.account_no = a.account_no
+				WHERE t.status = ? %s
+				GROUP BY a.account_category, a.account_type, a.account_business_type
+
+				UNION ALL
+
+				-- C) balance_buffer 未 flush 在途
+				SELECT
+					a.account_category, a.account_type, a.account_business_type,
+					0                    AS account_count,
+					0                    AS sum_ending,
+					COALESCE(SUM(b.pending_delta), 0) AS pending_net,
+					0                    AS inflight_tcc_count
+				FROM %s b
+				INNER JOIN %s a ON b.account_no = a.account_no
+				WHERE b.pending_delta <> 0 %s
+				GROUP BY a.account_category, a.account_type, a.account_business_type
+			) u
 			GROUP BY account_category, account_type, account_business_type
-		`, accountTable, strings.Join(where, " AND "))
+		`, accountTable, accCur, tccTable, accountTable, tccCur, bufferTable, accountTable, bufCur)
 
 	var rows []ShardTrialBalanceRow
 	if err := db.WithContext(ctx).Raw(query, args...).Scan(&rows).Error; err != nil {

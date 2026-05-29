@@ -38,6 +38,7 @@
     "balancePass": "Passed",
     "balanceFail": "Imbalanced",
     "equationTitle": "Accounting Equation",
+    "healthTitle": "Ledger Health (in-flight adjusted)",
     "equationPass": "Holds",
     "equationFail": "Does Not Hold",
     "totalDebit": "Period Total Debit",
@@ -56,7 +57,11 @@
     "expenseEnding": "Total Expense Ending Balance",
     "accountingEquation": "Accounting Equation",
     "equationValid": "Assets = Liabilities + Equity + Revenue - Expense ✓",
-    "equationInvalid": "Imbalanced ✗"
+    "equationInvalid": "Imbalanced ✗",
+    "inflightCount": "In-flight Transactions (TCC TRYING)",
+    "inflightContribution": "In-flight Net (equation space)",
+    "adjustedEquationDiff": "Diff After In-flight Projection",
+    "inflightHint": "There are in-flight transactions not yet settled. A non-zero instantaneous \"Equation Difference\" in live trial balance is expected (cross-shard reads + TCC in-flight). The system projects the in-flight net back onto balances before judging — rely on \"Diff After In-flight Projection\" and \"Ledger Health\"; this is not a real imbalance."
   },
   "summary": {
     "title": "Category x Type Detail",
@@ -76,7 +81,9 @@
     "button": "Live Trial Balance",
     "failed": "Live trial balance failed",
     "modeLive": "Live",
-    "modeSnapshot": "Snapshot"
+    "modeSnapshot": "Snapshot",
+    "healthyWithInflight": "Ledger healthy: balanced after in-flight projection ({{count}} in-flight transactions not yet settled; a non-zero instantaneous equation diff is normal)",
+    "trulyImbalanced": "Still imbalanced after in-flight settlement — likely a real ledger discrepancy, please drill down"
   },
   "drilldown": {
     "button": "Drill Down",

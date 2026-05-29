@@ -139,10 +139,17 @@ export default function TrialBalance() {
       setIsLive(true)
       if (res.warning) {
         message.warning(res.warning)
-      } else if (res.result.is_balanced && res.result.is_equation_valid) {
-        message.success(t('form.balancedMessage'))
+      } else if (res.result.is_healthy) {
+        // 在途投影后平 → 健康。若有在途交易，裸读 equation_diff 可能非 0（正常，不误报）。
+        const inflight = Number(res.result.inflight_tcc_count ?? 0)
+        if (inflight > 0) {
+          message.success(t('live.healthyWithInflight', { count: inflight }))
+        } else {
+          message.success(t('form.balancedMessage'))
+        }
       } else {
-        message.warning(t('form.imbalancedMessage'))
+        // 在途落定后仍不平 → 真不平。
+        message.error(t('live.trulyImbalanced'))
       }
     } catch (err: unknown) {
       const msg = (err as { message?: string })?.message ?? t('live.failed')
@@ -360,18 +367,19 @@ export default function TrialBalance() {
                 </Col>
                 <Col span={6}>
                   <Card>
-                    <Statistic
-                      title={t('stats.equationTitle')}
-                      value={result.is_equation_valid ? t('stats.equationPass') : t('stats.equationFail')}
-                      prefix={
-                        result.is_equation_valid ? (
-                          <CheckCircleOutlined />
-                        ) : (
-                          <CloseCircleOutlined />
-                        )
-                      }
-                      valueStyle={{ color: result.is_equation_valid ? '#3f8600' : '#cf1322' }}
-                    />
+                    {/* live 模式按"在途投影后是否平"（is_healthy）判定，带在途交易也不误报；
+                        snapshot 模式仍按裸 is_equation_valid 判定。 */}
+                    {(() => {
+                      const ok = isLive ? !!result.is_healthy : result.is_equation_valid
+                      return (
+                        <Statistic
+                          title={isLive ? t('stats.healthTitle') : t('stats.equationTitle')}
+                          value={ok ? t('stats.equationPass') : t('stats.equationFail')}
+                          prefix={ok ? <CheckCircleOutlined /> : <CloseCircleOutlined />}
+                          valueStyle={{ color: ok ? '#3f8600' : '#cf1322' }}
+                        />
+                      )
+                    })()}
                   </Card>
                 </Col>
                 <Col span={6}>
@@ -402,12 +410,38 @@ export default function TrialBalance() {
                   <Descriptions.Item label={t('equation.equityEnding')}>{fmt(result.equity_ending_balance)}</Descriptions.Item>
                   <Descriptions.Item label={t('equation.revenueEnding')}>{fmt(result.revenue_ending_balance)}</Descriptions.Item>
                   <Descriptions.Item label={t('equation.expenseEnding')}>{fmt(result.expense_ending_balance)}</Descriptions.Item>
+                  {isLive && (
+                    <>
+                      <Descriptions.Item label={t('equation.inflightCount')}>
+                        {Number(result.inflight_tcc_count ?? 0)}
+                      </Descriptions.Item>
+                      <Descriptions.Item label={t('equation.inflightContribution')}>
+                        {fmt(result.inflight_equation_contribution ?? 0)}
+                      </Descriptions.Item>
+                      <Descriptions.Item label={t('equation.adjustedEquationDiff')}>
+                        <span style={{ fontWeight: 'bold' }}>{fmt(result.adjusted_equation_diff ?? 0)}</span>
+                      </Descriptions.Item>
+                    </>
+                  )}
                   <Descriptions.Item label={t('equation.accountingEquation')}>
-                    <Tag color={result.is_equation_valid ? 'green' : 'red'}>
-                      {result.is_equation_valid ? t('equation.equationValid') : t('equation.equationInvalid')}
-                    </Tag>
+                    {(() => {
+                      const ok = isLive ? !!result.is_healthy : result.is_equation_valid
+                      return (
+                        <Tag color={ok ? 'green' : 'red'}>
+                          {ok ? t('equation.equationValid') : t('equation.equationInvalid')}
+                        </Tag>
+                      )
+                    })()}
                   </Descriptions.Item>
                 </Descriptions>
+                {isLive && Number(result.inflight_tcc_count ?? 0) > 0 && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginTop: 12 }}
+                    message={t('equation.inflightHint')}
+                  />
+                )}
               </Card>
 
               {/* 分类明细 */}

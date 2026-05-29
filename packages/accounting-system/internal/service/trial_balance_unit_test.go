@@ -371,6 +371,72 @@ func TestRunLiveTrialBalance_EquationValid(t *testing.T) {
 	}
 }
 
+// TestRunLiveTrialBalance_InflightNotFalseAlarm 验证"不误报"：一笔双分录部分确认
+// （Asset 腿已 Confirm，balance 已 +100000；Liability 腿仍 TRYING，balance 未动但
+// PendingNet=+100000）。裸读恒等式不平（EquationDiff=100000），但在途投影后归零。
+func TestRunLiveTrialBalance_InflightNotFalseAlarm(t *testing.T) {
+	repo := &mockTrialBalanceRepo{
+		liveRows: map[int][]repository.ShardTrialBalanceRow{
+			0: {
+				// Asset 腿已确认：balance 已落 100000，无在途。
+				{AccountCategory: model.AccountCategoryAsset, AccountType: model.AccountTypeTransitChannelReceivable,
+					AccountBusinessType: 201, AccountCount: 1, SumEnding: 100000, PendingNet: 0, InflightTccCount: 0},
+			},
+			1: {
+				// Liability 腿仍 TRYING：balance 未动（SumEnding=0），在途净额 +100000。
+				{AccountCategory: model.AccountCategoryLiability, AccountType: model.AccountTypeUser,
+					AccountBusinessType: 1, AccountCount: 1, SumEnding: 0, PendingNet: 100000, InflightTccCount: 1},
+			},
+		},
+		errors: map[int]error{},
+	}
+
+	svc := newTrialBalanceSvc(repo)
+	result, err := svc.RunLiveTrialBalance(context.Background(), "PHP")
+	require.NoError(t, err)
+
+	// 裸读：资产 100000 vs 负债 0 → 不平（这正是会误报的地方）。
+	assert.Equal(t, int64(100000), result.AssetEndingBalance)
+	assert.Equal(t, int64(0), result.LiabilityEndingBalance)
+	assert.Equal(t, int64(100000), result.EquationDiff)
+	assert.False(t, result.IsEquationValid)
+
+	// 在途投影后：差额归零 → 健康，不误报。
+	assert.True(t, result.IsLive)
+	assert.Equal(t, int64(1), result.InflightTccCount)
+	assert.Equal(t, int64(-100000), result.InflightEquationContribution)
+	assert.Equal(t, int64(0), result.AdjustedEquationDiff)
+	assert.True(t, result.IsHealthy)
+}
+
+// TestRunLiveTrialBalance_TrulyImbalanced 验证真不平不会被在途掩盖：无在途，但裸读不平
+// → AdjustedEquationDiff 仍非 0，IsHealthy=false。
+func TestRunLiveTrialBalance_TrulyImbalanced(t *testing.T) {
+	repo := &mockTrialBalanceRepo{
+		liveRows: map[int][]repository.ShardTrialBalanceRow{
+			0: {
+				{AccountCategory: model.AccountCategoryAsset, AccountType: model.AccountTypeTransitChannelReceivable,
+					AccountBusinessType: 201, AccountCount: 1, SumEnding: 100000, PendingNet: 0, InflightTccCount: 0},
+			},
+			1: {
+				// 负债只有 90000，且无在途 → 真差 10000。
+				{AccountCategory: model.AccountCategoryLiability, AccountType: model.AccountTypeUser,
+					AccountBusinessType: 1, AccountCount: 1, SumEnding: 90000, PendingNet: 0, InflightTccCount: 0},
+			},
+		},
+		errors: map[int]error{},
+	}
+
+	svc := newTrialBalanceSvc(repo)
+	result, err := svc.RunLiveTrialBalance(context.Background(), "PHP")
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(10000), result.EquationDiff)
+	assert.Equal(t, int64(0), result.InflightEquationContribution)
+	assert.Equal(t, int64(10000), result.AdjustedEquationDiff)
+	assert.False(t, result.IsHealthy) // 没有在途可解释 → 真不平
+}
+
 func TestRunLiveTrialBalance_RequiresCurrency(t *testing.T) {
 	svc := newTrialBalanceSvc(&mockTrialBalanceRepo{})
 	_, err := svc.RunLiveTrialBalance(context.Background(), "")
