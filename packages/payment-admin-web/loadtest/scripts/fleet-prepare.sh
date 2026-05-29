@@ -75,8 +75,25 @@ account_type_for_prefix() {
   esac
 }
 
-# account_business_type 用 1（GENERAL）即可
-ABT=1
+# account_business_type 必须跟 account_type 1:1 对齐(accounting platformAccountSpec
+# 强制约定),否则 ForceProvision 建出来的 100 个 sub-account 全部 biz=1,
+# 试算平衡分类明细按业务类型摊开时全压成一行,跟实时试算对不上。
+# 映射跟 packages/accounting-system/internal/service/accounting_service.go 里的
+# platformAccountSpec 完全一致(为了不发版改 yaml 才用 shell case)。
+business_type_for_prefix() {
+  case "$1" in
+    "channel-receivable:")        echo 5 ;;  # TRANSIT_CHANNEL_RECEIVABLE
+    "channel-payable:")           echo 6 ;;  # TRANSIT_CHANNEL_PAYABLE
+    "channel-suspense:")          echo 9 ;;  # TRANSIT(中间账户)
+    "channel-fee:")               echo 7 ;;  # TRANSACTION_FEE
+    "platform-fee-clearing:")     echo 4 ;;  # PLATFORM_PNL
+    "platform-fee-revenue:")      echo 4 ;;  # PLATFORM_PNL
+    "platform-withdraw-pending:") echo 9 ;;  # TRANSIT
+    "user-suspense:")             echo 9 ;;  # TRANSIT
+    "transit:")                   echo 9 ;;  # TRANSIT
+    *)                            echo 9 ;;
+  esac
+}
 
 # ─── 参数解析 ─────────────────────────────────────────────────────────────
 for arg in "$@"; do
@@ -101,9 +118,10 @@ red()   { printf "\033[31m%s\033[0m\n" "$*"; }
 register_and_provision() {
   local key="$1"
   local account_type="$2"
+  local business_type="$3"
 
   echo
-  yellow "[LA] ${key}"
+  yellow "[LA] ${key} (type=${account_type} biz=${business_type})"
 
   # ── 1. register（已存在 → 409 → 跳过）
   local register_payload
@@ -111,7 +129,7 @@ register_and_provision() {
 {
   "logical_account_key": "${key}",
   "account_type": ${account_type},
-  "account_business_type": ${ABT},
+  "account_business_type": ${business_type},
   "currency": "${CURRENCY}",
   "rotation_enabled": true,
   "operator": "${OPERATOR}"
@@ -176,20 +194,24 @@ green "=========================================================="
 
 IFS=',' read -ra CHAN_ARR <<< "${CHANNELS}"
 
-# 渠道维度：每个渠道 × 4 prefix = 4 个 LA
+# 渠道维度：每个渠道 × 4 prefix = 4 个 LA。biz_type 跟 account_type 1:1 对齐(strict)。
 for chan in "${CHAN_ARR[@]}"; do
   chan="${chan// /}"
   [[ -z "${chan}" ]] && continue
   for p in "${CHANNEL_PREFIXES[@]}"; do
     key="${p}${chan}"
-    register_and_provision "${key}" "$(account_type_for_prefix "${p}")" || true
+    register_and_provision "${key}" \
+      "$(account_type_for_prefix "${p}")" \
+      "$(business_type_for_prefix "${p}")" || true
   done
 done
 
-# 平台/通用：每个 prefix 一个 LA（用 "default" 后缀，可按需扩展）
+# 平台/通用：每个 prefix 一个 LA（用 "default" 后缀，可按需扩展）。biz_type 同上。
 for p in "${PLATFORM_PREFIXES[@]}"; do
   key="${p}default"
-  register_and_provision "${key}" "$(account_type_for_prefix "${p}")" || true
+  register_and_provision "${key}" \
+    "$(account_type_for_prefix "${p}")" \
+    "$(business_type_for_prefix "${p}")" || true
 done
 
 green ""
