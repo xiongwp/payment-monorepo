@@ -33,10 +33,11 @@ import {
   drilldownTrialBalance,
   exportTrialBalanceURL,
 } from '../../api/accounting'
+// AccountBalanceDetail（4 层下钻明细行）定义在 api 层，跟 drilldown API 同源。
+import type { AccountBalanceDetail } from '../../api/accounting'
 import type {
   TrialBalanceResult,
   TrialBalanceCategorySummary,
-  AccountBalanceDetail,
 } from '../../types/accounting'
 import { display as displayMoney } from '../../utils/money'
 
