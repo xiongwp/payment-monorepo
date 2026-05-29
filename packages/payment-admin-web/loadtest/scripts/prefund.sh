@@ -30,11 +30,13 @@ red()    { printf "\033[31m%s\033[0m\n" "$*"; }
 echo ">>> prefund: 给 accounting_db_*.account_* 里 balance=0 的账户充 ${TARGET_BALANCE} minor"
 
 UPDATED_TOTAL_ROWS=0
+SKIPPED_SHARDS=()
 for i in $(seq 0 9); do
   # payment-admin-web stack 用 shared-shard-N 命名
   SHARD="shared-shard-${i}"
   if ! docker ps --format '{{.Names}}' | grep -qx "${SHARD}"; then
     yellow "  shard-${i}: 容器 ${SHARD} 没在跑，跳过"
+    SKIPPED_SHARDS+=("${SHARD}")
     continue
   fi
 
@@ -78,6 +80,16 @@ done
 
 green ">>> prefund 完成：累计 balance>0 账户 ${UPDATED_TOTAL_ROWS} 行"
 
+# 有 shard 没起就醒目提示 —— 那些 shard 的 account 表余额还是 0，prefund 不完整
+if [[ ${#SKIPPED_SHARDS[@]} -gt 0 ]]; then
+  red "─────────────────────────────────────────────────────────────"
+  red ">>> ⚠ 警告：${#SKIPPED_SHARDS[@]} 个 shard 没启动被跳过，prefund 不完整！"
+  red "    跳过的容器：${SKIPPED_SHARDS[*]}"
+  red "    这些 shard 上的 account_NN 表余额仍为 0，路由到它们的账户会报"
+  red "    insufficient available balance。先 docker compose up 把这些 shard 起来，再重跑本脚本。"
+  red "─────────────────────────────────────────────────────────────"
+fi
+
 # 抽检：pool 里第一个 user 账户余额
 POOL_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)/output/account_pool.json"
 if [[ -s "${POOL_FILE}" ]]; then
@@ -106,7 +118,11 @@ if [[ -s "${POOL_FILE}" ]]; then
     # 注意：不能写 `[[ ${FOUND} -ne 1 ]] && yellow ...` 当末位语句 —— 当 FOUND=1
     # 时这个表达式 rc=1，会污染整个脚本的退出码。必须用 if/fi 显式块。
     if [[ ${FOUND} -ne 1 ]]; then
-      yellow "  ⚠ ${SAMPLE} 在 10 个 shard 都没找到（account_no 编码路由可能不是 0..9 简单 mod？）"
+      # 这里是对所有 shard 全表暴力扫描（不是 mod 路由），扫不到 = 账户在 accounting
+      # DB 里根本不存在，不是路由问题。
+      yellow "  ⚠ ${SAMPLE} 在所有 shard 全表扫描都没命中 → 该账户在 accounting DB 里不存在。"
+      yellow "    多半是 account_pool.json 跟 accounting DB 不同步（pool 里的账户没在 accounting 开户），"
+      yellow "    或上面有 shard 没起被跳过。请检查 loadtest pool 生成步骤是否漏建账户。"
     fi
   fi
 fi
