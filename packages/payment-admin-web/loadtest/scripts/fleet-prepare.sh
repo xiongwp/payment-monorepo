@@ -75,24 +75,114 @@ account_type_for_prefix() {
   esac
 }
 
-# account_business_type 必须跟 account_type 1:1 对齐(accounting platformAccountSpec
-# 强制约定),否则 ForceProvision 建出来的 100 个 sub-account 全部 biz=1,
-# 试算平衡分类明细按业务类型摊开时全压成一行,跟实时试算对不上。
-# 映射跟 packages/accounting-system/internal/service/accounting_service.go 里的
-# platformAccountSpec 完全一致(为了不发版改 yaml 才用 shell case)。
-business_type_for_prefix() {
-  case "$1" in
-    "channel-receivable:")        echo 5 ;;  # TRANSIT_CHANNEL_RECEIVABLE
-    "channel-payable:")           echo 6 ;;  # TRANSIT_CHANNEL_PAYABLE
-    "channel-suspense:")          echo 9 ;;  # TRANSIT(中间账户)
-    "channel-fee:")               echo 7 ;;  # TRANSACTION_FEE
-    "platform-fee-clearing:")     echo 4 ;;  # PLATFORM_PNL
-    "platform-fee-revenue:")      echo 4 ;;  # PLATFORM_PNL
-    "platform-withdraw-pending:") echo 9 ;;  # TRANSIT
-    "user-suspense:")             echo 9 ;;  # TRANSIT
-    "transit:")                   echo 9 ;;  # TRANSIT
-    *)                            echo 9 ;;
-  esac
+# ─── LA ↔ business_type 1:1 ──────────────────────────────────────────────
+#
+# 每个 LA 都拿一个专属 biz_type 数字码,而不是几个 LA 共享同一个 biz。原因:
+#   - 试算平衡按 business_type 维度摊开,共享 biz 的多个 LA 会被压成同一行,
+#     看不出渠道/平台账户各自的余额分布;
+#   - rotation/账实对账按 LA 拆分时,如果 biz 跨 LA 共用,跨账定位变模糊。
+#
+# 实现:每注册一个 LA 之前,先按 `<PREFIX>_<SUFFIX>` 生成专属 biz_code,
+# POST /admin/business-types(business_type=0 让服务端从 [101, 999] 自动分配),
+# 拿到分配的数字码再用于 LA 注册。idempotent:已存在的 biz_code 走 GET 路径
+# 复用同一个数字。
+#
+# 预置 biz=1..9(USER_BALANCE / MERCHANT_BALANCE / 几个平台预置 type)用于
+# bootstrap 直接走 /admin/platform-accounts 单点账户,不被本脚本占用。
+# 本脚本注册的 LA biz 全在 [101, 999] 段,跟 bootstrap 单点账户互不冲突。
+
+# la_biz_code: 从 (prefix, suffix) 生成专属 biz_code。
+# 大写 + 去末尾冒号 + `-`/`.`/`:` 换成 `_`,符合 account_business_type_code 命名约定。
+la_biz_code() {
+  local prefix="$1"
+  local suffix="$2"
+  local p s
+  p=$(printf "%s" "${prefix%:}" | tr '[:lower:]-.:' '[:upper:]___')
+  s=$(printf "%s" "${suffix}"  | tr '[:lower:]-.:' '[:upper:]___')
+  printf "%s_%s\n" "${p}" "${s}"
+}
+
+# ensure_biz_registered: 保证 (code, account_type) 已登记,echo 它的 business_type 数字码。
+# 流程: GET /admin/business-types 查 cache → 命中复用 / 未命中 POST 创建并解析返回 ID。
+# stdout = biz_type 数字;stderr = 调试日志。失败时退出非 0 且 stdout 空。
+#
+# 依赖 python3 解析 JSON(macOS / linux 默认都有;不用 jq 是为了少装一个东西)。
+ensure_biz_registered() {
+  local code="$1"
+  local atype="$2"
+  local desc="${3:-loadtest fleet-prepare 1:1 biz}"
+
+  # 1) GET 查现有
+  local list_resp
+  list_resp=$(curl -s "${ADMIN_HTTP}/admin/business-types" 2>/dev/null || echo "")
+  local existing
+  existing=$(printf "%s" "${list_resp}" | python3 -c "
+import json,sys
+try:
+  data = json.loads(sys.stdin.read() or '[]')
+  if isinstance(data, dict): data = data.get('list') or data.get('data') or []
+  for r in (data or []):
+    if r.get('business_type_code') == '${code}':
+      print(r.get('business_type','')); break
+except Exception as e:
+  pass
+" 2>/dev/null)
+
+  if [[ -n "${existing}" ]]; then
+    printf "%s\n" "${existing}"
+    return 0
+  fi
+
+  # 2) 不存在 → POST 创建(business_type=0 让服务端在 [101, 999] 自动分配)
+  local payload
+  payload=$(cat <<EOF
+{"account_type":${atype},"business_type_code":"${code}","description":"${desc}","business_type":0}
+EOF
+)
+  local create_resp http_code
+  create_resp=$(mktemp)
+  http_code=$(curl -s -o "${create_resp}" -w "%{http_code}" -X POST \
+    "${ADMIN_HTTP}/admin/business-types" \
+    -H 'Content-Type: application/json' -d "${payload}")
+
+  if [[ "${http_code}" != "200" && "${http_code}" != "201" ]]; then
+    # 兜底:很罕见情况下 GET 没命中但 POST 又撞 unique → 再 GET 一次
+    if grep -qiE "duplicate|exists|409" "${create_resp}" 2>/dev/null; then
+      list_resp=$(curl -s "${ADMIN_HTTP}/admin/business-types" 2>/dev/null || echo "")
+      existing=$(printf "%s" "${list_resp}" | python3 -c "
+import json,sys
+data = json.loads(sys.stdin.read() or '[]')
+if isinstance(data, dict): data = data.get('list') or data.get('data') or []
+for r in (data or []):
+  if r.get('business_type_code') == '${code}':
+    print(r.get('business_type','')); break
+" 2>/dev/null)
+      rm -f "${create_resp}"
+      if [[ -n "${existing}" ]]; then
+        printf "%s\n" "${existing}"
+        return 0
+      fi
+    fi
+    red "    ✗ ensure_biz '${code}' 失败 (HTTP ${http_code}): $(cat "${create_resp}" 2>/dev/null)" >&2
+    rm -f "${create_resp}"
+    return 1
+  fi
+
+  local new_biz
+  new_biz=$(python3 -c "
+import json,sys
+try:
+  d = json.load(open('${create_resp}'))
+  if isinstance(d, dict) and 'data' in d: d = d['data']
+  print(d.get('business_type',''))
+except Exception: pass
+" 2>/dev/null)
+  rm -f "${create_resp}"
+  if [[ -z "${new_biz}" ]]; then
+    red "    ✗ ensure_biz '${code}': POST 200 但解析不出 business_type" >&2
+    return 1
+  fi
+  printf "%s\n" "${new_biz}"
 }
 
 # ─── 参数解析 ─────────────────────────────────────────────────────────────
@@ -282,24 +372,35 @@ fi
 
 IFS=',' read -ra CHAN_ARR <<< "${CHANNELS}"
 
-# 渠道维度：每个渠道 × 4 prefix = 4 个 LA。biz_type 跟 account_type 1:1 对齐(strict)。
+# 渠道维度:每个渠道 × 4 prefix = 4 个 LA。每个 LA 拿专属 biz_type(1:1),
+# 在 admin/business-types 自动登记 + 数字分配。
 for chan in "${CHAN_ARR[@]}"; do
   chan="${chan// /}"
   [[ -z "${chan}" ]] && continue
   for p in "${CHANNEL_PREFIXES[@]}"; do
     key="${p}${chan}"
-    register_and_provision "${key}" \
-      "$(account_type_for_prefix "${p}")" \
-      "$(business_type_for_prefix "${p}")" || true
+    atype=$(account_type_for_prefix "${p}")
+    biz_code=$(la_biz_code "${p}" "${chan}")
+    biz_num=$(ensure_biz_registered "${biz_code}" "${atype}" "fleet LA ${key}")
+    if [[ -z "${biz_num}" ]]; then
+      red "  跳过 ${key}: 无法确定专属 biz_type"
+      continue
+    fi
+    register_and_provision "${key}" "${atype}" "${biz_num}" || true
   done
 done
 
-# 平台/通用：每个 prefix 一个 LA（用 "default" 后缀，可按需扩展）。biz_type 同上。
+# 平台/通用:每个 prefix 一个 LA(用 "default" 后缀,可按需扩展)。biz_type 同样 1:1。
 for p in "${PLATFORM_PREFIXES[@]}"; do
   key="${p}default"
-  register_and_provision "${key}" \
-    "$(account_type_for_prefix "${p}")" \
-    "$(business_type_for_prefix "${p}")" || true
+  atype=$(account_type_for_prefix "${p}")
+  biz_code=$(la_biz_code "${p}" "default")
+  biz_num=$(ensure_biz_registered "${biz_code}" "${atype}" "fleet LA ${key}")
+  if [[ -z "${biz_num}" ]]; then
+    red "  跳过 ${key}: 无法确定专属 biz_type"
+    continue
+  fi
+  register_and_provision "${key}" "${atype}" "${biz_num}" || true
 done
 
 green ""
