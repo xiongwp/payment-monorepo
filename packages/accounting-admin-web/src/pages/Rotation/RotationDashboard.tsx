@@ -208,10 +208,10 @@ function RegisterLAModal(p: RegisterLAModalProps) {
   const { t } = useTranslation('rotation')
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
-  const [prefix, setPrefix] = useState<string>(KEY_PREFIX_OPTIONS[0].prefix)
-  const [keySuffix, setKeySuffix] = useState<string>('')
 
-  // business_type registry（来自 /v1/business-types），首次打开 modal 时拉取
+  // business_type registry(来自 /v1/business-types),首次打开 modal 时拉取。
+  // LA↔biz_type 是 1:1,选 biz 后 logical_account_key 完全从 biz_code 反推,
+  // 不再要 prefix 下拉 + full-key 输入(用户出错的来源)。
   const [btRegistry, setBtRegistry] = useState<BusinessTypeInfo[]>([])
   const [btLoading, setBtLoading] = useState(false)
   const [selectedBT, setSelectedBT] = useState<number | undefined>(undefined)
@@ -244,37 +244,59 @@ function RegisterLAModal(p: RegisterLAModalProps) {
     }
   }, [selectedBT, btRegistry])
 
-  const fullKey = useMemo(() => `${prefix}${keySuffix.trim()}`, [prefix, keySuffix])
+  // 从 biz_code 反推 logical_account_key:
+  //   biz_code = <PREFIX_UPPER_UNDERSCORED>_<SUFFIX_UPPER>(fleet-prepare 的命名约定),
+  //   反过来:取 KEY_PREFIX_OPTIONS 里每个 prefix 把 - 和 : 都换成 _ 大写,作为
+  //   biz_code 前缀匹配,最长匹配胜出。匹配到后 suffix 转 lowercase 拼回完整 key。
+  //
+  // 如果 biz_code 不匹配任何 prefix 的反推规则(用户用自定义 code 注册的),返回 null,
+  // submit 阻断并提示。account_type 4-9 才能进 LA 体系(1-3 是 user/merchant 业务账户)。
+  const derivedKey = useMemo<string | null>(() => {
+    if (!derived) return null
+    const bizCode = derived.code
+    if (!bizCode) return null
+    // 按 prefix 长度降序,优先匹配最具体的
+    const sorted = [...KEY_PREFIX_OPTIONS].sort((a, b) => b.prefix.length - a.prefix.length)
+    for (const opt of sorted) {
+      // 'channel-receivable:' → 'CHANNEL_RECEIVABLE_'
+      const pat = opt.prefix.replace(/[-:]/g, '_').toUpperCase()
+      if (bizCode.startsWith(pat)) {
+        const suffix = bizCode.slice(pat.length).toLowerCase()
+        if (!suffix) continue
+        return `${opt.prefix}${suffix}`
+      }
+    }
+    return null
+  }, [derived])
 
   const submit = async () => {
     try {
       const values = await form.validateFields()
-      if (!keySuffix.trim()) {
-        message.error(t('register.suffixRequired'))
-        return
-      }
-      if (fullKey.length < 8 || fullKey.length > 64) {
-        message.error(t('register.keyLengthError', { length: fullKey.length }))
-        return
-      }
       if (!derived) {
         message.error(t('register.businessTypeRequired'))
         return
       }
+      if (!derivedKey) {
+        message.error(t('register.deriveKeyFailed', { code: derived.code }))
+        return
+      }
+      if (derivedKey.length < 8 || derivedKey.length > 64) {
+        message.error(t('register.keyLengthError', { length: derivedKey.length }))
+        return
+      }
       setLoading(true)
       const req: RotationRegisterRequest = {
-        logical_account_key:   fullKey,
-        account_type:          derived.accountType,         // 派生，不让用户填
-        account_business_type: values.business_type,        // 用户选
+        logical_account_key:   derivedKey,                  // 完全由 biz_code 反推,用户不填
+        account_type:          derived.accountType,         // biz registry 派生,用户不填
+        account_business_type: values.business_type,        // 用户唯一要选的
         currency:              values.currency,
         description:           values.description || undefined,
         rotation_enabled:      !!values.rotation_enabled,
         operator:              values.operator,
       }
       await rotationRegisterLogicalAccount(req)
-      message.success(t('register.createdSuccess', { key: fullKey }))
+      message.success(t('register.createdSuccess', { key: derivedKey }))
       form.resetFields()
-      setKeySuffix('')
       setSelectedBT(undefined)
       p.onClose()
       p.onDone()
@@ -325,26 +347,9 @@ function RegisterLAModal(p: RegisterLAModalProps) {
           rotation_enabled: true,
         }}
       >
-        <Form.Item label={t('register.keyPrefixLabel')} required>
-          <Select
-            value={prefix}
-            onChange={setPrefix}
-            options={KEY_PREFIX_OPTIONS.map((o) => ({ value: o.prefix, label: t(o.labelKey) }))}
-            style={{ width: '100%' }}
-          />
-        </Form.Item>
-        <Form.Item
-          label={t('register.fullKeyLabel', { key: fullKey || t('register.fullKeyPlaceholder') })}
-          required
-          help={t('register.fullKeyHelp')}
-        >
-          <Input
-            value={keySuffix}
-            onChange={(e) => setKeySuffix(e.target.value)}
-            placeholder={t('register.suffixPlaceholder')}
-            addonBefore={prefix}
-          />
-        </Form.Item>
+        {/* LA↔biz_type 是 1:1 — 用户只选 biz,prefix + logical_account_key + account_type 都自动派生。
+            biz 选项只列 account_type 4-9(平台 / 中间账户) 的,1-3 是 user/merchant 业务账户,
+            不进 LA 体系。 */}
         <Form.Item
           label={t('register.businessTypeLabel')}
           name="business_type"
@@ -357,31 +362,43 @@ function RegisterLAModal(p: RegisterLAModalProps) {
             showSearch
             optionFilterProp="label"
             onChange={(v: number) => setSelectedBT(v)}
-            options={btRegistry.map((r) => ({
-              value: r.business_type,
-              label: `${r.business_type} - ${r.business_type_code} (${ACCOUNT_TYPE_LABEL[r.account_type] || `type=${r.account_type}`})`,
-            }))}
+            options={btRegistry
+              .filter((r) => r.account_type >= 4 && r.account_type <= 9)
+              .map((r) => ({
+                value: r.business_type,
+                label: `${r.business_type} - ${r.business_type_code} (${ACCOUNT_TYPE_LABEL[r.account_type] || `type=${r.account_type}`})`,
+              }))}
           />
         </Form.Item>
         {derived && (
           <Alert
-            type="success"
+            type={derivedKey ? 'success' : 'warning'}
             showIcon={false}
             message={
-              <Space size="middle" wrap>
-                <span>
-                  <Text type="secondary">{t('register.derivedAccountType')}</Text>{' '}
-                  <Tag color="cyan">{derived.accountType} - {derived.accountTypeLabel}</Tag>
-                </span>
-                <span>
-                  <Text type="secondary">{t('register.derivedCategory')}</Text>{' '}
-                  <Tag color={categoryColor(derived.category)}>{derived.category}</Tag>
-                </span>
-                {derived.description && (
+              <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                <Space size="middle" wrap>
                   <span>
-                    <Text type="secondary">{t('register.derivedDescription')}</Text> <Text>{derived.description}</Text>
+                    <Text type="secondary">{t('register.derivedKey')}</Text>{' '}
+                    {derivedKey
+                      ? <Text code copyable>{derivedKey}</Text>
+                      : <Text type="danger">{t('register.derivedKeyFailed', { code: derived.code })}</Text>}
                   </span>
-                )}
+                </Space>
+                <Space size="middle" wrap>
+                  <span>
+                    <Text type="secondary">{t('register.derivedAccountType')}</Text>{' '}
+                    <Tag color="cyan">{derived.accountType} - {derived.accountTypeLabel}</Tag>
+                  </span>
+                  <span>
+                    <Text type="secondary">{t('register.derivedCategory')}</Text>{' '}
+                    <Tag color={categoryColor(derived.category)}>{derived.category}</Tag>
+                  </span>
+                  {derived.description && (
+                    <span>
+                      <Text type="secondary">{t('register.derivedDescription')}</Text> <Text>{derived.description}</Text>
+                    </span>
+                  )}
+                </Space>
               </Space>
             }
             style={{ marginBottom: 16 }}
