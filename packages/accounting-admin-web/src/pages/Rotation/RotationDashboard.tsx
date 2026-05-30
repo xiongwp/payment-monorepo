@@ -244,27 +244,43 @@ function RegisterLAModal(p: RegisterLAModalProps) {
     }
   }, [selectedBT, btRegistry])
 
-  // 从 biz_code 反推 logical_account_key:
-  //   biz_code = <PREFIX_UPPER_UNDERSCORED>_<SUFFIX_UPPER>(fleet-prepare 的命名约定),
-  //   反过来:取 KEY_PREFIX_OPTIONS 里每个 prefix 把 - 和 : 都换成 _ 大写,作为
-  //   biz_code 前缀匹配,最长匹配胜出。匹配到后 suffix 转 lowercase 拼回完整 key。
+  // 从 biz_code 反推 logical_account_key。两条规则,从严到松:
   //
-  // 如果 biz_code 不匹配任何 prefix 的反推规则(用户用自定义 code 注册的),返回 null,
-  // submit 阻断并提示。account_type 4-9 才能进 LA 体系(1-3 是 user/merchant 业务账户)。
+  // 规则 1 (strict): biz_code 是 <PREFIX_UPPER_UNDERSCORED>_<SUFFIX_UPPER> 形式
+  //   (fleet-prepare 注册的 biz 都长这样,例 CHANNEL_RECEIVABLE_ALIPAY)。
+  //   取 KEY_PREFIX_OPTIONS 每个 prefix 把 - 和 : 都换成 _ 大写,跟 biz_code 前缀匹配,
+  //   最长匹配胜出,剩余部分 lowercase 当 suffix。
+  //
+  // 规则 2 (fallback): 预置 biz 的 code 是单段语义名(TRANSACTION_FEE / TRANSIT /
+  //   PLATFORM_PNL ...),没法按规则 1 切分。按 biz 的 account_type 在 KEY_PREFIX_OPTIONS
+  //   里找 suggestedAccountType 匹配的 prefix(账号类型 4-9 都至少有一个 prefix 匹配);
+  //   多个 prefix 匹配同一 account_type 时取字母序首位,deterministic。
+  //   suffix = biz_code lowercased + _ 换 -(例 TRANSACTION_FEE → transaction-fee)。
+  //
+  // 都不匹配返回 null(只有 account_type 1-3 = user/merchant 业务账户会走到这,
+  // 这些本来就不该进 LA 体系,UI 也已经过滤掉了)。
   const derivedKey = useMemo<string | null>(() => {
     if (!derived) return null
     const bizCode = derived.code
     if (!bizCode) return null
-    // 按 prefix 长度降序,优先匹配最具体的
-    const sorted = [...KEY_PREFIX_OPTIONS].sort((a, b) => b.prefix.length - a.prefix.length)
-    for (const opt of sorted) {
-      // 'channel-receivable:' → 'CHANNEL_RECEIVABLE_'
+    // ── 规则 1 严格匹配(带 account_type 守卫,避免 TRANSIT_CHANNEL_RECEIVABLE 这种
+    // 字符串以 TRANSIT_ 开头但 account_type=5 应走 channel-receivable: 的误判)─────
+    const sortedByLen = [...KEY_PREFIX_OPTIONS].sort((a, b) => b.prefix.length - a.prefix.length)
+    for (const opt of sortedByLen) {
+      if (opt.suggestedAccountType !== derived.accountType) continue
       const pat = opt.prefix.replace(/[-:]/g, '_').toUpperCase()
       if (bizCode.startsWith(pat)) {
         const suffix = bizCode.slice(pat.length).toLowerCase()
-        if (!suffix) continue
-        return `${opt.prefix}${suffix}`
+        if (suffix) return `${opt.prefix}${suffix}`
       }
+    }
+    // ── 规则 2 按 account_type fallback ─────────────────────────────────
+    const matchingPrefixes = KEY_PREFIX_OPTIONS
+      .filter((o) => o.suggestedAccountType === derived.accountType)
+      .sort((a, b) => a.prefix.localeCompare(b.prefix))
+    if (matchingPrefixes.length > 0) {
+      const suffix = bizCode.toLowerCase().replace(/_/g, '-')
+      return `${matchingPrefixes[0].prefix}${suffix}`
     }
     return null
   }, [derived])
@@ -363,7 +379,14 @@ function RegisterLAModal(p: RegisterLAModalProps) {
             optionFilterProp="label"
             onChange={(v: number) => setSelectedBT(v)}
             options={btRegistry
-              .filter((r) => r.account_type >= 4 && r.account_type <= 9)
+              .filter((r) => {
+                // account_type 4-9 才进 LA 体系(1-3 是 user/merchant 业务账户)。
+                if (r.account_type < 4 || r.account_type > 9) return false
+                // 还得有至少一个 prefix 匹配该 account_type,否则反推不出 logical_account_key。
+                // 当前只有 type=8 (CHARGE_FEE) 没对应 prefix —— 后端 AllowedKeyPrefixes
+                // 没登记 platform-service-fee:。等后端补 prefix 后这里自动放开。
+                return KEY_PREFIX_OPTIONS.some((o) => o.suggestedAccountType === r.account_type)
+              })
               .map((r) => ({
                 value: r.business_type,
                 label: `${r.business_type} - ${r.business_type_code} (${ACCOUNT_TYPE_LABEL[r.account_type] || `type=${r.account_type}`})`,
