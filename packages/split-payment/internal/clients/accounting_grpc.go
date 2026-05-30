@@ -85,11 +85,12 @@ func NewAccountingGRPCClient(endpoint string) (*AccountingGRPCClient, error) {
 		// 强制 gRPC over HTTP/2 over TCP, 避开 Kitex netpoll 把 host:port 当 unix
 		// socket 路径解读的 "dial unix ...: no such file or directory" 陷阱.
 		client.WithTransportProtocol(transport.GRPC),
-		// 2s inner timeout：loadtest 外层 3s，内层短 1s 让单 leg 先 fail-fast，
-		// 整笔 TriggerEvent 不被一条慢 leg 拖死。retry 已禁掉，不会被放大。
-		// Fleet × rotation 启用后每个 leg 多一次 LA→sub_account 解析 +
-		// shard write，资源压力大时 2s 不够 → 调 3s。
-		client.WithRPCTimeout(3*time.Second),
+		// 10s inner timeout: loadtest 外层 15s,内层留 5s 缓冲。原来 3s 在
+		// 100 并发 × 1 replica × 笔记本环境下被秒打穿(整条 TCC try+confirm
+		// 跨 10 shard 单笔 P99 普遍 > 3s),整轮跑出 92% 超时。retry 已禁掉
+		// 不会被重试放大;拉宽到 10s 给单 leg 一次完整通过的余地。
+		// 生产容量充裕时(每 replica < 100 QPS)可以缩回 3s。
+		client.WithRPCTimeout(10*time.Second),
 		client.WithFailureRetry(noRetryPolicy),
 	)
 	cli, err := transactionservice.NewClient("accounting-service", opts...)
@@ -98,7 +99,7 @@ func NewAccountingGRPCClient(endpoint string) (*AccountingGRPCClient, error) {
 	}
 	return &AccountingGRPCClient{
 		cli:        cli,
-		Timeout:    3 * time.Second, // 同 WithRPCTimeout — fleet routing 解析 + 多 shard write 需要稍宽
+		Timeout:    10 * time.Second, // 跟 WithRPCTimeout 对齐
 
 		rulesCache: map[string][]*TransactionRule{},
 		rulesExp:   map[string]time.Time{},

@@ -105,6 +105,16 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
 fi
 green "  ✓ payment-admin-web 全栈关键容器都在跑"
 
+# 单 replica 容易被压垮:30 并发笔记本下 P99 经常 > 1s 撞超时。如果只有 1 个
+# accounting-service 容器在跑,提醒一下(不硬卡死,留 override 余地)。
+ACCT_COUNT=$(docker ps --format '{{.Names}}' | grep -cE '(^|-)accounting-service(-[0-9]+)?$' || echo 0)
+if [[ "${ACCT_COUNT}" -lt 2 ]]; then
+  yellow "  ⚠ 只有 ${ACCT_COUNT} 个 accounting-service replica。压测建议至少 2 个分担负载:"
+  yellow "      cd $(cd "${DIR}/.." && pwd) && docker compose -p accounting-system \\"
+  yellow "         -f deploy/overrides/accounting-system.yml up -d --scale accounting-service=2"
+  yellow "    (单 replica + 30 并发实测 P99 接近 3s,2 replica 后能稳到 < 800ms)"
+fi
+
 # ─── Step 1: build loadtest 镜像 ─────────────────────────────────────────
 step "Step 1 / 5  build loadtest 镜像（复用 split-payment binary）"
 

@@ -23,8 +23,12 @@ target:
   admin_token: ""
 
 load:
-  # 1000 用户池下 50-100 并发足够（再高会被 mysql connection pool 限到）
-  concurrency: 100
+  # 笔记本 + 1 accounting-service replica 跑稳的甜点是 30 并发。
+  # 历史 100 并发实测 92% 超时(整链路 TCC 跨 10 shard 单笔 P99 > 3s),
+  # 把 accounting RPC 超时从 3s 拉到 10s 后才不至于雪崩。生产容量充裕时
+  # (multi-replica + 独立 DB) 可以从 50 起步、按 P99 < 1s 往上加到 200+。
+  # 命令行用 --concurrency=N 可临时覆盖。
+  concurrency: 30
   duration: 60s
   rate_limit_qps: 0          # 0 = 不限速；ramp 阶段过后跑全速
   warmup: 10s

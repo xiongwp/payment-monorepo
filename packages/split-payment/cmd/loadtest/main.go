@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/pkg/retry"
 
 	spadmin "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1"
 	spadminsvc "github.com/xiongwp/split-payment/kitex_gen/split_payment/v1/adminservice"
@@ -674,13 +675,27 @@ func main() {
 		cfg.Load.Mode, cfg.Load.Concurrency, cfg.Load.Duration)
 
 	// Kitex client → split-payment AdminService
+	//
+	// 关键: 必须显式 WithFailureRetry(MaxRetryTimes=0),否则 Kitex 默认会对
+	// retryable 错(timeout / connection-closed) 自动重试 2 次。压测一旦某个
+	// timeout(15s 内层 10s + 网络) 触发,worker 会原地阻塞 ~45s 跑 3 轮,把
+	// 全部 worker 卡死 → 负载放大 3 倍 → accounting 雪崩。日志里之前那条
+	// "KITEX: auto retry retryable error, retry=2" 警告就是这个机制。
+	//
+	// outer timeout 15s = inner 10s + 5s 缓冲。原 3s 在 100 并发 1 replica
+	// 笔记本环境下被秒打穿。
+	noRetryPolicy := &retry.FailurePolicy{
+		StopPolicy: retry.StopPolicy{
+			MaxRetryTimes:    0,
+			MaxDurationMS:    0,
+			DisableChainStop: false,
+		},
+	}
 	spClient, err := spadminsvc.NewClient(
 		"split-payment",
 		client.WithHostPorts(cfg.Target.SplitPaymentEndpoint),
-		// 压测 tuning：3s outer timeout —— worker 等不到结果就 fail-fast 释放，
-		// 立刻发下一笔。inner（split-payment → accounting）配 2s，保证内层先死
-		// 让外层拿到明确错。
-		client.WithRPCTimeout(3*time.Second),
+		client.WithRPCTimeout(15*time.Second),
+		client.WithFailureRetry(noRetryPolicy),
 	)
 	if err != nil {
 		fatal("create split-payment client: %v", err)
