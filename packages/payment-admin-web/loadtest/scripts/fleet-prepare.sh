@@ -96,12 +96,31 @@ business_type_for_prefix() {
 }
 
 # ─── 参数解析 ─────────────────────────────────────────────────────────────
+#
+# --register-biz 是可重复 flag,启动时先把额外 biz_type 注册到
+# accounting 的 account_business_type_info(POST /admin/business-types),
+# 然后再走标准 LA register + provision。预置 biz=1..9 已在 init.sql 里,
+# 本 flag 只用于扩展(比如新增渠道独占的 biz_type=101 等)。
+#
+# 格式: --register-biz=CODE:account_type[:business_type[:description]]
+#   CODE             唯一码名(英文大写下划线),如 ALIPAY_PREMIUM_RECEIVABLE
+#   account_type     1-9(必填,跟 accounting 的 spec 对应:5 渠道应收 / 6 应付 /
+#                    7 手续费 / 9 中间 / 4 平台损益 ...)
+#   business_type    数字码;留空 / 0 → 让服务端在 [101, 999] 自动分配(推荐)
+#   description      可选描述
+#
+# 示例:
+#   ./fleet-prepare.sh \
+#     --register-biz=ALIPAY_PREMIUM_RECV:5 \
+#     --register-biz=WECHAT_VIP_FEE:7:201:WeChat VIP 手续费
+BIZ_TYPES_TO_REGISTER=()
 for arg in "$@"; do
   case "$arg" in
-    --channels=*) CHANNELS="${arg#*=}" ;;
-    --channels)   shift; CHANNELS="$1" ;;
-    --currency=*) CURRENCY="${arg#*=}" ;;
-    --admin=*)    ADMIN_HTTP="${arg#*=}" ;;
+    --channels=*)     CHANNELS="${arg#*=}" ;;
+    --channels)       shift; CHANNELS="$1" ;;
+    --currency=*)     CURRENCY="${arg#*=}" ;;
+    --admin=*)        ADMIN_HTTP="${arg#*=}" ;;
+    --register-biz=*) BIZ_TYPES_TO_REGISTER+=("${arg#*=}") ;;
     -h|--help)
       sed -n '2,/^set -euo/p' "$0" | sed 's/^# \?//'
       exit 0 ;;
@@ -111,6 +130,60 @@ done
 green() { printf "\033[32m%s\033[0m\n" "$*"; }
 yellow(){ printf "\033[33m%s\033[0m\n" "$*"; }
 red()   { printf "\033[31m%s\033[0m\n" "$*"; }
+
+# 注册一条 business_type 到 accounting.account_business_type_info。
+# 幂等:同 code 已存在时 accounting 返回 400 "duplicate" 或 409,这里都当 OK 跳过。
+# 入参:CODE:account_type[:business_type[:description]]
+register_biz_type() {
+  local spec="$1"
+  local IFS=':'
+  # shellcheck disable=SC2206
+  local parts=( $spec )
+  local code="${parts[0]:-}"
+  local atype="${parts[1]:-}"
+  local biz="${parts[2]:-0}"           # 0 = 让服务端自动分配 [101, 999]
+  local desc="${parts[3]:-loadtest-registered}"
+  if [[ -z "${code}" || -z "${atype}" ]]; then
+    red "  ✗ --register-biz 格式错误: '${spec}' (期望 CODE:account_type[:biz[:desc]])"
+    return 1
+  fi
+
+  yellow "[BIZ] ${code} (account_type=${atype} biz=${biz})"
+  local payload
+  payload=$(cat <<EOF
+{
+  "account_type": ${atype},
+  "business_type_code": "${code}",
+  "description": "${desc}",
+  "business_type": ${biz}
+}
+EOF
+)
+  : > /tmp/biz_resp
+  local rc
+  rc=$(curl -s -o /tmp/biz_resp -w "%{http_code}" -X POST \
+    "${ADMIN_HTTP}/admin/business-types" \
+    -H 'Content-Type: application/json' \
+    -d "${payload}")
+  case "${rc}" in
+    200|201) green "  ✓ registered: $(cat /tmp/biz_resp 2>/dev/null)" ;;
+    409)     yellow "  • already exists, skip" ;;
+    400)
+      # accounting 返回 400 + duplicate 提示也当 OK(uk_business_type_code 撞了)
+      if grep -qiE "duplicate|already.*exist|exists" /tmp/biz_resp 2>/dev/null; then
+        yellow "  • already exists (400 dup), skip"
+      else
+        red "  ✗ register biz failed (HTTP 400): $(cat /tmp/biz_resp 2>/dev/null)"
+        return 1
+      fi ;;
+    000)
+      red "  ✗ connection refused (admin HTTP ${ADMIN_HTTP} unreachable)"
+      return 1 ;;
+    *)
+      red "  ✗ register biz failed (HTTP ${rc}): $(cat /tmp/biz_resp 2>/dev/null)"
+      return 1 ;;
+  esac
+}
 
 # 注册 + provision + switch 单个 LA。幂等：已存在的 LA register 返回 409，
 # 这里把 409 视为 OK 继续走 provision + switch（manual-provision 会建下一期
@@ -190,7 +263,22 @@ green "=========================================================="
 green "Fleet × Rotation 压测准备  (ADMIN=${ADMIN_HTTP})"
 green "  currency: ${CURRENCY}"
 green "  channels: ${CHANNELS}"
+if [[ ${#BIZ_TYPES_TO_REGISTER[@]} -gt 0 ]]; then
+  green "  extra biz to register: ${BIZ_TYPES_TO_REGISTER[*]}"
+fi
 green "=========================================================="
+
+# ─── Step 0: 注册额外的 business_type ─────────────────────────────────────
+# 跑 LA 注册前先把所有 --register-biz 指定的 biz 塞到 account_business_type_info,
+# 否则后面 LA register / ForceProvision 用了未登记的 biz 会被 createAccountInternal
+# 的 registry 校验拒掉。预置 biz=1..9 走 init.sql,这里只处理用户扩展的。
+if [[ ${#BIZ_TYPES_TO_REGISTER[@]} -gt 0 ]]; then
+  green ""
+  green "─── Step 0: 注册 ${#BIZ_TYPES_TO_REGISTER[@]} 个额外 business_type ───"
+  for spec in "${BIZ_TYPES_TO_REGISTER[@]}"; do
+    register_biz_type "${spec}" || red "  (继续往下走;后续用到该 biz 的 LA 会失败)"
+  done
+fi
 
 IFS=',' read -ra CHAN_ARR <<< "${CHANNELS}"
 
