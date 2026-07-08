@@ -46,8 +46,8 @@ temp/
 .env.local
 # .env.example 不忽略（作为模板提交）
 
-# Generated files
-kitex_gen/
+# Generated Kitex stubs are committed so clean Docker builds do not try to
+# fetch this private module to satisfy github.com/xiongwp/accounting-system/kitex_gen imports.
 
 # Top-level build binaries
 accounting-system
