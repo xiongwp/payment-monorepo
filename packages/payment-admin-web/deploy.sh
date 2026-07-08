@@ -280,6 +280,47 @@ ensure_card_dbs() {
   ok "  card shard-0 DBs: ${got:-<none>}"
 }
 
+ensure_user_merchant_dbs() {
+  # 幂等：CREATE * IF NOT EXISTS。
+  #
+  # 跟 ensure_card_dbs 同一个坑：MySQL 的 /docker-entrypoint-initdb.d/ 只在
+  # 数据卷**首次创建**时跑一次。user-merchant-core 分库分表是后加的，老
+  # shared-db volume（分库前建的）不会自动补 user_merchant_db_0..9 /
+  # user_merchant_meta。这里无条件 exec 进每个 MySQL 重灌一遍
+  # user-merchant-core 的 init SQL，缺失才会建出来，已存在则 IF NOT EXISTS
+  # 跳过 → 重跑无害，不影响 paychan_db / order_db / accounting_db 里的数据。
+  local meta_init="$ROOT/user-merchant-core/database/metadb/init/init.sql"
+
+  if [[ ! -s "$meta_init" ]]; then
+    return 0
+  fi
+  if ! docker ps --format '{{.Names}}' | grep -qx 'shared-meta'; then
+    return 0
+  fi
+
+  info "  ensure user_merchant databases on shared-db"
+
+  docker exec -i shared-meta mysql -uroot -ppassword < "$meta_init" 2>/dev/null \
+    || warn "    apply user-merchant meta failed"
+
+  for i in 0 1 2 3 4 5 6 7 8 9; do
+    local shard_init="$ROOT/user-merchant-core/database/userdb/init/${i}_init.sql"
+    if [[ -s "$shard_init" ]]; then
+      docker exec -i "shared-shard-$i" mysql -uroot -ppassword < "$shard_init" 2>/dev/null \
+        || warn "    apply user-merchant shard $i failed"
+    fi
+  done
+
+  # 验证
+  local got
+  got=$(docker exec shared-meta mysql -uroot -ppassword -N -e \
+        "SHOW DATABASES LIKE 'user_merchant%'" 2>/dev/null | tr '\n' ' ')
+  ok "  user_merchant meta DBs: ${got:-<none>}"
+  got=$(docker exec shared-shard-0 mysql -uroot -ppassword -N -e \
+        "SHOW DATABASES LIKE 'user_merchant%'" 2>/dev/null | tr '\n' ' ')
+  ok "  user_merchant shard-0 DBs: ${got:-<none>}"
+}
+
 verify_shared_dbs() {
   # shared-shard-0 应该同时有 paychan_db_0 / order_db_0 / accounting_db_0 /
   # user_merchant_db_0（user-merchant-core 已分库后）。
@@ -443,13 +484,20 @@ cmd_up() {
     fi
     case "$svc" in
       shared-db)
-        info "  等共享 MySQL 栈 healthy（最多 180s）"
-        local deadline=$((SECONDS + 180))
+        info "  等共享 MySQL 栈 healthy（最多 360s）"
+        local deadline=$((SECONDS + 360))
         until [[ $(docker ps --filter "name=^shared-" --filter "health=healthy" --format '{{.Names}}' | wc -l) -ge 11 ]]; do
           (( SECONDS > deadline )) && { warn "等超时，继续（MySQL 可能还在初始化）"; break; }
           sleep 4
         done
-        verify_shared_dbs
+        # 补灌 user_merchant_* 库（老 volume 分库前建的，init SQL 不会重跑）；
+        # 放 verify 前面，这样首跑就直接补齐，不用等 verify 失败再排查。
+        ensure_user_merchant_dbs
+        if ! verify_shared_dbs; then
+          warn "  verify_shared_dbs 失败，尝试自愈后重验一次"
+          ensure_user_merchant_dbs
+          verify_shared_dbs || warn "  自愈后仍缺库，请检查 user-merchant-core 仓是否存在/生成正常"
+        fi
         # 补灌 card_* 库（如果之前 shared-db 已起、init 没含这俩，这里 idempotent 补建）
         ensure_card_dbs
         ;;
